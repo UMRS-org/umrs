@@ -96,6 +96,14 @@ def get_venue_service(request: Request) -> FrontendVenueService:
     cached = getattr(request.app.state, "companion_venue_service", None)
     if cached is not None:
         return cached
+    service = build_venue_service(getattr(request.app.state, "umrs_db_pool", None))
+    request.app.state.companion_venue_service = service
+    return service
+
+
+def build_venue_service(pool: Any) -> FrontendVenueService:
+    """The venue service over ``pool`` (the routes' and, slice 8b, the plan
+    loop's: one construction, never a second configuration)."""
     from umrs.venues.frontend_config import FrontendVenueConfig
     from umrs.venues.frontend_podman import FrontendPodmanProvisioner
     from umrs.venues.venue_sessions import VenueSessionStore
@@ -104,9 +112,8 @@ def get_venue_service(request: Request) -> FrontendVenueService:
     from .secret_broker import get_broker
 
     config = FrontendVenueConfig.from_env()
-    pool = getattr(request.app.state, "umrs_db_pool", None)
     broker = get_broker()
-    service = FrontendVenueService(
+    return FrontendVenueService(
         config=config,
         broker=broker,
         store=VenueSessionStore(pool),
@@ -116,8 +123,6 @@ def get_venue_service(request: Request) -> FrontendVenueService:
         site_name=_site_name(),
         quota_check=_quota_check(pool),
     )
-    request.app.state.companion_venue_service = service
-    return service
 
 
 def _typed(exc: VenueError) -> None:

@@ -164,3 +164,105 @@ async def cancel_plan_run_on_venue(
         raise
     except Exception as exc:  # noqa: BLE001
         _refused(exc, "cancel")
+
+
+# ── slice 8b: the server-hosted loop's plan-run host ───────────────────────
+
+
+def build_loop_plan_host(pool: Any, *, service: Any = None, job_store: Any = None) -> Any:
+    """The venue verbs and the proposal lane a server-hosted plan loop uses
+    (``umrs.knowledge.plan_iteration``), bound at boot over ``pool``.
+
+    The same ``umrs.venues.plan_runs`` verbs the routes call, with the
+    project's ADR-067 caps the route would read, and the existing proposal
+    lane (migration 0069: a pending proposal a person decides, ADR-050).
+    """
+    from umrs.knowledge.plan_iteration import PlanRunHost
+
+    from .companion_venue import build_venue_service
+
+    venue = service or build_venue_service(pool)
+
+    def _store() -> Any:
+        if job_store is not None:
+            return job_store
+        from .jobs import get_optional_job_store
+
+        store = get_optional_job_store()
+        if store is None:
+            raise RuntimeError("durable job store unavailable")
+        return store
+
+    def start(*, owner, project, run_id, definition, caps, **venue_args):
+        from .loop import _project_budget_caps
+
+        project_caps = plan_runs.caps_for(_project_budget_caps(project))
+        merged = _tighter_caps(project_caps, caps)
+        return plan_runs.start(
+            venue,
+            _store(),
+            owner=owner,
+            project=project,
+            run_id=run_id,
+            definition=definition,
+            caps=merged,
+            **venue_args,
+        )
+
+    def view(*, owner, project, run_id):
+        return plan_runs.status(venue, _store(), owner=owner, project=project, run_id=run_id)
+
+    def cancel(*, owner, project, run_id):
+        return plan_runs.cancel(
+            venue, _store(), owner=owner, project=project, run_id=run_id, actor="loop"
+        )
+
+    return PlanRunHost(
+        start=start,
+        view=view,
+        cancel=cancel,
+        propose=lambda **kw: propose_finding(pool, **kw),
+        venue_missing=lambda: venue.config.missing(),
+    )
+
+
+def _tighter_caps(project: dict[str, Any], loop: dict[str, Any]) -> dict[str, Any]:
+    walls = [int(c["max_wall_clock_sec"]) for c in (project, loop) if c.get("max_wall_clock_sec")]
+    return {"max_wall_clock_sec": min(walls)} if walls else {}
+
+
+def propose_finding(
+    pool: Any,
+    *,
+    project: str,
+    owner: str,
+    reason: str,
+    source_artifacts: list[str],
+    operation: dict[str, Any],
+) -> dict[str, Any]:
+    """Stage one PENDING proposal on the project's first graph (0069 lane).
+
+    Never decided here: a proposal is decided by a person (ADR-050; agents
+    and loops propose, the decide route refuses agents).
+    """
+    from umrs.knowledge.graph_registry import GraphRegistryStore, ProposalStore
+
+    graphs = GraphRegistryStore(pool).list_graphs(project_id=project, limit=1)
+    if not graphs:
+        return {
+            "status": "not_proposed",
+            "reason": f"project {project!r} has no knowledge graph to propose into",
+        }
+    proposal = ProposalStore(pool).create_proposal(
+        graphs[0].graph_id,
+        reason=reason,
+        source_artifacts=list(source_artifacts),
+        proposed_operations=[operation],
+        created_by=owner or "research_loop",
+    )
+    return {
+        "status": "proposed",
+        "graph_id": graphs[0].graph_id,
+        "proposal_id": proposal.proposal_id,
+        "proposal_status": getattr(proposal, "status", "pending"),
+    }

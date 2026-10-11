@@ -263,6 +263,20 @@ def _init_deep_stores(app, db_pool):
     _init_research_sessions_store(app, db_pool)
     _init_companion_trust_store(app, db_pool)
     _init_usage_pool(db_pool)
+    _init_loop_plan_host(db_pool)
+
+
+def _init_loop_plan_host(db_pool) -> None:
+    """ADR-092 slice 8b: the server-hosted loop's plan-run host (the venue
+    verbs and the proposal lane). Unwired, a plan loop's iteration stops
+    by name (``plan_host_unavailable``), never runs anything else."""
+    try:
+        from umrs.api.plan_run_venue import build_loop_plan_host
+        from umrs.knowledge import plan_iteration
+
+        plan_iteration.configure(build_loop_plan_host(db_pool))
+    except Exception:  # noqa: BLE001 — boot must survive per-component failures
+        logger.warning("plan-loop host unavailable in HTTP sidecar", exc_info=True)
 
 
 def _init_companion_trust_store(app, db_pool):

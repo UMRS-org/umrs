@@ -21,7 +21,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
-from umrs.knowledge import loop_hosting
+from umrs.knowledge import loop_hosting, plan_iteration
 from umrs.knowledge.loop import (
     AutonomousResearchLoop,
     LoopPhase,
@@ -470,12 +470,29 @@ class StartLoopRequest(BaseModel):
     iteration_plan: str = Field(
         "",
         description=(
-            "ADR-092 slice 6: a team-plan template each iteration runs. Only "
-            "the local venue runs one today; a server-hosted loop refuses it "
-            "by name (422 loops.unprocessable, plan_iteration_needs_server_venue) "
-            "until slice 8's server venue."
+            "ADR-092 slices 6, 8b: a team-plan template each iteration runs as "
+            "one venue-hosted plan run (the plan engine in the sandboxed r4 "
+            "worker). Refused by name (422 loops.unprocessable, "
+            "plan_iteration_needs_server_venue) when this site has no frontend "
+            "venue."
         ),
     )
+    iteration_plan_doc: dict[str, Any] = Field(
+        default_factory=dict,
+        description="The template's plan (JSON), resolved by the client (slice 8b).",
+    )
+    plan_args: dict[str, Any] = Field(
+        default_factory=dict,
+        description="The plan's params other than the loop's own (objective, context).",
+    )
+    plan_sources: list[str] = Field(
+        default_factory=list,
+        description="Venue sources for the runs' models: pushed sources and/or 'site'.",
+    )
+    plan_default_source: str = ""
+    plan_web_policy: str = ""
+    plan_default_model: str = ""
+    plan_tool_capabilities: dict[str, Any] = Field(default_factory=dict)
 
 
 class LoopStatusResponse(BaseModel):
@@ -710,7 +727,7 @@ def _resolve_loop_workflow(
     written on the loop (``metadata.workflow_name`` + ``workflow_resolution``)
     and onto every experiment lacking one.
     """
-    if engine.simulated or request.agentic:
+    if engine.simulated or request.agentic or (request.iteration_plan or "").strip():
         return ""
     planned = _plan_workflow(loop)
     if planned is not None:
@@ -764,26 +781,69 @@ def _refuse_plan_iteration(request: StartLoopRequest) -> None:
     from umrs.venues.frontend_config import FrontendVenueConfig
     from umrs.venues.plan_runs import ENABLE_POINTER
 
-    # ADR-092 slice 8: the server venue hosts single plan runs; a loop of
-    # them driven here is not built. The refusal names which is missing.
+    # ADR-092 slice 8b: a server-hosted loop runs each iteration as one
+    # venue-hosted plan run; without the venue it is refused by name.
     missing = FrontendVenueConfig.from_env().missing()
-    hint = (
-        f"this site has no server venue (missing: {', '.join(missing)}); {ENABLE_POINTER}"
-        if missing
-        else "this site's server venue hosts single plan runs (POST "
-        "/umrs/traces/plan-runs/{run_id}/venue; r4 team plan run --venue server); a "
-        "server-driven loop of plan runs is not built yet"
-    )
-    raise_typed(
-        PlatformError.loops(
-            "unprocessable",
-            f"{PLAN_ITERATION_REFUSAL} ({hint})",
-            reason="plan_iteration_needs_server_venue",
-            iteration_plan=template[:120],
-            venue_missing=missing,
-            pending="a server-driven loop of plan runs (ADR-092 slice 8 deferred)",
+    if missing:
+        raise_typed(
+            PlatformError.loops(
+                "unprocessable",
+                f"{PLAN_ITERATION_REFUSAL} (this site has no server venue (missing: "
+                f"{', '.join(missing)}); {ENABLE_POINTER})",
+                reason="plan_iteration_needs_server_venue",
+                iteration_plan=template[:120],
+                venue_missing=missing,
+            )
         )
+    problems = _plan_iteration_problems(request)
+    if problems:
+        raise_typed(
+            PlatformError.loops(
+                "unprocessable",
+                "plan_invalid: " + "; ".join(problems),
+                reason="plan_invalid",
+                iteration_plan=template[:120],
+            )
+        )
+
+
+def _plan_iteration_problems(request: StartLoopRequest) -> list[str]:
+    """Why the loop's plan cannot run as its iteration ([] = it can), checked
+    with the shared loop table and the stdlib grammar before anything exists."""
+    from r4_contracts import loop_plan
+    from r4_contracts.team_engine.plan import prepare_plan
+
+    try:
+        shape = loop_plan.loop_template(request.iteration_plan)
+        args = loop_plan.caller_args(shape, request.plan_args)
+    except ValueError as exc:
+        return [str(exc)]
+    if not request.plan_sources:
+        return ["plan_sources: a venue source serves the runs' models (a pushed source, or site)"]
+    args.update({shape.goal_param: request.research_goal, shape.context_param: ""})
+    _program, problems = prepare_plan(
+        request.iteration_plan_doc, args, tool_capabilities=request.plan_tool_capabilities
     )
+    return [f"{p.path}: {p.message}" for p in problems[:10]]
+
+
+def _attach_iteration_plan(loop: Any, request: StartLoopRequest) -> None:
+    """ADR-092 slice 8b: the loop's plan, recorded on the loop; a plan loop
+    with no mode asks at every plan run (fail closed, as the local one)."""
+    if not (request.iteration_plan or "").strip():
+        return
+    loop.metadata[plan_iteration.META_KEY] = {
+        "template": request.iteration_plan.strip(),
+        "doc": dict(request.iteration_plan_doc),
+        "args": dict(request.plan_args),
+        "sources": list(request.plan_sources),
+        "default_source": request.plan_default_source,
+        "web_policy": request.plan_web_policy,
+        "default_model": request.plan_default_model,
+        "tool_capabilities": dict(request.plan_tool_capabilities),
+    }
+    if not (request.mode or "").strip() or "mode" not in request.model_fields_set:
+        loop.metadata["mode"] = "ask"
 
 
 def _validate_loop_venue(request: StartLoopRequest) -> str:
@@ -971,6 +1031,7 @@ async def start_loop(
         max_iterations=request.max_iterations,
     )
     _apply_loop_mode(loop, request)
+    _attach_iteration_plan(loop, request)
     venue = _validate_loop_venue(request)
     loop.metadata["venue"] = venue
     # D-52 (2026-09-22): one trace id through the loop's jobs, iterations and
@@ -1140,7 +1201,16 @@ def _host_on_thread(
     try:
         from umrs.knowledge import engine_loop_runner as _engine_runner
 
-        if agentic:
+        if plan_iteration.is_plan_loop(loop):
+            # ADR-092 slice 8b: the plan executor under the same engine driver.
+            _engine_runner.register(
+                loop,
+                engine_factory=plan_iteration.engine_factory(),
+                store=_loop_store,
+                on_iteration=loop_hosting.iteration_hook(),
+            )
+            loop.metadata["driver"] = "engine"
+        elif agentic:
             # ADR-064 fold: the agent executor hosts under the ENGINE driver
             # (AgenticEngine adapter); the agent runner is no longer spawned.
             from umrs.knowledge.agentic_engine import AgenticEngine
