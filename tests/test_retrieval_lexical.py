@@ -189,10 +189,13 @@ def test_lexical_hit_strength() -> None:
     ],
 )
 def test_scope_is_the_dense_lanes(spec: RetrieveSpec) -> None:
+    from umrs.knowledge.access_scope import artifact_alive_predicate
+
     sql, params = lexical.scope_predicate(spec)
     gate, gate_params = dense.gate_clause(spec)
     exclude, exclude_params = dense._exclude_clause(spec)
-    assert sql == f"{gate} AND n.content->>'kind' = 'chunk'{exclude}"
+    alive = artifact_alive_predicate("n")
+    assert sql == f"{gate} AND n.content->>'kind' = 'chunk' AND {alive}{exclude}"
     assert params == [*gate_params, *exclude_params]
     assert sql.count("%s") == len(params)
 

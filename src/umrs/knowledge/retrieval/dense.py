@@ -25,7 +25,7 @@ from typing import Any
 
 import httpx
 
-from umrs.knowledge.access_scope import visibility_predicate
+from umrs.knowledge.access_scope import artifact_alive_predicate, visibility_predicate
 from umrs.knowledge.graph_registry import default_graph_id
 from umrs.knowledge.text_embedder import embedding_space
 
@@ -121,12 +121,13 @@ def _exclude_clause(spec: RetrieveSpec) -> tuple[str, list[Any]]:
 
 
 def scope_clause(spec: RetrieveSpec, model: str) -> tuple[str, list[Any]]:
-    """``WHERE`` body over ``n``/``e``: visibility, graphs, one space, chunks."""
+    """``WHERE`` body over ``n``/``e``: visibility, graphs, one space, chunks
+    whose artifact is alive (wave F; legacy mode keeps its old statement)."""
     gate, params = gate_clause(spec)
     exclude, exclude_params = _exclude_clause(spec)
     sql = (
         f"{gate} AND (e.model_name = %s OR e.model_name LIKE %s) "
-        f"AND n.content->>'kind' = 'chunk'{exclude}"
+        f"AND n.content->>'kind' = 'chunk' AND {artifact_alive_predicate('n')}{exclude}"
     )
     return sql, [*params, model, same_space_pattern(model), *exclude_params]
 

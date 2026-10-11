@@ -33,6 +33,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
 
+from umrs.knowledge.access_scope import artifact_alive_predicate
+
 from .dense import _exclude_clause, gate_clause
 from .types import Candidate, LaneResult, RetrieveSpec
 
@@ -136,10 +138,12 @@ def clear_caches() -> None:
 def scope_predicate(spec: RetrieveSpec) -> tuple[str, list[Any]]:
     """``(sql, params)`` over alias ``n``: the chunk rows the dense lane may
     rank for ``spec`` (its ownership/visibility gate, graph selection with
-    the legacy ``graph_id = ''`` rule, and exclusions), without the space."""
+    the legacy ``graph_id = ''`` rule, and exclusions), without the space —
+    and, like it, only chunks whose artifact is alive (wave F)."""
     gate, params = gate_clause(spec)
     exclude, exclude_params = _exclude_clause(spec)
-    return f"{gate} AND n.content->>'kind' = 'chunk'{exclude}", [
+    alive = artifact_alive_predicate("n")
+    return f"{gate} AND n.content->>'kind' = 'chunk' AND {alive}{exclude}", [
         *params,
         *exclude_params,
     ]

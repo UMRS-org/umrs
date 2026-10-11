@@ -182,6 +182,30 @@ def visibility_predicate(
     return f"(({owned} OR {prefix}visibility = '{VISIBILITY_SYSTEM}'){ambient_clause})"
 
 
+#: The chunk writer whose rows carry their artifact id (``content.artifact_id``)
+#: — the embed job. rag.upload minting and the legacy canonizer key their
+#: chunks by ``document_id`` and are never filtered by the predicate below.
+EMBED_CHUNK_ORIGIN = "knowledge_embed"
+
+
+def artifact_alive_predicate(alias: str = "n") -> str:
+    """ADR-093 D-11 (wave F): a row the embed job wrote is readable only while
+    its artifact row exists in the row's own project.
+
+    One SQL boolean, no parameter. Rows of any other origin pass unchanged:
+    their chunks carry ``document_id``, not ``artifact_id``, so a check on
+    the chunk's own key would hide every one of them. A chunk whose artifact
+    row is gone (an embed write that failed half-way, a bundle-import dedup)
+    is an orphan; no lane reads it.
+    """
+    return (
+        f"({alias}.content->>'origin' IS DISTINCT FROM '{EMBED_CHUNK_ORIGIN}' "
+        "OR EXISTS (SELECT 1 FROM knowledge_artifacts alive "
+        f"WHERE alive.artifact_id = {alias}.content->>'artifact_id' "
+        f"AND alive.project_id = {alias}.project_id))"
+    )
+
+
 def visibility_clause(
     project_id: str | None, alias: str | None = None
 ) -> tuple[str, list]:
