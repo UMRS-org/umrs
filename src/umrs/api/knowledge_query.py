@@ -606,9 +606,12 @@ class _EmbeddingsSearchBackend:
         if len(row) > 6:  # similarity lane: cosine distance in position 7
             distance = float(row[6])
             score, lane = max(0.0, 1.0 - distance), "similarity"
-            extra = {"distance": distance}
-            # The matched text, so a semantic hit is readable on its own.
-            content = _first_text_field(row[7] if len(row) > 7 else "") or content
+            # The matched text, whole up to the server cap, so a semantic hit
+            # is readable on its own and the caller's per-hit budget reaches it.
+            matched = _first_text_field(row[7] if len(row) > 7 else "")
+            extra: dict[str, Any] = {"distance": distance}
+            if matched:
+                content, extra["clipped"] = _bounded(matched)
         else:
             score, lane, extra = 0.5, "table-reader", {}
         return {
@@ -663,11 +666,12 @@ def _embeddings_backend_for(
     )
 
 
-#: ADR-093 D-11 (wave F): the server cap on one K3 hit's text. The lexical
-#: and graph lanes clipped a hit to 240/200 characters with no flag, so the
-#: caller's per-hit evidence budget (r4 C23b) could not reach the text of a
-#: hit only those lanes found. A hit now carries the full matched text up to
-#: this cap, and ``metadata.clipped`` says whether the cap cut it.
+#: ADR-093 D-11 (wave F): the server cap on one K3 hit's text. The lexical,
+#: graph and similarity lanes clipped a hit to 240/200/240 characters with no
+#: flag, so the caller's per-hit evidence budget (r4 C23b) could not reach the
+#: text (measured 2026-10-11, eval Phase 11: a 1,200-character share grew the
+#: reader's context by 35 tokens a claim). A hit now carries the full matched
+#: text up to this cap, and ``metadata.clipped`` says whether the cap cut it.
 HIT_TEXT_MAX_ENV = "UMRS_K3_HIT_TEXT_MAX"
 HIT_TEXT_MAX_DEFAULT = 4000
 
@@ -686,18 +690,12 @@ def _bounded(text: str) -> tuple[str, bool]:
 
 
 def _first_text_field(content_text: str) -> str | None:
-    """First non-empty text-ish value of a JSONB payload, or None."""
+    """First non-empty text-ish value of a JSONB payload, whole, or None."""
     try:
         parsed = json.loads(content_text) if content_text else {}
     except (ValueError, TypeError):
         parsed = {}
-    return _first_text_value(parsed)
-
-
-def _first_text_value(parsed: Any) -> str | None:
-    """First non-empty text-ish value of a parsed payload (240 chars), or None."""
-    value = _first_text_raw(parsed)
-    return value[:240] if value else None
+    return _first_text_raw(parsed)
 
 
 def _first_text_raw(parsed: Any) -> str | None:

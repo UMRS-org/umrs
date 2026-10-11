@@ -9,8 +9,9 @@ full text up to a server cap (ADR-093 D-11, wave F, 2026-10-11).
   row exists. Chunks of other writers (rag.upload minting, the legacy
   canonizer) carry ``document_id``, not ``artifact_id``, and pass unchanged.
   Dense legacy mode (acceptance receipt 4) keeps its old statement.
-- K3's lexical and graph lanes clipped a hit to 240/200 characters with no
-  flag, so the caller's per-hit budget could not reach its text.
+- K3's lexical, graph and similarity lanes clipped a hit to 240/200/240
+  characters with no flag, so the caller's per-hit budget could not reach its
+  text.
 """
 
 from __future__ import annotations
@@ -149,6 +150,29 @@ def test_the_server_cap_bounds_a_hit_and_says_so(monkeypatch):
     lexical_hit, graph_hit = _lexical("y" * 80), _graph("z" * 80)
     assert lexical_hit["content"] == "y" * 50 and lexical_hit["metadata"]["clipped"] is True
     assert graph_hit["content"] == "z" * 50 and graph_hit["metadata"]["clipped"] is True
+    assert _similar("s" * 80)["content"] == "s" * 50
+    assert _similar("s" * 80)["metadata"]["clipped"] is True
+
+
+def _similar(text: str | None) -> dict:
+    content = json.dumps({"text": text}) if text is not None else "{}"
+    row = ("node-chunk-art-1-0", "e5-base-v2", 768, None, "abstract", "p", 0.2, content)
+    return kq._EmbeddingsSearchBackend._hit(row)
+
+
+def test_a_similarity_hit_carries_its_full_chunk_text():
+    """The lane the small profile reads most: 240 characters before, so a
+    1,200-character share (C23b) showed the reader 35 more tokens a claim."""
+    body = "vitamin D " * 120  # 1,200 characters
+    hit = _similar(body)
+    assert hit["content"] == body.strip() and hit["metadata"]["clipped"] is False
+    assert hit["metadata"]["distance"] == 0.2
+
+
+def test_a_similarity_hit_without_text_keeps_its_row_label():
+    hit = _similar(None)
+    assert hit["content"].startswith("vector row for node-chunk-art-1-0")
+    assert "clipped" not in hit["metadata"]
 
 
 def test_the_cap_survives_the_search_api_conversion():
