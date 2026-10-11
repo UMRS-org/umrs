@@ -1,10 +1,11 @@
 """Ask-the-scientist policy vocabulary (ADR-066 + amendment 3, gap row D-33).
 
 - which trigger classes an engine action carries (a set: a physical workflow
-  trigger is both ``cost`` and ``physical_action``; a team-plan run,
-  ``plan_run``, is ``cost`` — ADR-092 slice 6 registers it here before any
-  loop runs a plan, so an ask-mode loop parks at it and a profile naming
-  ``cost`` does too);
+  trigger is both ``cost`` and ``physical_action``). The class names and
+  the kind → class table are ``r4_contracts.ask_policy``'s, shared with r4's
+  local loop; a team-plan run, ``plan_run``, is ``cost`` there (ADR-092
+  slice 6, registered before any loop runs a plan), so an ask-mode loop
+  parks at it and a profile naming ``cost`` does too;
 - the maturity-stage presets of the persisted per-project policy, and the
   reverse lookup that names the stage a stored policy corresponds to.
 
@@ -16,18 +17,19 @@ from __future__ import annotations
 
 from typing import Any
 
-COST = "cost"
-COMPETING = "competing_hypotheses"
-DIRECTION = "direction_change"
-PHYSICAL = "physical_action"
-TRIGGER_CLASSES = (COST, COMPETING, DIRECTION, PHYSICAL)
+from r4_contracts.ask_policy import (
+    ACTION_KIND_CLASSES,
+    COMPETING,
+    COST,
+    DIRECTION,
+    PHYSICAL,
+    PLAN_RUN,
+    TRIGGER_CLASSES,
+)
 
-# ADR-092 slice 6 (D-29 tail): one loop iteration that runs a team plan
-# (fan-out agents under a token budget). Classed ``cost`` like any other
-# spend; a plan's own gates are not actions — they always ask (ADR-092
-# slice 2), whatever the loop's mode.
-PLAN_RUN = "plan_run"
-COST_ACTION_KINDS = ("workflow_trigger", "agent_iteration", PLAN_RUN)
+# The kinds the shared table classes ``cost`` (a plan's own gates are not
+# actions: they always ask, ADR-092 slice 2, whatever the loop's mode).
+COST_ACTION_KINDS = tuple(k for k, c in ACTION_KIND_CLASSES.items() if COST in c)
 
 # Maturity stage → (ask_mode, pause_triggers). physical_action is kept on
 # every profile preset: hardware actions keep asking even when autonomous.
@@ -44,10 +46,9 @@ def action_trigger_classes(action: dict[str, Any]) -> frozenset[str]:
     """The trigger classes one engine action carries (unknown kinds: none —
     a profile-mode loop never silently parks on them)."""
     kind = str(action.get("kind") or "")
-    if kind in COST_ACTION_KINDS:
-        return (
-            frozenset({COST, PHYSICAL}) if action.get("physical") else frozenset({COST})
-        )
+    classes = ACTION_KIND_CLASSES.get(kind)
+    if classes:
+        return classes | {PHYSICAL} if action.get("physical") else classes
     if kind in (COMPETING, DIRECTION):
         return frozenset({kind})
     return frozenset()

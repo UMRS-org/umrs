@@ -13,18 +13,17 @@ from umrs.knowledge.engine_loop_runner import EngineLoopRunner
 # ── the action class ─────────────────────────────────────────────────────────
 
 
-def test_a_plan_run_is_classed_cost():
-    assert ap.PLAN_RUN == "plan_run"
-    assert ap.action_trigger_classes({"kind": "plan_run"}) == {"cost"}
-    assert ap.action_trigger_classes({"kind": "plan_run", "physical": True}) == {
-        "cost",
-        "physical_action",
-    }
+def test_ask_policy_reads_the_shared_action_table():
+    # The table is pinned once, in r4-contracts (test_ask_policy.py).
+    from r4_contracts.ask_policy import ACTION_KIND_CLASSES, PLAN_RUN
 
-
-def test_the_older_cost_kinds_are_unchanged():
-    assert ap.action_trigger_classes({"kind": "workflow_trigger"}) == {"cost"}
-    assert ap.action_trigger_classes({"kind": "agent_iteration"}) == {"cost"}
+    assert ap.PLAN_RUN == PLAN_RUN
+    assert set(ap.COST_ACTION_KINDS) == set(ACTION_KIND_CLASSES)
+    for kind, classes in ACTION_KIND_CLASSES.items():
+        assert ap.action_trigger_classes({"kind": kind}) == classes
+        assert ap.action_trigger_classes({"kind": kind, "physical": True}) == (
+            classes | {"physical_action"}
+        )
     assert ap.action_trigger_classes({"kind": "plan_gate"}) == frozenset()
 
 
