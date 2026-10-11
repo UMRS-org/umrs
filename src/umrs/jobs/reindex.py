@@ -48,12 +48,20 @@ the old job returned silently over ZMQ), so a project larger than
 ``batch_limit`` could not converge — ``models.default_idempotency_key`` now
 gives each reindex submitted without a key a fresh one.
 
+An artifact the embed job failed for good under the site's model and scheme
+(``metadata.embed_failed``: content with no embedder, an object that is
+gone, no file node) is passed over and counted as ``failed_skipped`` in the
+backend ref (2026-10-11): before, every pass re-sent the same never-
+embeddable artifacts and their embed job failed by name each time.
+``retry_failed: true`` sweeps them again.
+
 Payload contract (validated at submit time):
 
     {"database": str, "table": str, "target_model": str,
      "index_name": str | None, "embedding_dim": int > 0 | None,
      "batch_limit": int > 0 (default 500),
-     "project_id": str | None, "chunk_scheme": str | None}
+     "project_id": str | None, "chunk_scheme": str | None,
+     "retry_failed": bool (default false)}
 
 ``chunk_scheme``, when given, must be the site's scheme: the re-embed
 writes the scheme the site runs, never the one a spec asks for.
@@ -70,6 +78,7 @@ from umrs.jobs.models import Job, JobAttempt, JobStatus, JobType
 from umrs.knowledge.embedding_metadata import (
     EmbeddingMetadataError,
     HeldBy,
+    count_failed_artifacts,
     select_stale_artifacts,
     validate_reindex_payload,
 )
@@ -103,6 +112,7 @@ class _PassTotals:
     swept: int = 0
     enqueued: int = 0
     pages: int = 0
+    failed_skipped: int = 0
 
 
 def validate_knowledge_reindex_spec(spec: dict) -> dict:
@@ -116,12 +126,16 @@ def validate_knowledge_reindex_spec(spec: dict) -> dict:
     limit = spec.get("batch_limit", 500)
     _require_positive_int(dim, "embedding_dim", allow_none=True)
     _require_positive_int(limit, "batch_limit")
+    retry_failed = spec.get("retry_failed", False)
+    if not isinstance(retry_failed, bool):
+        raise EmbeddingMetadataError("retry_failed must be a bool")
     return {
         **base,
         "database": database,
         "table": table,
         "embedding_dim": dim,
         "batch_limit": limit,
+        "retry_failed": retry_failed,
         **_scope_fields(spec),
     }
 
@@ -169,17 +183,23 @@ class KnowledgeReindexBackend(OrchestratorBackend):
             _lock_project(conn, spec["project_id"])
             totals = _pass(job, conn, spec)
         if not totals.swept:
-            logger.info("reindex no-op: no stale artifacts for job=%s", job.job_id)
+            logger.info(
+                "reindex no-op: no stale artifacts for job=%s (failed_skipped=%d)",
+                job.job_id,
+                totals.failed_skipped,
+            )
             return _backend_ref(spec, totals)
 
         action = _maintain_index(spec)
         logger.info(
-            "reindex: job=%s attempt=%s swept=%d pages=%d re-embed jobs=%d index=%s",
+            "reindex: job=%s attempt=%s swept=%d pages=%d re-embed jobs=%d "
+            "failed_skipped=%d index=%s",
             job.job_id,
             attempt.attempt_id,
             totals.swept,
             totals.pages,
             totals.enqueued,
+            totals.failed_skipped,
             action,
         )
         return _backend_ref(spec, totals)
@@ -214,7 +234,21 @@ def _pass(job: Job, conn, spec: dict) -> _PassTotals:
             totals.enqueued += len(_enqueue_reembed(job, batches))
             after = page[-1]
         if len(page) < limit:
+            totals.failed_skipped = _failed_skipped(conn, spec)
             return totals
+
+
+def _failed_skipped(conn, spec: dict) -> int:
+    """Stale artifacts the pass left out as permanently failed (0 with
+    ``retry_failed``, which sweeps them)."""
+    if spec.get("retry_failed"):
+        return 0
+    return count_failed_artifacts(
+        conn,
+        spec["target_model"],
+        chunk_scheme=spec.get("chunk_scheme"),
+        project_id=spec.get("project_id"),
+    )
 
 
 # Vector tables whose column has no dimension (0075): no ANN index can exist
@@ -438,6 +472,7 @@ def _sweep(conn, spec: dict, after: str | None) -> list[str]:
         project_id=spec.get("project_id"),
         after=after,
         held_by=HELD_BY,
+        skip_failed=not spec.get("retry_failed"),
     )
 
 
@@ -468,7 +503,8 @@ def _backend_ref(spec: dict, totals: _PassTotals) -> str:
     return (
         f"knowledge_reindex|database={spec['database']}|table={spec['table']}|"
         f"index={index}|model={spec['target_model']}|scheme={scheme}|"
-        f"swept={totals.swept}|reembed_jobs={totals.enqueued}|pages={totals.pages}"
+        f"swept={totals.swept}|reembed_jobs={totals.enqueued}|pages={totals.pages}|"
+        f"failed_skipped={totals.failed_skipped}"
     )
 
 

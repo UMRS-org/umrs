@@ -30,6 +30,14 @@ Convergence (ADR-093 D-11, wave F, 2026-10-11): the sweep pages by
 ``artifact_id`` (keyset ``after``), so one reindex pass visits each stale
 artifact once, and with ``held_by`` it skips artifacts that a queued or
 running embed/understand job already holds.
+
+Permanent failures (ADR-093 D-11, 2026-10-11): an artifact the embed job
+failed by name for a reason no retry changes (content this site has no
+embedder for, an object that is gone, no file node to hang chunks on)
+carries ``metadata.embed_failed = {model, scheme, reason, at}``. A sweep
+with ``skip_failed`` passes it over while the site's model and scheme are
+the ones that failed it, so a pass converges; a model or scheme change, or
+``retry_failed``, tries it again, and a successful stamp clears the record.
 """
 
 from __future__ import annotations
@@ -147,6 +155,18 @@ class HeldBy:
     statuses: tuple[str, ...]
 
 
+# The record a permanent embed failure leaves (see the module docstring),
+# matched on the model and scheme that failed it.
+_FAILED_SQL = (
+    "(COALESCE(metadata->'embed_failed'->>'model', '') = %s "
+    "AND COALESCE(metadata->'embed_failed'->>'scheme', '') = %s)"
+)
+
+
+def _failed_clause(model: str, chunk_scheme: str | None) -> tuple[str, list[Any]]:
+    return f" AND NOT {_FAILED_SQL}", [model, chunk_scheme or _UNSTAMPED_SCHEME]
+
+
 def select_stale_artifacts(
     conn,
     target_model: str,
@@ -156,6 +176,7 @@ def select_stale_artifacts(
     project_id: str | None = None,
     after: str | None = None,
     held_by: HeldBy | None = None,
+    skip_failed: bool = False,
 ) -> list[str]:
     """Active artifact ids needing (re)embedding under ``target_model``.
 
@@ -168,7 +189,8 @@ def select_stale_artifacts(
     starts the page past the previous page's last id, so one pass visits
     each artifact once — an artifact that fails and turns stale again
     during the pass is not visited twice. With ``held_by``, artifacts an
-    unfinished job of those types already holds are skipped.
+    unfinished job of those types already holds are skipped, and with
+    ``skip_failed``, artifacts this model and scheme failed permanently.
     """
     model = str(target_model or "").strip()
     if not model:
@@ -180,6 +202,10 @@ def select_stale_artifacts(
     if held_by is not None:
         where += f" AND {_HELD_SQL}"
         params += [list(held_by.job_types), list(held_by.statuses)]
+    if skip_failed:
+        clause, extra = _failed_clause(model, chunk_scheme)
+        where += clause
+        params += extra
     cur = conn.cursor()
     cur.execute(
         f"SELECT artifact_id FROM knowledge_artifacts WHERE {where} "
@@ -187,6 +213,29 @@ def select_stale_artifacts(
         (*params, int(limit)),
     )
     return [row[0] for row in cur.fetchall()]
+
+
+def count_failed_artifacts(
+    conn,
+    target_model: str,
+    *,
+    chunk_scheme: str | None = None,
+    project_id: str | None = None,
+) -> int:
+    """Stale artifacts a sweep with ``skip_failed`` passes over: those this
+    model and scheme failed permanently (reported, never silently dropped)."""
+    model = str(target_model or "").strip()
+    if not model:
+        raise EmbeddingMetadataError("target_model must be non-empty")
+    where, params = _stale_where(model, chunk_scheme, project_id)
+    params += [model, chunk_scheme or _UNSTAMPED_SCHEME]
+    cur = conn.cursor()
+    cur.execute(
+        f"SELECT count(*) FROM knowledge_artifacts WHERE {where} AND {_FAILED_SQL}",
+        tuple(params),
+    )
+    row = cur.fetchone()
+    return int(row[0]) if row else 0
 
 
 def stamp_embeddings_current(
@@ -247,10 +296,12 @@ def mark_embeddings_stale(conn, *, previous_model: str | None = None) -> int:
     return int(getattr(cur, "rowcount", 0) or 0)
 
 
+# A successful stamp clears a permanent-failure record.
 _STAMP_SQL = (
     "UPDATE knowledge_artifacts "
     "SET embedding_model = $1, embedding_dim = $2, embedded_at = now(), "
-    "embedding_status = 'current', updated_at = now() "
+    "embedding_status = 'current', updated_at = now(), "
+    "metadata = COALESCE(metadata, '{}'::jsonb) - 'embed_failed' "
     "WHERE artifact_id = $3"
 )
 # ADR-093 D-11: the scheme and the chunk counts ride with the stamp.
@@ -258,10 +309,18 @@ _STAMP_CHUNKS_SQL = (
     "UPDATE knowledge_artifacts "
     "SET embedding_model = $1, embedding_dim = $2, embedded_at = now(), "
     "embedding_status = 'current', updated_at = now(), "
-    "metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object("
+    "metadata = (COALESCE(metadata, '{}'::jsonb) - 'embed_failed') || jsonb_build_object("
     "'chunk_scheme', $4::text, 'chunks_total', $5::int, 'chunks_indexed', $6::int) "
     "WHERE artifact_id = $3"
 )
+_FAILED_STAMP_SQL = (
+    "UPDATE knowledge_artifacts "
+    "SET metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object("
+    "'embed_failed', jsonb_build_object('model', $1::text, 'scheme', $2::text, "
+    "'reason', $3::text, 'at', now()::text)), updated_at = now() "
+    "WHERE artifact_id = $4"
+)
+_FAILED_REASON_MAX = 300
 
 
 @dataclass(frozen=True)
@@ -297,3 +356,20 @@ async def stamp_artifact_embedded(
         args += (chunks.scheme, int(chunks.total), int(chunks.indexed))
     async with pool.acquire() as conn:
         await conn.execute(sql, *args)
+
+
+async def record_embed_failures(
+    pool: Any, failures: Sequence[tuple[str, str]], *, model: str, scheme: str
+) -> int:
+    """Record ``(artifact_id, reason)`` permanent embed failures under the
+    model and scheme that failed them (asyncpg pool). Returns the count."""
+    rows = [
+        (model, scheme, str(reason)[:_FAILED_REASON_MAX], str(artifact_id))
+        for artifact_id, reason in failures
+        if str(artifact_id).strip()
+    ]
+    if not rows or not model:
+        return 0
+    async with pool.acquire() as conn:
+        await conn.executemany(_FAILED_STAMP_SQL, rows)
+    return len(rows)
