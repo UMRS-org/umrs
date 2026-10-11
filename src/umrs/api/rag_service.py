@@ -16,7 +16,7 @@ os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 import contextlib
 
 import httpx
-from fastapi import FastAPI, File, Form, Query, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from langchain_community.embeddings import SentenceTransformerEmbeddings
 from langchain_core.callbacks import CallbackManagerForRetrieverRun
 from langchain_core.documents import Document
@@ -2157,26 +2157,25 @@ def rag_stats(
     return stats
 
 
-@app.delete("/rag/documents/{document_id}")
+@app.delete("/rag/documents/{document_id}", status_code=501)
 def rag_delete_document(
     document_id: str,
     project_id: str = Query(..., description="Project ID for access control"),
 ) -> dict[str, str]:
-    """Delete a document and its chunks from the index.
+    """Delete a document — not implemented (ADR-093 MD-16, wave F).
 
-    Removes all chunks and metadata associated with the document.
+    This was a placeholder that deleted nothing yet answered "deleted", so a
+    deleted document stayed retrievable. It answers 501 until a delete verb
+    exists (one transaction over the artifact row, its nodes, vectors, edges
+    and findings — the maintainer's decision).
     """
-    # Placeholder implementation
-    # Full implementation would:
-    # 1. Verify document belongs to project
-    # 2. Delete chunks from pgvector
-    # 3. Delete metadata from UMRS
-    # 4. Optionally delete file from S3
-
-    return {
-        "status": "deleted",
-        "document_id": document_id,
-    }
+    raise HTTPException(
+        status_code=501,
+        detail=(
+            f"document delete is not implemented: {document_id} in {project_id} "
+            "was not deleted (ADR-093 MD-16)"
+        ),
+    )
 
 
 def main() -> None:
