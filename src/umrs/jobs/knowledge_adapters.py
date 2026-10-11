@@ -2681,11 +2681,7 @@ def _artifact_text(
     source_ref = src.get("source_ref", "")
     content = _fetch_artifact_bytes(s3_client, bucket, source_ref)
     if content is None:
-        missing = _object_gone(s3_client, bucket, source_ref)
-        error = "artifact object is gone" if missing else "artifact content unavailable"
-        result.failed_items.append(
-            {"artifact_id": artifact_id, "error": error, "permanent": missing}
-        )
+        result.failed_items.append(_unreadable(artifact_id, s3_client, bucket, source_ref))
         return None
     from umrs.knowledge.retrieval.hydrate import decode_chunked
 
@@ -2693,23 +2689,33 @@ def _artifact_text(
     text = decode_chunked(raw) if raw is not None else ""
     other = other or _not_text_reason(raw or b"", text)
     if other:
-        result.failed_items.append(
-            {
-                "artifact_id": artifact_id,
-                "error": (
-                    f"no embedding model for {other} content: this site embeds text "
-                    f"only ({configured_text_embedder()})"
-                    if other in _NON_TEXT_KINDS
-                    else other
-                ),
-                "permanent": True,
-            }
-        )
+        result.failed_items.append(_not_embeddable(artifact_id, other))
         return None
     if not text:
         result.skipped += 1
         return None
     return text
+
+
+def _unreadable(
+    artifact_id: str, s3_client: Any, bucket: str, source_ref: str
+) -> dict[str, Any]:
+    """The failure of an artifact whose bytes could not be read: permanent
+    only when the object is gone (ADR-093 D-11, 2026-10-11)."""
+    missing = _object_gone(s3_client, bucket, source_ref)
+    error = "artifact object is gone" if missing else "artifact content unavailable"
+    return {"artifact_id": artifact_id, "error": error, "permanent": missing}
+
+
+def _not_embeddable(artifact_id: str, other: str) -> dict[str, Any]:
+    """The failure of content this site has no embedder for: permanent."""
+    error = (
+        f"no embedding model for {other} content: this site embeds text "
+        f"only ({configured_text_embedder()})"
+        if other in _NON_TEXT_KINDS
+        else other
+    )
+    return {"artifact_id": artifact_id, "error": error, "permanent": True}
 
 
 # The share of control characters (beyond tab/newline/CR/FF/VT) above which
