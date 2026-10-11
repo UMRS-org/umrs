@@ -28,6 +28,10 @@ from umrs.jobs.models import JobType
 # ── Fakes ────────────────────────────────────────────────────────────────────
 
 
+async def _no_pool():
+    return None
+
+
 class _CapturingStore:
     """JobStore test double: records post-completion callback registrations."""
 
@@ -104,7 +108,7 @@ def test_success_hook_produces_real_knowledge_ingest_submission(
     monkeypatch.setattr(
         ka, "_dedup_artifacts", lambda _refs, _pid: ([dict(_DESCRIPTOR)], "r4-data")
     )
-    monkeypatch.setattr(ka, "_get_pool", lambda: None)
+    monkeypatch.setattr(ka, "_created_pool", _no_pool)
 
     submissions: list[object] = []
 
@@ -305,7 +309,7 @@ def test_combined_persist_registry_and_auto_ingest(
     # 2) Auto-ingest through the REAL module-global wiring with REAL metrics.
     monkeypatch.setattr(ka, "_collect_artifact_ids", lambda _job: [descriptor])
     monkeypatch.setattr(ka, "_dedup_artifacts", lambda _refs, _pid: ([descriptor], "r4-data"))
-    monkeypatch.setattr(ka, "_get_pool", lambda: None)
+    monkeypatch.setattr(ka, "_created_pool", _no_pool)
 
     submissions: list[object] = []
 
