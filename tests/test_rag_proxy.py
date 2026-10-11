@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+
 from umrs.api.rag import router
 from umrs.orchestrator.endpoint_registry import EndpointRegistry, get_registry
 
@@ -185,12 +186,18 @@ def test_list_documents_endpoint():
     assert response.json() == []
 
 
-def test_delete_document_answers_501_and_records_no_deletion(monkeypatch):
-    """ADR-093 MD-16 (wave F, 2026-10-11): the service's delete was a
-    placeholder that deleted nothing yet answered "deleted", and the proxy
-    then recorded the deletion — the document stayed retrievable. Until a
-    delete verb exists, the proxy answers 501, calls nothing and records
-    nothing."""
+def test_delete_document_never_proxies_and_records_nothing_unresolved(monkeypatch):
+    """ADR-093 MD-16 (decided 2026-10-11): the delete runs in UMRS over the
+    knowledge tables, never through the rag service's old placeholder (which
+    answered "deleted" and deleted nothing). Without a knowledge database the
+    id cannot resolve: the answer says so, nothing is called or recorded.
+    (The resolved delete: test_knowledge_artifact_delete.py.)"""
+    for var in ("UMRS_DATA_CATALOG_DB", "DATABASE_URL", "DB_HOST", "DB_PORT", "UMRS_JOBS_DB"):
+        monkeypatch.delenv(var, raising=False)
+    for var in ("POSTGRES_PORT", "POSTGRES_DB", "DB_SUPERUSER", "DB_SUPERUSER_PASSWORD"):
+        monkeypatch.delenv(var, raising=False)
+    for var in ("POSTGRES_USER", "POSTGRES_PASSWORD"):
+        monkeypatch.delenv(var, raising=False)
     registry = _make_registry_with_endpoint()
     client = _create_client(registry)
     calls: list[str] = []
@@ -200,6 +207,7 @@ def test_delete_document_answers_501_and_records_no_deletion(monkeypatch):
         return _mock_rag_response({"status": "deleted"})
 
     import httpx
+
     from umrs.api import governance
 
     monkeypatch.setattr(
@@ -211,20 +219,8 @@ def test_delete_document_answers_501_and_records_no_deletion(monkeypatch):
             headers={"x-user-id": "user-1", "x-project-id": "test-project"},
         )
 
-    assert response.status_code == 501
-    assert "not implemented" in response.json()["detail"]
+    assert response.status_code == 503
     assert calls == []
-
-
-def test_the_rag_service_delete_answers_501():
-    from fastapi.testclient import TestClient
-    from umrs.api import rag_service
-
-    response = TestClient(rag_service.app).delete(
-        "/rag/documents/doc-123", params={"project_id": "p"}
-    )
-    assert response.status_code == 501
-    assert "doc-123" in response.json()["detail"]
 
 
 def test_get_document_endpoint():
