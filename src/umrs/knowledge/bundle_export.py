@@ -682,12 +682,7 @@ class KnowledgeExportEngine:
         ``excluded_node_ids`` (from the checked snapshot) drops ineligible
         canonical nodes and every edge touching one.
         """
-        artifacts, artifact_total = await self._store.list_artifacts(
-            project_id=project_id,
-            status="active",
-            page=1,
-            page_size=_PAGE_SIZE,
-        )
+        artifacts, artifact_total = await self._all_artifacts(project_id)
         artifact_rows = [self._serialize_artifact(a) for a in artifacts]
         for row in artifact_rows:
             self._stamp_identity(row)
@@ -719,12 +714,7 @@ class KnowledgeExportEngine:
         await writer.write_edges(edge_rows)
         logger.info("Exported %d edges for project=%s", len(edge_rows), project_id)
 
-        emb_rows, emb_total = await self._list_embeddings_paged(
-            store=self._store,
-            project_id=project_id,
-            cursor=_DEFAULT_EMBEDDING_CURSOR,
-            page_size=_PAGE_SIZE,
-        )
+        emb_rows, emb_total = await self._all_embeddings(project_id)
         await writer.write_embeddings(emb_rows)
         logger.info(
             "Exported %d/%d embeddings for project=%s",
@@ -747,6 +737,44 @@ class KnowledgeExportEngine:
             "embeddings": (emb_total, "embeddings.jsonl"),
             "catalog": (len(cat_rows), "catalog.jsonl"),
         }
+
+    async def _all_artifacts(self, project_id: str) -> tuple[list[Any], int]:
+        """Every active artifact of the project, page by page (2026-10-11:
+        one page of ``_PAGE_SIZE`` was exported, so a project of 5,183
+        artifacts exported 500 and the import restored only those). Stops at
+        the first short page, so a store whose count disagrees still ends."""
+        collected: list[Any] = []
+        total = 0
+        page = 1
+        while True:
+            rows, total = await self._store.list_artifacts(
+                project_id=project_id,
+                status="active",
+                page=page,
+                page_size=_PAGE_SIZE,
+            )
+            collected.extend(rows)
+            if len(rows) < _PAGE_SIZE:
+                return collected, max(total, len(collected))
+            page += 1
+
+    async def _all_embeddings(self, project_id: str) -> tuple[list[dict[str, Any]], int]:
+        """Every ``memory_vectors`` row of the project, cursor page by
+        cursor page (one page was exported before 2026-10-11)."""
+        collected: list[dict[str, Any]] = []
+        total = 0
+        cursor = _DEFAULT_EMBEDDING_CURSOR
+        while True:
+            rows, total = await self._list_embeddings_paged(
+                store=self._store,
+                project_id=project_id,
+                cursor=cursor,
+                page_size=_PAGE_SIZE,
+            )
+            collected.extend(rows)
+            if len(rows) < _PAGE_SIZE:
+                return collected, max(total, len(collected))
+            cursor = str(rows[-1]["id"])
 
     async def _dump_nodes(
         self,
