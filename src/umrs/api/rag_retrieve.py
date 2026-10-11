@@ -184,9 +184,10 @@ def profile_fields(
         "k_max": _k_max(params.get("k_max"), params.get("threshold"), sized_k),
         "pool": params.get("pool") or profiles.sized(name, site_pool(), profile.pool),
         "merge": profiles.merge_mode(params.get("merge"), profile),
-        # A named reader's profile decides lexical inclusion; a request naming
-        # no reader (an older client) keeps the site's UMRS_RAG_LEXICAL.
-        "lexical": profiles.lexical_mode(params.get("lexical"), profile)
+        # A named reader's profile decides lexical inclusion (the small one
+        # reads the site's UMRS_RAG_LEXICAL); a request naming no reader (an
+        # older client) keeps the site's UMRS_RAG_LEXICAL.
+        "lexical": profiles.lexical_mode(params.get("lexical"), profile, name)
         if reader
         else (params.get("lexical") or "auto"),
         "partial_k": profile.partial_k,

@@ -48,7 +48,7 @@ def test_dense_keeps_rank_one_and_the_ones_within_delta():
 
 
 def test_dense_stops_at_the_largest_gap_of_at_least_gamma():
-    # gaps 0.005, 0.025, 0.002 against the tuned gamma 0.02 (2026-10-10)
+    # gaps 0.005, 0.025, 0.002 against gamma 0.015 (ADR-093 Phase 9)
     ranked = [_c(0.900, "a"), _c(0.895, "b"), _c(0.870, "c"), _c(0.868, "d")]
     assert _ids(cutoff.cut(ranked, _spec(), mode="dense")) == ["a", "b"]
 

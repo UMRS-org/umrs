@@ -50,10 +50,10 @@ CUT_MODES: tuple[str, ...] = ("dense", "fused", "rerank", "legacy")
 
 _DEFAULTS: dict[str, float] = {
     "UMRS_RAG_DELTA": 0.03,
-    # Tuned on SciFact train (2026-10-10, benchmarks/retrieval/tune_cut.py):
-    # 0.015 kept ctx_recall 0.893 against a 0.903 floor; 0.02 meets it at
-    # ctx_precision 0.601 (top-5: 0.243).
-    "UMRS_RAG_GAMMA": 0.02,
+    # 0.015 (ADR-093 Phase 9, 2026-10-11). The 0.02 tuned on SciFact train
+    # (2026-10-10) did not pass its own confirmation on the answer path
+    # (+2 to +3 there, +3.6 verdicts on NEI in E-A), so it does not ship.
+    "UMRS_RAG_GAMMA": 0.015,
     "UMRS_RAG_Z_SUFFICIENT": 3.0,
     "UMRS_RAG_Z_PARTIAL": 2.0,
     "UMRS_RAG_NULL_P": 0.05,
