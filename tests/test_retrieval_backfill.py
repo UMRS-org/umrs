@@ -590,11 +590,26 @@ def test_the_upsert_guard_on_postgres(request: pytest.FixtureRequest) -> None:
 # ── the writer: the embed job's chunk nodes ──────────────────────────────────
 
 
+class _TxConn:
+    """The embed writer's one transaction: the artifact row and the writer's
+    own file node exist; the deletes remove nothing."""
+
+    async def fetchval(self, *_a: Any) -> int:
+        return 1
+
+    async def execute(self, *_a: Any) -> str:
+        return "DELETE 0"
+
+    def transaction(self) -> Any:
+        return _acquire(self)  # type: ignore[arg-type]
+
+
 class _ChunkStore:
     def __init__(self) -> None:
         self.nodes: list[KnowledgeNode] = []
+        self._pool = _AsyncPool(_TxConn())  # type: ignore[arg-type]
 
-    async def upsert_node(self, node: KnowledgeNode) -> None:
+    async def upsert_node(self, node: KnowledgeNode, **_k: Any) -> None:
         self.nodes.append(node)
 
     async def upsert_edge(self, *_a: Any, **_k: Any) -> None:

@@ -78,7 +78,7 @@ def test_insert_artifact_time_params_are_iso_strings() -> None:
             metadata={"workflow": "demo08_yield_eval"},
         )
     )
-    assert ok is True
+    assert ok == "wfart-c1"
     assert len(conn.executed) == 1
     sql, params = conn.executed[0]
     assert "INSERT INTO knowledge_artifacts" in sql

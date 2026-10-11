@@ -294,6 +294,12 @@ class _StampPool:
 
         return _Ctx()
 
+    def transaction(self):
+        return self.acquire()
+
+    async def fetchval(self, *_args):
+        return 1  # the artifact row and the writer's own file node exist
+
     async def execute(self, sql, *args):
         self.updates.append((sql, args))
 

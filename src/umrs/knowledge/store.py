@@ -4,17 +4,20 @@ CRUD operations for knowledge persistence tables using asyncpg-pool pattern.
 No umrs.api or umrs.server imports — strict boundary.
 
 Key operations:
-  - insert_artifact: insert-dedup returning deduped flag
+  - insert_artifact: insert-dedup returning the id that holds the bytes
   - insert_ir: write-once (ON CONFLICT DO NOTHING)
-  - upsert_node / upsert_edge: node/edge upsert
+  - upsert_node / upsert_edge: node/edge upsert (``conn=`` joins a
+    caller's transaction)
   - truncate_nodes / truncate_edges: truncate-and-recompile
   - list_artifacts: paged list with kind/status filters
 """
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import time
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -200,6 +203,29 @@ class KnowledgeEdge:
     graph_id: str = ""
 
 
+#: Postgres SQLSTATE of a unique violation (asyncpg ``UniqueViolationError``).
+_UNIQUE_VIOLATION = "23505"
+
+
+def is_unique_violation(exc: BaseException) -> bool:
+    """A unique-constraint violation, read from its SQLSTATE (no driver import)."""
+    return getattr(exc, "sqlstate", None) == _UNIQUE_VIOLATION
+
+
+class ArtifactWriteError(RuntimeError):
+    """An artifact row that was not written, named (ADR-093 D-11, wave F):
+    the caller must not send its id down the chain."""
+
+
+_INSERT_ARTIFACT_SQL = """INSERT INTO knowledge_artifacts
+   (artifact_id, content_hash, kind, project_id, source_ref,
+    size_bytes, mime_type, status, metadata, created_at, updated_at)
+   VALUES ($1, $2, $3, $4, $5, $6, $7, 'active', $8, $9, $10)
+   ON CONFLICT (artifact_id) DO UPDATE
+   SET updated_at = $10, status = 'active'
+   WHERE knowledge_artifacts.project_id = EXCLUDED.project_id"""
+
+
 class KnowledgeStore:
     """Knowledge Postgres store using asyncpg pool.
 
@@ -229,6 +255,16 @@ class KnowledgeStore:
                 project_id,
             )
 
+    @contextlib.asynccontextmanager
+    async def _using(self, conn: Any = None) -> AsyncIterator[Any]:
+        """``conn`` when the caller holds one (its transaction), else a pool
+        connection of our own."""
+        if conn is not None:
+            yield conn
+            return
+        async with self._pool.acquire() as own:
+            yield own
+
     async def insert_artifact(
         self,
         artifact_id: str,
@@ -239,45 +275,66 @@ class KnowledgeStore:
         size_bytes: int = 0,
         mime_type: str = "",
         metadata: dict[str, Any] | None = None,
-    ) -> bool:
-        """Insert or update artifact metadata.
+    ) -> str:
+        """Insert (or reactivate) artifact metadata; return the artifact id
+        that holds these bytes in the project.
 
-        Returns True if inserted (new), False if deduped (already existed
-        with same hash). Dedup is per-project (audit B8): a bare global
-        content_hash probe caused identical bytes ingested into a second
-        project to produce no artifact row — the chained understand then
-        FK-failed in silence while the job reported success.
+        That is ``artifact_id`` itself when it was inserted or reactivated,
+        or the stored id when the project already holds the same bytes
+        (per-project dedup, audit B8). Bytes without a hash are never matched:
+        ``''`` is no identity (ADR-093 D-11, wave F: a second hashless upload
+        was "deduped" against the first and went down the chain with no row).
+        A row that could not be written raises :class:`ArtifactWriteError`
+        by name — never a silent False. Two uploads of the same bytes racing
+        past the probe resolve to the stored id.
         """
-        existing = await self.active_artifact_for(content_hash, project_id)
-        if existing:
-            logger.debug("Artifact deduped: hash=%s (exists as %s)", content_hash, existing)
-            return False
-        async with self._pool.acquire() as conn:
-
-            # NOTE: knowledge_artifacts.created_at/updated_at are TEXT columns
-            # on live deployments (0064-shim migration shape). asyncpg rejects
-            # datetime values for them — persist as ISO-8601 strings.
-            ts = _utcnow().isoformat()
-            await conn.execute(
-                """INSERT INTO knowledge_artifacts
-                   (artifact_id, content_hash, kind, project_id, source_ref,
-                    size_bytes, mime_type, status, metadata, created_at, updated_at)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7, 'active', $8, $9, $10)
-                   ON CONFLICT (artifact_id) DO UPDATE
-                   SET updated_at = $10, status = 'active'""",
-                artifact_id,
-                content_hash,
-                kind,
-                project_id,
-                source_ref,
-                size_bytes,
-                mime_type,
-                metadata or {},
-                ts,
-                ts,
+        if content_hash:
+            existing = await self.active_artifact_for(content_hash, project_id)
+            if existing:
+                logger.debug(
+                    "Artifact deduped: hash=%s (exists as %s)", content_hash, existing
+                )
+                return existing
+        # NOTE: knowledge_artifacts.created_at/updated_at are TEXT columns
+        # on live deployments (0064-shim migration shape). asyncpg rejects
+        # datetime values for them — persist as ISO-8601 strings.
+        ts = _utcnow().isoformat()
+        params = (artifact_id, content_hash, kind, project_id, source_ref)
+        try:
+            async with self._pool.acquire() as conn:
+                status = await conn.execute(
+                    _INSERT_ARTIFACT_SQL,
+                    *params,
+                    size_bytes,
+                    mime_type,
+                    metadata or {},
+                    ts,
+                    ts,
+                )
+        except Exception as exc:
+            if not (content_hash and is_unique_violation(exc)):
+                raise
+            return await self._stored_after_race(artifact_id, content_hash, project_id)
+        if str(status).strip().endswith(" 0"):
+            raise ArtifactWriteError(
+                f"artifact {artifact_id} exists in another project: no row written "
+                f"for project {project_id}"
             )
-            logger.debug("Artifact inserted: %s (hash=%s)", artifact_id, content_hash)
-            return True
+        logger.debug("Artifact inserted: %s (hash=%s)", artifact_id, content_hash)
+        return artifact_id
+
+    async def _stored_after_race(
+        self, artifact_id: str, content_hash: str, project_id: str
+    ) -> str:
+        """The id a concurrent insert of the same bytes stored, else a named
+        failure."""
+        stored = await self.active_artifact_for(content_hash, project_id)
+        if not stored:
+            raise ArtifactWriteError(
+                f"artifact {artifact_id}: unique violation on its bytes, yet no "
+                f"active row holds hash {content_hash} in project {project_id}"
+            )
+        return stored
 
     async def insert_ir(
         self,
@@ -308,13 +365,21 @@ class KnowledgeStore:
                 )
                 inserted = result != "INSERT 0 0"
                 return inserted
-        except Exception as exc:  # noqa: BLE001 — duplicate insert is an expected shape, reported not raised
-            logger.warning("IR insert failed (likely duplicate): %s: %s", ir_id, exc)
+        except Exception as exc:
+            # Only a duplicate is an expected shape. A foreign-key violation
+            # (no artifact row) fails the caller's item by name: logging it
+            # as "likely duplicate" let understand build nodes on a missing
+            # IR (ADR-093 D-11, wave F).
+            if not is_unique_violation(exc):
+                raise
+            logger.warning("IR insert was a duplicate: %s: %s", ir_id, exc)
             return False
 
     async def upsert_node(
         self,
         node: KnowledgeNode,
+        *,
+        conn: Any = None,
     ) -> None:
         """Upsert a knowledge graph node (graph-scoped; first-write wins graph).
 
@@ -328,9 +393,10 @@ class KnowledgeStore:
         and the header it was verified against are unchanged; otherwise the
         column goes NULL, for the backfill to refill from verified text.
         Non-chunk nodes never touch the column. Without migration 0120 the
-        row is written without it (probed once per pool).
+        row is written without it (probed once per pool). ``conn`` joins the
+        caller's transaction.
         """
-        async with self._pool.acquire() as conn:
+        async with self._using(conn) as db:
             ts = _utcnow()
             params: list[Any] = [
                 node.node_id,
@@ -346,18 +412,21 @@ class KnowledgeStore:
                 node.status,
                 node.confidence,
             ]
-            if _carries_search_text(node) and await _has_search_text(self._pool, conn):
-                await conn.execute(_UPSERT_NODE_TEXT_SQL, *params, node.search_text)
+            if _carries_search_text(node) and await _has_search_text(self._pool, db):
+                await db.execute(_UPSERT_NODE_TEXT_SQL, *params, node.search_text)
             else:
-                await conn.execute(_UPSERT_NODE_SQL, *params)
+                await db.execute(_UPSERT_NODE_SQL, *params)
 
     async def upsert_edge(
         self,
         edge: KnowledgeEdge,
+        *,
+        conn: Any = None,
     ) -> None:
-        """Upsert a knowledge graph edge (graph-scoped; D-35 tiers as nodes)."""
-        async with self._pool.acquire() as conn:
-            await conn.execute(
+        """Upsert a knowledge graph edge (graph-scoped; D-35 tiers as nodes).
+        ``conn`` joins the caller's transaction."""
+        async with self._using(conn) as db:
+            await db.execute(
                 """INSERT INTO knowledge_edges
                    (edge_id, project_id, source_id, target_id, relation_type, content,
                     graph_id, status, confidence)
@@ -1152,8 +1221,10 @@ class KnowledgeStore:
         embedding: list[float],
         *,
         content_hash: str = "",
+        conn: Any = None,
     ) -> None:
-        """Insert or refresh the node-keyed vector row for one model."""
+        """Insert or refresh the node-keyed vector row for one model. ``conn``
+        joins the caller's transaction."""
         sql = """
             INSERT INTO knowledge_node_embeddings
                 (node_id, model_name, dimension, embedding, content_hash)
@@ -1164,8 +1235,8 @@ class KnowledgeStore:
                 content_hash = EXCLUDED.content_hash,
                 updated_at   = now()
             """
-        async with self._pool.acquire() as conn:
-            await conn.execute(
+        async with self._using(conn) as db:
+            await db.execute(
                 sql,
                 node_id,
                 model_name,

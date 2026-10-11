@@ -150,14 +150,17 @@ class KnowledgeFindingSink:
         return _run_coroutine_sync(coro, label)
 
     async def _mint(self, fields: dict[str, Any]) -> bool:
+        """True once the finding's own row holds it. Bytes the project holds
+        under another id fail by name: the lineage would hang on a rowless
+        id (ADR-093 D-11, wave F)."""
         from umrs.jobs.knowledge_adapters import _open_pool
 
-        from .store import KnowledgeStore
+        from .store import ArtifactWriteError, KnowledgeStore
 
         async with _open_pool() as pool:
             if pool is None:
                 raise RuntimeError("knowledge pool unavailable")
-            return await KnowledgeStore(pool).insert_artifact(
+            stored = await KnowledgeStore(pool).insert_artifact(
                 artifact_id=fields["artifact_id"],
                 content_hash=fields["content_hash"],
                 kind=FINDING_ARTIFACT_KIND,
@@ -167,6 +170,12 @@ class KnowledgeFindingSink:
                 mime_type=FINDING_MIME,
                 metadata=fields["metadata"],
             )
+        if stored != fields["artifact_id"]:
+            raise ArtifactWriteError(
+                f"finding {fields['artifact_id']}: its bytes are stored as {stored}; "
+                "not minted"
+            )
+        return True
 
     async def _link(
         self, project_id: str, nodes: list[dict[str, Any]], edges: list[dict[str, Any]]

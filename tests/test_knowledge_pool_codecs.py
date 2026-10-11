@@ -71,8 +71,6 @@ def test_open_pool_registers_json_and_jsonb_codecs(
     monkeypatch.setenv("DB_HOST", "127.0.0.1")
     captured: dict[str, object] = {}
 
-    import asyncpg as _real_asyncpg
-
     def _factory(*, dsn: str = "", init=None, **_kw):
         captured["init"] = init
 
@@ -175,7 +173,7 @@ def test_knowledge_store_insert_artifact_accepts_metadata_dict() -> None:
             metadata=metadata,
         )
     )
-    assert ok is True
+    assert ok == "wfart-95c825952512cddb"
     assert conn.executed, "store must execute the INSERT"
     sql, params = conn.executed[-1]
     assert "INSERT INTO knowledge_artifacts" in sql

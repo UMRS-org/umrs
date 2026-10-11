@@ -324,7 +324,14 @@ class _AsyncConn:
             return self.db.upsert_vector(args)
         raise AssertionError(f"unexpected write: {sql[:120]}")
 
+    @contextlib.asynccontextmanager
+    async def transaction(self):
+        yield self  # the writer's one transaction per artifact (wave F)
+
     async def fetchval(self, sql: str, *args: Any) -> Any:
+        if sql == ka._ARTIFACT_ROW_LOCK_SQL:  # the artifact's own row (wave F)
+            row = self.db.artifacts.get(args[0])
+            return 1 if row is not None and row["project_id"] == args[1] else None
         if sql == ka._FILE_NODE_SQL:  # the writer's own file node, by id
             row = self.db.nodes.get(args[0])
             return 1 if row is not None and row["project_id"] == args[1] else None

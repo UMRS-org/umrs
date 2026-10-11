@@ -63,6 +63,10 @@ class _Pool:
     async def acquire(self):
         yield self
 
+    @contextlib.asynccontextmanager
+    async def transaction(self):
+        yield self
+
     async def execute(self, sql, *args):
         self.executed.append((sql, args))
         return self.delete_status if sql.startswith("DELETE") else "UPDATE 1"
@@ -84,10 +88,10 @@ class _Store:
         self.edges: list[Any] = []
         self.vectors: list[str] = []
 
-    async def upsert_node(self, node):
+    async def upsert_node(self, node, **_k):
         self.nodes.append(node)
 
-    async def upsert_edge(self, edge):
+    async def upsert_edge(self, edge, **_k):
         self.edges.append(edge)
 
     async def upsert_node_embedding(self, node_id, *_a, **_k):
@@ -512,7 +516,7 @@ async def _orphan_delete_round(url: str):
         await _seed(conn, "g-x-", 4)  # the same artifact in a named graph
         await _seed(conn, "", 4, artifact="c9-it-other")
         target = ka._ChunkTarget(_IT_ART, _IT_PROJECT, "", "", "sent-v1")
-        removed = await ka._drop_chunks_from(_Store(_ConnPool(conn)), target, 2, 128)
+        removed = await ka._drop_chunks_from(conn, target, 2, 128)
         return removed, await _left(conn)
     finally:
         await transaction.rollback()
