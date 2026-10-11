@@ -43,6 +43,8 @@ logger = logging.getLogger(__name__)
 
 REF_PREFIX = "frontend_session|"
 MAX_SOURCES = 8
+# ADR-092 slice 8: the phase a plan-run worker reports when its run ended.
+WORKER_DONE_PHASE = "done"
 
 
 def _clean_list(value: Any) -> list[str]:
@@ -86,7 +88,26 @@ def validate_frontend_session_spec(spec: Any) -> dict[str, Any]:
         "web_policy": web_policy,
         "web_allow_domains": _clean_list(spec.get("web_allow_domains")),
         "project": str(spec.get("project") or ""),
+        "plan_run_id": _plan_run_id(spec),
     }
+
+
+def _plan_run_id(spec: dict[str, Any]) -> str:
+    """ADR-092 slice 8: the team plan run this session's worker hosts ("" =
+    a chat session). Validated as a run id: it rides the worker's argv."""
+    run_id = str(spec.get("plan_run_id") or "").strip()
+    if not run_id:
+        return ""
+    from .plan_run_records import check_run_id
+
+    return check_run_id(run_id)
+
+
+def worker_command_for(spec: dict[str, Any]) -> tuple[str, ...]:
+    """The worker's argv after the image (``r4``): the chat loop, or one plan
+    run's headless worker (slice 8). Never anything else."""
+    run_id = spec.get("plan_run_id") or ""
+    return ("venue", "worker", "--plan-run", run_id) if run_id else ("venue", "worker")
 
 
 class FrontendSessionBackend(OrchestratorBackend):
@@ -143,6 +164,7 @@ class FrontendSessionBackend(OrchestratorBackend):
             web_policy=spec["web_policy"],
             web_allow_domains=tuple(spec["web_allow_domains"]),
             project=spec["project"],
+            worker_command=worker_command_for(spec),
         )
         result = self.provisioner.provision(cfg)
         if result.state != "running":
@@ -227,9 +249,19 @@ class FrontendSessionStatusChecker(BackendStatusChecker):
                 row, reason=f"idle beyond {backend.config.idle_seconds}s"
             )
             return AttemptCheckResult.succeeded(metrics={"end": "idle"})
-        if str(row.runtime.get("phase") or "") == "exited":
+        phase = str(row.runtime.get("phase") or "")
+        if phase == "exited":
             return self._worker_exited(row)
+        if phase == WORKER_DONE_PHASE:
+            return self._worker_done(row)
         return AttemptCheckResult.running(detail=_running_detail(row))
+
+    def _worker_done(self, row: Any) -> AttemptCheckResult:
+        """A plan-run worker finished its run (slice 8): its session ends.
+        The run's own outcome is on the run's record, not here."""
+        detail = str(row.runtime.get("detail") or "plan run finished")
+        self._backend.end_session(row, reason=detail)
+        return AttemptCheckResult.succeeded(metrics={"end": "plan_run_done"})
 
     def _worker_exited(self, row: Any) -> AttemptCheckResult:
         detail = str(row.runtime.get("detail") or "worker exited")

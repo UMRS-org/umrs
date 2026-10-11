@@ -23,6 +23,7 @@ import logging
 from umrs.jobs.models import Job, JobAttempt, JobType
 
 from .monitor import AttemptCheckResult, BackendStatusChecker
+from .plan_run_records import CLIENT_HOSTED_REFUSAL, is_plan_run_record
 from .reindex import _parse_ref
 from .scheduler import OrchestratorBackend
 
@@ -30,17 +31,41 @@ logger = logging.getLogger(__name__)
 
 REF_PREFIX = "research_loop_job|"
 DRIVERS = frozenset({"engine", "agent"})
+CLIENT_HOSTED_DETAIL = "client-hosted plan run: its client reports the outcome"
+VENUE_HOSTED_DETAIL = "venue-hosted plan run: its venue worker reports the outcome"
 
 
 CLUSTER_VENUE_PATTERN = "cluster:"
+
+# ADR-092 slice 6 / 8b: a server-hosted loop whose iteration is a team plan
+# carries the plan on its LOOP RECORD (``metadata.iteration_plan``) and runs
+# each round as one venue-hosted plan run (``umrs.knowledge.plan_iteration``),
+# only where this site has the frontend venue (the start route refuses
+# otherwise). A job spec never carries the plan: one that does is refused by
+# name here, never run as a plain engine loop with the plan silently dropped.
+PLAN_ITERATION_REFUSAL = (
+    "plan_iteration_needs_server_venue: a loop whose iteration is a team plan "
+    "runs each round on this site's server venue (ADR-092 slice 8b); the plan "
+    "rides the loop record, never a research_loop_job spec, and a site without "
+    "the frontend venue refuses it. Run the loop on the local runtime "
+    "(R4_RUNTIME_MODE=local), or start it without a plan."
+)
 
 
 def validate_research_loop_spec(spec: dict) -> dict:
     if not isinstance(spec, dict):
         raise TypeError("research_loop_job spec must be an object")
+    if is_plan_run_record(spec):
+        # ADR-092 slice 7: a team plan run's durable record. Its client
+        # (or, slice 8, its frontend-venue worker) hosts it; an admin retry
+        # or a reproduce that requeued it is refused here by name, never
+        # hosted as a loop.
+        raise ValueError(CLIENT_HOSTED_REFUSAL)
     loop_id = str(spec.get("loop_id") or "").strip()
     if not loop_id:
         raise ValueError("research_loop_job spec requires loop_id")
+    if str(spec.get("iteration_plan") or "").strip():
+        raise ValueError(PLAN_ITERATION_REFUSAL)
     driver = str(spec.get("driver") or "engine").strip()
     if driver not in DRIVERS:
         raise ValueError(f"research_loop_job driver must be one of {sorted(DRIVERS)}")
@@ -142,6 +167,15 @@ class ResearchLoopStatusChecker(BackendStatusChecker):
     async def check_status(self, attempt: JobAttempt, job: Job) -> AttemptCheckResult:
         # Feeble investigator's note: `job` (Job) is the caller's handle; only the attempt
         # records ref drives this checker. Keeping the interface signature.
+        spec = getattr(job, "spec", None)
+        if is_plan_run_record(spec):
+            # ADR-092 slice 7: its client opens and closes the attempt over
+            # HTTP (the request-driven tier); no loop record or in-process
+            # driver exists to read, and none must fail it. A UMRS restart
+            # still marks it LOST (reconciler); a resume supersedes it.
+            # Slice 8: a venue-hosted run's worker does the same over its rail.
+            venue = spec.get("hosting") == "venue"
+            return AttemptCheckResult.running(VENUE_HOSTED_DETAIL if venue else CLIENT_HOSTED_DETAIL)
         backend_ref = attempt.backend_ref or ""
         if not backend_ref.startswith(REF_PREFIX):
             return AttemptCheckResult.failed("Unexpected backend reference")

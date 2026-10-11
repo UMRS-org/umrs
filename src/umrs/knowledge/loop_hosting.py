@@ -265,6 +265,18 @@ def _register_driver(
     from . import engine_loop_runner
 
     wiring = _wiring()
+    from . import plan_iteration
+
+    if plan_iteration.is_plan_loop(loop):
+        # ADR-092 slice 8b: each iteration is one venue-hosted team plan run
+        # (the plan executor under this same engine driver).
+        engine_loop_runner.register(
+            loop,
+            engine_factory=plan_iteration.engine_factory(),
+            store=store,
+            on_iteration=iteration_hook(job_id=job_id, attempt_id=attempt_id),
+        )
+        return "engine"
     if loop.metadata.get("agent"):
         from .agentic_engine import AgenticEngine
 

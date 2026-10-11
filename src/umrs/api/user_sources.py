@@ -103,6 +103,22 @@ class PushSourceResponse(BaseModel):
     replaced: bool
 
 
+def _refuse_reserved_name(name: str) -> None:
+    """ADR-092 slice 8b/9: ``site`` is the venue's reserved source (the
+    site's own EndpointRegistry rows); a pushed source of that name would
+    be shadowed by it at every venue start, so it is refused by name."""
+    from umrs.shared.site_source import SITE_SOURCE_NAME
+
+    if name.strip().lower() == SITE_SOURCE_NAME:
+        raise_typed(
+            PlatformError.usersources(
+                "bad_request",
+                f"source name {name!r} is reserved: it names the site's own models on "
+                "the server venue (--source site); push under another name",
+            )
+        )
+
+
 @router.post(
     "/sealed", response_model=PushSourceResponse, status_code=status.HTTP_201_CREATED
 )
@@ -119,6 +135,7 @@ async def push_source(
                 "bad_request", f"unknown provider_kind {body.provider_kind!r}"
             )
         )
+    _refuse_reserved_name(body.name)
     owner = caller.user_id
     if not owner:
         raise_typed(
