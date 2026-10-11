@@ -445,8 +445,8 @@ class _ImportStore:
         self._pool = _ImportPool(column)
         self.nodes: dict[str, KnowledgeNode] = {}
 
-    async def insert_artifact(self, **_kw):
-        return True
+    async def insert_artifact(self, **kw):
+        return kw["artifact_id"]
 
     async def insert_ir(self, **_kw):
         return True

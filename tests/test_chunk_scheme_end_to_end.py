@@ -565,8 +565,8 @@ class Store(KnowledgeStore):
     async def list_edges(self, **_kw: Any) -> list:
         return []
 
-    async def insert_artifact(self, **_kw: Any) -> bool:
-        return True
+    async def insert_artifact(self, **kw: Any) -> str:
+        return kw["artifact_id"]
 
     async def insert_ir(self, **_kw: Any) -> bool:
         return True

@@ -70,13 +70,17 @@ class _FakeStore:
         self.a2l_links: list[dict] = []
         self.a2l_refs: list[dict] = []
         self.existing_hashes: set[str] = set()
+        self.stored_ids: dict[str, str] = {}
 
-    async def insert_artifact(self, **kwargs) -> bool:
-        if kwargs["content_hash"] in self.existing_hashes:
-            return False
+    async def insert_artifact(self, **kwargs) -> str:
+        """The id that holds the bytes (KnowledgeStore's contract since wave F)."""
+        held = self.stored_ids.get(kwargs["content_hash"])
+        if held:
+            return held
         self.existing_hashes.add(kwargs["content_hash"])
+        self.stored_ids[kwargs["content_hash"]] = kwargs["artifact_id"]
         self.artifacts.append(kwargs)
-        return True
+        return kwargs["artifact_id"]
 
     async def insert_ir(self, **kwargs) -> bool:
         self.irs.append(kwargs)
@@ -293,11 +297,16 @@ class TestRestoreFlow:
         engine = KnowledgeImportEngine(store=store)
 
         await engine.import_project(bundle, verify=False, allow_unsigned=True)
+        # The identity lookup now finds the first run's rows (same id, same hash).
+        store._pool = _ConflictPool(
+            {f"knowledge_artifacts:{a['artifact_id']}": a["content_hash"] for a in store.artifacts}
+        )
         second = await engine.import_project(bundle, verify=False, allow_unsigned=True)
 
-        # Artifacts dedup by content hash on the second run.
+        # Same identity + same hash: skipped, and the rows stay theirs.
         assert second.artifact_count == 0
         assert second.skipped_count == 2
+        assert second.deduped_artifacts == {}
         assert second.document_count == 2  # write-once API allows re-insert here
 
     async def test_integrity_verification_with_secret(self, tmp_path):
