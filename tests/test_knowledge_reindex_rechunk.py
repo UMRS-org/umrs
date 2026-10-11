@@ -337,6 +337,9 @@ class _Cur:
     def fetchall(self):
         return self._batches.pop(0) if self._batches else []
 
+    def fetchone(self):
+        return (True,)  # the project's pass lock is free (wave F)
+
 
 def _conn(cur):
     return SimpleNamespace(cursor=lambda: cur)
@@ -348,7 +351,7 @@ def test_the_sweep_selects_scheme_mismatches_in_one_project():
     ((sql, params),) = cur.statements
     assert ids == ["art-1"]
     assert "OR COALESCE(metadata->>'chunk_scheme', %s) <> %s OR" in sql
-    assert sql.endswith("AND project_id = %s ORDER BY created_at LIMIT %s")
+    assert sql.endswith("AND project_id = %s ORDER BY artifact_id LIMIT %s")
     assert params == ("m", "fixed-v0", "sent-v1", "fixed-v0", "sent-v1", "p1", "p1", 9)
 
 
@@ -407,8 +410,10 @@ def test_reindex_never_maintains_an_index_on_the_untyped_node_vectors(monkeypatc
     cur = _Cur([[("art-1",)], [("art-1", "p1", "k1", "document", {})]])
     ref, submitted = _submit(monkeypatch, cur, {**SPEC, "project_id": "p1"})
     assert "swept=1|reembed_jobs=1" in ref and "scheme=sent-v1" in ref
-    sweep = (MODEL, "fixed-v0", "sent-v1", "fixed-v0", "sent-v1", "p1", "p1", 50)
-    assert cur.statements[0][1] == sweep
+    held = (list(reindex.HELD_BY.job_types), list(reindex.HELD_BY.statuses))
+    sweep = (MODEL, "fixed-v0", "sent-v1", "fixed-v0", "sent-v1", "p1", "p1", *held, 50)
+    assert cur.statements[0][0].startswith("SELECT pg_try_advisory_xact_lock")
+    assert cur.statements[1][1] == sweep
     assert submitted[0].spec["graph_id"] == default_graph_id("p1")
 
 
@@ -424,7 +429,7 @@ def test_reindex_reembeds_each_artifact_into_the_graphs_it_lives_in(monkeypatch)
     _, submitted = _submit(monkeypatch, cur, dict(SPEC))
     batches = {s.spec["graph_id"]: [x["artifact_id"] for x in s.spec["sources"]] for s in submitted}
     assert batches == {default_graph_id("p1"): ["art-1"], "g-named": ["art-1", "art-2"]}
-    assert "node_type = 'file' OR content->>'kind' = 'chunk'" in cur.statements[2][0]
+    assert "node_type = 'file' OR content->>'kind' = 'chunk'" in cur.statements[3][0]
 
 
 def test_a_spec_scheme_other_than_the_site_is_refused(monkeypatch):

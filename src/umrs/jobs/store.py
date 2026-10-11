@@ -36,6 +36,7 @@ from .models import (
     JobType,
     RestartPolicy,
     compute_idempotency_key,
+    default_idempotency_key,
     generate_attempt_id,
     generate_job_id,
 )
@@ -287,7 +288,7 @@ class JobStore:
         job_id = generate_job_id()
 
         if idempotency_key is None:
-            idempotency_key = compute_idempotency_key(
+            idempotency_key = default_idempotency_key(
                 project_id, user_id, job_type, spec
             )
 

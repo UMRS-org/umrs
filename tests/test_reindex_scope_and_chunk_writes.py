@@ -71,6 +71,9 @@ class _Cur:
     def fetchall(self):
         return self._batches.pop(0) if self._batches else []
 
+    def fetchone(self):
+        return (True,)  # the project's pass lock is free (wave F)
+
 
 def _conn(cur):
     return SimpleNamespace(cursor=lambda: cur)
@@ -144,10 +147,11 @@ def test_a_reindex_sweeps_the_jobs_project_when_its_spec_names_none(monkeypatch)
     """chunk-data-5: a spec without ``project_id`` swept every project."""
     cur = _Cur([[("art-1",)], [ROW_PPTX]])
     _ref, submitted = _submit(monkeypatch, cur)
-    sweep_sql, sweep_params = cur.statements[0]
-    assert sweep_sql.endswith("AND project_id = %s ORDER BY created_at LIMIT %s")
-    assert sweep_params[-2:] == ("A", 50)
-    assert cur.statements[1][1] == (["art-1"], "A")  # the rows: the job's project
+    sweep_sql, sweep_params = cur.statements[1]  # [0] is the pass lock (wave F)
+    assert "AND project_id = %s AND NOT EXISTS (SELECT 1 FROM jobs j" in sweep_sql
+    assert sweep_sql.endswith("ORDER BY artifact_id LIMIT %s")
+    assert sweep_params[-1] == 50 and "A" in sweep_params
+    assert cur.statements[2][1] == (["art-1"], "A")  # the rows: the job's project
     assert {s.project_id for s in submitted} == {"A"}
 
 
@@ -170,7 +174,7 @@ def test_the_graphs_of_an_artifact_are_read_in_its_own_project(monkeypatch):
     project's node naming the artifact must not add a target."""
     cur = _Cur([[("art-1",)], [ROW_PPTX], [("art-1", "g-x")]])
     _ref, submitted = _submit(monkeypatch, cur)
-    graphs_sql, graphs_params = cur.statements[2]
+    graphs_sql, graphs_params = cur.statements[3]
     assert "AND project_id = %s AND content->>'artifact_id' = ANY(%s)" in graphs_sql
     assert graphs_params == ("A", ["art-1"])
     assert [s.spec["graph_id"] for s in submitted] == ["g-x"]

@@ -33,6 +33,21 @@ project. Each re-embed descriptor carries the artifact's ``kind`` and
 ``metadata`` (its source name decides PDF/PPTX extraction), and a retry
 that finds a batch already enqueued goes on with the next one.
 
+One pass, converging (ADR-093 D-11, wave F, 2026-10-11): a reindex makes
+ONE pass over the whole stale set in keyset pages of ``batch_limit``
+artifacts — one KNOWLEDGE_EMBED job per (graph, page), so ``batch_limit`` is
+the most sources one embed job carries — and stops at the first short page.
+It skips artifacts that a queued or running embed or understand job already
+holds (another pass, the ingest chain, an earlier attempt of this job), and
+a per-project transaction advisory lock serialises passes: a second pass
+while one runs fails transiently by name before any sweep and is retried.
+It still does not wait for its embed jobs; it completes when the pass is
+enqueued. Before, one job swept at most ``batch_limit`` artifacts and the
+store-computed idempotency key refused an identical repeat for ever (409;
+the old job returned silently over ZMQ), so a project larger than
+``batch_limit`` could not converge — ``models.default_idempotency_key`` now
+gives each reindex submitted without a key a fresh one.
+
 Payload contract (validated at submit time):
 
     {"database": str, "table": str, "target_model": str,
@@ -48,11 +63,13 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import dataclass
 from typing import Any
 
-from umrs.jobs.models import Job, JobAttempt, JobType
+from umrs.jobs.models import Job, JobAttempt, JobStatus, JobType
 from umrs.knowledge.embedding_metadata import (
     EmbeddingMetadataError,
+    HeldBy,
     select_stale_artifacts,
     validate_reindex_payload,
 )
@@ -64,6 +81,28 @@ logger = logging.getLogger(__name__)
 
 # Same env name as the KNOWLEDGE_EMBED backend (knowledge_adapters).
 _SITE_EMBED_MODEL_ENV = "UMRS_KNOWLEDGE_EMBED_MODEL"
+
+#: The unfinished jobs whose sources a pass does not sweep again.
+HELD_BY = HeldBy(
+    job_types=(JobType.KNOWLEDGE_EMBED.value, JobType.KNOWLEDGE_UNDERSTAND.value),
+    statuses=(JobStatus.QUEUED.value, JobStatus.RUNNING.value),
+)
+#: The class half of the two-key advisory lock (``pg_try_advisory_xact_lock(
+#: int4, int4)``): its key space is disjoint from the one-key job-id locks of
+#: ``store._advisory_lock_key``. The second key is ``hashtext`` of the project.
+_PASS_LOCK_CLASS = 0x52494458  # "RIDX"
+_PASS_LOCK_SQL = "SELECT pg_try_advisory_xact_lock(%s, hashtext(%s))"
+
+
+class ReindexBusy(RuntimeError):
+    """Another KNOWLEDGE_REINDEX pass holds the project: transient, retried."""
+
+
+@dataclass
+class _PassTotals:
+    swept: int = 0
+    enqueued: int = 0
+    pages: int = 0
 
 
 def validate_knowledge_reindex_spec(spec: dict) -> dict:
@@ -126,22 +165,56 @@ class KnowledgeReindexBackend(OrchestratorBackend):
         spec["target_model"] = resolve_site_embed_model(spec["target_model"])
         spec["chunk_scheme"] = resolve_site_chunk_scheme(spec.get("chunk_scheme"))
 
-        stale = _sweep(spec)
-        if not stale:
+        with _artifact_conn() as conn:
+            _lock_project(conn, spec["project_id"])
+            totals = _pass(job, conn, spec)
+        if not totals.swept:
             logger.info("reindex no-op: no stale artifacts for job=%s", job.job_id)
-            return _backend_ref(spec, swept=0, enqueued=0)
+            return _backend_ref(spec, totals)
 
-        enqueued = _enqueue_reembed(job, _stale_sources(stale, spec["project_id"]))
         action = _maintain_index(spec)
         logger.info(
-            "reindex: job=%s attempt=%s swept=%d re-embed jobs=%d index=%s",
+            "reindex: job=%s attempt=%s swept=%d pages=%d re-embed jobs=%d index=%s",
             job.job_id,
             attempt.attempt_id,
-            len(stale),
-            len(enqueued),
+            totals.swept,
+            totals.pages,
+            totals.enqueued,
             action,
         )
-        return _backend_ref(spec, swept=len(stale), enqueued=len(enqueued))
+        return _backend_ref(spec, totals)
+
+
+def _lock_project(conn, project_id: str) -> None:
+    """Take the project's pass lock for this transaction, or fail by name
+    (transient: the attempt is retried) before any sweep. The try variant:
+    a blocking wait would stall the scheduler loop."""
+    cur = conn.cursor()
+    cur.execute(_PASS_LOCK_SQL, (_PASS_LOCK_CLASS, f"knowledge_reindex:{project_id}"))
+    row = cur.fetchone()
+    if not (row and row[0]):
+        raise ReindexBusy(
+            f"another KNOWLEDGE_REINDEX pass holds project {project_id!r}; "
+            "this one is retried"
+        )
+
+
+def _pass(job: Job, conn, spec: dict) -> _PassTotals:
+    """One keyset-paged pass over the project's stale, unheld artifacts:
+    one KNOWLEDGE_EMBED job per (graph, page); stops at the first short or
+    empty page."""
+    limit = int(spec.get("batch_limit", 500))
+    totals, after = _PassTotals(), None
+    while True:
+        page = _sweep(conn, spec, after)
+        if page:
+            totals.pages += 1
+            totals.swept += len(page)
+            batches = _stale_sources(conn, page, spec["project_id"])
+            totals.enqueued += len(_enqueue_reembed(job, batches))
+            after = page[-1]
+        if len(page) < limit:
+            return totals
 
 
 # Vector tables whose column has no dimension (0075): no ANN index can exist
@@ -273,7 +346,7 @@ def _descriptor(row: tuple) -> dict[str, Any]:
     }
 
 
-def _stale_sources(stale: list[str], project_id: str) -> _Batches:
+def _stale_sources(conn, stale: list[str], project_id: str) -> _Batches:
     """Swept artifact ids of ``project_id`` → KNOWLEDGE_EMBED sources per
     (project, graph).
 
@@ -286,11 +359,10 @@ def _stale_sources(stale: list[str], project_id: str) -> _Batches:
     """
     from umrs.knowledge.graph_registry import default_graph_id
 
-    with _artifact_conn() as conn:
-        cur = conn.cursor()
-        cur.execute(_STALE_ROWS_SQL, (list(stale), project_id))
-        rows = cur.fetchall()
-        graphs = _graphs_by_artifact(cur, [str(row[0]) for row in rows], project_id)
+    cur = conn.cursor()
+    cur.execute(_STALE_ROWS_SQL, (list(stale), project_id))
+    rows = cur.fetchall()
+    graphs = _graphs_by_artifact(cur, [str(row[0]) for row in rows], project_id)
     default = default_graph_id(project_id)
     batches: _Batches = {}
     for row in rows:
@@ -356,15 +428,17 @@ def _submit_batch(
         return existing
 
 
-def _sweep(spec: dict) -> list[str]:
-    with _artifact_conn() as conn:
-        return select_stale_artifacts(
-            conn,
-            spec["target_model"],
-            limit=int(spec.get("batch_limit", 500)),
-            chunk_scheme=spec.get("chunk_scheme"),
-            project_id=spec.get("project_id"),
-        )
+def _sweep(conn, spec: dict, after: str | None) -> list[str]:
+    """One page of the pass: stale, unheld artifacts after ``after``."""
+    return select_stale_artifacts(
+        conn,
+        spec["target_model"],
+        limit=int(spec.get("batch_limit", 500)),
+        chunk_scheme=spec.get("chunk_scheme"),
+        project_id=spec.get("project_id"),
+        after=after,
+        held_by=HELD_BY,
+    )
 
 
 def _artifact_conn():
@@ -388,13 +462,13 @@ def _artifact_conn():
     return _managed()
 
 
-def _backend_ref(spec: dict, *, swept: int, enqueued: int) -> str:
+def _backend_ref(spec: dict, totals: _PassTotals) -> str:
     index = spec.get("index_name") or "default"
     scheme = spec.get("chunk_scheme") or "fixed-v0"
     return (
         f"knowledge_reindex|database={spec['database']}|table={spec['table']}|"
         f"index={index}|model={spec['target_model']}|scheme={scheme}|"
-        f"swept={swept}|reembed_jobs={enqueued}"
+        f"swept={totals.swept}|reembed_jobs={totals.enqueued}|pages={totals.pages}"
     )
 
 
@@ -433,5 +507,6 @@ class KnowledgeReindexStatusChecker(BackendStatusChecker):
             metrics={
                 "swept": parsed.get("swept"),
                 "reembed_jobs": parsed.get("reembed_jobs"),
+                "pages": parsed.get("pages"),
             }
         )

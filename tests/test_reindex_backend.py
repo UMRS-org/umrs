@@ -83,6 +83,9 @@ class _Cur:
             return self._batches.pop(0) if self._batches else []
         return list(self._rows)
 
+    def fetchone(self):
+        return (True,)  # the project's pass lock is free (wave F)
+
     @property
     def rowcount(self):
         return self._rowcount
@@ -160,7 +163,8 @@ def test_submit_sweeps_reembeds_and_never_stamps(monkeypatch):
     assert "model=/srv/models/bge-m3" in ref  # resolved to the site embedder
     assert not [q for q, _ in cur.statements if q.startswith("UPDATE")]
     # sweep compares against the site model string the embed job stamps
-    assert cur.statements[0][1][0] == "/srv/models/bge-m3"
+    assert cur.statements[0][0].startswith("SELECT pg_try_advisory_xact_lock")
+    assert cur.statements[1][1][0] == "/srv/models/bge-m3"
 
 
 def test_reembed_jobs_stay_in_the_jobs_project_with_their_sources(monkeypatch):
@@ -178,7 +182,7 @@ def test_reembed_jobs_stay_in_the_jobs_project_with_their_sources(monkeypatch):
         {"artifact_id": "art-3", "source_ref": "k3", "kind": "code", "metadata": {}},
     ]  # fmt: skip
     assert by_project["p1"].spec["reason"] == "knowledge_reindex"
-    assert cur.statements[1][1] == (["art-1", "art-2", "art-3"], "p1")
+    assert cur.statements[2][1] == (["art-1", "art-2", "art-3"], "p1")
 
 
 @pytest.mark.parametrize("site", ["", "/srv/models/e5-base-v2"])

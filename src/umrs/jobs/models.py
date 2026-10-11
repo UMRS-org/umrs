@@ -261,6 +261,29 @@ def compute_idempotency_key(
     return hashlib.sha256(combined.encode()).hexdigest()[:32]
 
 
+#: Job types whose identical spec is new work each time, not a client retry:
+#: a KNOWLEDGE_REINDEX is a pass over whatever is stale when it runs (ADR-093
+#: D-11, wave F). Hashing its spec made an identical repeat 409 for ever (the
+#: unique index on (project_id, idempotency_key) is not partial on status)
+#: and, over ZMQ, silently return the old completed job.
+FRESH_PASS_JOB_TYPES = frozenset({JobType.KNOWLEDGE_REINDEX})
+
+
+def default_idempotency_key(
+    project_id: str,
+    user_id: str,
+    job_type: JobType,
+    spec: dict[str, Any],
+) -> str:
+    """The key a job submitted without one gets: the spec hash, plus a fresh
+    16-hex suffix for :data:`FRESH_PASS_JOB_TYPES` (49 chars, within the
+    column's 64). A caller's own key still deduplicates as before."""
+    key = compute_idempotency_key(project_id, user_id, job_type, spec)
+    if job_type in FRESH_PASS_JOB_TYPES:
+        return f"{key}:{uuid.uuid4().hex[:16]}"
+    return key
+
+
 @dataclass
 class Job:
     """
