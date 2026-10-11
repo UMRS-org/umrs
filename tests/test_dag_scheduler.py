@@ -735,3 +735,43 @@ class TestAggregateDAGResults:
         assert ck == ["ck_d"]
         assert meta == [{"final": True}]
         assert emb is not None
+
+
+# =========================================================================
+# execute_dag — tracing (2026-10-12: no pipeline step had ever been traced)
+# =========================================================================
+
+
+class TestExecuteDAGTracing:
+    def test_every_step_is_traced_with_its_outputs_and_lineage(self):
+        """``_start_step_trace`` passed ``trace_id=`` to a store that mints
+        its own (TypeError on every traced run), and ``complete_trace`` got
+        the outputs dict as ``outputs_ref``, a text reference."""
+        from umrs.jobs.execution_trace_store import ExecutionTraceStore
+
+        store = ExecutionTraceStore()  # in-memory (no DSN)
+        specs = _make_specs(["a", "b"])
+        steps = [PassthroughStep(), PassthroughStep()]
+        for st, sp in zip(steps, specs):
+            st.setup(sp.config)
+        meta: dict[str, Any] = {}
+        execute_dag(
+            DAGScheduler(specs),
+            steps,
+            specs,
+            s3=_mock_s3(),
+            input_bucket="src",
+            input_keys=["k1"],
+            output_bucket="dst",
+            run_id="r1",
+            shared_metadata=meta,
+            trace_store=store,
+            job_id="job-1",
+            execution_id="ex-1",
+        )
+        traces = {t.step_name: t for t in store.get_traces_for_execution("ex-1")}
+        assert set(traces) == {"a", "b"}
+        assert all(t.status == "succeeded" for t in traces.values())
+        assert traces["a"].outputs_snapshot["output_keys"] == ["k1"]
+        assert traces["a"].outputs_ref is None
+        assert meta["_trace_id_a"] == traces["a"].trace_id
