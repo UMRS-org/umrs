@@ -1,7 +1,10 @@
 """Ask-the-scientist policy vocabulary (ADR-066 + amendment 3, gap row D-33).
 
 - which trigger classes an engine action carries (a set: a physical workflow
-  trigger is both ``cost`` and ``physical_action``);
+  trigger is both ``cost`` and ``physical_action``; a team-plan run,
+  ``plan_run``, is ``cost`` — ADR-092 slice 6 registers it here before any
+  loop runs a plan, so an ask-mode loop parks at it and a profile naming
+  ``cost`` does too);
 - the maturity-stage presets of the persisted per-project policy, and the
   reverse lookup that names the stage a stored policy corresponds to.
 
@@ -19,6 +22,13 @@ DIRECTION = "direction_change"
 PHYSICAL = "physical_action"
 TRIGGER_CLASSES = (COST, COMPETING, DIRECTION, PHYSICAL)
 
+# ADR-092 slice 6 (D-29 tail): one loop iteration that runs a team plan
+# (fan-out agents under a token budget). Classed ``cost`` like any other
+# spend; a plan's own gates are not actions — they always ask (ADR-092
+# slice 2), whatever the loop's mode.
+PLAN_RUN = "plan_run"
+COST_ACTION_KINDS = ("workflow_trigger", "agent_iteration", PLAN_RUN)
+
 # Maturity stage → (ask_mode, pause_triggers). physical_action is kept on
 # every profile preset: hardware actions keep asking even when autonomous.
 STAGE_PRESETS: dict[str, tuple[str, tuple[str, ...]]] = {
@@ -34,7 +44,7 @@ def action_trigger_classes(action: dict[str, Any]) -> frozenset[str]:
     """The trigger classes one engine action carries (unknown kinds: none —
     a profile-mode loop never silently parks on them)."""
     kind = str(action.get("kind") or "")
-    if kind in ("workflow_trigger", "agent_iteration"):
+    if kind in COST_ACTION_KINDS:
         return (
             frozenset({COST, PHYSICAL}) if action.get("physical") else frozenset({COST})
         )
@@ -68,9 +78,11 @@ def stage_for(ask_mode: str, pause_triggers: list[str]) -> str:
 __all__ = [
     "COMPETING",
     "COST",
+    "COST_ACTION_KINDS",
     "CUSTOM_STAGE",
     "DIRECTION",
     "PHYSICAL",
+    "PLAN_RUN",
     "STAGE_PRESETS",
     "TRIGGER_CLASSES",
     "action_trigger_classes",

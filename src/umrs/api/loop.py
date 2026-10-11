@@ -467,6 +467,15 @@ class StartLoopRequest(BaseModel):
             "engine driver only today). Mirrors companion venue vocabulary."
         ),
     )
+    iteration_plan: str = Field(
+        "",
+        description=(
+            "ADR-092 slice 6: a team-plan template each iteration runs. Only "
+            "the local venue runs one today; a server-hosted loop refuses it "
+            "by name (422 loops.unprocessable, plan_iteration_needs_server_venue) "
+            "until slice 8's server venue."
+        ),
+    )
 
 
 class LoopStatusResponse(BaseModel):
@@ -743,6 +752,27 @@ def _loop_job_spec(loop: ResearchLoop, *, agentic: bool) -> dict[str, Any]:
     return spec
 
 
+def _refuse_plan_iteration(request: StartLoopRequest) -> None:
+    """ADR-092 slice 6: a plan as the iteration executor runs in the local
+    venue only; here it is refused by name (slice 8 brings the server
+    venue), before anything is created — never a plain loop with the plan
+    dropped."""
+    template = (request.iteration_plan or "").strip()
+    if not template:
+        return
+    from umrs.jobs.research_loop_backend import PLAN_ITERATION_REFUSAL
+
+    raise_typed(
+        PlatformError.loops(
+            "unprocessable",
+            PLAN_ITERATION_REFUSAL,
+            reason="plan_iteration_needs_server_venue",
+            iteration_plan=template[:120],
+            pending="ADR-092 slice 8",
+        )
+    )
+
+
 def _validate_loop_venue(request: StartLoopRequest) -> str:
     """Start-route venue grammar (WP-05 r2 start leg).
 
@@ -914,6 +944,7 @@ async def start_loop(
     thread (``hosting == "thread"``). Both are visible on the loop record.
     """
     _enforce_loop_project(request, http_request, owner)
+    _refuse_plan_iteration(request)
     _enforce_readiness_approval(request)
     # D-33 tail: the project's persisted ask-policy default fills the
     # request when the caller left mode unset; an explicit mode always
