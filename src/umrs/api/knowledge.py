@@ -1285,11 +1285,14 @@ async def export_knowledge(
             details={"kind": "export"},
         )
 
+        # A plain export is owned by its caller too: submitted under "" its
+        # job was unreadable to the very user who started it (403 on
+        # GET /jobs/{id}, found 2026-10-12 running ADR-093 S8).
         job_id = await runtime.submit_job_sync(
             job_type=JobType.KNOWLEDGE_EXPORT,
             project_id=body.project_id,
             spec=spec,
-            user_id=submitter,
+            user_id=submitter or request.headers.get("x-user-id", ""),
         )
 
         logger.info("Knowledge export queued: %s", job_id)

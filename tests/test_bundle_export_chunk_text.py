@@ -753,6 +753,13 @@ def test_an_unreadable_registry_refuses_chunk_text(monkeypatch):
     runtime.submit_job_sync.assert_not_called()
 
 
+def test_a_plain_export_is_submitted_under_its_caller(monkeypatch):
+    """Submitted under "" its job was unreadable to the user who started it."""
+    resp, runtime = _post_export(monkeypatch, None, "bob")
+    assert resp.status_code == 200, resp.text
+    assert runtime.submit_job_sync.call_args.kwargs["user_id"] == "bob"
+
+
 def test_a_plain_export_carries_no_chunk_text(monkeypatch):
     resp, runtime = _post_export(monkeypatch, None, None)
     assert resp.status_code == 200, resp.text
