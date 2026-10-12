@@ -3,8 +3,8 @@
 The stand-alone reader is ``llama3.2:3b``: the small profile, which must
 behave exactly as before D-14. The rikyu deployment reads with ``kimi-k3``
 and ``glm-5.3``, frontier MoE models with 1M-token windows: the large
-profile (k_max 10, partial 6, pool 100, merge on, no explicit answer
-limit). Pinned here: the resolution order (request > UMRS_RAG_PROFILE > the
+profile (merge on, no explicit answer limit; since ADR-093 MD-14,
+2026-10-13, at the medium sizes: k_max 6, partial 3, pool 50). Pinned here: the resolution order (request > UMRS_RAG_PROFILE > the
 size rule), the route's defaults per profile with explicit parameters
 winning, the env site defaults, the compose path sized by the registry's
 answer model, the loop store sized by the loop's model, and the partial cap
@@ -47,6 +47,12 @@ _ENV = (
     "UMRS_AGENT_LITELLM_URL",
     "UMRS_KNOWLEDGE_EXTRACT_MODEL",
 )
+
+
+#: The large profile's sizes from the shared table (ADR-093 D-14; the medium
+#: sizes since MD-14, 2026-10-13).
+_L = RETRIEVAL_PROFILES["large"]
+LARGE = (_L.k_max, _L.pool, _L.merge, _L.partial_k)
 
 
 @pytest.fixture(autouse=True)
@@ -170,13 +176,13 @@ def _sizes(spec):
     [
         ({}, (4, 50, "auto", 2, "small", "")),  # an older R4: unchanged
         ({"reader_model": "llama3.2:3b"}, (4, 50, "auto", 2, "small", "llama3.2:3b")),
-        ({"reader_model": "kimi-k3"}, (10, 100, "on", 6, "large", "kimi-k3")),
-        ({"reader_model": "glm-5.3"}, (10, 100, "on", 6, "large", "glm-5.3")),
+        ({"reader_model": "kimi-k3"}, (*LARGE, "large", "kimi-k3")),
+        ({"reader_model": "glm-5.3"}, (*LARGE, "large", "glm-5.3")),
         ({"reader_model": "qwen2.5:7b"}, (6, 50, "on", 3, "medium", "qwen2.5:7b")),
         # Lead decision 2026-10-10: one effective-size rule; unknown -> medium.
         ({"reader_model": "qwen3-30b-a3b"}, (6, 50, "on", 3, "medium", "qwen3-30b-a3b")),
         ({"reader_model": "house-model"}, (6, 50, "on", 3, "medium", "house-model")),
-        ({"profile": "large"}, (10, 100, "on", 6, "large", "")),
+        ({"profile": "large"}, (*LARGE, "large", "")),
     ],
 )
 def test_the_route_defaults_per_profile(route, params, sizes):
@@ -185,7 +191,7 @@ def test_the_route_defaults_per_profile(route, params, sizes):
 
 def test_explicit_parameters_win_over_the_profile(route):
     spec = route(reader_model="kimi-k3", k_max=3, pool=20, merge="off")
-    assert _sizes(spec) == (3, 20, "off", 6, "large", "kimi-k3")
+    assert _sizes(spec) == (3, 20, "off", _L.partial_k, "large", "kimi-k3")
 
 
 def test_a_request_profile_wins_over_the_reader_and_the_site(route, monkeypatch):
@@ -198,7 +204,10 @@ def test_site_defaults_apply_to_small_and_only_widen_a_larger_profile(route, mon
     monkeypatch.setenv("UMRS_RAG_FINAL_K_MAX", "3")
     monkeypatch.setenv("UMRS_RAG_POOL", "150")
     assert (route().k_max, route().pool) == (3, 150)
-    assert (route(reader_model="kimi-k3").k_max, route(reader_model="kimi-k3").pool) == (10, 150)
+    assert (route(reader_model="kimi-k3").k_max, route(reader_model="kimi-k3").pool) == (
+        _L.k_max,
+        150,
+    )
 
 
 def test_the_legacy_threshold_mode_keeps_k_five_for_every_profile(route):
@@ -261,7 +270,7 @@ def compose(monkeypatch):
 
 def test_the_compose_path_sizes_by_the_registry_answer_model(compose):
     spine, spec, call = compose("kimi-k3")
-    assert _sizes(spec) == (10, 100, "on", 6, "large", "kimi-k3")
+    assert _sizes(spec) == (*LARGE, "large", "kimi-k3")
     assert call["model"] == "kimi-k3" and call["max_tokens"] is None  # the family default
     assert spine.model == "kimi-k3"
 
@@ -281,7 +290,7 @@ def test_the_compose_path_reads_a_moe_or_unknown_answer_model_as_medium(compose,
     assert call["max_tokens"] == 600
 
 
-@pytest.mark.parametrize(("model", "shown"), [("llama3.2:3b", 2), ("glm-5.3", 6)])
+@pytest.mark.parametrize(("model", "shown"), [("llama3.2:3b", 2), ("glm-5.3", _L.partial_k)])
 def test_a_partial_verdict_shows_the_profiles_partial_cap(compose, model, shown):
     spine, _spec, _call = compose(model, status="partial")
     assert len(spine.passages) == shown
@@ -325,7 +334,7 @@ def loop_spec(monkeypatch):
 
 
 def test_the_loop_store_sizes_by_a_named_loop_model(loop_spec):
-    assert _sizes(loop_spec(reader_model="kimi-k3"))[:5] == (10, 100, "on", 6, "large")
+    assert _sizes(loop_spec(reader_model="kimi-k3"))[:5] == (*LARGE, "large")
 
 
 def test_the_loop_store_reads_the_sites_agent_model_then_the_registry(loop_spec, monkeypatch):
