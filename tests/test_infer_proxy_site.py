@@ -17,7 +17,6 @@ from types import SimpleNamespace
 import httpx
 import pytest
 from test_infer_proxy import _app, _lease, _request, _stream_response
-
 from umrs.infer_proxy.app import create_app
 from umrs.orchestrator.endpoint_registry import EndpointRegistry, EndpointStatus
 from umrs.shared.site_source import SITE_SOURCE_ID, SITE_SOURCE_NAME
@@ -43,7 +42,7 @@ def _registry(**rows):
     return registry
 
 
-def _site_app(monkeypatch, *, registry=None, lease=None, pool=None):
+def _site_app(monkeypatch, *, registry=None, lease=None, pool=None, respond=None):
     lease = lease or _lease(
         source_ids=("src-a", SITE_SOURCE_ID), project="proj-a", owner_id="alice"
     )
@@ -55,7 +54,7 @@ def _site_app(monkeypatch, *, registry=None, lease=None, pool=None):
         seen.update(
             url=str(request.url), headers=dict(request.headers), body=json.loads(request.read())
         )
-        return _stream_response()
+        return respond(request) if respond else _stream_response()
 
     broker = SimpleNamespace(audit=[])
     broker._audit_log = lambda *a: broker.audit.append(a)
@@ -106,6 +105,27 @@ def test_another_projects_row_is_never_reachable(monkeypatch):
     app, seen, _broker = _site_app(monkeypatch, registry=registry)
     res = _post(app, model="secret-model")
     assert (res.status_code, res.json()["error"], seen) == (404, "site_model_not_found", {})
+
+
+def test_a_registry_answer_from_another_project_is_still_refused(monkeypatch):
+    """Defence in depth: a selection that names another project's row (a
+    registry bug, a shared name) is refused by the proxy's own scope check."""
+    (foreign,) = _registry(**{"ep-9": {"project_id": "proj-b"}}).list_all(project_id="proj-b")
+    leaky = SimpleNamespace(
+        select_endpoint=lambda *_a, **_k: foreign, list_all=lambda **_k: [foreign]
+    )
+    app, seen, _broker = _site_app(monkeypatch, registry=leaky)
+    res = _post(app, model="qwen3-8b")
+    assert (res.status_code, res.json()["error"], seen) == (404, "site_model_not_found", {})
+
+
+def test_an_upstream_redirect_is_never_followed(monkeypatch):
+    def redirect(_request):
+        return httpx.Response(302, headers={"location": "http://169.254.169.254/"})
+
+    app, _seen, _broker = _site_app(monkeypatch, respond=redirect)
+    res = _post(app)
+    assert (res.status_code, res.json()["error"]) == (502, "redirect_offhost")
 
 
 def test_a_row_that_is_not_ready_is_not_served(monkeypatch):

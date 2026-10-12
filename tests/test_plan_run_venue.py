@@ -28,7 +28,6 @@ from test_companion_venue_routes import (
     _Pool,
 )
 from test_plan_run_records import _Caller, _FakeJobStore
-
 from umrs.api import _rail_identity
 from umrs.api import companion_venue as venue_api
 from umrs.api import jobs as jobs_api
@@ -352,6 +351,12 @@ def _open_via_rail(h, worker, attempt=1):
     )
 
 
+def _record_texts(h, worker) -> list:
+    """The record texts the worker reads back through its rail."""
+    read = h.client.get(f"{worker.gw}/records", headers=worker.headers).json()
+    return [r["record"] for r in read["records"]]
+
+
 class TestWorkerCredentialScope:
     def test_the_worker_writes_its_own_runs_record_through_the_rail(self, h):
         worker = _launched(h)
@@ -364,21 +369,31 @@ class TestWorkerCredentialScope:
             headers=worker.headers,
         )
         assert wrote.status_code == 201, wrote.text
-        read = h.client.get(f"{worker.gw}/records", headers=worker.headers).json()
-        assert [r["record"] for r in read["records"]] == [_record()]
+        records = _record_texts(h, worker)
         done = h.client.post(
             f"{worker.gw}/attempts/{attempt_id}/finish",
             json={"status": "success", "summary": {"status": "success", "output": {"x": 1}}},
             headers=worker.headers,
         )
-        assert done.status_code == 200 and done.json()["job_status"] == "completed"
         view = h.client.get(f"/umrs/traces/plan-runs/{RUN}", headers=H).json()
-        assert view["hosting"] == "venue"
-        assert view["attempts"][0]["plan_status"] == "success"
-        assert view["attempts"][0]["summary"]["output"] == {"x": 1}
-        assert h.jobs.attempts[attempt_id].backend == "r4_venue"
-        # every attestation lived only for its own in-process call
-        assert h.app.state.rail_attestations == {}
+        assert {
+            "records": records,
+            "finish": (done.status_code, done.json()["job_status"]),
+            "hosting": view["hosting"],
+            "plan_status": view["attempts"][0]["plan_status"],
+            "output": view["attempts"][0]["summary"]["output"],
+            "backend": h.jobs.attempts[attempt_id].backend,
+            # every attestation lived only for its own in-process call
+            "attestations": h.app.state.rail_attestations,
+        } == {
+            "records": [_record()],
+            "finish": (200, "completed"),
+            "hosting": "venue",
+            "plan_status": "success",
+            "output": {"x": 1},
+            "backend": "r4_venue",
+            "attestations": {},
+        }
 
     def test_the_owners_own_client_cannot_write_a_venue_hosted_run(self, h):
         worker = _launched(h)
@@ -533,18 +548,35 @@ class TestGatesGoToTheInbox:
         assert self._gate(h, worker).status_code == 403
 
     def test_the_rail_has_no_decide_verb(self):
-        rail = [r for r in venue_api.router.routes if "/rail/" in getattr(r, "path", "")]
-        assert rail
-        for route in rail:
-            assert "decision" not in route.path and "decide" not in route.path
-            if "plan-gates" in route.path:
-                assert route.methods <= {"GET", "POST"}
-        assert "companion" not in venue_api.RAIL_GW_FAMILIES  # no inbox decide via the gw
-        gates = {r.path: r.methods for r in rail if "plan-gates" in r.path}
-        assert gates == {
-            "/umrs/companion/sessions/{session_id}/rail/plan-gates": {"POST"},
-            "/umrs/companion/sessions/{session_id}/rail/plan-gates/{approval_id}": {"GET"},
+        rail = _rail_routes()
+        assert {
+            "rail routes": bool(rail),
+            "decide paths": _decide_paths(rail),
+            # no inbox decide via the gw
+            "companion via gw": "companion" in venue_api.RAIL_GW_FAMILIES,
+            # create + read only: a gate is never answered over the rail
+            "plan gates": _plan_gate_methods(rail),
+        } == {
+            "rail routes": True,
+            "decide paths": [],
+            "companion via gw": False,
+            "plan gates": {
+                "/umrs/companion/sessions/{session_id}/rail/plan-gates": {"POST"},
+                "/umrs/companion/sessions/{session_id}/rail/plan-gates/{approval_id}": {"GET"},
+            },
         }
+
+
+def _rail_routes() -> list:
+    return [r for r in venue_api.router.routes if "/rail/" in getattr(r, "path", "")]
+
+
+def _decide_paths(rail: list) -> list[str]:
+    return [r.path for r in rail if "decision" in r.path or "decide" in r.path]
+
+
+def _plan_gate_methods(rail: list) -> dict[str, set[str]]:
+    return {r.path: r.methods for r in rail if "plan-gates" in r.path}
 
 
 class TestResumeAndCancel:

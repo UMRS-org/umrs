@@ -272,15 +272,17 @@ def object_targets(row: Sequence[Any], project_id: str) -> list[ObjectTarget]:
     """
     _aid, content_hash, source_ref, raw_meta = row[0], row[1], row[2], row[3]
     refs = [str(source_ref or ""), str(_metadata(raw_meta).get("staged_from") or "")]
-    targets: list[ObjectTarget] = []
-    for ref in dict.fromkeys(r for r in refs if r):
-        if ref.startswith(CONTENT_PREFIX.format(project_id=project_id)):
-            targets.append(ObjectTarget(ref=ref, key=ref, content_hash=str(content_hash or "")))
-        elif ref.startswith("s3://"):
-            target = _s3_target(ref, project_id)
-            if target is not None:
-                targets.append(target)
-    return targets
+    targets = (_object_target(ref, project_id, content_hash) for ref in dict.fromkeys(refs))
+    return [target for target in targets if target is not None]
+
+
+def _object_target(ref: str, project_id: str, content_hash: Any) -> ObjectTarget | None:
+    """The project's content key or staged upload ``ref`` names, else None."""
+    if ref.startswith(CONTENT_PREFIX.format(project_id=project_id)):
+        return ObjectTarget(ref=ref, key=ref, content_hash=str(content_hash or ""))
+    if ref.startswith("s3://"):
+        return _s3_target(ref, project_id)
+    return None
 
 
 def _notes(row: Sequence[Any]) -> list[str]:
@@ -288,9 +290,11 @@ def _notes(row: Sequence[Any]) -> list[str]:
     if meta.get("origin") != "rag.upload":
         return []
     return [
-        f"rag document {meta.get('document_id') or '?'}: rows in the endpoint corpus "
-        "(the mini-RiVault RAG index) are not part of the knowledge spine and are "
-        "not deleted; the spine and its retrieval no longer hold the document"
+        (
+            f"rag document {meta.get('document_id') or '?'}: rows in the endpoint corpus "
+            "(the mini-RiVault RAG index) are not part of the knowledge spine and are "
+            "not deleted; the spine and its retrieval no longer hold the document"
+        )
     ]
 
 

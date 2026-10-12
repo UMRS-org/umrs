@@ -467,11 +467,24 @@ async def _site_forward(request: Request, pool: Any, lease: Any, path: str) -> A
     started = time.monotonic()
     payload, model = site_models.request_model(await request.body())
     endpoint = site_models.resolve(registry, project, model)
-    if site_models.is_public_row(endpoint) and data_class_for_project(pool, project) == (
-        "sensitive"
-    ):
-        raise site_models.SiteSourceRefused(403, "source_class_refused")
+    _check_site_data_class(pool, project, endpoint)
     payload["model"] = site_models.served_name(endpoint)
+    upstream = await _site_send(request, lease, endpoint, path, payload)
+    return _relayed(request, lease, upstream, f"site:{endpoint.job_id}", started)
+
+
+def _check_site_data_class(pool: Any, project: str, endpoint: Any) -> None:
+    """ADR-062: a sensitive project never reaches a public row."""
+    if not site_models.is_public_row(endpoint):
+        return
+    if data_class_for_project(pool, project) == "sensitive":
+        raise site_models.SiteSourceRefused(403, "source_class_refused")
+
+
+async def _site_send(
+    request: Request, lease: Any, endpoint: Any, path: str, payload: dict[str, Any]
+) -> Any:
+    """POST to the row's upstream (streamed); no redirect is ever followed."""
     client = _http_client(request)
     try:
         upstream = await client.send(
@@ -489,7 +502,7 @@ async def _site_forward(request: Request, pool: Any, lease: Any, path: str) -> A
     if 300 <= upstream.status_code < 400:
         await upstream.aclose()
         raise site_models.SiteSourceRefused(502, "redirect_offhost")
-    return _relayed(request, lease, upstream, f"site:{endpoint.job_id}", started)
+    return upstream
 
 
 def _site_headers(request: Request, lease: Any, endpoint: Any) -> dict[str, str]:

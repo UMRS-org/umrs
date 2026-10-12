@@ -752,7 +752,7 @@ class TestExecuteDAGTracing:
         store = ExecutionTraceStore()  # in-memory (no DSN)
         specs = _make_specs(["a", "b"])
         steps = [PassthroughStep(), PassthroughStep()]
-        for st, sp in zip(steps, specs):
+        for st, sp in zip(steps, specs, strict=True):
             st.setup(sp.config)
         meta: dict[str, Any] = {}
         execute_dag(

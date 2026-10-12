@@ -17,7 +17,6 @@ from types import SimpleNamespace
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-
 from umrs.api import agent_quota
 from umrs.api import jobs as jobs_api
 from umrs.api import traces as traces_api
@@ -562,20 +561,34 @@ def _sql_store(rows):
     return store, conn, log
 
 
+def _first_sql(log, prefix):
+    """The first (sql, params) the store executed that starts with ``prefix``."""
+    return next(entry for entry in log if entry[0].startswith(prefix))
+
+
 class TestReopenSql:
     def test_reopen_is_client_hosted_only_never_cancelled_never_queued(self):
         # advisory lock taken, then the job UPDATE matched one row
         store, conn, log = _sql_store([(True,), ("job-1",)])
         assert store.reopen_client_job("job-1") == ["att-old"]
-        update_job = next(sql for sql in log if sql[0].startswith("UPDATE jobs"))
-        sql, params = update_job
-        assert "spec->>'hosting' IN ('client', 'venue')" in sql  # slice 8: venue too
-        assert params[0] == JobStatus.PLANNED.value
-        assert JobStatus.CANCELLED.value not in params
-        assert JobStatus.QUEUED.value in params  # taken OUT of the queue
-        lost = next(sql for sql in log if sql[0].startswith("UPDATE job_attempts"))
-        assert lost[1][0] == AttemptStatus.LOST.value
-        assert conn.committed
+        sql, params = _first_sql(log, "UPDATE jobs")
+        _lost_sql, lost_params = _first_sql(log, "UPDATE job_attempts")
+        assert {
+            # slice 8: venue too
+            "hosting clause": "spec->>'hosting' IN ('client', 'venue')" in sql,
+            "job to": params[0],
+            "cancelled in params": JobStatus.CANCELLED.value in params,
+            "queued in params": JobStatus.QUEUED.value in params,  # taken OUT of the queue
+            "attempt to": lost_params[0],
+            "committed": conn.committed,
+        } == {
+            "hosting clause": True,
+            "job to": JobStatus.PLANNED.value,
+            "cancelled in params": False,
+            "queued in params": True,
+            "attempt to": AttemptStatus.LOST.value,
+            "committed": True,
+        }
 
     def test_reopen_of_another_job_raises_and_changes_nothing(self):
         store, conn, log = _sql_store([(True,), None])

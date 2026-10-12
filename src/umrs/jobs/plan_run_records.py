@@ -263,7 +263,6 @@ def append_record(
     kind = str(record.get("kind") or "agent")
     ok = bool(record.get("ok")) or kind == "invalidate"
     model = str(record.get("model") or "")
-    retrieval = record.get("retrieval")
     return traces.record_completed(
         job_id=job.job_id,
         attempt_id=attempt_id,
@@ -274,15 +273,41 @@ def append_record(
         outputs_snapshot={"format": RECORD_FORMAT, "record": record_text},
         outputs_hash=hashlib.sha256(record_text.encode()).hexdigest(),
         model_ref={"name": model} if model else None,
-        retrieval_refs=[r for r in retrieval if isinstance(r, dict)]
-        if isinstance(retrieval, list)
-        else [],
-        error=None if ok else str(record.get("reason") or "")[:MAX_ERROR_CHARS] or None,
+        retrieval_refs=_retrieval_refs(record.get("retrieval")),
+        error=None if ok else _record_error(record),
     )
+
+
+def _retrieval_refs(retrieval: Any) -> list[dict[str, Any]]:
+    """The record's retrieval refs: its object entries, or none."""
+    if not isinstance(retrieval, list):
+        return []
+    return [r for r in retrieval if isinstance(r, dict)]
+
+
+def _record_error(record: dict[str, Any]) -> str | None:
+    """A failed record's reason, bounded; ``None`` when it named none."""
+    return str(record.get("reason") or "")[:MAX_ERROR_CHARS] or None
 
 
 def parse_record(record_text: Any) -> dict[str, Any]:
     """The record a client sent: a JSON object of a portable kind with a key."""
+    record = _record_object(record_text)
+    key = record.get("call_key")
+    if not isinstance(key, str) or not key or len(key) > MAX_KEY_CHARS:
+        raise PlanRunRecordError(
+            "bad_request", f"record call_key must be a string of 1-{MAX_KEY_CHARS} characters"
+        )
+    kind = str(record.get("kind") or "agent")
+    if kind not in STEP_TYPES:
+        raise PlanRunRecordError(
+            "bad_request", f"record kind {kind!r} is not portable ({sorted(STEP_TYPES)})"
+        )
+    return record
+
+
+def _record_object(record_text: Any) -> dict[str, Any]:
+    """The record text as a bounded JSON object, refused by name otherwise."""
     if not isinstance(record_text, str):
         raise PlanRunRecordError("bad_request", "record must be the record's JSON text")
     size = len(record_text.encode())
@@ -296,16 +321,6 @@ def parse_record(record_text: Any) -> dict[str, Any]:
         raise PlanRunRecordError("bad_request", f"record is not JSON: {exc}") from exc
     if not isinstance(record, dict):
         raise PlanRunRecordError("bad_request", "record must be a JSON object")
-    key = record.get("call_key")
-    if not isinstance(key, str) or not key or len(key) > MAX_KEY_CHARS:
-        raise PlanRunRecordError(
-            "bad_request", f"record call_key must be a string of 1-{MAX_KEY_CHARS} characters"
-        )
-    kind = str(record.get("kind") or "agent")
-    if kind not in STEP_TYPES:
-        raise PlanRunRecordError(
-            "bad_request", f"record kind {kind!r} is not portable ({sorted(STEP_TYPES)})"
-        )
     return record
 
 

@@ -316,6 +316,16 @@ def _apply_update(
         )
     if req.status == "skipped":
         return trace_store.skip_trace(trace_id)
+    return _apply_fields(trace_store, trace_id, req, existing)
+
+
+def _apply_fields(
+    trace_store: ExecutionTraceStore,
+    trace_id: str,
+    req: TraceUpdateRequest,
+    existing: TraceRecord,
+) -> TraceRecord | None:
+    """No transition: a progress update, else the fields the PATCH sets."""
     if req.progress is not None:
         return trace_store.update_progress(trace_id, req.progress)
     fields = ("outputs_ref", "artifact_refs", "tool_calls", "retrieval_refs", "routing_decision")

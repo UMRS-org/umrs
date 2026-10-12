@@ -727,7 +727,7 @@ def _resolve_loop_workflow(
     written on the loop (``metadata.workflow_name`` + ``workflow_resolution``)
     and onto every experiment lacking one.
     """
-    if engine.simulated or request.agentic or (request.iteration_plan or "").strip():
+    if _runs_no_workflow(request, engine):
         return ""
     planned = _plan_workflow(loop)
     if planned is not None:
@@ -739,9 +739,7 @@ def _resolve_loop_workflow(
     requested = (request.workflow_name or "").strip()
     candidates = _catalog_candidates(requested, owner)
     name, source = _pick_workflow(requested, candidates)
-    for experiment in list(loop.plan.experiments) if loop.plan else []:
-        if not _experiment_workflow(experiment):
-            experiment.metadata["workflow_name"] = name
+    _stamp_experiments(loop, name)
     loop.metadata["workflow_name"] = name
     loop.metadata["workflow_resolution"] = {
         "workflow_name": name,
@@ -749,6 +747,18 @@ def _resolve_loop_workflow(
         "candidates": list(candidates or [])[:20],
     }
     return name
+
+
+def _runs_no_workflow(request: StartLoopRequest, engine: AutonomousResearchLoop) -> bool:
+    """Simulated engines, agentic loops and plan iterations run no workflow."""
+    return bool(engine.simulated or request.agentic or (request.iteration_plan or "").strip())
+
+
+def _stamp_experiments(loop: ResearchLoop, name: str) -> None:
+    """Every planned experiment lacking a workflow gets the resolved one."""
+    for experiment in list(loop.plan.experiments) if loop.plan else []:
+        if not _experiment_workflow(experiment):
+            experiment.metadata["workflow_name"] = name
 
 
 def _loop_job_spec(loop: ResearchLoop, *, agentic: bool) -> dict[str, Any]:

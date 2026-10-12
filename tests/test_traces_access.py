@@ -19,7 +19,6 @@ from types import SimpleNamespace
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-
 from umrs.api import jobs as jobs_api
 from umrs.api import traces as traces_api
 from umrs.jobs.execution_trace_store import ExecutionTraceStore
@@ -107,6 +106,14 @@ def test_another_projects_trace_cannot_be_changed(world):
     )
     assert res.status_code == 404
     assert world.traces.get_trace(world.a.trace_id).status == "pending"
+
+
+def test_a_patch_without_a_status_sets_only_its_fields(world):
+    url = f"/umrs/traces/{world.a.trace_id}"
+    res = _client(world, ALICE).patch(url, json={"artifact_refs": [{"id": "art-1"}]})
+    assert res.status_code == 200, res.text
+    trace = world.traces.get_trace(world.a.trace_id)
+    assert (trace.status, trace.artifact_refs) == ("pending", [{"id": "art-1"}])
 
 
 def test_a_child_cannot_be_hung_under_another_projects_trace(world):

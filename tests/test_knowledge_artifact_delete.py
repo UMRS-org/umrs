@@ -20,7 +20,6 @@ from typing import Any
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-
 from umrs.api import knowledge_artifact_delete as route
 from umrs.api import rag as rag_api
 from umrs.knowledge import artifact_delete as core
@@ -342,41 +341,63 @@ def _code(response) -> str:
 # ── the knowledge artifact delete ────────────────────────────────────────────
 
 
+ART_A_NODES = {
+    "node-file-art-a",
+    "node-class-K-art-a",
+    "node-sem-foo-art-a",
+    "chunk-a-0",
+    "node-ir-only",
+    "art-a",
+}
+
+
+def _left_after_delete(db, audit) -> dict:
+    """What the store holds (and the audit says) after deleting art-a."""
+    nodes = set(db.t["nodes"])
+    return {
+        "artifacts": set(db.t["artifacts"]),
+        "ir-a kept": "ir-a" in db.t["ir"],
+        "art-a nodes kept": nodes & ART_A_NODES,
+        # The job's provenance node is shared by the job's other outputs.
+        "shared nodes kept": {"prod-job-j1", "node-file-art-b", "chunk-b-0"} <= nodes,
+        "edges": set(db.t["edges"]),
+        "chunk-a embedding kept": ("chunk-a-0", "m") in db.t["embeddings"],
+        "chunk-b embedding kept": ("chunk-b-0", "m") in db.t["embeddings"],
+        "findings": db.t["findings"],
+        "commits/rollbacks": (db.commits, db.rollbacks),
+        "first audit": (audit[0][0], audit[0][1]["details"]["artifact_id"]),
+    }
+
+
 def test_delete_removes_the_artifact_and_everything_derived_from_it(client, db, audit):
     response = _delete(client, "art-a")
 
     assert response.status_code == 200, response.text
     body = response.json()
-    assert body["deleted"] is True
-    assert body["counts"] == {
-        "artifacts": 1,
-        "nodes": 6,  # file, class, semantic, chunk, source_ir-only, provenance
-        "edges": 5,  # part_of, mentions, produced_by, and both cross edges
-        "embeddings": 2,
-        "findings": 1,
-        "ir": 1,
-        "events_detached": 2,
+    assert {"deleted": body["deleted"], "counts": body["counts"]} == {
+        "deleted": True,
+        "counts": {
+            "artifacts": 1,
+            "nodes": 6,  # file, class, semantic, chunk, source_ir-only, provenance
+            "edges": 5,  # part_of, mentions, produced_by, and both cross edges
+            "embeddings": 2,
+            "findings": 1,
+            "ir": 1,
+            "events_detached": 2,
+        },
     }
-    assert set(db.t["artifacts"]) == {"art-b", "artifact-rag-d1", "art-x"}
-    assert "ir-a" not in db.t["ir"]
-    nodes = set(db.t["nodes"])
-    assert not nodes & {
-        "node-file-art-a",
-        "node-class-K-art-a",
-        "node-sem-foo-art-a",
-        "chunk-a-0",
-        "node-ir-only",
-        "art-a",
+    assert _left_after_delete(db, audit) == {
+        "artifacts": {"art-b", "artifact-rag-d1", "art-x"},
+        "ir-a kept": False,
+        "art-a nodes kept": set(),
+        "shared nodes kept": True,
+        "edges": {"e-chunk-b", "e-rag-0", "e-rag-1", "e-x"},
+        "chunk-a embedding kept": False,
+        "chunk-b embedding kept": True,
+        "findings": {"f-b": "art-b", "f-x": "art-x"},
+        "commits/rollbacks": (1, 0),
+        "first audit": ("knowledge.artifact_deleted", "art-a"),
     }
-    # The job's provenance node is shared by the job's other outputs.
-    assert {"prod-job-j1", "node-file-art-b", "chunk-b-0"} <= nodes
-    assert set(db.t["edges"]) == {"e-chunk-b", "e-rag-0", "e-rag-1", "e-x"}
-    assert ("chunk-a-0", "m") not in db.t["embeddings"]
-    assert ("chunk-b-0", "m") in db.t["embeddings"]
-    assert db.t["findings"] == {"f-b": "art-b", "f-x": "art-x"}
-    assert db.commits == 1 and db.rollbacks == 0
-    assert audit[0][0] == "knowledge.artifact_deleted"
-    assert audit[0][1]["details"]["artifact_id"] == "art-a"
 
 
 def test_events_are_detached_not_deleted(client, db):
@@ -434,10 +455,22 @@ def test_the_steps_run_inside_one_transaction(client, db, monkeypatch):
     monkeypatch.setattr(db, "run", _spy)
     assert _delete(client, "art-a").status_code == 200
 
+    assert {**_tx_split(seen), "commits": db.commits} == {
+        "first in tx": "lock_artifact",
+        "last in tx": "delete_artifact",
+        "outside tx": ["object_refs", "object_refs"],
+        "commits": 1,
+    }
+
+
+def _tx_split(seen: list[tuple[str, bool]]) -> dict:
+    """The first/last step inside the transaction and the steps outside it."""
     in_tx = [tag for tag, inside in seen if inside]
-    assert in_tx[0] == "lock_artifact" and in_tx[-1] == "delete_artifact"
-    assert [tag for tag, inside in seen if not inside] == ["object_refs", "object_refs"]
-    assert db.commits == 1
+    return {
+        "first in tx": in_tx[0],
+        "last in tx": in_tx[-1],
+        "outside tx": [tag for tag, inside in seen if not inside],
+    }
 
 
 def test_another_projects_artifact_is_404_by_name(client, db, store):
