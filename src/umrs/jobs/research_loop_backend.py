@@ -69,27 +69,26 @@ def validate_research_loop_spec(spec: dict) -> dict:
     driver = str(spec.get("driver") or "engine").strip()
     if driver not in DRIVERS:
         raise ValueError(f"research_loop_job driver must be one of {sorted(DRIVERS)}")
+    return {"loop_id": loop_id, "driver": driver, **_venue_fields(spec, driver)}
+
+
+def _venue_fields(spec: dict, driver: str) -> dict:
+    """The spec's venue: none, ``frontend``, or ``cluster:<site>`` (engine only)."""
     venue = str(spec.get("venue") or "").strip()
-    if venue and not (venue == "frontend" or venue.startswith(CLUSTER_VENUE_PATTERN)):
+    if not venue:
+        return {}
+    if venue == "frontend":
+        return {"venue": venue}
+    if not venue.startswith(CLUSTER_VENUE_PATTERN):
         raise ValueError(
             f"research_loop_job venue must be 'frontend' or 'cluster:<name>' (got {venue!r})"
         )
-    out = {"loop_id": loop_id, "driver": driver}
-    if venue.startswith(CLUSTER_VENUE_PATTERN):
-        if driver != "engine":
-            raise ValueError(
-                "research_loop_job on a cluster venue accepts driver 'engine' only "
-                "(the companion agent driver needs cluster-side wiring — follow-on)"
-            )
-        out["cluster_site"] = split_cluster_venue_name(venue)
-    elif venue and venue != "frontend":
+    if driver != "engine":
         raise ValueError(
-            f"research_loop_job venue must be 'frontend' or 'cluster:<site-name>' "
-            f"(got {venue!r})"
+            "research_loop_job on a cluster venue accepts driver 'engine' only "
+            "(the companion agent driver needs cluster-side wiring — follow-on)"
         )
-    if venue:
-        out["venue"] = venue
-    return out
+    return {"cluster_site": split_cluster_venue_name(venue), "venue": venue}
 
 
 def split_cluster_venue_name(venue: str) -> str:
@@ -169,13 +168,7 @@ class ResearchLoopStatusChecker(BackendStatusChecker):
         # records ref drives this checker. Keeping the interface signature.
         spec = getattr(job, "spec", None)
         if is_plan_run_record(spec):
-            # ADR-092 slice 7: its client opens and closes the attempt over
-            # HTTP (the request-driven tier); no loop record or in-process
-            # driver exists to read, and none must fail it. A UMRS restart
-            # still marks it LOST (reconciler); a resume supersedes it.
-            # Slice 8: a venue-hosted run's worker does the same over its rail.
-            venue = spec.get("hosting") == "venue"
-            return AttemptCheckResult.running(VENUE_HOSTED_DETAIL if venue else CLIENT_HOSTED_DETAIL)
+            return _plan_run_result(spec)
         backend_ref = attempt.backend_ref or ""
         if not backend_ref.startswith(REF_PREFIX):
             return AttemptCheckResult.failed("Unexpected backend reference")
@@ -188,13 +181,26 @@ class ResearchLoopStatusChecker(BackendStatusChecker):
         if snap is None:
             return AttemptCheckResult.failed(f"research loop record missing: {loop_id}")
         remote = _parse_ref(backend_ref).get("driver") == "slurm"
-        foreign = (
-            not remote
-            and self._instance_id
+        foreign = not remote and self._foreign(attempt)
+        return _result_for(snap, remote_driver=remote, attempt=attempt, foreign=foreign)
+
+    def _foreign(self, attempt: JobAttempt) -> bool:
+        """Another server claimed this attempt (its in-process driver lives there)."""
+        return bool(
+            self._instance_id
             and attempt.umrs_instance_id
             and attempt.umrs_instance_id != self._instance_id
         )
-        return _result_for(snap, remote_driver=remote, attempt=attempt, foreign=foreign)
+
+
+def _plan_run_result(spec: dict) -> AttemptCheckResult:
+    """ADR-092 slice 7: its client opens and closes the attempt over HTTP
+    (the request-driven tier); no loop record or in-process driver exists to
+    read, and none must fail it. A UMRS restart still marks it LOST
+    (reconciler); a resume supersedes it. Slice 8: a venue-hosted run's
+    worker does the same over its rail."""
+    venue = spec.get("hosting") == "venue"
+    return AttemptCheckResult.running(VENUE_HOSTED_DETAIL if venue else CLIENT_HOSTED_DETAIL)
 
 
 # Grace for cluster (slurm) drivers: queue wait + image pull + pod start on

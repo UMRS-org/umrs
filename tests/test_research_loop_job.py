@@ -322,6 +322,26 @@ class TestChecker:
         no_ref = asyncio.run(checker.check_status(_attempt(ref=None), _job({})))
         assert no_ref.status == "failed"
 
+    def test_a_foreign_instances_attempt_is_never_failed_for_a_driver_it_cannot_see(self):
+        store = LoopStore.memory()
+        store.save(_loop("loop-f"))  # RUNNING; no driver registered in this process
+        _wire(store)
+        checker = ResearchLoopStatusChecker("me")
+
+        def _status(instance):
+            attempt = SimpleNamespace(
+                attempt_id="att-f",
+                backend_ref="research_loop_job|loop_id=loop-f|driver=engine",
+                umrs_instance_id=instance,
+            )
+            return asyncio.run(checker.check_status(attempt, _job({}))).status
+
+        assert {i: _status(i) for i in ("other", "me", None)} == {
+            "other": "running",
+            "me": "failed",
+            None: "failed",
+        }
+
 
 class _FakeStep:
     def __init__(self, extra=None):

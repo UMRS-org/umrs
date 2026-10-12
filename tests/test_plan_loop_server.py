@@ -24,13 +24,13 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from test_companion_venue_routes import READY_ENV
-
-from r4_contracts import loop_plan
 from umrs.api import plan_run_venue
 from umrs.companion_trust.approval_inbox import ApprovalInboxStore
 from umrs.knowledge import ask_policy, plan_iteration, tool_approvals
 from umrs.knowledge.engine_loop_runner import EngineLoopRunner
 from umrs.knowledge.loop import LoopStatus, ResearchLoop
+
+from r4_contracts import loop_plan
 
 TEMPLATE = Path("/tmp/w-a92/r4/src/r4/teams/plan/templates/research-round.json")
 
@@ -338,6 +338,14 @@ class TestTheStartRoute:
         ((_loop_id, factory),) = registered
         assert isinstance(factory(), plan_iteration.PlanIterationEngine)
 
+    def test_a_plan_loop_resolves_no_workflow_even_on_a_real_engine(self, loops, monkeypatch):
+        client, loop_api, _registered = loops
+        monkeypatch.setattr(loop_api._loop_engine, "_simulated", False)
+        res = client.post("/umrs/loops", json=self._body())
+        assert res.status_code == 201, res.text
+        (loop,) = loop_api._loop_store.list_all()
+        assert "workflow_resolution" not in loop.metadata
+
     def test_an_explicit_mode_is_kept(self, loops):
         client, loop_api, _registered = loops
         assert client.post("/umrs/loops", json=self._body(mode="auto")).status_code == 201
@@ -357,6 +365,23 @@ class TestTheStartRoute:
         res = client.post("/umrs/loops", json=self._body(**over))
         assert res.status_code == 422 and why in res.text
         assert loop_api._loop_store.list_all() == [] and registered == []
+
+
+@pytest.mark.parametrize(
+    ("view", "expected"),
+    [
+        ({"status": "cancelled"}, "cancelled"),
+        ({"attempts": [{"plan_status": "success", "status": "succeeded"}]}, "success"),
+        ({"venue": {"state": "running"}, "attempts": [{"status": "running"}]}, None),
+        # the session stopped but the worker's attempt still runs: not over
+        ({"venue": {"state": "stopped"}, "attempts": [{"status": "running"}]}, None),
+        ({"venue": {"state": "failed", "reason": "pull"}, "attempts": []}, "failed"),
+        ({"venue": {"state": "stopped"}, "attempts": [{"status": "lost"}]}, "failed"),
+    ],
+)
+def test_a_runs_outcome_is_what_its_record_says(view, expected):
+    outcome = plan_iteration.run_outcome({"status": "running", **view})
+    assert (outcome or {}).get("status") == expected
 
 
 def test_the_server_loop_reads_the_shared_table():

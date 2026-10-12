@@ -275,7 +275,7 @@ def _init_loop_plan_host(db_pool) -> None:
         from umrs.knowledge import plan_iteration
 
         plan_iteration.configure(build_loop_plan_host(db_pool))
-    except Exception:  # noqa: BLE001 — boot must survive per-component failures
+    except Exception:  # boot must survive per-component failures
         logger.warning("plan-loop host unavailable in HTTP sidecar", exc_info=True)
 
 
@@ -761,7 +761,9 @@ def _create_app():
     from umrs.api.intake_uploads import router as intake_uploads_router
     from umrs.api.jobs import router as jobs_router
     from umrs.api.knowledge import router as knowledge_router
-    from umrs.api.knowledge_artifact_delete import router as knowledge_artifact_delete_router
+    from umrs.api.knowledge_artifact_delete import (
+        router as knowledge_artifact_delete_router,
+    )
     from umrs.api.knowledge_attrition import router as knowledge_attrition_router
     from umrs.api.knowledge_graphs import router as knowledge_graphs_router
     from umrs.api.knowledge_lineage import router as knowledge_lineage_router

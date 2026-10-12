@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import pytest
 from test_ask_policy_emitters import _loop, _store
-
 from umrs.knowledge import ask_policy as ap
 from umrs.knowledge.engine_loop_runner import EngineLoopRunner
 
@@ -107,7 +106,6 @@ def _api():
     pytest.importorskip("fastapi")
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
-
     from umrs.api import loop as loop_api
     from umrs.api.loop import clear_loop_store, router
     from umrs.knowledge.loop import AutonomousResearchLoop

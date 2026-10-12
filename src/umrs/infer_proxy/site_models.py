@@ -74,14 +74,24 @@ def resolve(registry: Any, project: str, model: str) -> Any:
     """The project's own row serving ``model``; refused by name otherwise."""
     if not project:
         raise SiteSourceRefused(403, "site_scope_missing")
-    base, _, suffix = model.rpartition("-")
-    variant = suffix if base and _VARIANT.match(suffix) else None
-    endpoint = registry.select_endpoint(project, base if variant else model, variant=variant)
+    endpoint = _selected(registry, project, model)
     if endpoint is None:
-        endpoint = next((ep for ep in _ready(registry, project) if model in _names(ep)), None)
+        endpoint = _served_as(registry, project, model)
     if endpoint is None or getattr(endpoint, "project_id", None) != project:
         raise SiteSourceRefused(404, "site_model_not_found")
     return endpoint
+
+
+def _selected(registry: Any, project: str, model: str) -> Any:
+    """The registry's own selection for ``model`` (``<model>-<variant>`` split)."""
+    base, _, suffix = model.rpartition("-")
+    variant = suffix if base and _VARIANT.match(suffix) else None
+    return registry.select_endpoint(project, base if variant else model, variant=variant)
+
+
+def _served_as(registry: Any, project: str, model: str) -> Any:
+    """The project's first ready row serving ``model`` under any of its names."""
+    return next((ep for ep in _ready(registry, project) if model in _names(ep)), None)
 
 
 def is_public_row(endpoint: Any) -> bool:

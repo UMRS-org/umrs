@@ -89,7 +89,7 @@ async def run_delete(request: Request, artifact_id: str, project_id: str) -> Art
         return await delete_artifact(pool, artifact_id, project_id, object_store)
     except ArtifactNotFound as exc:
         raise_typed(PlatformError.knowledge("not_found", str(exc)), cause=exc)
-    except Exception as exc:  # noqa: BLE001 — the transaction rolled back: say so
+    except Exception as exc:  # the transaction rolled back: say so
         logger.exception("knowledge artifact delete failed: %s", artifact_id)
         raise_typed(
             PlatformError.knowledge(
@@ -168,6 +168,11 @@ def ingest_job_artifacts(job_id: str, project_id: str) -> list[str]:
         attempts = store.get_attempts_for_job(job_id)
     except Exception:  # noqa: BLE001 — not a job of this project: not resolvable
         return []
+    return _stored_artifact_ids(job, attempts)
+
+
+def _stored_artifact_ids(job: Any, attempts: list[Any]) -> list[str]:
+    """The artifact ids the committed attempt (else every attempt) recorded."""
     committed = [a for a in attempts if a.attempt_id == job.commit_attempt_id] or attempts
     found = [
         d.get("artifact_id") for a in committed for d in (a.metrics or {}).get("artifacts", [])

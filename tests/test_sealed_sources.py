@@ -7,11 +7,10 @@ sealing is a real write. Hermetic per run: unique owner names.
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 import os
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI
@@ -290,7 +289,6 @@ def test_push_refuses_the_reserved_site_name(name):
     """ADR-092 slice 9: ``site`` names the venue's own models (slice 8b);
     refused before anything is sealed or stored (no database needed)."""
     from fastapi import FastAPI
-
     from umrs.api import user_sources
 
     app = FastAPI()

@@ -6,7 +6,6 @@ from unittest.mock import patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-
 from umrs.api.rag import router
 from umrs.orchestrator.endpoint_registry import EndpointRegistry, get_registry
 
@@ -207,7 +206,6 @@ def test_delete_document_never_proxies_and_records_nothing_unresolved(monkeypatc
         return _mock_rag_response({"status": "deleted"})
 
     import httpx
-
     from umrs.api import governance
 
     monkeypatch.setattr(

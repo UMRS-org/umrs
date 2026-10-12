@@ -145,21 +145,35 @@ def run_outcome(view: dict[str, Any]) -> dict[str, Any] | None:
     """The outcome a run's worker recorded, or None while it runs."""
     if view.get("status") == "cancelled":
         return {"status": "cancelled", "error": "the run's record was cancelled"}
+    last = _last_attempt(view)
+    if last.get("plan_status"):
+        return _reported(last)
+    return _worker_ended(view.get("venue") or {}, last)
+
+
+def _last_attempt(view: dict[str, Any]) -> dict[str, Any]:
+    """The run's last attempt ({} when it has none)."""
     attempts = [a for a in view.get("attempts") or () if isinstance(a, dict)]
-    last = attempts[-1] if attempts else None
-    if last and last.get("plan_status"):
-        summary = last.get("summary") if isinstance(last.get("summary"), dict) else {}
-        return {
-            "status": last["plan_status"],
-            "error": summary.get("error") or last.get("exit_reason") or "",
-            "summary": summary,
-        }
-    venue = view.get("venue") or {}
-    ended = venue.get("state") in ("failed", "stopped")
-    if ended and not (last and last.get("status") == "running"):
-        why = venue.get("reason") or venue["state"]
-        return {"status": "failed", "error": f"worker_ended: {why}"}
-    return None
+    return attempts[-1] if attempts else {}
+
+
+def _reported(last: dict[str, Any]) -> dict[str, Any]:
+    """The outcome the worker reported when it closed its attempt."""
+    summary = last.get("summary")
+    summary = summary if isinstance(summary, dict) else {}
+    return {
+        "status": last["plan_status"],
+        "error": summary.get("error") or last.get("exit_reason") or "",
+        "summary": summary,
+    }
+
+
+def _worker_ended(venue: dict[str, Any], last: dict[str, Any]) -> dict[str, Any] | None:
+    """A failed run when the worker's session ended with no attempt running."""
+    if venue.get("state") not in ("failed", "stopped") or last.get("status") == "running":
+        return None
+    why = venue.get("reason") or venue["state"]
+    return {"status": "failed", "error": f"worker_ended: {why}"}
 
 
 # ── the executor: one round ─────────────────────────────────────────────────
