@@ -82,20 +82,26 @@ NODES_SQL = (
 NODE_STEPS: tuple[tuple[str, str, bool], ...] = (
     (
         "embeddings",
-        "/* artifact_delete:delete_embeddings */ "
-        "DELETE FROM knowledge_node_embeddings WHERE node_id = ANY($1::text[])",
+        (
+            "/* artifact_delete:delete_embeddings */ "
+            "DELETE FROM knowledge_node_embeddings WHERE node_id = ANY($1::text[])"
+        ),
         False,
     ),
     (
         "edges",
-        "/* artifact_delete:delete_edges */ DELETE FROM knowledge_edges "
-        "WHERE source_id = ANY($1::text[]) OR target_id = ANY($1::text[])",
+        (
+            "/* artifact_delete:delete_edges */ DELETE FROM knowledge_edges "
+            "WHERE source_id = ANY($1::text[]) OR target_id = ANY($1::text[])"
+        ),
         False,
     ),
     (
         "nodes",
-        "/* artifact_delete:delete_nodes */ DELETE FROM knowledge_nodes "
-        "WHERE node_id = ANY($1::text[]) AND project_id = $2",
+        (
+            "/* artifact_delete:delete_nodes */ DELETE FROM knowledge_nodes "
+            "WHERE node_id = ANY($1::text[]) AND project_id = $2"
+        ),
         True,
     ),
 )
@@ -103,8 +109,10 @@ NODE_STEPS: tuple[tuple[str, str, bool], ...] = (
 ARTIFACT_STEPS: tuple[tuple[str, str], ...] = (
     (
         "findings",
-        "/* artifact_delete:delete_findings */ "
-        "DELETE FROM verification_findings WHERE artifact_id = $1",
+        (
+            "/* artifact_delete:delete_findings */ "
+            "DELETE FROM verification_findings WHERE artifact_id = $1"
+        ),
     ),
     (
         "ir",
@@ -112,8 +120,10 @@ ARTIFACT_STEPS: tuple[tuple[str, str], ...] = (
     ),
     (
         "events_detached",
-        "/* artifact_delete:detach_events */ "
-        "UPDATE knowledge_events SET artifact_id = NULL WHERE artifact_id = $1",
+        (
+            "/* artifact_delete:detach_events */ "
+            "UPDATE knowledge_events SET artifact_id = NULL WHERE artifact_id = $1"
+        ),
     ),
 )
 DELETE_ARTIFACT_SQL = (
