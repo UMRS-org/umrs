@@ -541,6 +541,10 @@ class ConnectInfoResponse(BaseModel):
     zmq: ConnectInfoZMQ
     services: ConnectInfoServices | None = None
     s3cfg_content: str | None = None
+    # ADR-062 amendment (2026-10-15): the site's institutional-provider
+    # allowlist, so the workstation classifies sources exactly as the
+    # venue-start and lease gates do (UMRS_INSTITUTIONAL_PROVIDER_HOSTS).
+    institutional_provider_hosts: list[str] = []
 
 
 @router.get(
@@ -560,6 +564,7 @@ def ops_connect_info(
     can write a local S3 configuration file at login time.
     """
     from umrs.shared.connection_profiles import parse_data_port_range
+    from umrs.shared.project_data_class import institutional_provider_hosts
 
     control_port = int(os.environ.get("UMRS_CONTROL_PORT", "5555"))
     tunnel_mode = os.environ.get("UMRS_TUNNEL_MODE", "false").lower() in (
@@ -586,6 +591,7 @@ def ops_connect_info(
             "auth_type": auth_type,
             "tunnel_mode": tunnel_mode,
         },
+        "institutional_provider_hosts": sorted(institutional_provider_hosts()),
     }
 
     _add_connect_info_extras(result, x_user_id)
