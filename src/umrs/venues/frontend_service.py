@@ -27,7 +27,22 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from typing import Any, Protocol
 
-from umrs.shared.project_data_class import PUBLIC_PROVIDER_KINDS, data_class_for_project
+from umrs.shared.project_data_class import (
+    PUBLIC_PROVIDER_KINDS,
+    data_class_for_project,
+    is_institutional_url,
+)
+
+
+def _gated_public_source(meta: Any) -> bool:
+    """ADR-062 + the 2026-10-15 amendment: public-kind and NOT institutional.
+
+    An institutional host (the site's allowlist — Rikyu by default) is
+    admitted for sensitive projects; commercial public hosts stay refused.
+    """
+    if getattr(meta, "provider_kind", "") not in PUBLIC_PROVIDER_KINDS:
+        return False
+    return not is_institutional_url(getattr(meta, "allow_host", ""))
 from umrs.shared.site_source import SITE_SOURCE_ID, SITE_SOURCE_NAME
 
 from .frontend_config import (
@@ -407,7 +422,7 @@ class FrontendVenueService:
             # public-passthrough row per request (slice 8b)
             if n != SITE_SOURCE_NAME
             and (m := sealed.get_meta(owner, n))
-            and getattr(m, "provider_kind", "") in PUBLIC_PROVIDER_KINDS
+            and _gated_public_source(m)
         ]
         if public:
             raise VenueError(

@@ -41,6 +41,22 @@ def _as_triggers(raw: Any) -> list[str]:
     return []
 
 
+def _listed_row(row: Any) -> dict[str, Any]:
+    """Map one list() SELECT row (the _row() columns)."""
+    return {
+        "project_id": row[0],
+        "name": row[1],
+        "owner_id": row[2],
+        "status": row[3],
+        "retired_at": row[4].isoformat() if row[4] else None,
+        "created_at": row[5].isoformat() if row[5] else None,
+        "updated_at": row[6].isoformat() if row[6] else None,
+        "data_class": row[7] if len(row) > 7 else "sensitive",
+        "ask_mode": row[8] if len(row) > 8 else "",
+        "pause_triggers": _as_triggers(row[9] if len(row) > 9 else None),
+    }
+
+
 class ProjectStore:
     """psycopg2-backed durable store over the 0095 registry."""
 
@@ -86,12 +102,17 @@ class ProjectStore:
         existing = self._row(pid)
         if existing:
             return existing
+        from umrs.shared.project_data_class import default_project_data_class
+
         cur = self._conn.cursor()
         cur.execute(
-            """INSERT INTO projects (project_id, name, owner_id)
-               VALUES (%s, %s, %s)
+            """INSERT INTO projects (project_id, name, owner_id, data_class)
+               VALUES (%s, %s, %s, %s)
                ON CONFLICT (project_id) DO NOTHING""",
-            (pid, name, owner_id),
+            # ADR-062 amendment D-4: the deployment's default for NEW rows
+            # (stand-alone: non_sensitive). DO NOTHING + the ensuring-shape
+            # return mean an owner's later choice is never rewritten here.
+            (pid, name, owner_id, default_project_data_class()),
         )
         self._conn.commit()
         row = self._row(pid)
@@ -119,24 +140,11 @@ class ProjectStore:
         where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
         cur.execute(
             "SELECT project_id, name, owner_id, status, retired_at, created_at,"
-            " updated_at"
+            " updated_at, data_class, ask_mode, pause_triggers"
             " FROM projects" + where + " ORDER BY created_at",
             tuple(params),
         )
-        out: list[dict[str, Any]] = []
-        for row in cur.fetchall():
-            out.append(
-                {
-                    "project_id": row[0],
-                    "name": row[1],
-                    "owner_id": row[2],
-                    "status": row[3],
-                    "retired_at": row[4].isoformat() if row[4] else None,
-                    "created_at": row[5].isoformat() if row[5] else None,
-                    "updated_at": row[6].isoformat() if row[6] else None,
-                }
-            )
-        return out
+        return [_listed_row(row) for row in cur.fetchall()]
 
     def retire(self, project_id: str) -> dict[str, Any]:
         row = self.get(project_id)  # raises ProjectNotFound

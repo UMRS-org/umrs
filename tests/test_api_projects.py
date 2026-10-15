@@ -49,9 +49,12 @@ class _Conn:
         return _Cursor(self)
 
     def _handle_insert(self, params, cur: _Cursor):
-        pid, name, owner = params
+        pid, name, owner = params[:3]
+        # INSERT may carry data_class as a 4th param (ADR-062 amendment:
+        # the deployment's default class for NEW rows).
+        data_class = params[3] if len(params) > 3 else "sensitive"
         if pid not in self.rows:
-            self.rows[pid] = (pid, name, owner, "active", None, None, None, "sensitive", "", "[]")
+            self.rows[pid] = (pid, name, owner, "active", None, None, None, data_class, "", "[]")
         cur._result = []
 
     def _handle_update(self, sql, params, cur: _Cursor):
@@ -159,6 +162,34 @@ class TestStoreLifecycle:
         store.create("p-2", owner_id="bob")
         mine = store.list(owner="alice")
         assert [r["project_id"] for r in mine] == ["p-1"]
+
+    def test_list_carries_the_real_data_class(self) -> None:
+        """S2 (2026-10-15): the listing selected 7 columns, so every listed
+        project reported the `_row_response` default 'sensitive'."""
+        store = ProjectStore(_Conn())
+        store.create("p-1", owner_id="alice")
+        store.set_data_class("p-1", "non_sensitive")
+        mine = store.list(owner="alice")
+        assert mine[0]["data_class"] == "non_sensitive"
+
+    def test_create_honours_the_deployment_default_class(self, monkeypatch) -> None:
+        """ADR-062 amendment D-4: stand-alone sets
+        UMRS_PROJECT_DEFAULT_DATA_CLASS=non_sensitive; sites keep sensitive.
+        Only NEW rows take it — the value never widens an existing row."""
+        monkeypatch.setenv("UMRS_PROJECT_DEFAULT_DATA_CLASS", "non_sensitive")
+        store = ProjectStore(_Conn())
+        row = store.create("p-1", owner_id="alice")
+        assert row["data_class"] == "non_sensitive"
+
+    def test_create_default_class_stays_sensitive_on_sites(self, monkeypatch) -> None:
+        monkeypatch.delenv("UMRS_PROJECT_DEFAULT_DATA_CLASS", raising=False)
+        store = ProjectStore(_Conn())
+        assert store.create("p-1", owner_id="alice")["data_class"] == "sensitive"
+
+    def test_create_invalid_default_class_falls_back_to_sensitive(self, monkeypatch) -> None:
+        monkeypatch.setenv("UMRS_PROJECT_DEFAULT_DATA_CLASS", "public")
+        store = ProjectStore(_Conn())
+        assert store.create("p-1", owner_id="alice")["data_class"] == "sensitive"
 
 
 class TestRoutes:

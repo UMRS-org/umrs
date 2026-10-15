@@ -215,9 +215,16 @@ class FakeSealed:
         return self.rows.get((owner, name))
 
 
-def _meta(name: str, *, tombstoned=None):
-    # provider_kind: pushed sources are public providers (ADR-062's class)
-    return SimpleNamespace(id=SRC_ID, name=name, tombstoned_at=tombstoned, provider_kind="openai")
+def _meta(name: str, *, tombstoned=None, allow_host: str | None = None):
+    # provider_kind: pushed sources are public providers (ADR-062's class).
+    # allow_host absent → a commercial public host (never institutional).
+    return SimpleNamespace(
+        id=SRC_ID,
+        name=name,
+        tombstoned_at=tombstoned,
+        provider_kind="openai",
+        allow_host=allow_host if allow_host is not None else "https://api.openai.com",
+    )
 
 
 class FakeJobStore:
@@ -996,3 +1003,46 @@ class TestDataClassGate:
             headers=H,
         )
         assert r.status_code == 200, r.text  # absent row → no gate (never invented)
+
+    def test_sensitive_project_admits_institutional_source(self, harness, monkeypatch):
+        """ADR-062 amendment (2026-10-15): an institutional host (the site's
+        allowlist — Rikyu by default) is NOT public for the venue-start gate,
+        even though the pushed source's provider_kind is."""
+        monkeypatch.delenv("UMRS_INSTITUTIONAL_PROVIDER_HOSTS", raising=False)
+        harness.pool.seed("alice", "sess-1")
+        harness.pool.projects = {"proj-s": "sensitive"}
+        harness.service._sealed = FakeSealed(
+            {
+                ("alice", "rikyu-main"): _meta(
+                    "rikyu-main", allow_host="https://api.rikyu.r-ccs.riken.jp"
+                )
+            }
+        )
+        r = harness.client.post(
+            "/umrs/companion/sessions/sess-1/venue/start",
+            json={"source_refs": ["rikyu-main"], "project": "proj-s"},
+            headers=H,
+        )
+        assert r.status_code == 200, r.text
+
+    def test_sensitive_project_institutional_env_replacement_refuses_rikyu(
+        self, harness, monkeypatch
+    ):
+        """The allowlist is the site's: emptied, even the Rikyu host is public."""
+        monkeypatch.setenv("UMRS_INSTITUTIONAL_PROVIDER_HOSTS", "")
+        harness.pool.seed("alice", "sess-1")
+        harness.pool.projects = {"proj-s": "sensitive"}
+        harness.service._sealed = FakeSealed(
+            {
+                ("alice", "rikyu-main"): _meta(
+                    "rikyu-main", allow_host="https://api.rikyu.r-ccs.riken.jp"
+                )
+            }
+        )
+        r = harness.client.post(
+            "/umrs/companion/sessions/sess-1/venue/start",
+            json={"source_refs": ["rikyu-main"], "project": "proj-s"},
+            headers=H,
+        )
+        assert r.status_code == 403
+        assert r.headers["x-platform-error-code"] == "companionvenue.source_class_refused"

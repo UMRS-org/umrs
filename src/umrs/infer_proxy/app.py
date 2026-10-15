@@ -37,7 +37,11 @@ from starlette.routing import Route
 from umrs.security.provider_url import _is_global_unicast as _ip_is_public
 from umrs.security.seal import SealedBlob, SealError, unseal_credential
 from umrs.security.sealed_sources import SealedSourceStore
-from umrs.shared.project_data_class import PUBLIC_PROVIDER_KINDS, data_class_for_project
+from umrs.shared.project_data_class import (
+    PUBLIC_PROVIDER_KINDS,
+    data_class_for_project,
+    is_institutional_url,
+)
 from umrs.shared.site_source import SITE_PATH_PREFIX, SITE_SOURCE_ID
 
 from . import site_models
@@ -256,6 +260,10 @@ def _source_class_refused(pool: Any, lease: Any, full: Any) -> bool:
     if not getattr(lease, "project", ""):
         return False
     if full.provider_kind not in PUBLIC_PROVIDER_KINDS:
+        return False
+    # ADR-062 amendment (2026-10-15): an institutional host (the site's
+    # allowlist — Rikyu by default) is admitted for sensitive projects.
+    if is_institutional_url(getattr(full, "allow_host", "")):
         return False
     return data_class_for_project(pool, lease.project) == "sensitive"
 
