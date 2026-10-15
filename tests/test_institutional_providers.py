@@ -16,7 +16,6 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
-
 from umrs.shared.project_data_class import (
     DEFAULT_INSTITUTIONAL_PROVIDER_HOSTS,
     institutional_provider_hosts,
