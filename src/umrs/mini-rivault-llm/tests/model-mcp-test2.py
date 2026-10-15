@@ -1,3 +1,5 @@
+import os
+
 from openai import OpenAI
 
 
@@ -6,7 +8,8 @@ def square_the_number(input_num: float) -> dict:
 
 
 client = OpenAI(
-    base_url="http://llm.ai.r-ccs.riken.jp:11434/v1", api_key="sk-ll-324kmjh8"
+    base_url="http://llm.ai.r-ccs.riken.jp:11434/v1",
+    api_key=os.environ["RCCS_LLM_API_KEY"],
 )
 
 tools = [
