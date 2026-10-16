@@ -32,17 +32,6 @@ from umrs.shared.project_data_class import (
     data_class_for_project,
     is_institutional_url,
 )
-
-
-def _gated_public_source(meta: Any) -> bool:
-    """ADR-062 + the 2026-10-15 amendment: public-kind and NOT institutional.
-
-    An institutional host (the site's allowlist — Rikyu by default) is
-    admitted for sensitive projects; commercial public hosts stay refused.
-    """
-    if getattr(meta, "provider_kind", "") not in PUBLIC_PROVIDER_KINDS:
-        return False
-    return not is_institutional_url(getattr(meta, "allow_host", ""))
 from umrs.shared.site_source import SITE_SOURCE_ID, SITE_SOURCE_NAME
 
 from .frontend_config import (
@@ -57,6 +46,17 @@ logger = logging.getLogger(__name__)
 
 MAX_SOURCE_REFS = 8
 JOB_TYPE = "frontend_session"
+
+
+def _gated_public_source(meta: Any) -> bool:
+    """ADR-062 + the 2026-10-15 amendment: public-kind and NOT institutional.
+
+    An institutional host (the site's allowlist — Rikyu by default) is
+    admitted for sensitive projects; commercial public hosts stay refused.
+    """
+    if getattr(meta, "provider_kind", "") not in PUBLIC_PROVIDER_KINDS:
+        return False
+    return not is_institutional_url(getattr(meta, "allow_host", ""))
 
 
 class JobSubmitter(Protocol):
@@ -408,7 +408,9 @@ class FrontendVenueService:
         """ADR-062 (D-51 gate, first seam): a SENSITIVE project's session
         must not reach public-kind inference sources — refuse by name at
         venue start (the project claim rides the start body; no claim →
-        no gate, the pre-gate behavior)."""
+        no gate, the pre-gate behavior). A source whose host is on the
+        site's institutional-provider allowlist is admitted (amendment
+        2026-10-15); in a mixed set only the other sources are refused."""
         if not project or not names:
             return
         data_class = data_class_for_project(self.pool, project)
@@ -430,7 +432,8 @@ class FrontendVenueService:
                 "project "
                 + project
                 + " is data_class=sensitive (ADR-062): public-kind sources "
-                "refused for its sessions — self-deployed models only "
+                "refused for its sessions — self-deployed models and the "
+                "site's institutional providers only "
                 "(offenders: " + ", ".join(public) + ")",
                 project=project,
                 data_class=data_class,

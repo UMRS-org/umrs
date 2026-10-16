@@ -133,7 +133,7 @@ class _FakeBroker:
         self.ops.append((operation, detail))
 
 
-def _make_fetch(priv_pub, *, provider_kind="openai"):
+def _make_fetch(priv_pub, *, provider_kind="openai", allow_host="https://api.example-provider.com"):
     pub, _priv = priv_pub
     blob = seal_credential(
         "sk-real-provider-key",
@@ -141,7 +141,7 @@ def _make_fetch(priv_pub, *, provider_kind="openai"):
         owner="alice",
         name="openai-main",
         provider_kind=provider_kind,
-        allow_host="https://api.example-provider.com",
+        allow_host=allow_host,
     )
     return type(
         "Fetch",
@@ -151,8 +151,8 @@ def _make_fetch(priv_pub, *, provider_kind="openai"):
             "owner": "alice",
             "name": "openai-main",
             "provider_kind": provider_kind,
-            "base_url": "https://api.example-provider.com/v1",
-            "allow_host": "https://api.example-provider.com",
+            "base_url": allow_host + "/v1",
+            "allow_host": allow_host,
             "allow_paths": (),
             "key_fingerprint": "sha256:deadbeef",
             "seal_key_id": blob.seal_key_id,
@@ -171,11 +171,12 @@ def _app(
     broker=None,
     pool=None,
     provider_kind: str = "openai",
+    allow_host: str = "https://api.example-provider.com",
 ):
     if lease is None:
         lease = _lease()
     priv, pub = generate_recipient_keypair()
-    fetch = _make_fetch((pub, priv), provider_kind=provider_kind)
+    fetch = _make_fetch((pub, priv), provider_kind=provider_kind, allow_host=allow_host)
     monkeypatch.setenv("UMRS_UNSEAL_PRIVKEY_B64", priv)
     monkeypatch.setattr("umrs.infer_proxy.app.lease_by_token", lambda _pool, _token: lease)
     monkeypatch.setattr(
@@ -481,3 +482,43 @@ class TestSourceClassGate:
             pool=_FakePool({}),
         )
         assert resp.status_code == 200
+
+    # ADR-062 amendment (2026-10-15) through the request path (F9 of the
+    # wave-2 review: the admission was only unit-tested at the helper).
+
+    def test_sensitive_admits_institutional_source_end_to_end(self, monkeypatch):
+        monkeypatch.delenv("UMRS_INSTITUTIONAL_PROVIDER_HOSTS", raising=False)
+        resp, seen, broker = self._chat(
+            monkeypatch,
+            lease=_lease(project="proj-s"),
+            pool=_FakePool({"proj-s": "sensitive"}),
+            allow_host="https://api.rikyu.r-ccs.riken.jp",
+        )
+        assert resp.status_code == 200, resp.text
+        # the upstream call really happened, to the institutional host
+        assert seen["headers"]["host"] == "api.rikyu.r-ccs.riken.jp"
+        assert not any(op == "deny" for op, _ in broker.ops)
+
+    def test_site_allowlist_decides_end_to_end(self, monkeypatch):
+        """The same Rikyu source is refused once the site empties the list,
+        and a site's own host (entry written as a URL with a trailing dot)
+        is admitted."""
+        monkeypatch.setenv("UMRS_INSTITUTIONAL_PROVIDER_HOSTS", "")
+        refused, _seen, _broker = self._chat(
+            monkeypatch,
+            lease=_lease(project="proj-s"),
+            pool=_FakePool({"proj-s": "sensitive"}),
+            allow_host="https://api.rikyu.r-ccs.riken.jp",
+        )
+        assert (refused.status_code, refused.json()["error"]) == (
+            403,
+            "source_class_refused",
+        )
+        monkeypatch.setenv("UMRS_INSTITUTIONAL_PROVIDER_HOSTS", "https://llm.example.ac.jp.")
+        admitted, _seen, _broker = self._chat(
+            monkeypatch,
+            lease=_lease(project="proj-s"),
+            pool=_FakePool({"proj-s": "sensitive"}),
+            allow_host="https://llm.example.ac.jp",
+        )
+        assert admitted.status_code == 200, admitted.text

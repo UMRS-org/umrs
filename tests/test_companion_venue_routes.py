@@ -1046,3 +1046,70 @@ class TestDataClassGate:
         )
         assert r.status_code == 403
         assert r.headers["x-platform-error-code"] == "companionvenue.source_class_refused"
+
+    def test_sensitive_project_mixed_set_refuses_only_the_commercial_source(
+        self, harness, monkeypatch
+    ):
+        """F9 (wave-2 review): an institutional and a commercial source in one
+        start — the refusal names the commercial source only, and the text
+        says which sources a sensitive project may use."""
+        monkeypatch.delenv("UMRS_INSTITUTIONAL_PROVIDER_HOSTS", raising=False)
+        harness.pool.seed("alice", "sess-1")
+        harness.pool.projects = {"proj-s": "sensitive"}
+        rikyu = _meta("rikyu-main", allow_host="https://api.rikyu.r-ccs.riken.jp")
+        rikyu.id = "22222222-2222-4222-8222-222222222222"
+        harness.service._sealed = FakeSealed(
+            {
+                ("alice", "rikyu-main"): rikyu,
+                ("alice", "openai-main"): _meta("openai-main"),
+            }
+        )
+        r = harness.client.post(
+            "/umrs/companion/sessions/sess-1/venue/start",
+            json={"source_refs": ["rikyu-main", "openai-main"], "project": "proj-s"},
+            headers=H,
+        )
+        assert r.status_code == 403
+        assert r.headers["x-platform-error-code"] == "companionvenue.source_class_refused"
+        detail = r.json()["detail"]
+        assert "(offenders: openai-main)" in detail
+        assert "rikyu-main" not in detail
+        assert "institutional" in detail  # F8: not "self-deployed models only"
+
+    def test_sensitive_project_trailing_dot_institutional_host_admitted(self, harness, monkeypatch):
+        """F6/F9: an allowlist entry written with a trailing dot and a scheme
+        still names the host; the pushed source's host matches it."""
+        monkeypatch.setenv("UMRS_INSTITUTIONAL_PROVIDER_HOSTS", "https://llm.example.ac.jp.")
+        harness.pool.seed("alice", "sess-1")
+        harness.pool.projects = {"proj-s": "sensitive"}
+        harness.service._sealed = FakeSealed(
+            {("alice", "inst-main"): _meta("inst-main", allow_host="https://llm.example.ac.jp")}
+        )
+        r = harness.client.post(
+            "/umrs/companion/sessions/sess-1/venue/start",
+            json={"source_refs": ["inst-main"], "project": "proj-s"},
+            headers=H,
+        )
+        assert r.status_code == 200, r.text
+
+    def test_sensitive_project_userinfo_host_is_never_institutional(self, harness, monkeypatch):
+        """F7/F9: a source whose stored host carries userinfo is refused even
+        when the allowlisted host appears after the '@' (fail closed)."""
+        monkeypatch.delenv("UMRS_INSTITUTIONAL_PROVIDER_HOSTS", raising=False)
+        harness.pool.seed("alice", "sess-1")
+        harness.pool.projects = {"proj-s": "sensitive"}
+        harness.service._sealed = FakeSealed(
+            {
+                ("alice", "odd-main"): _meta(
+                    "odd-main",
+                    allow_host="https://evil.example.com:x@api.rikyu.r-ccs.riken.jp",
+                )
+            }
+        )
+        r = harness.client.post(
+            "/umrs/companion/sessions/sess-1/venue/start",
+            json={"source_refs": ["odd-main"], "project": "proj-s"},
+            headers=H,
+        )
+        assert r.status_code == 403
+        assert "odd-main" in r.json()["detail"]

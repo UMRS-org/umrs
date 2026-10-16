@@ -13,6 +13,7 @@ advertises the effective list so r4 classifies the same way.
 
 from __future__ import annotations
 
+import logging
 from types import SimpleNamespace
 
 import pytest
@@ -34,9 +35,7 @@ class TestAllowlist:
         assert RIKYU in hosts
 
     def test_env_replaces_the_default(self, monkeypatch):
-        monkeypatch.setenv(
-            "UMRS_INSTITUTIONAL_PROVIDER_HOSTS", "llm.example.jp, other.example.jp"
-        )
+        monkeypatch.setenv("UMRS_INSTITUTIONAL_PROVIDER_HOSTS", "llm.example.jp, other.example.jp")
         hosts = institutional_provider_hosts()
         assert "llm.example.jp" in hosts
         assert "other.example.jp" in hosts
@@ -47,20 +46,155 @@ class TestAllowlist:
         assert institutional_provider_hosts() == frozenset()
 
 
+class TestAllowlistEntryNormalization:
+    """F6 (wave-2 review, 2026-10-16): an operator who writes an entry with
+    a scheme, a port, a trailing dot or IPv6 brackets means the bare host.
+    Before, such entries were stored verbatim and silently never matched."""
+
+    @pytest.fixture(autouse=True)
+    def _fresh_parse_cache(self):
+        # The parsed list is cached per raw value (one warning per value).
+        from umrs.shared import project_data_class
+
+        parse = getattr(project_data_class, "_parse_allowlist", None)
+        cache_clear = getattr(parse, "cache_clear", None)
+        if cache_clear:
+            cache_clear()
+        yield
+
+    @pytest.mark.parametrize(
+        "entry",
+        [
+            "https://api.rikyu.r-ccs.riken.jp",
+            "https://api.rikyu.r-ccs.riken.jp/v1",  # a pasted base URL
+            "HTTP://API.Rikyu.R-CCS.riken.jp:8443",
+            "api.rikyu.r-ccs.riken.jp:443",
+            "api.rikyu.r-ccs.riken.jp.",  # fully-qualified trailing dot
+            "API.RIKYU.R-CCS.RIKEN.JP.",
+        ],
+    )
+    def test_entry_shapes_normalize_to_the_bare_host(self, monkeypatch, entry):
+        monkeypatch.setenv("UMRS_INSTITUTIONAL_PROVIDER_HOSTS", entry)
+        assert institutional_provider_hosts() == frozenset({RIKYU})
+        assert is_institutional_url("https://api.rikyu.r-ccs.riken.jp/v1")
+
+    @pytest.mark.parametrize(
+        "entry,host",
+        [
+            ("[fd00::1]", "fd00::1"),
+            ("[FD00::1]:8443", "fd00::1"),
+            ("fd00:0:0::1", "fd00::1"),  # bare v6, canonical form
+            ("10.0.0.5:8000", "10.0.0.5"),
+        ],
+    )
+    def test_ip_entries_normalize(self, monkeypatch, entry, host):
+        monkeypatch.setenv("UMRS_INSTITUTIONAL_PROVIDER_HOSTS", entry)
+        assert institutional_provider_hosts() == frozenset({host})
+
+    @pytest.mark.parametrize(
+        ("entry", "shown", "why"),
+        [
+            # wildcards are not supported (exact match only)
+            ("*.riken.jp", "*.riken.jp", "wildcard"),
+            ("user@api.rikyu.r-ccs.riken.jp", "***@api.rikyu.r-ccs.riken.jp", "user name"),
+            (
+                "https://u:p@api.rikyu.r-ccs.riken.jp",
+                "https://***@api.rikyu.r-ccs.riken.jp",
+                "user name",
+            ),
+            # not an http(s) service
+            ("ftp://api.rikyu.r-ccs.riken.jp", "ftp://api.rikyu.r-ccs.riken.jp", "http(s)"),
+            ("api.rikyu.r-ccs.riken.jp:notaport", "api.rikyu.r-ccs.riken.jp:notaport", "host"),
+            (
+                "https://api.rikyu.r-ccs.riken.jp/?q=1",
+                "https://api.rikyu.r-ccs.riken.jp/***",
+                "query",
+            ),
+            ("https://", "https://", "host"),
+            ("bad..host.jp", "bad..host.jp", "host"),
+        ],
+    )
+    def test_unparseable_entries_are_ignored_with_a_warning(
+        self, monkeypatch, caplog, entry, shown, why
+    ):
+        monkeypatch.setenv("UMRS_INSTITUTIONAL_PROVIDER_HOSTS", f"llm.example.jp,{entry}")
+        with caplog.at_level(logging.WARNING, logger="umrs.shared.project_data_class"):
+            hosts = institutional_provider_hosts()
+        assert hosts == frozenset({"llm.example.jp"})  # the good entry stays
+        messages = [rec.getMessage() for rec in caplog.records]
+        assert any(f"'{shown}'" in m and why in m for m in messages), caplog.text
+
+    @pytest.mark.parametrize(
+        ("entry", "secret", "host"),
+        [
+            ("https://svc:DUMMY-PASSWORD@llm.example.ac.jp", "DUMMY-PASSWORD", "llm.example.ac.jp"),
+            ("svc:DUMMY-PASSWORD@llm.example.ac.jp", "DUMMY-PASSWORD", "llm.example.ac.jp"),
+            ("https://svc:DUMMY/PASS@llm.example.ac.jp", "DUMMY", "llm.example.ac.jp"),
+            ("https://svc:DUMMY?PASS@llm.example.ac.jp", "DUMMY", "llm.example.ac.jp"),
+            ("https://svc:DUMMY@PASS@llm.example.ac.jp", "DUMMY", "llm.example.ac.jp"),
+            ("ftp://svc:DUMMY-PASSWORD@llm.example.ac.jp", "DUMMY-PASSWORD", "llm.example.ac.jp"),
+            ("https://llm2.example.ac.jp/v1?api_key=DUMMY-KEY", "DUMMY-KEY", "llm2.example.ac.jp"),
+            ("https://llm2.example.ac.jp?api_key=DUMMY-KEY", "DUMMY-KEY", "llm2.example.ac.jp"),
+            (
+                "https://llm3.example.ac.jp/v1#token=DUMMY-TOKEN",
+                "DUMMY-TOKEN",
+                "llm3.example.ac.jp",
+            ),
+            ("ftp://llm4.example.ac.jp/DUMMY-PATH-TOKEN", "DUMMY-PATH-TOKEN", "llm4.example.ac.jp"),
+        ],
+    )
+    def test_warning_never_echoes_a_credential(self, monkeypatch, caplog, entry, secret, host):
+        # A rejected entry may be a URL with a password, an api_key query or
+        # a token path: the warning names the host so the operator can find
+        # the entry, and never writes the credential into the server logs.
+        monkeypatch.setenv("UMRS_INSTITUTIONAL_PROVIDER_HOSTS", f"ok.example.jp,{entry}")
+        with caplog.at_level(logging.WARNING, logger="umrs.shared.project_data_class"):
+            hosts = institutional_provider_hosts()
+        assert hosts == frozenset({"ok.example.jp"})
+        assert caplog.records, "the rejected entry must still be reported"
+        assert secret not in caplog.text
+        assert host in caplog.text
+
+    def test_warning_is_logged_once_per_value_not_per_request(self, monkeypatch, caplog):
+        # The lease gate reads the list on every proxied request.
+        monkeypatch.setenv("UMRS_INSTITUTIONAL_PROVIDER_HOSTS", "*.once.example.jp")
+        with caplog.at_level(logging.WARNING, logger="umrs.shared.project_data_class"):
+            for _ in range(5):
+                institutional_provider_hosts()
+        hits = [r for r in caplog.records if "*.once.example.jp" in r.getMessage()]
+        assert len(hits) == 1
+
+
 class TestUrlHost:
     @pytest.mark.parametrize(
         "url,host",
         [
             ("https://api.rikyu.r-ccs.riken.jp/v1", RIKYU),
             ("http://API.RIKYU.R-CCS.RIKEN.JP:8443/x", RIKYU),
-            ("https://user:pw@api.Example.com:443/v1", "api.example.com"),
             ("api.rikyu.r-ccs.riken.jp", RIKYU),  # scheme-less allow_host
+            ("https://api.rikyu.r-ccs.riken.jp./v1", RIKYU),  # trailing dot
             ("[::1]:8080/v1", "::1"),
             ("", ""),
         ],
     )
     def test_host_shapes(self, url, host):
         assert url_host(url) == host
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            # F7: userinfo can make a URL parser and a connect parser
+            # disagree on the host — fail closed, never a host.
+            "https://user:pw@api.Example.com:443/v1",
+            "https://evil.example.com:x@api.rikyu.r-ccs.riken.jp",
+            "https://api.rikyu.r-ccs.riken.jp@evil.example.com",
+            "api.rikyu.r-ccs.riken.jp@evil.example.com",
+            # not an http(s) service
+            "ftp://api.rikyu.r-ccs.riken.jp",
+        ],
+    )
+    def test_userinfo_or_foreign_scheme_has_no_host(self, url):
+        assert url_host(url) == ""
 
     @pytest.mark.parametrize(
         "url,expected",
@@ -72,6 +206,10 @@ class TestUrlHost:
             ("https://api.openai.com", False),
             ("", False),
             ("127.0.0.1:11434", False),  # loopback is local, not institutional
+            ("https://api.rikyu.r-ccs.riken.jp.", True),  # trailing dot, same host
+            ("https://api.rikyu.r-ccs.riken.jp.evil.example.com", False),
+            ("https://evil.example.com:x@api.rikyu.r-ccs.riken.jp", False),  # userinfo
+            ("https://api.rikyu.r-ccs.riken.jp@evil.example.com", False),
         ],
     )
     def test_classification(self, monkeypatch, url, expected):
@@ -132,9 +270,7 @@ class TestLeaseGateInstitutional:
         else:
             monkeypatch.setenv("UMRS_INSTITUTIONAL_PROVIDER_HOSTS", env)
         lease = SimpleNamespace(project=project)
-        return _source_class_refused(
-            _FakePool({project: "sensitive"}), lease, _full(allow_host)
-        )
+        return _source_class_refused(_FakePool({project: "sensitive"}), lease, _full(allow_host))
 
     def test_institutional_admitted_for_sensitive(self, monkeypatch):
         assert self._refused(monkeypatch, "https://api.rikyu.r-ccs.riken.jp") is False
@@ -144,9 +280,7 @@ class TestLeaseGateInstitutional:
 
     def test_env_replacement_can_refuse_rikyu(self, monkeypatch):
         # A site that runs no institutional service empties the list.
-        assert (
-            self._refused(monkeypatch, "https://api.rikyu.r-ccs.riken.jp", env="") is True
-        )
+        assert self._refused(monkeypatch, "https://api.rikyu.r-ccs.riken.jp", env="") is True
 
 
 # ── connect-info advertises the list ────────────────────────────────────────
@@ -176,3 +310,33 @@ class TestConnectInfoAdvertisesAllowlist:
         result = ops.ops_connect_info(x_user_id=None)
         parsed = ops.ConnectInfoResponse(**result)
         assert parsed.institutional_provider_hosts == [RIKYU]
+
+
+# ── module texts and shape (F4/F8 of the wave-2 review) ─────────────────────
+
+
+class TestGateModuleTexts:
+    def test_venue_gate_module_has_no_import_after_a_definition(self):
+        """F4: the gate helper sat inside the import block (E402)."""
+        import ast
+        import inspect
+
+        import umrs.venues.frontend_service as mod
+
+        body = ast.parse(inspect.getsource(mod)).body
+        first_def = next(
+            i for i, node in enumerate(body) if isinstance(node, (ast.FunctionDef, ast.ClassDef))
+        )
+        late = [
+            node.lineno
+            for node in body[first_def:]
+            if isinstance(node, (ast.Import, ast.ImportFrom))
+        ]
+        assert late == []
+
+    def test_proxy_docstring_names_the_institutional_exemption(self):
+        """F8: the request-flow summary (step 2) predated the amendment."""
+        import umrs.infer_proxy.app as app
+
+        step2 = app.__doc__.split("  3.")[0].split("  2.")[1]
+        assert "institutional" in step2
