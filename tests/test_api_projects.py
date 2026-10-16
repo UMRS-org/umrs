@@ -39,6 +39,30 @@ class _Cursor:
         return out
 
 
+# The projects columns in table order; the fake stores full rows and returns
+# only what a SELECT names (TV-1: a fake that returned full rows let a
+# reverted 7-column listing SELECT pass).
+_COLUMNS = (
+    "project_id",
+    "name",
+    "owner_id",
+    "status",
+    "retired_at",
+    "created_at",
+    "updated_at",
+    "data_class",
+    "ask_mode",
+    "pause_triggers",
+)
+
+
+def _project(sql: str, row: tuple) -> tuple:
+    """The stored row reduced to the SELECT's column list, in its order."""
+    selected = sql.split("SELECT", 1)[1].split("FROM", 1)[0]
+    names = [c.strip() for c in selected.split(",") if c.strip()]
+    return tuple(row[_COLUMNS.index(name)] for name in names)
+
+
 class _Conn:
     """psycopg-shaped fake — rows flow from _project_id/PK read."""
 
@@ -48,12 +72,21 @@ class _Conn:
     def cursor(self):
         return _Cursor(self)
 
-    def _handle_insert(self, params, cur: _Cursor):
+    def _handle_insert(self, sql, params, cur: _Cursor):
         pid, name, owner = params[:3]
         # INSERT may carry data_class as a 4th param (ADR-062 amendment:
         # the deployment's default class for NEW rows).
         data_class = params[3] if len(params) > 3 else "sensitive"
-        if pid not in self.rows:
+        if pid in self.rows:
+            # Postgres semantics on a primary-key conflict (TV-3).
+            if "DO NOTHING" in sql:
+                pass
+            elif "DO UPDATE" in sql:
+                old = self.rows[pid]
+                self.rows[pid] = old[:7] + (data_class,) + old[8:]
+            else:
+                raise RuntimeError("duplicate key value violates unique constraint")
+        else:
             self.rows[pid] = (pid, name, owner, "active", None, None, None, data_class, "", "[]")
         cur._result = []
 
@@ -85,28 +118,28 @@ class _Conn:
             self.rows[params[-1]] = (pid, name, owner, "retired", now, r2, now, dc, am, pt)
         cur._result = []
 
-    def _handle_select_by_id(self, params, cur: _Cursor):
+    def _handle_select_by_id(self, sql, params, cur: _Cursor):
         pid = params[0]
         row = self.rows.get(pid)
-        cur._result = [row] if row else []
+        cur._result = [_project(sql, row)] if row else []
 
-    def _handle_select_ordered(self, params, cur: _Cursor):
+    def _handle_select_ordered(self, sql, params, cur: _Cursor):
         owner_filter = next((params[0] for row in params if isinstance(row, str)), None)
         rows = [v for v in self.rows.values() if v[3] != "retired"]
         if owner_filter:
             rows = [v for v in rows if v[2] == owner_filter]
-        cur._result = rows
+        cur._result = [_project(sql, v) for v in rows]
 
     def _handle(self, sql, params, cur: _Cursor):
         verb = sql.lstrip().upper()
         if verb.startswith("INSERT"):
-            self._handle_insert(params, cur)
+            self._handle_insert(sql, params, cur)
         elif verb.startswith("UPDATE"):
             self._handle_update(sql, params, cur)
         elif "WHERE project_id = %s" in sql:
-            self._handle_select_by_id(params, cur)
+            self._handle_select_by_id(sql, params, cur)
         elif "ORDER BY created_at" in sql:
-            self._handle_select_ordered(params, cur)
+            self._handle_select_ordered(sql, params, cur)
         else:
             cur._result = []
 
@@ -165,12 +198,15 @@ class TestStoreLifecycle:
 
     def test_list_carries_the_real_data_class(self) -> None:
         """S2 (2026-10-15): the listing selected 7 columns, so every listed
-        project reported the `_row_response` default 'sensitive'."""
+        project reported the `_row_response` default 'sensitive'. The fake
+        returns only the SELECTed columns, so reverting the SELECT fails."""
         store = ProjectStore(_Conn())
         store.create("p-1", owner_id="alice")
         store.set_data_class("p-1", "non_sensitive")
+        store.set_ask_policy("p-1", "profile", ["cost"])
         mine = store.list(owner="alice")
         assert mine[0]["data_class"] == "non_sensitive"
+        assert (mine[0]["ask_mode"], mine[0]["pause_triggers"]) == ("profile", ["cost"])
 
     def test_create_honours_the_deployment_default_class(self, monkeypatch) -> None:
         """ADR-062 amendment D-4: stand-alone sets
@@ -180,6 +216,38 @@ class TestStoreLifecycle:
         store = ProjectStore(_Conn())
         row = store.create("p-1", owner_id="alice")
         assert row["data_class"] == "non_sensitive"
+
+    def test_deployment_default_never_widens_an_existing_row(self, monkeypatch) -> None:
+        """TV-3 (D-4): a row created before the stand-alone default was set
+        keeps its class when create() is called again with the default."""
+        monkeypatch.delenv("UMRS_PROJECT_DEFAULT_DATA_CLASS", raising=False)
+        store = ProjectStore(_Conn())
+        assert store.create("p-old", owner_id="alice")["data_class"] == "sensitive"
+        monkeypatch.setenv("UMRS_PROJECT_DEFAULT_DATA_CLASS", "non_sensitive")
+        assert store.create("p-old", owner_id="alice")["data_class"] == "sensitive"
+        assert store.get("p-old")["data_class"] == "sensitive"
+        # ... while a NEW row in the same deployment takes the default.
+        assert store.create("p-new", owner_id="alice")["data_class"] == "non_sensitive"
+
+    def test_deployment_default_never_widens_a_concurrently_created_row(self, monkeypatch) -> None:
+        """TV-3: the row appears between create()'s existence check and its
+        INSERT (another request won the race); the INSERT must not rewrite
+        that row's class (ON CONFLICT DO NOTHING, never DO UPDATE)."""
+        monkeypatch.setenv("UMRS_PROJECT_DEFAULT_DATA_CLASS", "non_sensitive")
+
+        class _RacingConn(_Conn):
+            def _handle(self, sql, params, cur):
+                if sql.lstrip().upper().startswith("INSERT"):
+                    self.rows.setdefault(
+                        params[0],
+                        (params[0], "", "bob", "active", None, None, None, "sensitive", "", "[]"),
+                    )
+                super()._handle(sql, params, cur)
+
+        store = ProjectStore(_RacingConn())
+        row = store.create("p-race", owner_id="alice")
+        assert row["data_class"] == "sensitive"
+        assert row["owner_id"] == "bob"  # the winner's row, untouched
 
     def test_create_default_class_stays_sensitive_on_sites(self, monkeypatch) -> None:
         monkeypatch.delenv("UMRS_PROJECT_DEFAULT_DATA_CLASS", raising=False)
@@ -360,6 +428,95 @@ class TestDataClass:
             headers=_headers("alice"),
         )
         assert r.status_code == 400
+
+    @pytest.fixture
+    def audit_events(self, monkeypatch) -> list[tuple[str, dict]]:
+        """The audit emitter, captured (projects.py imports it per call)."""
+        from umrs.api import audit_events
+
+        events: list[tuple[str, dict]] = []
+        monkeypatch.setattr(
+            audit_events, "emit_audit", lambda event, **kw: events.append((event, kw))
+        )
+        return events
+
+    def test_widening_is_audited_with_the_actor(self, audit_events) -> None:
+        """R4-4 / spec F3: ADR-062 asks that widening be attributable; the
+        CLI tells the owner the act is recorded with their identity."""
+        store = ProjectStore(_Conn())
+        store.create("proj-dc", owner_id="alice")
+        r = _client(store).patch(
+            "/umrs/projects/proj-dc",
+            json={"action": "set_data_class", "data_class": "non_sensitive"},
+            headers=_headers("alice"),
+        )
+        assert r.status_code == 200
+        ((event, kw),) = audit_events
+        assert event == "project.data_class_changed"
+        assert (kw["actor"], kw["project_id"], kw["outcome"]) == ("alice", "proj-dc", "success")
+        assert kw["details"] == {
+            "from_class": "sensitive",
+            "to_class": "non_sensitive",
+            "widening": True,
+            "owner_id": "alice",
+            "by_admin": False,
+        }
+
+    def test_admin_change_names_the_admin_not_the_owner(self, audit_events) -> None:
+        store = ProjectStore(_Conn())
+        store.create("proj-dc", owner_id="alice")
+        store.set_data_class("proj-dc", "non_sensitive")
+        r = _client(store).patch(
+            "/umrs/projects/proj-dc",
+            json={"action": "set_data_class", "data_class": "sensitive"},
+            headers=_headers("root", admin=True),
+        )
+        assert r.status_code == 200
+        ((_event, kw),) = audit_events
+        assert kw["actor"] == "root"
+        assert kw["details"] == {
+            "from_class": "non_sensitive",
+            "to_class": "sensitive",
+            "widening": False,
+            "owner_id": "alice",
+            "by_admin": True,
+        }
+
+    def test_refused_change_emits_no_event(self, audit_events) -> None:
+        store = ProjectStore(_Conn())
+        store.create("proj-dc", owner_id="alice")
+        client = _client(store)
+        forbidden = client.patch(
+            "/umrs/projects/proj-dc",
+            json={"action": "set_data_class", "data_class": "non_sensitive"},
+            headers=_headers("mallory"),
+        )
+        bad_value = client.patch(
+            "/umrs/projects/proj-dc",
+            json={"action": "set_data_class", "data_class": "public"},
+            headers=_headers("alice"),
+        )
+        assert (forbidden.status_code, bad_value.status_code) == (403, 400)
+        assert audit_events == []
+        assert store.get("proj-dc")["data_class"] == "sensitive"
+
+    def test_audit_record_reaches_the_audit_log(self, monkeypatch) -> None:
+        """Through the real emitter: the record lands in the audit trail
+        (the ring buffer here; the sidecar adds a persistent store)."""
+        from umrs.api import audit_events
+        from umrs.api.audit_events import query_audit_events
+
+        monkeypatch.setattr(audit_events, "_audit_store", None)
+        store = ProjectStore(_Conn())
+        store.create("proj-audit", owner_id="carol-audit")
+        _client(store).patch(
+            "/umrs/projects/proj-audit",
+            json={"action": "set_data_class", "data_class": "non_sensitive"},
+            headers=_headers("carol-audit"),
+        )
+        found = query_audit_events(event="project.data_class_changed", actor="carol-audit")
+        assert found and found[0]["project_id"] == "proj-audit"
+        assert found[0]["details"]["to_class"] == "non_sensitive"
 
     def test_get_carries_the_class(self) -> None:
         store = ProjectStore(_Conn())
