@@ -652,6 +652,27 @@ def create_db(sql_username, xp_name, username=None):
     return winner, db_name
 
 
+# One cluster-wide advisory-lock key ("umrsboot") for the servers' startup
+# bootstrap. Every umrs-server-<front> on a host shares one Postgres and one
+# umrs_server_db_user role; started together (a full converge), concurrent
+# ALTER USER on that role failed "tuple concurrently updated" and the loser
+# crashed in create_umrs_server_db_user (ops-watch #469/#472, 2026-10-16).
+SERVER_BOOTSTRAP_LOCK_KEY = 0x756D7273626F6F74
+
+
+@contextlib.contextmanager
+def _server_bootstrap_lock(superuser_conn):
+    """Hold the bootstrap lock on *superuser_conn* (a session-level lock;
+    closing the connection would also release it)."""
+    with superuser_conn.cursor() as cur:
+        cur.execute("SELECT pg_advisory_lock(%s);", (SERVER_BOOTSTRAP_LOCK_KEY,))
+    try:
+        yield
+    finally:
+        with superuser_conn.cursor() as cur:
+            cur.execute("SELECT pg_advisory_unlock(%s);", (SERVER_BOOTSTRAP_LOCK_KEY,))
+
+
 def _ensure_umrs_db(superuser_conn, db_name: str) -> None:
     """Create the umrs database if it does not already exist.
 
@@ -700,47 +721,50 @@ def create_umrs_server_db_user():
     )
     conn.autocommit = True
     try:
-        # Create the umrs database before any GRANT (connection to it would fail otherwise)
-        _ensure_umrs_db(conn, DB_NAME)
+        with _server_bootstrap_lock(conn):
+            # Create the umrs database before any GRANT (connection to it would fail otherwise)
+            _ensure_umrs_db(conn, DB_NAME)
 
-        if db_user_exists(conn, DB_USER):
-            logger.info(f"==> DB user '{DB_USER}' already exists — updating password.")
-            with conn.cursor() as cur:
-                cur.execute(
-                    sql.SQL("ALTER USER {} WITH PASSWORD %s;").format(
-                        sql.Identifier(DB_USER)
-                    ),
-                    (DB_UMRS_SERVER_PASSWORD,),
+            if db_user_exists(conn, DB_USER):
+                logger.info(
+                    f"==> DB user '{DB_USER}' already exists — updating password."
                 )
-        else:
-            with conn.cursor() as cur:
-                cur.execute(
-                    sql.SQL("CREATE USER {} WITH PASSWORD %s;").format(
-                        sql.Identifier(DB_USER)
-                    ),
-                    (DB_UMRS_SERVER_PASSWORD,),
-                )
-            logger.info(f"==> DB user '{DB_USER}' created.")
-
-        # Grant permission to create tables in the umrs database
-        with psycopg2.connect(
-            dbname=DB_NAME,
-            user=DB_SUPERUSER,
-            password=DB_SUPERUSER_PASSWORD,
-            host=DB_HOST,
-            port=DB_PORT,
-            **pg_connect_kwargs("admin"),
-        ) as conn_umrs:
-            conn_umrs.autocommit = True
-            with conn_umrs.cursor() as cur:
-                cur.execute(
-                    sql.SQL("GRANT CREATE ON SCHEMA public TO {};").format(
-                        sql.Identifier(DB_USER)
+                with conn.cursor() as cur:
+                    cur.execute(
+                        sql.SQL("ALTER USER {} WITH PASSWORD %s;").format(
+                            sql.Identifier(DB_USER)
+                        ),
+                        (DB_UMRS_SERVER_PASSWORD,),
                     )
+            else:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        sql.SQL("CREATE USER {} WITH PASSWORD %s;").format(
+                            sql.Identifier(DB_USER)
+                        ),
+                        (DB_UMRS_SERVER_PASSWORD,),
+                    )
+                logger.info(f"==> DB user '{DB_USER}' created.")
+
+            # Grant permission to create tables in the umrs database
+            with psycopg2.connect(
+                dbname=DB_NAME,
+                user=DB_SUPERUSER,
+                password=DB_SUPERUSER_PASSWORD,
+                host=DB_HOST,
+                port=DB_PORT,
+                **pg_connect_kwargs("admin"),
+            ) as conn_umrs:
+                conn_umrs.autocommit = True
+                with conn_umrs.cursor() as cur:
+                    cur.execute(
+                        sql.SQL("GRANT CREATE ON SCHEMA public TO {};").format(
+                            sql.Identifier(DB_USER)
+                        )
+                    )
+                logger.info(
+                    f"==> GRANT CREATE ON SCHEMA public → '{DB_USER}' in '{DB_NAME}'."
                 )
-            logger.info(
-                f"==> GRANT CREATE ON SCHEMA public → '{DB_USER}' in '{DB_NAME}'."
-            )
     finally:
         conn.close()
 
