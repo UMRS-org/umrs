@@ -356,6 +356,44 @@ def _authorize_patch(row: dict[str, Any], action: str, identity: Any) -> None:
         )
 
 
+def _set_data_class_audited(
+    store: ProjectStore, row: dict[str, Any], body: ProjectPatchBody, identity: Any
+) -> dict[str, Any]:
+    """'set_data_class' (ADR-062): write the class and audit the act.
+
+    Widening must be attributable: the audit trail records who changed the
+    class (owner or admin), on whose project, from which class to which.
+    """
+    data_class = str(body.data_class or "").strip()
+    if data_class not in ("sensitive", "non_sensitive"):
+        raise_typed(
+            PlatformError.projects(
+                "bad_request",
+                "set_data_class requires 'sensitive' or 'non_sensitive'",
+            )
+        )
+    before = str(row.get("data_class") or "sensitive")
+    updated = store.set_data_class(row["project_id"], data_class)
+    from .audit_events import emit_audit
+
+    actor = (identity.user_id or "").strip()
+    emit_audit(
+        "project.data_class_changed",
+        actor=actor,
+        project_id=row["project_id"],
+        outcome="success",
+        scope="project",
+        details={
+            "from_class": before,
+            "to_class": data_class,
+            "widening": before == "sensitive" and data_class == "non_sensitive",
+            "owner_id": row["owner_id"],
+            "by_admin": bool(identity.is_admin) and actor != row["owner_id"],
+        },
+    )
+    return updated
+
+
 def _row_response(row: dict[str, Any]) -> dict[str, Any]:
     from umrs.knowledge.ask_policy import stage_for
 
@@ -462,15 +500,7 @@ def patch_project(
         row = store.set_ask_policy(project_id, ask_mode, triggers)
         return {"status": "ok", "project": _row_response(row)}
     if body.action == "set_data_class":
-        data_class = str(body.data_class or "").strip()
-        if data_class not in ("sensitive", "non_sensitive"):
-            raise_typed(
-                PlatformError.projects(
-                    "bad_request",
-                    "set_data_class requires 'sensitive' or 'non_sensitive'",
-                )
-            )
-        row = store.set_data_class(project_id, data_class)
+        row = _set_data_class_audited(store, row, body, identity)
         return {"status": "ok", "project": _row_response(row)}
     row = store.retire(project_id)
     return {"status": "ok", "project": _row_response(row)}
