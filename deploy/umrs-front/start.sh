@@ -311,19 +311,31 @@ if [[ "$START_MODE" != "--server" ]]; then
     # Create AI4S database if it doesn't exist (container-first)
     _pg_cmd() { podman exec umrs-postgres psql -U "${POSTGRES_USER:-umrs}" "$@" 2>/dev/null || \
                 PGPASSWORD="${POSTGRES_PASSWORD}" psql -h 127.0.0.1 -p "${POSTGRES_PORT:-5432}" -U "${POSTGRES_USER:-umrs}" "$@" 2>/dev/null; }
-    _pg_cmd -d postgres -tc "SELECT 1 FROM pg_database WHERE datname='${POSTGRES_DB_AI4S:-umrs_ai4s}'" \
-        | grep -q 1 || \
-    _pg_cmd -d postgres -c "CREATE DATABASE ${POSTGRES_DB_AI4S:-umrs_ai4s};" || true
-
-    # Create bdrt database if it doesn't exist (container-first)
-    _pg_cmd -d postgres -tc "SELECT 1 FROM pg_database WHERE datname='${POSTGRES_DB_BDRT:-front_bdrt}'" \
-        | grep -q 1 || \
-    _pg_cmd -d postgres -c "CREATE DATABASE ${POSTGRES_DB_BDRT:-front_bdrt};" || true
-
-    # Create octopus database if it doesn't exist (container-first)
-    _pg_cmd -d postgres -tc "SELECT 1 FROM pg_database WHERE datname='${POSTGRES_DB_OCTOPUS:-front_octopus}'" \
-        | grep -q 1 || \
-    _pg_cmd -d postgres -c "CREATE DATABASE ${POSTGRES_DB_OCTOPUS:-front_octopus};" || true
+    # Create a front database only when the existence check itself succeeded
+    # and found no row. A check that failed (Postgres still in crash recovery
+    # after an unclean stop, podman exec racing the container) used to fall
+    # through to CREATE DATABASE and log "database ... already exists"
+    # (ops-watch #468, 2026-10-16). The check is retried; if it keeps failing,
+    # the server's own _ensure_umrs_db creates a missing database at start.
+    _ensure_front_db() {
+        local db="$1" found="" checked=0
+        for _ in 1 2 3 4 5; do
+            if found=$(_pg_cmd -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname='${db}'"); then
+                checked=1
+                break
+            fi
+            sleep 2
+        done
+        if [[ "$checked" != 1 ]]; then
+            echo "  WARNING: could not check database ${db}; leaving its creation to the server"
+            return 0
+        fi
+        [[ "$found" == "1" ]] && return 0
+        _pg_cmd -d postgres -c "CREATE DATABASE ${db};" || true
+    }
+    _ensure_front_db "${POSTGRES_DB_AI4S:-umrs_ai4s}"
+    _ensure_front_db "${POSTGRES_DB_BDRT:-front_bdrt}"
+    _ensure_front_db "${POSTGRES_DB_OCTOPUS:-front_octopus}"
 
     # Ensure pgvector extension in all databases
     for db in "${POSTGRES_DB_RCCS:-front_rccs}" "${POSTGRES_DB_AI4S:-front_ai4s}" "${POSTGRES_DB_BDRT:-front_bdrt}" "${POSTGRES_DB_OCTOPUS:-front_octopus}"; do
