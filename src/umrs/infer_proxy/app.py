@@ -6,7 +6,10 @@ Starlette ASGI service. Per request:
      (session/sid/ip/source).
   2. Source-class gate (ADR-062/D-51): a lease whose project is
      ``data_class=sensitive`` never reaches a public-kind source —
-     403 ``source_class_refused`` (no project claim → no gate).
+     403 ``source_class_refused`` (no project claim → no gate) — unless
+     the source's host is on the site's institutional-provider allowlist
+     (``UMRS_INSTITUTIONAL_PROVIDER_HOSTS``, Rikyu by default; ADR-062
+     amendment 2026-10-15), which a sensitive project may use.
   3. Path policy per provider kind; 403 path_denied with audit on miss.
   4. Unseal the provider key (private half lives only here).
   5. Re-resolve allow_host, reject non-global IPs; strip all inbound
