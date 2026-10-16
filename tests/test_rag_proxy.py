@@ -38,7 +38,7 @@ def _create_client(registry: EndpointRegistry) -> TestClient:
     return TestClient(app)
 
 
-def _mock_rag_response(content: dict, status_code: int = 200):
+def _mock_rag_response(content: dict | list, status_code: int = 200):
     import httpx
 
     return httpx.Response(
@@ -181,6 +181,53 @@ def test_list_documents_endpoint():
             headers={"x-user-id": "user-1", "x-project-id": "test-project"},
         )
 
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+def _list_documents_with_upstream(payload):
+    client = _create_client(_make_registry_with_endpoint())
+
+    async def fake_get(self, url, **kwargs):
+        return _mock_rag_response(payload)
+
+    import httpx
+
+    with patch.object(httpx.AsyncClient, "get", fake_get):
+        return client.get(
+            "/umrs/rag/documents",
+            headers={"x-user-id": "user-1", "x-project-id": "test-project"},
+        )
+
+
+def test_list_documents_reads_the_rag_service_list_shape():
+    """The rag service's GET /rag/documents answers a bare list
+    (response_model=list[GatewayDocumentInfo], rag_service.py). The proxy read
+    `.get("documents")` from it and answered 500 with "'list' object has no
+    attribute 'get'" (ops-watch #470, umrs-server-rccs, 2026-10-16)."""
+    response = _list_documents_with_upstream([])
+    assert response.status_code == 200
+    assert response.json() == []
+
+    response = _list_documents_with_upstream(
+        [{"document_id": "d1", "filename": "a.pdf", "chunks": 3}]
+    )
+    assert response.status_code == 200
+    assert response.json() == [
+        {
+            "document_id": "d1",
+            "filename": "a.pdf",
+            "project_id": "test-project",
+            "chunks": 3,
+            "metadata": {},
+        }
+    ]
+
+
+def test_list_documents_tolerates_an_unexpected_upstream_body():
+    """Neither a list nor a {"documents": [...]} envelope: an empty listing,
+    never a 500 from inside the proxy."""
+    response = _list_documents_with_upstream({"status": "ok"})
     assert response.status_code == 200
     assert response.json() == []
 
