@@ -764,6 +764,18 @@ async def _upload_via_endpoint(
         )
 
 
+def _documents_from(payload: Any) -> list[dict[str, Any]]:
+    """The rag service answers GET /rag/documents with a bare list
+    (``response_model=list[GatewayDocumentInfo]``); an older envelope
+    ``{"documents": [...]}`` is still accepted. Anything else lists nothing
+    (ops-watch #470, 2026-10-16: the proxy read ``.get`` from the list)."""
+    if isinstance(payload, dict):
+        payload = payload.get("documents", [])
+    if not isinstance(payload, list):
+        return []
+    return [doc for doc in payload if isinstance(doc, dict)]
+
+
 @router.get("/documents", response_model=list[DocumentInfo])
 async def list_documents(
     request: Request,
@@ -787,7 +799,7 @@ async def list_documents(
                     detail=f"Failed to list documents: {response.text}",
                 )
 
-            documents = response.json().get("documents", [])
+            documents = _documents_from(response.json())
             return [
                 DocumentInfo(
                     document_id=doc.get("document_id", ""),
