@@ -31,7 +31,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import json
 import logging
 import os
 import re
@@ -203,6 +202,25 @@ def _refuse_cpu_venue_on_frontend_rail(
         )
 
 
+def _checked_start_project(request: Request, requested: str) -> str:
+    """The session's project: one the verified caller may write (the start's
+    project becomes the job's and the lease's, hence the rail identity and the
+    ADR-062 data-class gate; it was honoured unchecked, H-1 2026-10-17)."""
+    from umrs.knowledge.access_scope import writable_project_for
+
+    from ._scope_identity import request_caller_scope
+
+    project = writable_project_for(requested, request_caller_scope(request))
+    if project is None:
+        raise_typed(
+            PlatformError.companionvenue(
+                "forbidden",
+                f"no write access to project {requested!r} for this session",
+            )
+        )
+    return project
+
+
 @router.post("/{session_id}/venue/start", response_model=dict[str, Any])
 async def start_venue(
     session_id: str, body: VenueStartBody, request: Request
@@ -214,6 +232,7 @@ async def start_venue(
     uid = _uid(request)
     _pool(request)
     _refuse_cpu_venue_on_frontend_rail(request, uid, session_id)
+    project = _checked_start_project(request, body.project)
     service = get_venue_service(request)
     try:
         return await asyncio.to_thread(
@@ -224,7 +243,7 @@ async def start_venue(
             default_source=body.default_source,
             web_policy=body.web_policy,
             web_allow_domains=body.web_allow_domains,
-            project=body.project,
+            project=project,
         )
     except VenueError as exc:
         _typed(exc)
@@ -458,35 +477,18 @@ def _lease_project(principal: RailPrincipal) -> str:
     return str(getattr(principal.lease, "project", "") or "").strip()
 
 
-def _snapshot_detail(request: Request, principal: RailPrincipal) -> dict[str, Any]:
-    pool = getattr(request.app.state, "umrs_db_pool", None)
-    if pool is None:
-        return {}
-    conn = pool.getconn()
-    try:
-        return snapshot_detail_row(conn, principal.owner, principal.session_id) or {}
-    finally:
-        pool.putconn(conn)
-
-
-def _snapshot_project(detail: dict[str, Any]) -> str:
-    try:
-        payload = json.loads(detail.get("payload") or "{}")
-        metadata = payload.get("metadata")
-        if isinstance(metadata, str):
-            metadata = json.loads(metadata)
-        config = (metadata or {}).get("config") or {}
-        return str(config.get("project_id") or "").strip()
-    except (TypeError, ValueError, AttributeError):
-        return ""
-
-
 def rail_project_for(principal: RailPrincipal, request: Request) -> str:
-    """Project the sandbox acts in: the lease's project (session config at
-    start), else the snapshot's recorded project, else the deployment default."""
+    """Project the sandbox acts in: the lease's project, checked when the
+    lease was issued, else the deployment default.
+
+    The session snapshot's recorded project was a fallback, but the client
+    writes that snapshot, so it could name any project and the rail minted
+    signed identity for it (H-1, 2026-10-17). Leases now always carry the
+    checked project; the default only covers leases issued before the fix.
+    """
+    del request  # kept for the route's call shape
     return (
         _lease_project(principal)
-        or _snapshot_project(_snapshot_detail(request, principal))
         or os.environ.get("JWT_DEFAULT_PROJECT", "default").strip()
         or "default"
     )
