@@ -548,9 +548,12 @@ def _passes_verify_hmac(instructions: list[dis.Instruction], consts: tuple[Any, 
     """
     for index, ins in enumerate(instructions):
         names = _kwnames(ins, consts)
-        if names and "verify_hmac" in names:
-            if _constant_keyword(instructions, index, names, "verify_hmac") is True:
-                return True
+        if (
+            names
+            and "verify_hmac" in names
+            and _constant_keyword(instructions, index, names, "verify_hmac") is True
+        ):
+            return True
     return False
 
 
