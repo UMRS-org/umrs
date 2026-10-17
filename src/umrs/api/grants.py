@@ -40,12 +40,24 @@ class GrantBody(BaseModel):
 
 
 def _caller(request: Request) -> CallerScope:
-    uid = request.headers.get("x-user-id", "").strip()
-    if not uid:
+    """The HMAC-verified caller (H-1, 2026-10-18).
+
+    The identity headers were read raw, so a direct sidecar caller could
+    claim any user, project or admin. Strict mode answers 401 to an unsigned
+    or forged tuple; mvp keeps the dev contract (a bare ``X-User-ID``, and
+    the legacy ``X-Project-ID`` is never taken as the caller's project),
+    except that admin now needs ``X-Verified-Project-ID``: a bare
+    ``X-Verified-Is-Admin`` flag no longer makes the caller an admin.
+    """
+    from ._identity import request_identity
+
+    identity = request_identity(request, require_project=False, verify_hmac=True)
+    if not identity.user_id:
         raise_typed(PlatformError.grants("unauthorized", "identity header missing"))
-    pid = request.headers.get("x-verified-project-id", "").strip()
-    admin = request.headers.get("x-verified-is-admin", "").strip() in ("true", "1")
-    return CallerScope(user_id=uid, project_id=pid, is_admin=admin)
+    project = "" if identity.legacy else identity.project_id
+    return CallerScope(
+        user_id=identity.user_id, project_id=project, is_admin=identity.is_admin
+    )
 
 
 def _pool(request: Request) -> Any:
@@ -271,6 +283,15 @@ async def list_my_grants(request: Request) -> dict[str, Any]:
     return _serialize(grants)
 
 
+def _may_revoke(pool: Any, grant: AssetGrant, caller: CallerScope) -> bool:
+    """The grantor, an asset writer or a verified admin (``_asset_writable``)
+    may revoke; anyone else reads the grant as not found. Revoking only
+    narrows access, so a grantor keeps it after losing write authority."""
+    if caller.user_id and grant.created_by == caller.user_id:
+        return True
+    return _asset_writable(pool, grant.asset_kind, grant.asset_id, caller)
+
+
 @router.post("/{grant_id}/revoke", response_model=dict[str, Any])
 async def revoke_grant(grant_id: str, request: Request) -> dict[str, Any]:
     """Tombstone a grant. Revoke = tombstone, never DELETE (audit survives).
@@ -282,9 +303,7 @@ async def revoke_grant(grant_id: str, request: Request) -> dict[str, Any]:
     try:
         store = GrantStore(conn)
         grant = store.get_grant(grant_id)
-        if grant is None:
-            raise_typed(PlatformError.grants("not_found", "grant not found"))
-        if not _asset_writable(pool, grant.asset_kind, grant.asset_id, caller):
+        if grant is None or not _may_revoke(pool, grant, caller):
             raise_typed(PlatformError.grants("not_found", "grant not found"))
         revoked = store.revoke_grant(grant_id, now=datetime.now(timezone.utc))
     finally:

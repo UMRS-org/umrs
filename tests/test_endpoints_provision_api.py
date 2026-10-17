@@ -445,19 +445,27 @@ def test_provision_endpoint_forwards_mounts_to_service(monkeypatch):
     app.include_router(router)
     app.dependency_overrides[get_registry] = _new_registry
 
+    # H-1 (2026-10-18): a non-admin's mount sources must lie under the caller's
+    # own user/project roots (they were checked only against the site-wide
+    # prefixes, so /project/data of anyone passed); the caller is alice in
+    # project-a and the sources are hers.
+    monkeypatch.delenv("UMRS_ENDPOINT_CALLER_MOUNT_ROOTS", raising=False)
+    monkeypatch.setattr(endpoints_api, "_check_requesting_user_gate", lambda _user: None)
     body = {
         "project_id": "project-a",
         "model": "qwen3-8b",
         "tier": "project",
         "mounts": {
             "mcp_servers": [{"source": "/home/alice/tools", "target": "/mcp-servers/tools"}],
-            "project_data": {"source": "/project/data", "target": "/project"},
-            "rag_index": {"source": "/project/rag-index", "target": "/rag-index"},
+            "project_data": {"source": "/projects/project-a/data", "target": "/project"},
+            "rag_index": {"source": "/projects/project-a/rag-index", "target": "/rag-index"},
         },
         "egress_domains": ["api.example.com"],
     }
     with TestClient(app) as client:
-        response = client.post("/umrs/endpoints/provision", json=body)
+        response = client.post(
+            "/umrs/endpoints/provision", json=body, headers={"X-User-ID": "alice"}
+        )
 
     app.dependency_overrides.clear()
 

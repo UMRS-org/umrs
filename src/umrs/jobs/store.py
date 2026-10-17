@@ -703,6 +703,39 @@ class JobStore:
 
             return [self._row_to_job(row) for row in cur.fetchall()]
 
+    def count_jobs(
+        self,
+        project_id: str | None = None,
+        user_id: str | None = None,
+        status: JobStatus | str | None = None,
+        job_type: JobType | None = None,
+    ) -> int:
+        """Count jobs under ``list_jobs``'s filters (same WHERE clause).
+
+        H-1 (2026-10-18): the web dashboard's overview and job-list totals
+        call this with the caller's owner filter (admins: no filter).
+        ``status`` may be a JobStatus or its string value.
+        """
+        conditions = []
+        params: list[Any] = []
+        if user_id is not None:
+            conditions.append("user_id = %s")
+            params.append(user_id)
+        if project_id:
+            conditions.append("project_id = %s")
+            params.append(project_id)
+        if status:
+            conditions.append("status = %s")
+            params.append(getattr(status, "value", status))
+        if job_type:
+            conditions.append("job_type = %s")
+            params.append(job_type.value)
+        where_clause = " WHERE " + " AND ".join(conditions) if conditions else ""
+        with self._get_conn() as conn, conn.cursor() as cur:
+            cur.execute(f"SELECT COUNT(*) FROM jobs{where_clause}", params)
+            row = cur.fetchone()
+            return int(row[0]) if row else 0
+
     # =========================================================================
     # Attempt Lifecycle Methods
     # =========================================================================

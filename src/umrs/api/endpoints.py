@@ -16,6 +16,7 @@ Authentication:
 
 import logging
 import os
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -512,6 +513,135 @@ def _enforce_provision_authorization(
                 "forbidden", "Only admins may provision system-tier endpoints"
             ),
         )
+
+
+# H-1 (2026-10-18): mount sources were checked only against the site-wide
+# prefixes (UMRS_ENDPOINT_ALLOWED_MOUNT_PREFIXES: /home, /projects, ...), so a
+# caller could mount another user's home or another project's data. A
+# non-admin's sources must lie under the caller's own roots. The defaults
+# follow the model registry's per-scope roots (PathValidator
+# DEFAULT_ALLOWED_PATHS: /shared/projects/{project_id}, /shared/users/
+# {owner_id}, /home/{owner_id}) plus the /projects/{project_id} layout the
+# site prefixes carry; a site names its own with a comma-separated
+# UMRS_ENDPOINT_CALLER_MOUNT_ROOTS ({project_id}, {user_id} placeholders).
+DEFAULT_CALLER_MOUNT_ROOTS = (
+    "/home/{user_id}",
+    "/shared/users/{user_id}",
+    "/shared/projects/{project_id}",
+    "/projects/{project_id}",
+)
+
+
+def _safe_path_segment(value: str) -> bool:
+    """A placeholder value that names exactly one directory."""
+    return (
+        bool(value)
+        and value not in (".", "..")
+        and not any(ch in value for ch in ("/", "\\", "\x00"))
+    )
+
+
+def _expand_mount_root(template: str, values: dict[str, str]) -> Path | None:
+    """*template* with its placeholders filled, or None when one is unsafe."""
+    for key, value in values.items():
+        token = "{" + key + "}"
+        if token not in template:
+            continue
+        if not _safe_path_segment(value):
+            return None
+        template = template.replace(token, value)
+    if not template.startswith("/") or "{" in template:
+        return None
+    return Path(template).resolve(strict=False)
+
+
+def _caller_mount_roots(project_id: str, user_id: str) -> list[Path]:
+    """The caller's own mount roots on this site."""
+    raw = os.environ.get("UMRS_ENDPOINT_CALLER_MOUNT_ROOTS")
+    templates = raw.split(",") if raw is not None else DEFAULT_CALLER_MOUNT_ROOTS
+    values = {"project_id": project_id, "user_id": user_id}
+    roots = [_expand_mount_root(t.strip(), values) for t in templates]
+    return [root for root in roots if root is not None]
+
+
+def _mount_sources(mounts: "EndpointMounts | None") -> list[str]:
+    if mounts is None:
+        return []
+    specs = [*mounts.mcp_servers, mounts.project_data, mounts.rag_index]
+    return [spec.source for spec in specs if spec is not None]
+
+
+def _under_root(source: str, roots: list[Path]) -> bool:
+    path = Path(source).resolve(strict=False)
+    return any(path == root or root in path.parents for root in roots)
+
+
+def _enforce_mount_scope(
+    request: "ProvisionRequest",
+    *,
+    is_admin: bool,
+    project_id: str,
+    user_id: str | None,
+) -> None:
+    """403 unless every mount source lies under the caller's own roots."""
+    sources = _mount_sources(request.mounts)
+    if is_admin or not sources:
+        return
+    roots = _caller_mount_roots(project_id, user_id or "")
+    foreign = [source for source in sources if not _under_root(source, roots)]
+    if foreign:
+        raise_typed(
+            PlatformError.endpoints(
+                "forbidden",
+                (
+                    f"mount source {foreign[0]} is outside your own project and user "
+                    "data roots (UMRS_ENDPOINT_CALLER_MOUNT_ROOTS)"
+                ),
+            ),
+        )
+
+
+# H-1 (2026-10-18, review): the model weights are a second host path bound
+# into the endpoint container. A model_path override, or an absolute model
+# name with no catalog entry, was checked only against the site-wide
+# prefixes, so a non-admin could serve another user's or project's weights.
+# A host path the caller names itself must lie under the caller's own roots;
+# the authorised catalog entry's storage_ref and remote URIs (hf://, s3://)
+# are not caller-named host paths. Residual: _under_root resolves links on
+# this host at request time only; the compute-node launcher must re-check.
+def _caller_named_host_path(resolved: str, model_entry: dict[str, Any] | None) -> bool:
+    if "://" in resolved:
+        return False
+    catalog_ref = str((model_entry or {}).get("storage_ref") or "")
+    if not catalog_ref or "://" in catalog_ref:
+        return True
+    catalog_path = Path(catalog_ref).resolve(strict=False)
+    return catalog_path != Path(resolved).resolve(strict=False)
+
+
+def _enforce_model_path_scope(
+    resolved: str,
+    model_entry: dict[str, Any] | None,
+    *,
+    is_admin: bool,
+    project_id: str,
+    user_id: str | None,
+) -> None:
+    """403 unless a caller-named host model path lies under the caller's roots."""
+    if is_admin or not _caller_named_host_path(resolved, model_entry):
+        return
+    if _under_root(resolved, _caller_mount_roots(project_id, user_id or "")):
+        return
+    raise_typed(
+        PlatformError.endpoints(
+            "forbidden",
+            (
+                f"model path {resolved} is outside your own project and user data "
+                "roots (UMRS_ENDPOINT_CALLER_MOUNT_ROOTS); register the model in "
+                "the catalog or use a path under your own roots"
+            ),
+        ),
+    )
 
 
 def _derive_reasoning_parser(model_name: str) -> str:
@@ -3008,6 +3138,12 @@ async def provision_endpoint(
 
     effective_project_id = _resolve_provision_project_id(request, project_id)
     _enforce_provision_authorization(request, is_admin=is_admin)
+    _enforce_mount_scope(
+        request,
+        is_admin=is_admin,
+        project_id=effective_project_id,
+        user_id=requesting_user,
+    )
 
     # Server-side correlation trail: received before any heavy work so a
     # client-side HTTP timeout still leaves a discoverable server-side record.
@@ -3089,6 +3225,13 @@ async def provision_endpoint(
                 ),
             ),
         )
+    _enforce_model_path_scope(
+        resolved_model_path,
+        model_entry,
+        is_admin=is_admin,
+        project_id=effective_project_id,
+        user_id=requesting_user,
+    )
 
     env_vars: dict[str, str] = {}
     # Merge request-supplied env_vars first so they take precedence

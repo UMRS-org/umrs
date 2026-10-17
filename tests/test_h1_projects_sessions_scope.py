@@ -245,7 +245,11 @@ def sessions(monkeypatch):
     store = _SessionStore()
     store.sessions["s-a"] = ResearchSession(session_id="s-a", project_id="proj-a", title="A")
     monkeypatch.setattr(mod, "_store", store)
-    loop_api.clear_loop_store()
+    # A memory store of its own: in a full run an earlier test may have bound
+    # the module store to Postgres, which rejects these bare loops.
+    from umrs.knowledge.loop_store import LoopStore
+
+    monkeypatch.setattr(loop_api, "_loop_store", LoopStore.memory())
     for loop_id, project, owner in (
         ("loop-bob", "proj-a", "bob"),
         ("loop-other-project", "proj-b", "alice"),
@@ -393,13 +397,15 @@ def test_owner_reads_own_turn_and_events():
 
 
 @pytest.fixture
-def approvals():
+def approvals(monkeypatch):
     from umrs.api import loop as loop_api
     from umrs.knowledge import tool_approvals
     from umrs.knowledge.loop import ResearchLoop
+    from umrs.knowledge.loop_store import LoopStore
 
     tool_approvals.clear_all()
-    loop_api.clear_loop_store()
+    # Own memory store (see the sessions fixture).
+    monkeypatch.setattr(loop_api, "_loop_store", LoopStore.memory())
     loop_api._loop_store.save(
         ResearchLoop(loop_id="loop-b", project_id="proj-b", research_goal="g", metadata={})
     )

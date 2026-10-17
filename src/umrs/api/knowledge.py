@@ -177,12 +177,21 @@ class ExternalSearchRequest(BaseModel):
 
 
 @router.post("/external/search")
-async def post_external_search(req: ExternalSearchRequest):
+async def post_external_search(
+    req: ExternalSearchRequest,
+    request: Request,
+    caller_project: str = Depends(get_project_id),
+):
     """Fan out one query across academic sources including JA-native ones.
 
     Defaults include CiNii Research and J-STAGE so Japanese-language
     research content is first-class alongside arXiv/S2/CrossRef. Matches
     the r4 SDK's `KnowledgeClient.external_search()` contract.
+
+    H-1 (2026-10-18): this server-side egress was anonymous; it now needs
+    the verified project (401 without it in strict mode), and each search is
+    logged with the verified user and project. The body ``project_id`` reads
+    no project data.
     """
     from umrs.knowledge.external import ExternalKnowledgeSearcher, ExternalSourceType
 
@@ -198,6 +207,15 @@ async def post_external_search(req: ExternalSearchRequest):
             )
         )
 
+    from umrs.api._scope_identity import request_caller_scope
+
+    caller = request_caller_scope(request)
+    logger.info(
+        "external search egress user=%s project=%s sources=%s",
+        caller.user_id,
+        caller_project,
+        names,
+    )
     searcher = ExternalKnowledgeSearcher()
     results = searcher.search_all(
         req.query,

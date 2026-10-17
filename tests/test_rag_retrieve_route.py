@@ -447,8 +447,14 @@ def _passage_client(
     app = FastAPI()
     app.include_router(rag_api.router)
     app.state.umrs_db_pool = Pool([])
-    headers = {"x-verified-is-admin": "true"} if admin else {}
-    return TestClient(app, headers=headers)
+    # H-1 (2026-10-18): admin is the verified tuple's flag; a bare
+    # X-Verified-Is-Admin with no identity was the unsigned-admin defect.
+    admin_tuple = {
+        "x-user-id": "root",
+        "x-verified-project-id": "p1",
+        "x-verified-is-admin": "true",
+    }
+    return TestClient(app, headers=admin_tuple if admin else {})
 
 
 def test_a_visible_passage_comes_back_with_its_full_text(monkeypatch):

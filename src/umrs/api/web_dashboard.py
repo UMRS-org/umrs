@@ -376,18 +376,30 @@ async def get_overview(
 
 
 def _job_status_counts(scope: CallerScope) -> tuple[int, int, int, int]:
-    """(running, queued, completed, failed) platform-wide job counts.
+    """(running, queued, completed, failed) counts of the caller's jobs.
 
-    The counts span every project, so only unrestricted callers get them;
-    other callers get zeros (the per-project list is GET /jobs).
+    Same owner filter as GET /jobs (admins: platform-wide). H-1 (2026-10-18):
+    this asked for ``count_by_status``, which no JobStore implements, so
+    every caller saw zeros; ``JobStore.count_jobs`` now backs it.
     """
     job_store = get_optional_job_store()
-    if not job_store or not _unrestricted(scope):
+    count_jobs = getattr(job_store, "count_jobs", None)
+    if not callable(count_jobs):
         return 0, 0, 0, 0
+    from ..jobs.models import JobStatus
+
+    project, owner = _job_owner_filter(scope)
     counts = []
-    for status_val in ("running", "queued", "completed", "failed"):
+    for status_val in (
+        JobStatus.RUNNING,
+        JobStatus.QUEUED,
+        JobStatus.COMPLETED,
+        JobStatus.FAILED,
+    ):
         try:
-            counts.append(job_store.count_by_status(status_val))
+            counts.append(
+                count_jobs(project_id=project, user_id=owner, status=status_val)
+            )
         except Exception:  # noqa: BLE001 — dashboard probes degrade to honest empty
             counts.append(0)
     return counts[0], counts[1], counts[2], counts[3]
@@ -566,15 +578,48 @@ def _fetch_jobs(
     return jobs
 
 
+def _job_count_owner(
+    scope: CallerScope, user_id: str | None
+) -> tuple[str | None, str | None] | None:
+    """(project, user) the job-list total counts under: the owner filter
+    narrowed by the ``user_id`` query, as ``_fetch_jobs`` narrows the page.
+    None when a restricted caller names another user (the list is empty)."""
+    project, owner = _job_owner_filter(scope)
+    if not user_id:
+        return project, owner
+    if owner is not None and user_id != owner:
+        return None
+    return project, user_id
+
+
 def _job_total(
-    job_store: Any, jobs: list[Any], status_filter: Any, scope: CallerScope
+    job_store: Any,
+    jobs: list[Any],
+    filters: tuple[Any, str | None, str | None],
+    scope: CallerScope,
 ) -> int:
-    """Store-backed total when available (platform-wide, so unrestricted
-    callers only), else the window size."""
+    """Store-backed total of the caller's jobs (admins: platform-wide) under
+    the list's (status, job_type, user_id) filters, else the window size.
+
+    H-1 (2026-10-18): was ``count_all``, which no JobStore implements; the
+    total is now ``count_jobs`` under the owner filter and the list filters.
+    """
+    status_filter, job_type, user_id = filters
+    owner_filter = _job_count_owner(scope, user_id)
+    if owner_filter is None:
+        return 0
+    count_jobs = getattr(job_store, "count_jobs", None)
     try:
-        if _unrestricted(scope) and hasattr(job_store, "count_all"):
-            return job_store.count_all(status=status_filter)
-    except Exception as exc:  # noqa: BLE001
+        if callable(count_jobs):
+            from ..jobs.models import JobType
+
+            return count_jobs(
+                project_id=owner_filter[0],
+                user_id=owner_filter[1],
+                status=status_filter,
+                job_type=JobType(job_type) if job_type else None,
+            )
+    except Exception as exc:  # noqa: BLE001 — e.g. an unknown job_type (page empty too)
         logger.warning("Dashboard job count failed: %s", exc)
     return len(jobs)
 
@@ -669,7 +714,8 @@ async def list_jobs(
     jobs = _fetch_jobs(job_store, status, job_type, user_id, (limit, offset), scope)
     # The envelope holds dicts: a JobSummary model failed validation (500).
     items = [_job_summary(j).model_dump() for j in jobs]
-    total = _job_total(job_store, jobs, JobStatus(status) if status else None, scope)
+    status_filter = JobStatus(status) if status else None
+    total = _job_total(job_store, jobs, (status_filter, job_type, user_id), scope)
     has_next = offset + limit < total
     has_prev = offset > 0
 

@@ -30,7 +30,7 @@ from umrs.knowledge.verification_store import (
 )
 from umrs.scientific_reasoning_engine import ScientificReasoningEngine
 
-from ._verified_headers import CallerIdentity, get_caller
+from ._verified_headers import CallerIdentity, get_caller, get_verified_caller
 
 # Reuse the shared M3.5 knowledge graph so verification chat can reason
 # over the same state that populates the dashboard/explorer/readiness views.
@@ -192,13 +192,19 @@ async def list_findings(
 async def transition_finding(
     finding_key: str,
     req: TransitionFindingRequest,
-    caller: CallerIdentity | None = Depends(get_caller),
+    caller: CallerIdentity = Depends(get_verified_caller),
 ) -> dict[str, Any]:
     """Transition a finding between states (open → acknowledged → resolved).
 
     Wave-6 F3: same admin scoping as the other findings endpoints.
+
+    H-1 (2026-10-18): the transition ran whenever ``get_caller`` returned
+    ``None``. Strict mode never does (a missing or forged tuple is 401), but
+    an anonymous dev (mvp) caller could transition any finding (the store
+    has no project dimension). A mutation now needs a verified admin in every
+    mode; the admin flag is covered by the gateway HMAC.
     """
-    if caller is not None and not caller.is_admin:
+    if not caller.is_admin:
         raise_typed(
             PlatformError.verification(
                 "forbidden", "verification finding transitions are admin-scoped"

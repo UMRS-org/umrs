@@ -145,10 +145,43 @@ class UploadResponse(BaseModel):
 
 
 def _get_caller_identity(request: Request) -> tuple[str, str]:
-    """Extract user_id and project_id from NGINX-set headers (canonical, R1)."""
+    """Extract user_id and project_id from NGINX-set headers (canonical, R1).
+
+    H-1 (2026-10-18): the tuple must carry the gateway HMAC (401 in strict
+    mode otherwise); mvp keeps trusting it.
+    """
     from ._identity import verified_identity
 
-    return verified_identity(request, require_project=True)
+    return verified_identity(request, require_project=True, verify_hmac=True)
+
+
+def _verified_caller(request: Request) -> CallerScope:
+    """The HMAC-verified caller, admin flag included (H-1, 2026-10-18).
+
+    Every rag route reads identity and admin through this: a forged tuple is
+    a 401 in strict mode, and admin is only ever the signed flag (the legacy
+    mvp ``X-Project-ID`` tier carries no admin).
+    """
+    from ._identity import request_identity
+
+    identity = request_identity(request, require_project=True, verify_hmac=True)
+    return CallerScope(
+        user_id=identity.user_id,
+        project_id=identity.project_id,
+        is_admin=identity.is_admin,
+    )
+
+
+def _verified_admin(request: Request) -> bool:
+    """The signed admin flag (H-1, 2026-10-18): a forged tuple is a 401 in
+    strict mode, never an admin. A request with no verified tuple is simply
+    not an admin, in either mode: rejecting an anonymous caller is
+    ``_require_rag_scope``'s job, not this flag's."""
+    from ._identity import request_identity
+
+    if not request.headers.get("x-verified-project-id"):
+        return False
+    return request_identity(request, require_project=False, verify_hmac=True).is_admin
 
 
 def _require_rag_scope(
@@ -170,12 +203,8 @@ def _require_rag_scope(
     scopes, group membership resolved against the 0097 authority). Writes
     never consult the list.
     """
-    user_id, project_id = _get_caller_identity(request)
-    admin = request.headers.get("x-verified-is-admin", "").strip().lower() in (
-        "true",
-        "1",
-    )
-    caller = CallerScope(user_id=user_id, project_id=project_id, is_admin=admin)
+    caller = _verified_caller(request)
+    user_id, project_id = caller.user_id, caller.project_id
     target = project_id if not target_project else target_project
     allowed = (
         project_writable(target, caller) if write else project_readable(target, caller)
@@ -230,15 +259,11 @@ def put_corpus_access(request: Request, body: CorpusAccessUpdate) -> dict[str, A
     # auth: verified
     """
     user_id, _ = _require_rag_scope(request, body.project_id, write=True)
-    admin = request.headers.get("x-verified-is-admin", "").strip().lower() in (
-        "true",
-        "1",
-    )
     caller = resource_caller(
         request,
         user_id=user_id,
         project_id=body.project_id,
-        is_admin=admin,
+        is_admin=_verified_admin(request),
     )
     access = checked_access(body.access, caller, error=PlatformError.rag)
     get_corpus_access_store().set_access(body.project_id, access, set_by=user_id)
@@ -550,10 +575,7 @@ async def _query_via_spine(
     pool = getattr(request.app.state, "umrs_db_pool", None)
     if pool is None:
         return SpineAnswer(reason="knowledge database unavailable")
-    admin = request.headers.get("x-verified-is-admin", "").strip().lower() in (
-        "true",
-        "1",
-    )
+    admin = _verified_admin(request)
     try:
         return await asyncio.to_thread(
             _answer_in_scope, request, pool, body, target_project, admin

@@ -109,8 +109,14 @@ class TestDownloadStatusNoJobStore:
         app = FastAPI()
         app.include_router(router)
 
+        # H-1 (2026-10-18): download-status now resolves the caller's project
+        # first (an anonymous call is 401), so the mvp caller names one.
         with TestClient(app) as client:
-            response = client.get("/umrs/files/download-status", params={"job_id": "job-1"})
+            response = client.get(
+                "/umrs/files/download-status",
+                params={"job_id": "job-1"},
+                headers={"X-Project-ID": "proj-a"},
+            )
 
         assert response.status_code == 503
 

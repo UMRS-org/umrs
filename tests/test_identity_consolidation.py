@@ -179,9 +179,10 @@ class TestSurfaceParity:
     def test_llm_delegates(self):
         from umrs.api import llm
 
-        assert llm._get_caller_identity(
-            _request({"x-user-id": "a", "x-verified-project-id": "p"})
-        ) == ("a", "p")
+        # H-1 (2026-10-18): llm._get_caller_identity became _verified_caller,
+        # which returns the full verified identity (the admin flag included).
+        identity = llm._verified_caller(_request({"x-user-id": "a", "x-verified-project-id": "p"}))
+        assert (identity.user_id, identity.project_id) == ("a", "p")
 
     def test_rag_delegates(self):
         from umrs.api import rag

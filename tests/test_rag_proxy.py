@@ -141,7 +141,12 @@ def test_query_rag_requires_verified_project_in_strict_mode(monkeypatch):
 
 def test_query_rag_prefers_verified_project(monkeypatch):
     """Verified Gateway project identity wins over advisory X-Project-ID."""
+    from r4_contracts.handshake_hmac import sign_claims
+
     monkeypatch.setenv("UMRS_AUTH_MODE", "strict")
+    # H-1 (2026-10-18): strict mode now checks the gateway HMAC on the rag
+    # routes; this test sent an unsigned tuple, which is the forged case.
+    monkeypatch.setenv("UMRS_HANDSHAKE_HMAC_SECRET", "rag-proxy-secret")
     registry = _make_registry_with_endpoint(project_id="verified-project")
     client = _create_client(registry)
 
@@ -159,6 +164,9 @@ def test_query_rag_prefers_verified_project(monkeypatch):
                 "x-user-id": "user-1",
                 "x-project-id": "attacker-project",
                 "x-verified-project-id": "verified-project",
+                "x-verified-hmac": sign_claims(
+                    "rag-proxy-secret", "user-1", "verified-project", False
+                ),
             },
         )
 

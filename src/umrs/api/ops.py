@@ -416,11 +416,6 @@ def ops_topology(
     }
 
 
-@router.get(
-    "/timeline",
-    response_model=OpsTimelineResponse,
-    summary="Job-attempt timeline",
-)
 def _enum_value(value: Any) -> Any:
     """Return ``.value`` when the object looks like an enum, else the value."""
     return value.value if hasattr(value, "value") else value
@@ -526,6 +521,13 @@ def _collect_timeline_events(
     return events
 
 
+# H-1 (2026-10-18): this decorator sat above ``_enum_value``, so the path
+# answered 422/500 unauthenticated and ops_timeline (admin-only) was unmounted.
+@router.get(
+    "/timeline",
+    response_model=OpsTimelineResponse,
+    summary="Job-attempt timeline",
+)
 def ops_timeline(
     window_minutes: int = Query(
         60, ge=1, le=1440, description="Look-back window in minutes"
@@ -627,14 +629,18 @@ class ConnectInfoResponse(BaseModel):
 )
 def ops_connect_info(
     x_user_id: str | None = Header(None, alias="X-User-ID"),
+    x_verified_project_id: str | None = Header(None),
+    x_verified_is_admin: str | None = Header(None),
+    x_verified_hmac: str | None = Header(None),
 ) -> dict[str, Any]:
     """Return ZMQ transport parameters so clients can auto-configure.
 
     This endpoint is unauthenticated for basic discovery (ports, auth
-    mode, bind address).  When an ``X-User-ID`` header is provided
-    (forwarded by the Gateway after JWT validation), the response
-    additionally includes the user's ``s3cfg_content`` so the client
-    can write a local S3 configuration file at login time.
+    mode, bind address). Under ``UMRS_EMIT_S3CFG=1`` the response also
+    carries the caller's ``s3cfg_content``, but only for the user of a
+    gateway-signed identity tuple in strict mode: a bare ``X-User-ID``
+    selected (and minted) any user's s3cfg (H-1, 2026-10-18). A presented
+    tuple whose signature fails is 401; mvp keeps the raw header.
     """
     from umrs.shared.connection_profiles import parse_data_port_range
     from umrs.shared.project_data_class import institutional_provider_hosts
@@ -667,7 +673,12 @@ def ops_connect_info(
         "institutional_provider_hosts": sorted(institutional_provider_hosts()),
     }
 
-    _add_connect_info_extras(result, x_user_id)
+    # The governance owner rule is the s3cfg rule too: signed tuple in strict
+    # ("" without one), raw header in mvp.
+    s3cfg_user = governance_user_id(
+        x_user_id, x_verified_project_id, x_verified_is_admin, x_verified_hmac
+    )
+    _add_connect_info_extras(result, s3cfg_user or None)
 
     return result
 
@@ -690,7 +701,11 @@ def _connect_info_services() -> dict[str, str]:
 
 
 def _add_connect_info_extras(result: dict[str, Any], x_user_id: str | None) -> None:
-    """Add service URLs and per-user S3 credentials to connect-info result."""
+    """Add service URLs and per-user S3 credentials to connect-info result.
+
+    ``x_user_id`` is the caller ``ops_connect_info`` resolved (signed in
+    strict mode), never a raw header.
+    """
     # Include service URLs when configured (allows clients to discover
     # the correct S3/RAG endpoint instead of guessing from the host).
     # UMRS_S3_URL is the canonical knob (ADR-055); the MinIO-era names stay

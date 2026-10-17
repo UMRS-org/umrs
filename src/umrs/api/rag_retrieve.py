@@ -135,10 +135,11 @@ def site_per_artifact() -> int:
 
 
 def is_admin(request: Request) -> bool:
-    return request.headers.get("x-verified-is-admin", "").strip().lower() in (
-        "true",
-        "1",
-    )
+    """The signed admin flag only (H-1, 2026-10-18): a forged tuple is a 401
+    in strict mode, never an admin (it gates ambient rows)."""
+    from . import rag as rag_api
+
+    return rag_api._verified_admin(request)
 
 
 # ── request → spec ──────────────────────────────────────────────────────────
