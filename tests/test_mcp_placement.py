@@ -149,11 +149,22 @@ class _ToolServer:
         self.trust_class = trust_class
 
 
-def test_invoke_refuses_trusted_host_only_server():
+def _admin_scope(monkeypatch, mcp_mod) -> object:
+    """Call/invoke resolve the caller (H-1, 2026-10-17): an admin sees every
+    server, so these gates are exercised on their own."""
+    from umrs.knowledge.access_scope import CallerScope
+
+    monkeypatch.setattr(mcp_mod, "_caller_scope", lambda _req: CallerScope(is_admin=True))
+    return object()
+
+
+def test_invoke_refuses_trusted_host_only_server(monkeypatch):
     """No trusted:<host> venue rail exists — every lane refuses by name."""
     from fastapi import HTTPException
     from umrs.api import mcp as mcp_mod
     from umrs.api.mcp import ToolCallRequest, call_tool
+
+    http_request = _admin_scope(monkeypatch, mcp_mod)
 
     class _Store:
         def get_server_for_tool(self, _tool):
@@ -164,7 +175,7 @@ def test_invoke_refuses_trusted_host_only_server():
         import asyncio
 
         with pytest.raises(HTTPException) as exc:
-            asyncio.run(call_tool(ToolCallRequest(tool="scope.run", arguments={})))
+            asyncio.run(call_tool(ToolCallRequest(tool="scope.run", arguments={}), http_request))
         assert exc.value.status_code == 403
         assert "trusted-host-only" in str(exc.value.detail)
         assert "never approximating" in str(exc.value.detail)
@@ -176,9 +187,11 @@ def test_invoke_refuses_trusted_host_only_server():
         mcp_mod._store = None
 
 
-def test_invoke_allows_local_safe_and_front_end_servers():
+def test_invoke_allows_local_safe_and_front_end_servers(monkeypatch):
     from umrs.api import mcp as mcp_mod
     from umrs.api.mcp import ToolCallRequest, call_tool
+
+    http_request = _admin_scope(monkeypatch, mcp_mod)
 
     class _Store:
         def __init__(self, trust_class):
@@ -195,7 +208,7 @@ def test_invoke_allows_local_safe_and_front_end_servers():
             # the gate passes (the proxy then fails on the fake URL — the
             # named _MCPProxyError, NOT the trust refusal)
             with pytest.raises(Exception) as exc:
-                asyncio.run(call_tool(ToolCallRequest(tool="t.run", arguments={})))
+                asyncio.run(call_tool(ToolCallRequest(tool="t.run", arguments={}), http_request))
             assert "trust_class_denied" not in str(exc.value)
         finally:
             mcp_mod._store = None

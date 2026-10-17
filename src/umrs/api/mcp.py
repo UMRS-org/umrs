@@ -512,14 +512,31 @@ async def list_tools(
 
 @router.get("/tools/lookup", response_model=ServerResponse | None)
 async def lookup_tool_server(
+    request: Request,
     tool: str = Query(..., description="Tool name to look up"),
 ) -> ServerResponse | None:
-    """Find which server provides a given tool."""
-    store = _get_store()
-    server = store.get_server_for_tool(tool)
+    """Find which server provides a given tool (one the caller may see)."""
+    server = _visible_server_for_tool(request, tool)
     if not server:
         raise_typed(PlatformError.mcp("not_found", f"No server found for tool: {tool}"))
     return _server_to_response(server)
+
+
+def _visible_server_for_tool(request: Request, tool: str):
+    """The server providing ``tool`` when the caller may see it, else None.
+
+    Lookup and call took no identity: any caller found any project's tool and
+    the call went out with that server's stored upstream credentials (H-1,
+    2026-10-17). Strict mode now needs identity (401), and a project-bound
+    server is visible to its project only, as in the listing (audit B9);
+    another project's tool reads as not found.
+    """
+    scope = _caller_scope(request)
+    server = _get_store().get_server_for_tool(tool)
+    if server is None:
+        return None
+    unrestricted = scope.is_admin or scope.anonymous
+    return server if _server_visible(server, scope.project_id, unrestricted) else None
 
 
 # =============================================================================
@@ -620,6 +637,7 @@ def _iso(value) -> str | None:
 @router.post("/invoke", response_model=ToolCallResponse)
 async def call_tool(
     request: ToolCallRequest,
+    http_request: Request,
 ) -> ToolCallResponse:
     """
     Invoke an MCP tool.
@@ -632,8 +650,7 @@ async def call_tool(
     trusted-host venue lane lands, the rail's venue marker becomes the
     accepted path.
     """
-    store = _get_store()
-    server = store.get_server_for_tool(request.tool)
+    server = _visible_server_for_tool(http_request, request.tool)
     if not server:
         raise_typed(PlatformError.mcp("not_found", f"Tool not found: {request.tool}"))
     if (getattr(server, "trust_class", "") or "") == "trusted-host-only":

@@ -5,6 +5,20 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from umrs.api.endpoints import get_registry, router
 
+from r4_contracts.handshake_hmac import sign_claims
+
+_SECRET = "location-secret"
+
+
+def _admin_headers() -> dict[str, str]:
+    """The route is admin-only (H-1, 2026-10-17: any caller could rewrite it)."""
+    return {
+        "X-User-ID": "root",
+        "X-Verified-Project-ID": "ops",
+        "X-Verified-Is-Admin": "true",
+        "X-Verified-HMAC": sign_claims(_SECRET, "root", "ops", True),
+    }
+
 
 class TestLocationRoute:
     """Tests for the admin location update route."""
@@ -13,6 +27,8 @@ class TestLocationRoute:
     def app(self, monkeypatch):
         """Create test app with registry override."""
         from umrs.orchestrator.endpoint_registry import EndpointRegistry
+
+        monkeypatch.setenv("UMRS_HANDSHAKE_HMAC_SECRET", _SECRET)
 
         registry = EndpointRegistry()
         registry.register(
@@ -39,6 +55,7 @@ class TestLocationRoute:
         with TestClient(test_app) as client:
             response = client.put(
                 "/umrs/endpoints/job-loc/location",
+                headers=_admin_headers(),
                 json={"host": "compute-02", "port": 11435, "metadata": {"updated": "true"}},
             )
 
@@ -61,6 +78,7 @@ class TestLocationRoute:
         with TestClient(test_app) as client:
             response = client.put(
                 "/umrs/endpoints/job-loc/location",
+                headers=_admin_headers(),
                 json={"host": "compute-03"},
             )
 
@@ -75,6 +93,7 @@ class TestLocationRoute:
         with TestClient(test_app) as client:
             response = client.put(
                 "/umrs/endpoints/nonexistent/location",
+                headers=_admin_headers(),
                 json={"host": "compute-01"},
             )
 
@@ -88,6 +107,7 @@ class TestLocationRoute:
         with TestClient(test_app) as client:
             response = client.put(
                 "/umrs/endpoints/job-loc/location",
+                headers=_admin_headers(),
                 json={"host": "compute-02"},
             )
 

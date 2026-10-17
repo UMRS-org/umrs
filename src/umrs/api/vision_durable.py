@@ -86,6 +86,27 @@ def terminal(
         )
 
 
+def owned_job_id(
+    store: JobStore | None, job_id: str | None, project_id: str
+) -> str | None:
+    """``job_id`` when it names a vision job of ``project_id``, else None.
+
+    Status and cancel took a bare ``job_id`` query: any caller could cancel,
+    or mark finished, any durable job of any type in any project (H-1,
+    2026-10-17). Unknown or foreign ids are ignored, like a missing id.
+    """
+    if store is None or not job_id:
+        return None
+    try:
+        job = store.get_job(job_id)
+    except Exception:  # noqa: BLE001 — an unknown id is simply not ours
+        return None
+    if job.project_id != project_id or job.job_type != JobType.VISION_INFER:
+        logger.warning("vision: ignoring job %s outside project %s", job_id, project_id)
+        return None
+    return job_id
+
+
 def cancel(store: JobStore | None, job_id: str | None, *, reason: str) -> None:
     """Cancel the durable row (advisory-locked; does not kill the backend task)."""
     if store is None or job_id is None:
@@ -96,4 +117,4 @@ def cancel(store: JobStore | None, job_id: str | None, *, reason: str) -> None:
         logger.warning("vision cancel_job failed (job %s): %s", job_id, exc)
 
 
-__all__ = ["admit", "cancel", "store_for", "terminal"]
+__all__ = ["admit", "cancel", "owned_job_id", "store_for", "terminal"]

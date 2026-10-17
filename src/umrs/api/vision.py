@@ -355,18 +355,21 @@ async def get_inference_status(
     response = await _request_endpoint(
         endpoint, "GET", "/infer/status", params={"task_id": task_id}
     )
-    _record_status_transition(http_request, job_id, response)
+    _record_status_transition(http_request, job_id, response, project_id)
     return _response_from_downstream(response)
 
 
 def _record_status_transition(
-    http_request: Request, job_id: str | None, response: httpx.Response
+    http_request: Request,
+    job_id: str | None,
+    response: httpx.Response,
+    project_id: str,
 ) -> None:
-    """WP-09: best-effort attempt-terminal transition on a terminal poll."""
-    if not job_id:
-        return
+    """WP-09: best-effort attempt-terminal transition on a terminal poll
+    (the caller's own vision jobs only)."""
     store = vision_durable.store_for(http_request)
-    if store is None:
+    job_id = vision_durable.owned_job_id(store, job_id, project_id)
+    if job_id is None:
         return
     try:
         job = store.get_job(job_id)
@@ -424,7 +427,10 @@ async def cancel_inference(
     response = await _request_endpoint(
         endpoint, "POST", "/infer/cancel", params={"task_id": task_id}
     )
+    store = vision_durable.store_for(http_request)
     vision_durable.cancel(
-        vision_durable.store_for(http_request), job_id, reason="user_cancelled"
+        store,
+        vision_durable.owned_job_id(store, job_id, project_id),
+        reason="user_cancelled",
     )
     return _response_from_downstream(response)

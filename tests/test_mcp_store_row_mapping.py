@@ -123,11 +123,14 @@ def test_list_servers_response_serialises(store):
 async def test_call_tool_refuses_trusted_host_only_through_the_real_store(store, monkeypatch):
     import umrs.api.mcp as api
     from fastapi import HTTPException
+    from umrs.knowledge.access_scope import CallerScope
 
     monkeypatch.setattr(api, "_store", store)
+    # call/invoke resolve the caller (H-1); an admin sees every server.
+    monkeypatch.setattr(api, "_caller_scope", lambda _req: CallerScope(is_admin=True))
     request = api.ToolCallRequest(tool="focus", arguments={})
     with pytest.raises(HTTPException) as excinfo:
-        await api.call_tool(request)
+        await api.call_tool(request, object())
     # Refused by name before any proxy attempt (the old mapping proxied it).
     assert excinfo.value.status_code == 403
     assert "trusted-host-only server" in str(excinfo.value.detail)

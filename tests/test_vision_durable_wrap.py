@@ -154,6 +154,48 @@ def test_submit_downstream_exception_marks_failed(app_client, monkeypatch):
     assert any(args[2] == "failed" for args, _ in term)
 
 
+class _VisionJobStore:
+    """get_job stub: status/cancel act only on the caller's own vision job
+    (H-1, 2026-10-17), so the fake job carries a project and a type."""
+
+    def __init__(self, project_id: str):
+        self._project_id = project_id
+
+    def get_job(self, job_id):
+        from umrs.jobs.models import JobType
+
+        return type(
+            "J",
+            (),
+            {
+                "active_attempt_id": "att-1",
+                "project_id": self._project_id,
+                "job_type": JobType.VISION_INFER,
+            },
+        )()
+
+
+def test_cancel_route_ignores_another_projects_job(app_client, monkeypatch):
+    cancels: list = []
+    monkeypatch.setattr(
+        vd, "cancel", lambda _store, job_id, *, reason: cancels.append((job_id, reason))
+    )
+    monkeypatch.setattr(vd, "store_for", lambda _req: _VisionJobStore("project-b"))
+
+    async def fake_request(*a, **k):
+        return httpx.Response(200, json={"cancelled": True})
+
+    monkeypatch.setattr(vision_api, "_request_endpoint", fake_request)
+    with TestClient(app_client) as client:
+        resp = client.post(
+            "/umrs/vision/infer/cancel",
+            params={"task_id": "t-1", "job_id": "job-1"},
+            headers={"X-Project-ID": "project-a"},
+        )
+        assert resp.status_code == 200
+    assert cancels == [(None, "user_cancelled")]
+
+
 def test_status_completed_transitions_attempt_once_and_safely(app_client, monkeypatch):
     monkeypatch.setattr(vd, "admit", lambda store, **kw: ("job-1", "att-1"))
     term: list[tuple] = []
@@ -169,11 +211,7 @@ def test_status_completed_transitions_attempt_once_and_safely(app_client, monkey
     monkeypatch.setattr(vision_api, "_request_endpoint", fake_request)
 
     # get_job lookup stub on the module seam
-    class _Store:
-        def get_job(self, job_id):
-            return type("J", (), {"active_attempt_id": "att-1"})()
-
-    monkeypatch.setattr(vd, "store_for", lambda req: _Store())
+    monkeypatch.setattr(vd, "store_for", lambda req: _VisionJobStore("project-a"))
 
     with TestClient(app_client) as client:
         for _ in range(2):  # status polled twice — idempotence contract lives in terminal()
@@ -191,7 +229,7 @@ def test_cancel_route_cancels_durable_row(app_client, monkeypatch):
     monkeypatch.setattr(
         vd, "cancel", lambda store, job_id, *, reason: cancels.append((job_id, reason))
     )
-    monkeypatch.setattr(vd, "store_for", lambda req: object())
+    monkeypatch.setattr(vd, "store_for", lambda req: _VisionJobStore("project-a"))
 
     async def fake_request(*a, **k):
         return httpx.Response(200, json={"cancelled": True})
