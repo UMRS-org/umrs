@@ -397,13 +397,21 @@ class VerificationStore:
         status: str | None = None,
         severity: str | None = None,
         limit: int = 200,
+        project_id: str | None = None,
     ) -> list[VerificationFinding]:
-        """List findings with optional filters."""
+        """List findings with optional filters (``project_id`` via the report)."""
         async with self._pool.acquire() as conn:
             sql = "SELECT * FROM verification_findings WHERE 1=1"
             params: list[Any] = []
             idx = 1
 
+            if project_id:
+                sql += (
+                    " AND report_id IN (SELECT report_id FROM verification_reports"
+                    f" WHERE project_id = ${idx})"
+                )
+                params.append(project_id)
+                idx += 1
             if report_id:
                 sql += f" AND report_id = ${idx}"
                 params.append(report_id)
