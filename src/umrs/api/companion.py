@@ -8,7 +8,8 @@ Routes under ``/umrs/companion`` (deployed as ``/gw/companion/*`` behind NGINX
 - pending-approval inbox over durable rows (ADR-036 (a), WP-05): owner-scoped
   list + terminal decisions that parked loop drivers consume,
 - ownership pinning: a registry row is reachable only by its owner_user_id
-  (401 on mismatch), token ≠ auth ≠ liveness holds end-to-end.
+  (401 on a worker mismatch; another user's approval reads as 404), token ≠
+  auth ≠ liveness holds end-to-end.
 
 Strict-mode identity gate reuses ``workflows._require_verified_workflow_identity``
 — the venue consumes ONLY the sidecar's signed identity tuple, never raw auth
@@ -471,6 +472,55 @@ def _writable_worker_project(request: Request, requested: str | None) -> str:
     return project
 
 
+def _worker_owner(declared: str, x_user_id: str) -> str:
+    """The worker's owner: the verified caller. An empty owner defaults to
+    the caller and another user is refused (H-1, 2026-10-18: an empty owner
+    passed the ownership check and then failed as a 500). An identity-less
+    dev (mvp) caller keeps the declared owner."""
+    owner = (declared or "").strip() or x_user_id
+    _enforce_ownership({"owner_user_id": owner}, x_user_id)
+    if not owner:
+        raise_typed(
+            PlatformError.companion("unprocessable", "owner_user_id is required")
+        )
+    return owner
+
+
+def _owned_companion_job(job: Any, owner: str, project_id: str) -> bool:
+    from umrs.jobs.models import JobType
+
+    return (
+        job is not None
+        and job.user_id == owner
+        and job.project_id == project_id
+        and job.job_type == JobType.COMPANION_WORKER
+    )
+
+
+def _caller_worker_job(job_id: str | None, owner: str, project_id: str, x_user_id: str):
+    """A caller-supplied job id, when it is the caller's own companion job in
+    that project; another job (or an unknown one) reads as not found (H-1,
+    2026-10-18: it was bound unchecked, and the row's turns and the
+    supervisor's R4_COMPANION_JOB_ID run under it). An omitted id is
+    submitted later; an identity-less dev (mvp) caller keeps its id."""
+    if not job_id or not x_user_id:
+        return job_id
+    from umrs.jobs.store import JobNotFoundError
+
+    from .jobs import get_optional_job_store
+
+    store = get_optional_job_store()
+    if store is None:
+        raise_typed(PlatformError.companion("unavailable", "job store unavailable"))
+    try:
+        job = store.get_job(job_id)
+    except JobNotFoundError:
+        job = None
+    if not _owned_companion_job(job, owner, project_id):
+        raise_typed(PlatformError.companion("not_found", f"job not found: {job_id}"))
+    return job_id
+
+
 @router.post("/workers", status_code=status.HTTP_201_CREATED)
 async def register_worker(
     body: WorkerRegisterRequest,
@@ -478,15 +528,12 @@ async def register_worker(
     x_user_id: str = Depends(_strict_headers),
 ) -> WorkerRowResponse:
     managers, _ = _managers(request)
+    owner = _worker_owner(body.owner_user_id, x_user_id)
     project_id = _writable_worker_project(request, body.project_id)
-    spec = CompanionWorkerSpec(owner_user_id=body.owner_user_id, project_id=project_id)
-    _enforce_ownership(
-        {"owner_user_id": body.owner_user_id}, x_user_id or body.owner_user_id
-    )
+    spec = CompanionWorkerSpec(owner_user_id=owner, project_id=project_id)
+    job_id = _caller_worker_job(body.job_id, owner, project_id, x_user_id)
     try:
-        job_id = body.job_id or await _submit_companion_job(
-            request, body.owner_user_id, project_id
-        )
+        job_id = job_id or await _submit_companion_job(request, owner, project_id)
         row = managers.register_active(spec, job_id=job_id)
         return _worker_row_to_response(row)
     except Exception as exc:
@@ -675,17 +722,17 @@ def _visible_approvals(rows: list[dict], request: Request) -> list[dict]:
 
 def _enforce_approval_ownership(record: dict, x_user_id: str, request: Request) -> None:
     """An approval intent is decidable only by the loop owner; an ownerless
-    one by its loop's project (another project's reads as not found)."""
+    one by its loop's project. Anyone else's reads as not found, as an
+    unknown id does (H-1, 2026-10-18: a non-owner got 401 "approval
+    ownership mismatch", which showed that the approval exists)."""
     owner = str(record.get("user_id") or "")
-    if owner and owner != x_user_id:
-        raise_typed(
-            PlatformError.companion("unauthorized", "approval ownership mismatch")
-        )
     if owner:
-        return
-    from ._scope_identity import request_caller_scope
+        allowed = owner == x_user_id
+    else:
+        from ._scope_identity import request_caller_scope
 
-    if not _ownerless_approval_open(record, request_caller_scope(request)):
+        allowed = _ownerless_approval_open(record, request_caller_scope(request))
+    if not allowed:
         raise_typed(
             PlatformError.companion(
                 "not_found", f"approval not found: {record.get('id', '')}"
@@ -749,8 +796,8 @@ async def record_approval_decision(
 
     ``once``/``always`` unblock the parked loop; ``no`` makes its gate fail.
     ``always`` additionally flips the owning loop into ``mode=auto`` and
-    mints a ``session:<loop_id>`` trust row. 404 unknown, 401 not the
-    owner, 409 already decided.
+    mints a ``session:<loop_id>`` trust row. 404 unknown or not the
+    caller's, 409 already decided.
     """
     from umrs.knowledge import tool_approvals
 

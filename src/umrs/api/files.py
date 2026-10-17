@@ -19,7 +19,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any
+from typing import Any, NoReturn
 
 from botocore.exceptions import ClientError
 from fastapi import (
@@ -510,10 +510,56 @@ def _download_not_ready_error(job_id: str, attempt_status: str) -> UMRSWarningEr
     return UMRSWarningError(warning, http_status=status.HTTP_409_CONFLICT)
 
 
-async def _await_download_readiness(request: PresignRequest) -> None:
-    """Validate download readiness for a job_id (loop until ready / deadline / fail)."""
+def _raise_job_not_found(job_id: str, cause: Exception | None = None) -> NoReturn:
+    """A missing job and another project's job read the same (H-1 A.2)."""
+    raise_typed(
+        PlatformError.files("job_not_found", f"Job {job_id} was not found"),
+        cause=cause,
+    )
+
+
+def _job_visible(job: Any, project_id: str, is_admin: bool = False) -> bool:
+    """Whether the caller's project (or a verified admin) may see *job*."""
+    return is_admin or getattr(job, "project_id", None) == project_id
+
+
+def _presign_attempt_status(job_store, job_id: str, project_id: str) -> str:
+    """Status gating a presigned download: the active attempt's, else the job's.
+
+    A job of another project is 404 like a missing one: the download key is
+    the caller's own, and its readiness showed the foreign job's state
+    (H-1, 2026-10-18).
+    """
     from umrs.jobs.store import JobNotFoundError
 
+    try:
+        job = job_store.get_job(job_id)
+        if not _job_visible(job, project_id):
+            _raise_job_not_found(job_id)
+        if not job.active_attempt_id:
+            return job.status.value
+        return job_store.get_attempt(job.active_attempt_id).status.value
+    except HTTPException:
+        raise
+    except JobNotFoundError as exc:
+        _raise_job_not_found(job_id, cause=exc)
+    except Exception as exc:
+        logger.warning(
+            "Failed to read job status for presign download job_id=%s: %s",
+            job_id,
+            exc,
+        )
+        raise_typed(
+            PlatformError.files(
+                "auth_unavailable",
+                "Job status is unavailable; download cannot be authorized",
+            ),
+            cause=exc,
+        )
+
+
+async def _await_download_readiness(request: PresignRequest, project_id: str) -> None:
+    """Validate download readiness for a job_id (loop until ready / deadline / fail)."""
     from .jobs import get_optional_job_store as get_jobs_store
 
     job_store = get_jobs_store()
@@ -527,33 +573,7 @@ async def _await_download_readiness(request: PresignRequest) -> None:
 
     deadline = asyncio.get_running_loop().time() + request.block_timeout
     while True:
-        try:
-            job = job_store.get_job(request.job_id)
-            attempt_status = job.status.value
-            if job.active_attempt_id:
-                attempt = job_store.get_attempt(job.active_attempt_id)
-                attempt_status = attempt.status.value
-        except JobNotFoundError as exc:
-            raise_typed(
-                PlatformError.files(
-                    "job_not_found", f"Job {request.job_id} was not found"
-                ),
-                cause=exc,
-            )
-        except Exception as exc:
-            logger.warning(
-                "Failed to read job status for presign download job_id=%s: %s",
-                request.job_id,
-                exc,
-            )
-            raise_typed(
-                PlatformError.files(
-                    "auth_unavailable",
-                    "Job status is unavailable; download cannot be authorized",
-                ),
-                cause=exc,
-            )
-
+        attempt_status = _presign_attempt_status(job_store, request.job_id, project_id)
         readiness = check_download_ready(
             request.job_id, attempt_status, blocking=request.blocking
         )
@@ -612,7 +632,7 @@ async def _generate_presigned_url_impl(
     """Core presign implementation split by operation (upload/download)."""
     bucket = _namespace_bucket(request.bucket, config, x_user_id)
     if request.operation == PresignedOperation.DOWNLOAD and request.job_id:
-        await _await_download_readiness(request)
+        await _await_download_readiness(request, project_id)
 
     key = validate_key(request.key, project_id, warn_on_rename=True)
     ttl_sec = min(request.ttl_sec or config.default_ttl, config.max_ttl)
@@ -1152,14 +1172,22 @@ class DownloadStatusResponse(BaseModel):
     blocking: bool = False
 
 
-def _job_not_found_for_job_id_response(job_id: str) -> DownloadStatusResponse:
-    return DownloadStatusResponse(
-        ready=False,
-        job_id=job_id,
-        status="unknown",
-        message=f"Job {job_id} was not found",
-        retry_after=10,
-    )
+def _visible_job(job_store, job_id: str, scope: tuple[str, bool]):
+    """The job if the caller may see it (``scope`` = project, verified admin).
+
+    A missing job and another project's job are both 404
+    ``files.job_not_found``: download-status answered any job's state by id
+    with no identity (H-1 A.2, 2026-10-18). Store failures propagate.
+    """
+    from umrs.jobs.store import JobNotFoundError
+
+    try:
+        job = job_store.get_job(job_id)
+    except JobNotFoundError as exc:
+        _raise_job_not_found(job_id, cause=exc)
+    if not _job_visible(job, *scope):
+        _raise_job_not_found(job_id)
+    return job
 
 
 def _attempt_ready_state(job_store, job_id: str, job) -> DownloadStatusResponse | None:
@@ -1185,28 +1213,38 @@ def _attempt_ready_state(job_store, job_id: str, job) -> DownloadStatusResponse 
     return None
 
 
+def _poll_once(
+    job_store, job_id: str, scope: tuple[str, bool]
+) -> DownloadStatusResponse | None:
+    """One blocking-poll step: the ready response, or None to keep polling.
+
+    A missing or foreign job ends the poll with 404 at once.
+    """
+    try:
+        job = _visible_job(job_store, job_id, scope)
+    except HTTPException:
+        raise
+    except Exception:
+        logger.warning(
+            "Failed to read job status for job %s during blocking poll",
+            job_id,
+            exc_info=True,
+        )
+        return None
+    if job.active_attempt_id:
+        return _attempt_ready_state(job_store, job_id, job)
+    return None
+
+
 async def _poll_job_until_ready(
-    job_store, job_id: str, timeout: int
+    job_store, job_id: str, timeout: int, scope: tuple[str, bool]
 ) -> DownloadStatusResponse:
     """Blocking poll until ready or timeout."""
-    from umrs.jobs.store import JobNotFoundError
-
     start = time.time()
     while time.time() - start < timeout:
-        try:
-            job = job_store.get_job(job_id)
-            if job.active_attempt_id:
-                ready_state = _attempt_ready_state(job_store, job_id, job)
-                if ready_state is not None:
-                    return ready_state
-        except JobNotFoundError:
-            return _job_not_found_for_job_id_response(job_id)
-        except Exception:
-            logger.warning(
-                "Failed to read job status for job %s during blocking poll",
-                job_id,
-                exc_info=True,
-            )
+        ready_state = _poll_once(job_store, job_id, scope)
+        if ready_state is not None:
+            return ready_state
         await asyncio.sleep(2)
 
     return DownloadStatusResponse(
@@ -1252,12 +1290,12 @@ def _status_from_attempt(job_id: str, attempt) -> DownloadStatusResponse:
     )
 
 
-def _nonblocking_job_status(job_store, job_id: str) -> DownloadStatusResponse:
+def _nonblocking_job_status(
+    job_store, job_id: str, scope: tuple[str, bool]
+) -> DownloadStatusResponse:
     """Single-shot (non-blocking) readiness check."""
-    from umrs.jobs.store import JobNotFoundError
-
     try:
-        job = job_store.get_job(job_id)
+        job = _visible_job(job_store, job_id, scope)
         if job.active_attempt_id:
             attempt = job_store.get_attempt(job.active_attempt_id)
             return _status_from_attempt(job_id, attempt)
@@ -1275,8 +1313,8 @@ def _nonblocking_job_status(job_store, job_id: str) -> DownloadStatusResponse:
             message=f"Task is {job.status.value} — download not available yet",
             retry_after=30,
         )
-    except JobNotFoundError:
-        return _job_not_found_for_job_id_response(job_id)
+    except HTTPException:
+        raise
     except Exception:
         logger.warning(
             "Failed to determine download status for job %s",
@@ -1305,8 +1343,15 @@ async def check_download_status(
     job_id: str = Query(..., description="Job ID to check"),
     blocking: bool = Query(False, description="Block until download is ready"),
     timeout: int = Query(300, ge=0, le=3600, description="Max seconds to block"),
+    project_id: str = Depends(get_project_id),
+    x_verified_is_admin: str | None = Header(None),
 ) -> DownloadStatusResponse:
     """Check if download is ready for a job, optionally blocking.
+
+    Only the caller's project's jobs are visible (a verified admin sees
+    every job); a missing or foreign job is 404. ``get_project_id`` checks
+    the gateway HMAC over the identity tuple, admin flag included, in
+    strict mode.
 
     Returns:
         - ready=true: Download is available
@@ -1325,7 +1370,8 @@ async def check_download_status(
             )
         )
 
+    scope = (project_id, _header_bool(x_verified_is_admin))
     if blocking and timeout > 0:
-        return await _poll_job_until_ready(job_store, job_id, timeout)
+        return await _poll_job_until_ready(job_store, job_id, timeout, scope)
 
-    return _nonblocking_job_status(job_store, job_id)
+    return _nonblocking_job_status(job_store, job_id, scope)

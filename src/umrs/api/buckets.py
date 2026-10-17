@@ -235,10 +235,18 @@ async def set_bucket_access(
         raise_typed(PlatformError.files("bucket_registry_unavailable", str(exc)), cause=exc)
     from .audit_events import emit_audit
 
+    # Audited under the actor's verified project, never the bucket's project
+    # segment: that segment is a free experiment label (ADR-079 D-2), so a
+    # caller could otherwise file audit rows under any project (H-1, 2026-10-18).
     emit_audit(
         "bucket.access_changed",
-        project_id=entry.project,
-        details={"bucket": entry.bucket, "access": access, "by": caller.user_id},
+        project_id=caller.project_id or "",
+        details={
+            "bucket": entry.bucket,
+            "label": entry.project,
+            "access": access,
+            "by": caller.user_id,
+        },
     )
     updated = await asyncio.to_thread(store.get, entry.bucket)
     assert updated is not None  # set_access would have failed otherwise

@@ -94,15 +94,19 @@ def _experiment_for(request: Request, experiment_id: str, *, write: bool) -> Any
 
 
 def _status_filter(status: str | None) -> ExperimentStatus | None:
-    """The list filter's status; an unknown value is a 400, not a 500."""
+    """The list filter's status; an unknown value is a typed 400
+    (``experiments.bad_request``), not a 500."""
     if not status:
         return None
     try:
         return ExperimentStatus(status)
     except ValueError as exc:
-        raise HTTPException(
-            status_code=400, detail=f"unknown experiment status '{status}'"
-        ) from exc
+        raise_typed(
+            PlatformError.experiments(
+                "bad_request", f"unknown experiment status '{status}'"
+            ),
+            cause=exc,
+        )
 
 
 def _author(scope: CallerScope, declared: str) -> str:

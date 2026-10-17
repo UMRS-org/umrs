@@ -78,7 +78,19 @@ def _turn_row(**overrides):
 
 
 class TestWorkerRoutes:
-    def test_register_worker_persists_and_returns_row(self):
+    def test_register_worker_persists_and_returns_row(self, monkeypatch):
+        # A caller-supplied job id must be the caller's own companion job in
+        # that project (H-1 review, 2026-10-18: it was bound unchecked), so
+        # the job store holds alice's companion_worker job "job-w1".
+        from types import SimpleNamespace
+
+        from umrs.api import jobs
+        from umrs.jobs.models import JobType
+
+        job = SimpleNamespace(
+            user_id="alice", project_id="default", job_type=JobType.COMPANION_WORKER
+        )
+        monkeypatch.setattr(jobs, "_job_store", SimpleNamespace(get_job=lambda _job_id: job))
         client = _app(FakePool([None, _worker_row()]))
         resp = client.post(
             "/umrs/companion/workers",

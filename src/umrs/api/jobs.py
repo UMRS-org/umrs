@@ -1387,33 +1387,6 @@ async def retry_job(
         raise_typed(PlatformError.jobs("conflict", str(e)), cause=e)
 
 
-# =============================================================================
-# Health/Stats Endpoint
-# =============================================================================
-
-
-@router.get(
-    "/stats",
-    summary="Get job statistics",
-    description="Get aggregate statistics about jobs.",
-)
-async def get_job_stats(
-    project_id: str | None = Query(None, description="Filter by project ID"),
-    store: JobStore = Depends(get_job_store),
-) -> dict[str, Any]:
-    """
-    Get job statistics.
-    """
-    # This would ideally use aggregate queries
-    # For now, return basic stats
-    stats = {
-        "status_counts": {},
-        "type_counts": {},
-    }
-
-    # Count by status
-    for job_status in JobStatus:
-        jobs = store.list_jobs(project_id=project_id, status=job_status, limit=0)
-        stats["status_counts"][job_status.value] = len(jobs)
-
-    return stats
+# H-1 (2026-10-18): GET /stats was deleted. It took ?project_id with no
+# identity, and GET /{job_id} (registered first) shadowed it, so it never
+# ran; /umrs/jobs/stats is a job lookup that needs identity.

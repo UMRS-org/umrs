@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, Header, Query, Request, status
+from fastapi import APIRouter, Depends, Query, Request, status
 from pydantic import BaseModel, Field
 
 from umrs.api._knowledge_mutation_guard import AGENT_ACTOR, request_actor
@@ -258,17 +258,17 @@ class _CallerIdentity(BaseModel):
     is_admin: bool = False
 
 
-def _caller_identity(
-    request: Request,
-    x_user_id: str = Header(default=""),
-    x_project_id: str = Header(default=""),
-    x_verified_project_id: str = Header(default=""),
-    x_verified_is_admin: str = Header(default="false"),
-) -> _CallerIdentity:
-    """Canonical tier chain (R1) → skills identity dataclass."""
+def _caller_identity(request: Request) -> _CallerIdentity:
+    """Canonical tier chain (R1) → skills identity dataclass.
+
+    The gateway HMAC is checked (H-1, 2026-10-18): the tuple was trusted
+    unsigned, so a direct sidecar caller could claim any user, project or
+    admin. Strict mode answers 401 to an unsigned or forged tuple; mvp keeps
+    the legacy ``X-Project-ID`` tier.
+    """
     from ._identity import request_identity
 
-    identity = request_identity(request, require_project=True)
+    identity = request_identity(request, require_project=True, verify_hmac=True)
     return _CallerIdentity(
         user_id=identity.user_id,
         project_id=identity.project_id,

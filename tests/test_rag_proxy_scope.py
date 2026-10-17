@@ -80,9 +80,11 @@ def test_query_admin_reads_any_project():
         response = client.post(
             "/umrs/rag/query",
             json={"query": "q", "project_id": "someone-else"},
+            # H-1 (2026-10-18): admin is the verified tuple's flag only; the
+            # legacy X-Project-ID tier carries none (mvp trusts the tuple).
             headers={
                 "x-user-id": "admin",
-                "x-project-id": "test-project",
+                "x-verified-project-id": "test-project",
                 "x-verified-is-admin": "true",
             },
         )

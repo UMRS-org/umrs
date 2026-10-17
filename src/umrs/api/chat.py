@@ -124,13 +124,15 @@ def _build_upstream_headers(
 
 
 def _get_caller_identity(request: Request) -> tuple[str, str]:
-    """Extract user_id and project_id from request headers.
+    """The caller's (user_id, project_id), HMAC-verified.
 
-    Canonical tier chain in ``umrs.api._identity`` (R1).
+    Canonical tier chain in ``umrs.api._identity`` (R1). The gateway HMAC is
+    checked (H-1, 2026-10-18): without it a direct sidecar caller could
+    claim any project in strict mode; mvp still trusts the headers.
     """
     from ._identity import verified_identity
 
-    return verified_identity(request, require_project=True)
+    return verified_identity(request, require_project=True, verify_hmac=True)
 
 
 def _parse_body(body: bytes) -> dict:

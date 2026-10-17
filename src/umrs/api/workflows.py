@@ -47,6 +47,7 @@ from ..server.workflow_registry_handler import (
     workflow_access_entries,
 )
 from ._access import checked_access, resource_caller
+from ._verified_headers import get_verified_memberships
 from .jobs import CallerIdentity, get_caller_identity, get_optional_job_store
 from .typed_errors import PlatformError, raise_typed
 from .workflow_auth import (
@@ -308,40 +309,25 @@ def _declared_workflow_project(resolved_params: dict[str, Any]) -> str:
     return ""
 
 
-def _checked_membership_set(
-    x_verified_project_memberships: str | None,
-) -> set[str]:
-    """Caller membership set honored for cross-project authorization.
-
-    Wave-6 F1b: the memberships header is NOT part of the v1 HMAC signature
-    tuple — an attacker with any one valid gateway session (or none at all
-    behind the sidecar port in strict mode) could forge
-    ``X-Verified-Project-Memberships`` and claim victim-project scope. Under
-    strict mode only the HMAC-covered primary project (or admin) may
-    authorize a foreign declared project_id. Memberships-based authorization
-    stays available in non-strict (mvp) mode until the handshake tuple is
-    extended to v2.
-    """
-    if _strict_auth_mode():
-        return set()
-    memberships_raw = _header_str(x_verified_project_memberships) or ""
-    return {item.strip() for item in memberships_raw.split(",") if item.strip()}
-
-
 def _authorize_declared_workflow_project(
     declared_project_id: str,
     verified_project_id: str | None,
-    x_verified_project_memberships: str | None,
+    memberships: frozenset[str] | None,
     x_verified_is_admin: str | None,
 ) -> None:
     """Workflow-declared project_id is authoritative — but only when the
     caller is authorized for it (admin role, or the declared project is in
     the caller's verified membership set). Anything else is a loud 403,
     never a silent rewrite (Phase P0-1).
+
+    ``memberships`` comes from ``get_verified_memberships``: in strict mode
+    the gateway list only when its own HMAC verified (wave-6 F1b ignored the
+    unsigned list outright; H-1 2026-10-18 honours the signed one), in mvp
+    the list as presented.
     """
     is_admin = _header_str(x_verified_is_admin) == "true"
     allowed = {p for p in (verified_project_id,) if p}
-    allowed |= _checked_membership_set(x_verified_project_memberships)
+    allowed |= set(memberships or ())
     if is_admin or not verified_project_id:
         return
     if declared_project_id not in allowed:
@@ -359,7 +345,7 @@ def _authorize_declared_workflow_project(
 def _verified_workflow_params(
     params: dict[str, Any],
     x_verified_project_id: str | None,
-    x_verified_project_memberships: str | None = None,
+    memberships: frozenset[str] | None = None,
     x_verified_is_admin: str | None = None,
 ) -> dict[str, Any]:
     verified_project_id = _header_str(x_verified_project_id)
@@ -369,7 +355,7 @@ def _verified_workflow_params(
         _authorize_declared_workflow_project(
             declared_project_id,
             verified_project_id,
-            x_verified_project_memberships,
+            memberships,
             x_verified_is_admin,
         )
         return resolved_params
@@ -780,9 +766,9 @@ async def trigger_run_definition(
     name: str,
     x_user_id: str | None = Header(None),
     x_verified_project_id: str | None = Header(None),
-    x_verified_project_memberships: str | None = Header(None),
     x_verified_is_admin: str | None = Header(None),
     x_verified_hmac: str | None = Header(None),
+    memberships: frozenset[str] = Depends(get_verified_memberships),
 ):
     """Replay one persisted (workflow_name, params) — exact same inputs.
 
@@ -802,9 +788,9 @@ async def trigger_run_definition(
         request=request,
         x_user_id=x_user_id,
         x_verified_project_id=x_verified_project_id,
-        x_verified_project_memberships=x_verified_project_memberships,
         x_verified_is_admin=x_verified_is_admin,
         x_verified_hmac=x_verified_hmac,
+        memberships=memberships,
     )
 
 
@@ -1338,9 +1324,9 @@ async def trigger_workflow(
     request: WorkflowTriggerRequest,
     x_user_id: str | None = Header(None),
     x_verified_project_id: str | None = Header(None),
-    x_verified_project_memberships: str | None = Header(None),
     x_verified_is_admin: str | None = Header(None),
     x_verified_hmac: str | None = Header(None),
+    memberships: frozenset[str] = Depends(get_verified_memberships),
 ):
     _require_verified_workflow_identity(
         x_user_id, x_verified_project_id, x_verified_is_admin, x_verified_hmac
@@ -1349,7 +1335,7 @@ async def trigger_workflow(
     params = _verified_workflow_params(
         request.resolved_params(),
         x_verified_project_id,
-        x_verified_project_memberships,
+        memberships,
         x_verified_is_admin,
     )
     # ADR-074 D-8: owner-scoped, the same resolution the run below uses.

@@ -67,24 +67,34 @@ def _cleanup(conn) -> None:
     conn.commit()
 
 
+_NODE_SQL = (
+    "INSERT INTO knowledge_nodes (node_id, project_id, label, node_type, "
+    "content, content_hash, graph_id, visibility, search_text) "
+    "VALUES (%s, %s, %s, 'concept', %s::jsonb, %s, '', %s, %s)"
+)
+
+
+def _seed_node(cur, node_id: str, project: str, tier: str, chunk: bool) -> None:
+    """One row per lane family: the graph lane reads non-chunk nodes; the rag
+    lane reads chunk rows (content.kind = 'chunk') through their search_text
+    (0120, ADR-093 C6), so a concept node alone is not in that lane."""
+    content = (
+        '{"kind": "chunk", "text": "tiering probe row"}'
+        if chunk
+        else '{"text": "tiering probe row"}'
+    )
+    search_text = "tiering probe row" if chunk else None
+    label = f"tiering {tier} {project}"
+    cur.execute(_NODE_SQL, (node_id, project, label, content, f"hash-{node_id}", tier, search_text))
+
+
 def _seed_nodes(conn) -> None:
     with conn.cursor() as cur:
         for i, project in enumerate(PROJECTS):
             for tier in TIERS:
                 node_id = _node_id(project, tier)
-                cur.execute(
-                    "INSERT INTO knowledge_nodes (node_id, project_id, label, node_type, "
-                    "content, content_hash, graph_id, visibility) "
-                    "VALUES (%s, %s, %s, 'concept', %s::jsonb, %s, '', %s)",
-                    (
-                        node_id,
-                        project,
-                        f"tiering {tier} {project}",
-                        '{"text": "tiering probe row"}',
-                        f"hash-{node_id}",
-                        tier,
-                    ),
-                )
+                _seed_node(cur, node_id, project, tier, chunk=False)
+                _seed_node(cur, f"{node_id}::chunk", project, tier, chunk=True)
                 # Distinct vectors per project so the similarity lane has a
                 # deterministic order; the gate — not the ranking — is under test.
                 vector = "[1,0,0]" if i == 0 else "[0,1,0]"
@@ -165,7 +175,7 @@ def _expected_visible(caller: str) -> set[tuple[str, str]]:
 def _pairs_from_node_ids(node_ids: list[str]) -> set[tuple[str, str]]:
     pairs = set()
     for node_id in node_ids:
-        _prefix, project, tier = node_id.split("::")
+        _prefix, project, tier = node_id.split("::")[:3]  # chunk rows add "::chunk"
         pairs.add((project, tier))
     return pairs
 
@@ -241,7 +251,11 @@ def test_embeddings_similarity_family_rule(pool, caller):
     from umrs.api.knowledge_query import _EmbeddingsSearchBackend
 
     hits = _EmbeddingsSearchBackend(pool).search_embeddings(
-        "ignored", project_id=caller, limit=50, query_embedding=[1.0, 0.0, 0.0]
+        "ignored",
+        project_id=caller,
+        limit=50,
+        query_embedding=[1.0, 0.0, 0.0],
+        model_name=MODEL,  # a query vector names its space (ADR-083)
     )
     assert all(h["metadata"]["lane"] == "similarity" for h in hits)
     _assert_family_rule(

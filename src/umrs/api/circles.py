@@ -446,30 +446,57 @@ def list_project_circles(
 ) -> dict[str, Any]:
     """Circles of the project. Affiliated callers, the project owner and
     admins see the roster (discoverability for sharing); unaffiliated
-    callers see only their own rows in the project.
+    callers see only their own rows in the project. A caller with no row
+    there who is not verified into it reads "not found", as for an unknown
+    project (H-1, 2026-10-18: an empty 200 showed that it exists).
     # auth: verified
     """
     project = _project_or_404(store, project_id)
-    actor = (identity.user_id or "").strip()
-    privileged = (
-        identity.is_admin
-        or actor == project["owner_id"]
-        or store.affiliated(project_id, actor)
-    )
-    if privileged:
+    if _roster_visible(store, project, identity):
         rows = store.list_for_project(project_id, include_retired=include_retired)
     else:
-        rows = [
-            r
-            for r in store.list_mine(actor, include_retired=include_retired)
-            if r["project_id"] == project_id
-        ]
+        rows = _own_rows_or_404(store, project_id, identity, include_retired)
     return {
         "status": "ok",
         "project_id": project_id,
         "circles": [_row_response(r) for r in rows],
         "count": len(rows),
     }
+
+
+def _roster_visible(
+    store: CirclesStore, project: dict[str, Any], identity: CallerIdentity
+) -> bool:
+    """Admin, project owner, or a caller affiliated through a circle."""
+    actor = (identity.user_id or "").strip()
+    return bool(
+        identity.is_admin
+        or actor == project["owner_id"]
+        or store.affiliated(project["project_id"], actor)
+    )
+
+
+def _own_rows_or_404(
+    store: CirclesStore,
+    project_id: str,
+    identity: CallerIdentity,
+    include_retired: bool,
+) -> list[dict[str, Any]]:
+    """The caller's own circles in the project; "not found" when there are
+    none and the caller is not verified into the project either."""
+    actor = (identity.user_id or "").strip()
+    rows = [
+        r
+        for r in store.list_mine(actor, include_retired=include_retired)
+        if r["project_id"] == project_id
+    ]
+    if not rows and (identity.project_id or "").strip() != project_id:
+        raise_typed(
+            PlatformError.circles(
+                "not_found", f"project {project_id} not found — circles need a project"
+            )
+        )
+    return rows
 
 
 def _may_see_circle(

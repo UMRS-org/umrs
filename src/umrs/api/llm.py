@@ -19,6 +19,7 @@ import json
 import logging
 import os
 import re
+from typing import TYPE_CHECKING
 
 import httpx
 from fastapi import APIRouter, Depends, Query, Request, Response
@@ -43,6 +44,9 @@ from umrs.orchestrator.endpoint_registry import (
     get_registry,
 )
 from umrs.server.correlation import get_request_id
+
+if TYPE_CHECKING:
+    from umrs.api._identity import CallerIdentity
 
 logger = logging.getLogger(__name__)
 
@@ -289,41 +293,53 @@ def _rewrite_model_name(body: bytes, endpoint: RegisteredEndpoint) -> bytes:
     return body
 
 
-def _build_upstream_headers(
-    request: Request,
-    user_id: str,
-    project_id: str,
-) -> dict[str, str]:
-    """Build headers for the upstream LiteLLM request."""
-    headers: dict[str, str] = {}
+# Never forwarded upstream: hop-by-hop and length headers, the caller's own
+# credentials (Authorization is replaced by the service key; the cookie
+# carries the gateway JWT) and the caller identity headers. The upstream may
+# be another project's shared endpoint (ADR-078), so the client's gateway
+# tuple (a replayable HMAC among it) stays here; only the verified user and
+# project are re-added (H-1, 2026-10-18).
+_NOT_FORWARDED = frozenset(
+    {
+        "host",
+        "connection",
+        "keep-alive",
+        "transfer-encoding",
+        "upgrade",
+        "authorization",
+        "cookie",
+        "x-project-id",
+        "x-user-id",
+        "content-length",
+    }
+)
+_GATEWAY_IDENTITY_PREFIX = "x-verified-"
 
-    # Forward safe headers
-    hop_by_hop = frozenset(
-        {
-            "host",
-            "connection",
-            "keep-alive",
-            "transfer-encoding",
-            "upgrade",
-            "authorization",
-            "x-project-id",
-            "x-user-id",
-            "content-length",
-        }
+
+def _forwardable(key: str) -> bool:
+    lowered = key.lower()
+    return lowered not in _NOT_FORWARDED and not lowered.startswith(
+        _GATEWAY_IDENTITY_PREFIX
     )
-    for key, value in request.headers.items():
-        if key.lower() not in hop_by_hop:
-            headers[key] = value
+
+
+def _build_upstream_headers(request: Request) -> dict[str, str]:
+    """Build headers for the upstream LiteLLM request.
+
+    The audit identity is the HMAC-verified caller, not the raw headers.
+    """
+    caller = _verified_caller(request)
+    headers = {k: v for k, v in request.headers.items() if _forwardable(k)}
 
     # Inject service key for LiteLLM auth
     if _LITELLM_SERVICE_KEY:
         headers["Authorization"] = f"Bearer {_LITELLM_SERVICE_KEY}"
 
     # Inject caller identity for audit
-    if user_id:
-        headers["X-User-ID"] = user_id
-    if project_id:
-        headers["X-Project-ID"] = project_id
+    if caller.user_id:
+        headers["X-User-ID"] = caller.user_id
+    if caller.project_id:
+        headers["X-Project-ID"] = caller.project_id
 
     return headers
 
@@ -621,7 +637,7 @@ async def _proxy_to_litellm(
     # Model alias rewriting
     body = _rewrite_model_name(body, endpoint)
 
-    headers = _build_upstream_headers(request, user_id, project_id)
+    headers = _build_upstream_headers(request)
 
     # Check if streaming
     is_streaming = False
@@ -703,15 +719,17 @@ def _extract_model(body: dict) -> str:
     return model
 
 
-def _get_caller_identity(request: Request) -> tuple[str, str]:
-    """
-    Extract user_id and project_id from request headers (canonical, R1).
+def _verified_caller(request: Request) -> CallerIdentity:
+    """The caller, HMAC-verified (canonical tier chain, R1).
 
-    These are set by the NGINX auth sidecar via auth_request_set.
+    The headers are set by the NGINX auth sidecar via auth_request_set; the
+    gateway HMAC is checked (H-1, 2026-10-18), so a direct sidecar caller
+    cannot claim a user, project or the admin flag in strict mode (401).
+    mvp keeps its legacy trust.
     """
-    from ._identity import verified_identity
+    from ._identity import request_identity
 
-    return verified_identity(request, require_project=True)
+    return request_identity(request, require_project=True, verify_hmac=True)
 
 
 _CIRCLES_TTL_SEC = 60.0
@@ -747,13 +765,14 @@ def _cached_circles(request: Request, user_id: str) -> frozenset[str]:
     return circles
 
 
-def _endpoint_caller(request: Request, user_id: str, project_id: str) -> EndpointCaller:
-    """Routing identity for ADR-078 access checks (gateway-verified headers)."""
-    admin = (request.headers.get("x-verified-is-admin") or "").strip().lower()
+def _endpoint_caller(request: Request, caller: CallerIdentity) -> EndpointCaller:
+    """Routing identity for ADR-078 access checks: the verified caller, its
+    admin flag included (never the raw header)."""
+    user_id = caller.user_id
     return EndpointCaller(
-        user_id=user_id or "",
-        project_id=project_id or "",
-        is_admin=admin in ("true", "1", "yes"),
+        user_id=user_id,
+        project_id=caller.project_id,
+        is_admin=caller.is_admin,
         circles_resolver=lambda: _cached_circles(request, user_id) if user_id else (),
     )
 
@@ -788,14 +807,15 @@ async def chat_completions(
 
     Discovers endpoint from local registry (no HTTP hop), proxies to LiteLLM.
     """
-    user_id, project_id = _get_caller_identity(request)
+    caller = _verified_caller(request)
+    user_id, project_id = caller.user_id, caller.project_id
     body = await request.json()
     model = _extract_model(body)
 
     logger.info("Chat completion: project=%s, model=%s", project_id, model)
 
     endpoint = _discover_endpoint(
-        registry, project_id, model, _endpoint_caller(request, user_id, project_id)
+        registry, project_id, model, _endpoint_caller(request, caller)
     )
     response = await _proxy_to_litellm(
         request,
@@ -818,12 +838,13 @@ async def completions(
     registry: EndpointRegistry = Depends(get_registry),
 ):
     """OpenAI-compatible completions endpoint (legacy)."""
-    user_id, project_id = _get_caller_identity(request)
+    caller = _verified_caller(request)
+    user_id, project_id = caller.user_id, caller.project_id
     body = await request.json()
     model = _extract_model(body)
 
     endpoint = _discover_endpoint(
-        registry, project_id, model, _endpoint_caller(request, user_id, project_id)
+        registry, project_id, model, _endpoint_caller(request, caller)
     )
     response = await _proxy_to_litellm(
         request,
@@ -1021,14 +1042,15 @@ async def list_models(
     every served model is discoverable (not just the first endpoint's).
     Entries are deduplicated by model id.
     """
-    user_id, project_id = _get_caller_identity(request)
+    caller = _verified_caller(request)
+    project_id = caller.project_id
 
     live = [EndpointStatus.READY, EndpointStatus.DEGRADED]
     endpoints = registry.list_all(project_id=project_id, status_filter=live)
     # ADR-078: plus endpoints other projects share with this caller.
     endpoints += usable_endpoints(
         registry.list_all(status_filter=live),
-        _endpoint_caller(request, user_id, project_id),
+        _endpoint_caller(request, caller),
         shared_only=True,
     )
 
@@ -1053,12 +1075,13 @@ async def embeddings(
     registry: EndpointRegistry = Depends(get_registry),
 ):
     """OpenAI-compatible embeddings endpoint."""
-    user_id, project_id = _get_caller_identity(request)
+    caller = _verified_caller(request)
+    user_id, project_id = caller.user_id, caller.project_id
     body = await request.json()
     model = _extract_model(body)
 
     endpoint = _discover_endpoint(
-        registry, project_id, model, _endpoint_caller(request, user_id, project_id)
+        registry, project_id, model, _endpoint_caller(request, caller)
     )
     response = await _proxy_to_litellm(
         request,

@@ -3,7 +3,7 @@
 - store semantics: idempotent request, terminal decisions, owner filter
 - durability: a decision recorded by one process instance is read by another
 - facade: ``tool_approvals`` delegates to the configured store, reports durability
-- routes: owner-scoped pending list, 401 for non-owners, ``always`` → mode flip
+- routes: owner-scoped pending list, 404 for non-owners, ``always`` → mode flip
   + session-scope trust row, durability surfaced
 - migration 0081 shape
 """
@@ -177,12 +177,15 @@ class TestRoutes:
         narrowed = _app("alice").get("/umrs/companion/approvals/pending?loop_id=loop-a").json()
         assert [r["id"] for r in narrowed["pending"]] == ["a-alice"]
 
-    def test_decision_by_non_owner_is_401(self):
+    def test_decision_by_non_owner_is_404(self):
+        # H-1 (2026-10-18): this pinned 401 "approval ownership mismatch",
+        # which told a non-owner that the approval exists; another user's
+        # approval now reads as not found, like an unknown id.
         tool_approvals.request_approval("loop-a", 1, ACTION, approval_id="a-alice", user_id="alice")
         resp = _app("bob").post(
             "/umrs/companion/approvals/a-alice/decision", json={"decision": "once"}
         )
-        assert resp.status_code == 401
+        assert resp.status_code == 404
         assert tool_approvals.get("a-alice")["status"] == "pending"
 
     def test_decision_unknown_404_and_repeat_409(self):

@@ -458,6 +458,10 @@ def create_project(
         name=body.name,
         owner_id=owner,
     )
+    # H-1 (2026-10-18): an id already taken returned that project's row to
+    # anyone, while GET hides it as 404; a caller who may not read it learns
+    # only that the id is taken.
+    row = _readable_project(store, row["project_id"], identity, refusal=_ID_TAKEN)
     return {"status": "ok", "project": _row_response(row), "created": True}
 
 
@@ -491,18 +495,27 @@ def _may_read_project(
     return store.circle_affiliated(row["project_id"], user)
 
 
+_ID_TAKEN = PlatformError.projects("conflict", "project id is taken")
+
+
 def _readable_project(
-    store: ProjectStore, project_id: str, identity: CallerIdentity
+    store: ProjectStore,
+    project_id: str,
+    identity: CallerIdentity,
+    *,
+    refusal: PlatformError | None = None,
 ) -> dict[str, Any]:
     """The project row for its owner, members and admins; anyone else reads
-    "not found" (H-1, 2026-10-17: these reads took no identity at all)."""
+    "not found" (H-1, 2026-10-17: these reads took no identity at all), or
+    ``refusal`` when the caller already knows the id exists (create)."""
     try:
         row = store.get(project_id)
     except ProjectNotFound:
         row = None
     if row is None or not _may_read_project(store, row, identity):
         raise_typed(
-            PlatformError.projects("not_found", f"project {project_id} not found")
+            refusal
+            or PlatformError.projects("not_found", f"project {project_id} not found")
         )
     return row
 
@@ -578,15 +591,11 @@ def put_project_budget(
     store: ProjectStore = Depends(_store_dep),
     identity: CallerIdentity = Depends(get_caller_identity),
 ) -> dict[str, Any]:
-    """Set loop budget caps — owner-or-admin; 0 clears the cap.
+    """Set loop budget caps — owner-or-admin; 0 clears the cap. A caller who
+    cannot read the project gets "not found", as on GET (H-1, 2026-10-18).
     # auth: verified
     """
-    try:
-        row = store.get(project_id)
-    except ProjectNotFound:
-        raise_typed(
-            PlatformError.projects("not_found", f"project {project_id} not found")
-        )
+    row = _readable_project(store, project_id, identity)
     if not identity.is_admin and (identity.user_id or "") != row["owner_id"]:
         raise_typed(
             PlatformError.projects(

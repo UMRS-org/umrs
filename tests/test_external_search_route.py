@@ -9,15 +9,32 @@ import pytest
 pytest.importorskip("fastapi")
 
 
+_SECRET = "external-search-route-secret"
+
+
 @pytest.fixture()
-def client():
+def client(monkeypatch):
+    # H-1 (2026-10-18): the route was anonymous server-side egress; it now
+    # needs the verified project, so the client carries a signed caller.
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
     from umrs.api import knowledge as knowledge_module
 
+    from r4_contracts.handshake_hmac import sign_claims
+
+    monkeypatch.setenv("UMRS_AUTH_MODE", "strict")
+    monkeypatch.setenv("UMRS_HANDSHAKE_HMAC_SECRET", _SECRET)
     app = FastAPI()
     app.include_router(knowledge_module.router)
-    return TestClient(app)
+    return TestClient(
+        app,
+        headers={
+            "X-User-ID": "alice",
+            "X-Verified-Project-ID": "proj-a",
+            "X-Verified-Is-Admin": "false",
+            "X-Verified-HMAC": sign_claims(_SECRET, "alice", "proj-a", False),
+        },
+    )
 
 
 def _ok(source_type_name: str):

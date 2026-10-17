@@ -28,9 +28,15 @@ object's ``module.qualname``, so a same-named helper does not count.
    ``_identity`` without ``verify_hmac=True``, and verifies nothing in its
    own helpers, is a finding unless a ``Depends`` target verified the tuple
    for the request. A resolver reached only from a deeper, possibly
-   conditional helper does not excuse it (``rag._require_rag_scope`` on
-   /upload and /retrieve). Headers no HMAC covers (memberships, role, legacy
-   ``X-Project-ID`` outside a verifying resolver) are always findings.
+   conditional helper does not excuse it (the pre-fix
+   ``rag._require_rag_scope`` on /upload and /retrieve). Headers no HMAC
+   covers (role, legacy ``X-Project-ID`` outside a verifying resolver, and
+   the memberships list outside a verifier-module reader that reaches a
+   ``MEMBERSHIP_VERIFIERS`` check) are always findings. Only an
+   ``IDENTITY_RESOLVERS`` entry authenticates when it lives in a verifier
+   module: its other helpers (the signed memberships reader, the mode probe)
+   check a header or nothing and name nobody, so as a Depends they do not
+   excuse raw identity reads.
    ``UNSIGNED_READER_ALLOWLIST`` is keyed by the reader, where the fix lands.
 
 Not proven by any rule: object-id routes (Appendix A.2 class: load the row,
@@ -38,7 +44,9 @@ compare its project or owner, a foreign id reads as not found). The fix
 lanes' tests cover the ones they fixed; the known open ones are listed by
 hand in ``KNOWN_GAPS`` or the allowlists. A guard anywhere in the closure
 covers every project field of the route (rule 1 cannot tie a guard to a
-field; ``KNOWN_GAPS`` names one such case). Raw ``request.query_params`` /
+field: POST /umrs/endpoints/{job_id}/upgrade passes on
+``_forbid_if_project_mismatch`` while ``request.model_path`` is unchecked,
+listed in ``KNOWN_GAPS``). Raw ``request.query_params`` /
 ``request.json()`` reads are not discovered as fields, and ``Header``
 project params are skipped (strict-mode resolvers ignore ``X-Project-ID``).
 
@@ -92,7 +100,7 @@ SCOPE_GUARDS: dict[str, str] = {
     "umrs.api.projects._readable_project": "admin, owner, signed project, circle",
     "umrs.api.a2l._scoped_project": "project_readable on the named project",
     "umrs.api.ops._scoped_project": "non-admins pinned via scope_filter",
-    "umrs.api.rag._require_rag_scope": "project compare (identity: see rule 4)",
+    "umrs.api.rag._require_rag_scope": "three-tier predicate on the HMAC-verified caller",
     "umrs.api.scientific_catalogs._require_project_scope": "body project == caller",
     "umrs.api.catalog._enforce_catalog_scope": "project_readable",
     "umrs.knowledge.events_sse._authorize_project": "project_readable",
@@ -119,6 +127,17 @@ SCOPE_GUARDS: dict[str, str] = {
     "umrs.api.companion._authorize_scope_write": "project:<pid> must be the caller's",
     "umrs.api.companion._enforce_ownership": "registry row owner",
     "umrs.api.companion._enforce_approval_ownership": "approval owner / loop project",
+    # H-1 fix lanes, 2026-10-18 (each read before listing):
+    "umrs.api.companion._caller_worker_job": "body job_id must be the caller's own worker job",
+    "umrs.api.circles._roster_visible": "roster: admin, project owner or affiliated",
+    "umrs.api.circles._own_rows_or_404": "own rows; 404 unless verified into the project",
+    "umrs.api.endpoints._enforce_mount_scope": "non-admin mount sources under caller roots",
+    "umrs.api.endpoints._enforce_model_path_scope": "caller-named model path under caller roots",
+    "umrs.api.files._job_visible": "job project vs caller (or verified admin)",
+    "umrs.api.files._visible_job": "foreign job reads as 404 (Appendix A.2)",
+    "umrs.api.grants._may_revoke": "grantor, asset writer or verified admin",
+    "umrs.api.models._member_may_write": "signed member project, project_writable",
+    "umrs.api.models._caller_job_partition": "job partition via writable_project_for",
 }
 # CallerIdentity methods (``_verified_headers``): matched by attribute name,
 # since ``caller.scope_filter(...)`` names no module object.
@@ -142,7 +161,7 @@ IDENTITY_RESOLVERS: dict[str, str] = {
     "umrs.api._verified_headers.workflow_author_trusted": "HMAC check for workflow authors",
     "umrs.api._verified_headers.verify_admin_flag": "HMAC-bound admin flag",
     "umrs.api.endpoints._caller_is_admin": "admin JWT or HMAC-verified admin",
-    "umrs.api.models.get_access_context": "HMAC-verified user/admin",
+    "umrs.api.models.get_access_context": "HMAC-verified user/admin, gateway-signed memberships",
     "umrs.api.workflows._require_verified_workflow_identity": "HMAC-verified tuple",
     "umrs.api._rail_identity.resolve_rail_principal": "venue rail lease-token principal",
     "umrs.shared.auth.validate_jwt": "bearer JWT",
@@ -168,7 +187,16 @@ _NOT_FOLLOWED_MODULES = frozenset({"umrs.api._identity"})
 _VERIFIER_MODULES = frozenset({"umrs.api._verified_headers", "umrs.api._scope_identity"})
 # The gateway HMAC covers (user, project, admin); nothing covers the rest.
 SIGNED_HEADERS = frozenset({"x-user-id", "x-verified-project-id", "x-verified-is-admin"})
-UNSIGNED_HEADERS = frozenset({"x-verified-project-memberships", "x-user-role", "x-project-id"})
+MEMBERSHIPS_HEADER = "x-verified-project-memberships"
+UNSIGNED_HEADERS = frozenset({MEMBERSHIPS_HEADER, "x-user-role", "x-project-id"})
+# Since 2026-10-18 the gateway signs the memberships list too
+# (X-Verified-Memberships-HMAC over the signed tuple and the sorted list). A
+# verifier-module callable whose own helpers reach one of these reads the list
+# signed; anywhere else a raw read stays a finding, because reaching the check
+# does not prove the verified value is the one used (a fallback branch).
+MEMBERSHIP_VERIFIERS: dict[str, str] = {
+    "r4_contracts.handshake_hmac.verify_memberships": "memberships HMAC bound to the signed tuple",
+}
 
 # Dependencies whose project-named inputs are identity, not a requested
 # project: the legacy mvp ``caller_project_id`` / ``x_project_id`` inputs,
@@ -188,19 +216,15 @@ _MODEL_DEPTH = 3  # nested body models
 # OWNER-OR-ADMIN / SCOPED (inline check on the loaded row), NOT-SCOPE (the
 # value reads no project data), DEFERRED H-1 (a known gap, not yet fixed).
 
-_UNSIGNED_MEMBERSHIPS = (
-    "trusts the unsigned X-Verified-Project-Memberships header (sign_claims covers"
-    " user, project and admin only); needs gateway-signed memberships"
-)
-_UNCHECKED_JOB_PROJECT = (
-    "Appendix A.1: ?caller_project_id (the durable job partition) is not checked"
-    " against the verified caller, and the body project drives the policy check;"
-    " no H-1 lane took models.py"
-)
 _ADMIN_TOKEN = "ADMIN-ONLY: x-admin-token must equal UMRS_ADMIN_TOKEN"
 _MODEL_ADMIN = "ADMIN-ONLY: ctx.is_admin from the HMAC-verified get_access_context"
 
 ALLOWLIST: dict[str, str] = {
+    "POST /umrs/buckets": (
+        "NOT-SCOPE: project is a free experiment label in the caller's own <user>.<project>.<alias> bucket name"
+        " (ADR-079 D-2); owner is the verified caller, and access changes audit under the caller's verified"
+        " project, not the label (H-1 2026-10-18)"
+    ),
     "POST /umrs/a2l/ledger/artifacts": (
         "ADMIN-ONLY: root artifacts are admin/ingestion only (is_admin from the HMAC-verified get_caller_identity)"
     ),
@@ -209,14 +233,6 @@ ALLOWLIST: dict[str, str] = {
     ),
     "POST /umrs/assets/patch": (
         "IDENTITY-ONLY: a non-admin's body project_id is replaced by the verified project (same rule as GET /umrs/assets)"
-    ),
-    "POST /umrs/buckets": (
-        "IDENTITY-ONLY: project is a name segment of the caller's own <user>.<project>.<alias> bucket; owner is the"
-        " verified caller (the segment is not checked: see KNOWN_GAPS)"
-    ),
-    "GET /umrs/circles/{project_id}": (
-        "IDENTITY-ONLY: unaffiliated callers get only their own circle rows; the roster needs admin, project owner"
-        " or affiliation (existence still shows: see KNOWN_GAPS)"
     ),
     "GET /umrs/companion/sessions": (
         "IDENTITY-ONLY: project only filters the caller's own snapshots (WHERE user_id = the HMAC-verified _uid)"
@@ -234,10 +250,6 @@ ALLOWLIST: dict[str, str] = {
         "IDENTITY-ONLY: strict mode submits under the HMAC-verified project and user; the body project is the"
         " mvp fallback only"
     ),
-    "GET /umrs/jobs/stats": (
-        "DEFERRED H-1: Appendix A.1 ?project_id unchecked with no identity; unreachable today because"
-        " GET /umrs/jobs/{job_id} is registered first; delete the route or scope it"
-    ),
     "POST /umrs/k2/verify": (
         "NOT-SCOPE: the body project_id is ignored; the job runs on the get_project_id (HMAC-verified) project"
     ),
@@ -249,20 +261,22 @@ ALLOWLIST: dict[str, str] = {
         "SCOPED: a body project_id other than the get_project_id project is refused inline (project_mismatch)"
     ),
     "POST /umrs/knowledge/external/search": (
-        "NOT-SCOPE: project_id is accepted but unused; the route only queries public academic sources"
+        "NOT-SCOPE: the body project_id reads no project data; the route only queries public academic sources"
+        " (caller resolved through get_project_id and logged since 2026-10-18)"
     ),
     "POST /umrs/knowledge/restore": (
         "ADMIN-ONLY: _require_operator needs an HMAC-verified admin (request_caller_scope) in every mode"
     ),
-    "GET /umrs/models": "DEFERRED H-1: the model ACL context " + _UNSIGNED_MEMBERSHIPS,
-    "POST /umrs/models": "DEFERRED H-1: acl.enforce_create " + _UNSIGNED_MEMBERSHIPS,
+    "GET /umrs/models": (
+        "SCOPED: rows pass the model ACL on ctx (HMAC-verified user/admin, the signed project plus the"
+        " gateway-signed memberships list); project_id only narrows them"
+    ),
+    "POST /umrs/models": (
+        "SCOPED: ACLEnforcer.enforce_create admits a project scope only for a project in ctx.project_memberships"
+        " (signed project plus the gateway-signed list)"
+    ),
     "POST /umrs/models/system": _MODEL_ADMIN,
     "PATCH /umrs/models/{model_name}/policy": _MODEL_ADMIN,
-    "POST /umrs/models/{model_id}/publish": (
-        "DEFERRED H-1: _check_publish_allowed admits target_project_id and " + _UNSIGNED_MEMBERSHIPS
-    ),
-    "POST /umrs/models/stage": "DEFERRED H-1: " + _UNCHECKED_JOB_PROJECT,
-    "POST /umrs/models/{model_name}/download": "DEFERRED H-1: " + _UNCHECKED_JOB_PROJECT,
     "PUT /umrs/ops/governance/quotas": _ADMIN_TOKEN,
     "GET /umrs/ops/governance/analytics": _ADMIN_TOKEN + " (_check_governance_admin)",
     "POST /umrs/ops/governance/ownership/transfer": (
@@ -278,13 +292,6 @@ ALLOWLIST: dict[str, str] = {
         "IDENTITY-ONLY: non-admins are pinned to their own HMAC-verified user rows; project_id only narrows them"
     ),
     "GET /umrs/usage/billing": "ADMIN-ONLY: _require_admin on the HMAC-verified caller",
-    "POST /umrs/projects": (
-        "DEFERRED H-1: creates only for the caller (for_user is admin-only), but an id already taken returns"
-        " that project's row, which GET /umrs/projects/{project_id} hides as 404 (guard-lane finding)"
-    ),
-    "PUT /umrs/projects/{project_id}/budget": (
-        "OWNER-OR-ADMIN: inline check on the loaded project row (a non-owner gets 403, not 404: see KNOWN_GAPS)"
-    ),
     "PUT /umrs/projects/{project_id}/storage": (
         "OWNER-OR-ADMIN: binding_refusal on the loaded project row (owners also need UMRS_PROJECT_STORAGE_ALLOWED)"
     ),
@@ -301,27 +308,9 @@ ALLOWLIST: dict[str, str] = {
 
 # ── rule 2 allowlists: routes that resolve no verified caller ─────────────
 
-_HEADER_TRUST = (
-    "reads X-User-ID / X-Verified-Project-ID / X-Verified-Is-Admin without the gateway HMAC,"
-    " so a direct sidecar caller can claim any project or admin"
-)
-_RAG = "DEFERRED H-1: rag._require_rag_scope " + _HEADER_TRUST
-
 # Whole modules: every route lacks a resolver (stale once one route has one).
 MODULE_ALLOWLIST: dict[str, str] = {
     "umrs.server.http_sidecar": "INFRA: /health, /metrics and /readiness probes, open by design",
-    "umrs.api.llm": (
-        "DEFERRED H-1: _get_caller_identity (verified_identity, no verify_hmac) and _endpoint_caller "
-        + _HEADER_TRUST
-    ),
-    "umrs.api.chat": (
-        "DEFERRED H-1: _get_caller_identity and the rag._require_rag_scope it calls "
-        + _HEADER_TRUST
-    ),
-    "umrs.api.grants": "DEFERRED H-1: _caller " + _HEADER_TRUST,
-    "umrs.api.skills": (
-        "DEFERRED H-1: _caller_identity (request_identity, no verify_hmac) " + _HEADER_TRUST
-    ),
 }
 
 # Single routes in modules that otherwise resolve the caller.
@@ -342,79 +331,17 @@ ROUTE_IDENTITY_ALLOWLIST: dict[str, str] = {
     "DELETE /umrs/ops/governance/orphans": _ADMIN_TOKEN,
     "POST /umrs/ops/governance/ownership/transfer": _ADMIN_TOKEN,
     "PUT /umrs/ops/governance/quotas": _ADMIN_TOKEN,
-    "GET /umrs/ops/connect-info": (
-        "DEFERRED H-1: discovery is open by design, but with UMRS_EMIT_S3CFG=1 a bare X-User-ID returns that"
-        " user's s3cfg; resolve_caller before the s3cfg branch (or drop the D-16 emission)"
-    ),
-    "GET /umrs/ops/timeline": (
-        "DEFERRED H-1: the decorator is bound to the helper _enum_value, so the path answers 422 or 500"
-        " without auth and ops_timeline (require_ops_admin) is unreachable"
-    ),
-    "GET /umrs/files/download-status": (
-        "DEFERRED H-1: any job's status and readiness by ?job_id with no identity (A.2 class); add"
-        " Depends(get_project_id) and answer 404 when job.project_id differs"
-    ),
-    "GET /umrs/jobs/stats": "DEFERRED H-1: no identity; dead route (see ALLOWLIST)",
-    "POST /umrs/knowledge/external/search": (
-        "DEFERRED H-1: anonymous server-side egress to the fixed academic sources; add Depends(get_project_id)"
-        " so the egress is attributable"
-    ),
-    "GET /umrs/rag/corpus-access": _RAG,
-    "PUT /umrs/rag/corpus-access": _RAG,
-    "POST /umrs/rag/query": _RAG,
-    "GET /umrs/rag/documents": _RAG,
-    "GET /umrs/rag/documents/{document_id}": _RAG,
-    "DELETE /umrs/rag/documents/{document_id}": _RAG,
-    "GET /umrs/rag/stats": _RAG,
 }
 
 # ── rule 3 allowlist: '# auth: verified' handlers without a resolver ──────
 
-ANNOTATION_ALLOWLIST: dict[str, str] = {
-    "GET /umrs/grants": "DEFERRED H-1: grants._caller " + _HEADER_TRUST,
-    "POST /umrs/grants": "DEFERRED H-1: grants._caller " + _HEADER_TRUST,
-    "GET /umrs/grants/mine": "DEFERRED H-1: grants._caller " + _HEADER_TRUST,
-    "POST /umrs/grants/{grant_id}/revoke": "DEFERRED H-1: grants._caller " + _HEADER_TRUST,
-    "GET /umrs/rag/corpus-access": _RAG,
-    "PUT /umrs/rag/corpus-access": _RAG,
-}
+ANNOTATION_ALLOWLIST: dict[str, str] = {}
 
 # ── rule 4 allowlist: identity read without the HMAC ──────────────────────
 # Keyed by the reader (module.qualname): the defect lives there, and one fix
 # clears every route it serves. A NO_RESOLVER finding is keyed by route.
 
-_MEMBERSHIPS_READER = "DEFERRED H-1: " + _UNSIGNED_MEMBERSHIPS
-
-UNSIGNED_READER_ALLOWLIST: dict[str, str] = {
-    "umrs.api.rag._get_caller_identity": "DEFERRED H-1: verified_identity without verify_hmac",
-    "umrs.api.rag._require_rag_scope": (
-        "DEFERRED H-1: raw X-Verified-Is-Admin; /upload, /retrieve and /passages reach request_caller_scope"
-        " only on graph-selection branches, so their project scope is unsigned too"
-    ),
-    "umrs.api.rag._query_via_spine": "DEFERRED H-1: raw X-Verified-Is-Admin",
-    "umrs.api.rag.put_corpus_access": "DEFERRED H-1: raw X-Verified-Is-Admin",
-    "umrs.api.rag_retrieve.is_admin": (
-        "DEFERRED H-1: raw X-Verified-Is-Admin gates include_ambient and node_visible on /retrieve and /passages"
-    ),
-    "umrs.api.chat._get_caller_identity": "DEFERRED H-1: verified_identity without verify_hmac",
-    "umrs.api.llm._get_caller_identity": "DEFERRED H-1: verified_identity without verify_hmac",
-    "umrs.api.llm._endpoint_caller": "DEFERRED H-1: raw X-Verified-Is-Admin",
-    "umrs.api.llm._build_upstream_headers": (
-        "DEFERRED H-1: forwards raw X-User-ID / X-Project-ID upstream (take them from the verified tuple)"
-    ),
-    "umrs.api.skills._caller_identity": "DEFERRED H-1: request_identity without verify_hmac",
-    "umrs.api.grants._caller": "DEFERRED H-1: " + _HEADER_TRUST,
-    "umrs.api.ops.ops_connect_info": (
-        "DEFERRED H-1: bare X-User-ID selects the s3cfg returned under UMRS_EMIT_S3CFG=1"
-    ),
-    "umrs.api.models.get_access_context": _MEMBERSHIPS_READER,
-    "umrs.api.workflows.trigger_workflow": (
-        "DEFERRED H-1: the declared-project check " + _UNSIGNED_MEMBERSHIPS
-    ),
-    "umrs.api.workflows.trigger_run_definition": (
-        "DEFERRED H-1: the declared-project check " + _UNSIGNED_MEMBERSHIPS
-    ),
-}
+UNSIGNED_READER_ALLOWLIST: dict[str, str] = {}
 
 # ── deferred route gaps the rules above cannot see ─────────────────────────
 # Object-id routes (Appendix A.2 class: load by id, compare the row's project
@@ -422,53 +349,75 @@ UNSIGNED_READER_ALLOWLIST: dict[str, str] = {
 # fix lanes' tests cover the ones they fixed, and the known open ones are
 # listed here by hand.
 # Checked and closed, so not listed: PATCH /umrs/verification/findings/{key}
-# (knowledge-objects lane question): get_caller -> resolve_caller never
-# returns None in strict mode, so only a verified admin transitions there.
+# (knowledge-objects lane question): get_verified_caller + is_admin, so only a
+# verified admin transitions there, in every mode (2026-10-18; mvp anonymous
+# refused).
+
+_PROJECT_403 = (
+    "DEFERRED H-1: answers 403 (owner or admin only) to a caller who cannot read the project, while"
+    " GET /umrs/projects/{project_id} hides it as 404; refuse non-readers with not_found via"
+    " _may_read_project first (projects lane)"
+)
+_ENDPOINT_LOOKUP_FIRST = (
+    "DEFERRED H-1: looks the endpoint up (404) before _require_identity_for_mutation (401), so in strict"
+    " mode an anonymous direct sidecar caller learns whether a job_id exists; call it before"
+    " registry.get_by_job_id (endpoints lane)"
+)
+_ENDPOINT_PATHS = (
+    "DEFERRED H-1: caller-named host paths (model_path, mounts) skip the per-caller root check"
+    " that POST /umrs/endpoints/provision applies (endpoints._enforce_mount_scope /"
+    " _enforce_model_path_scope); apply the same rule here"
+)
 
 KNOWN_GAPS: dict[str, str] = {
     "GET /umrs/web/dashboard/jobs": (
-        "DEFERRED H-1: the /umrs/web static shell (app.js) calls the dashboard API without identity, so strict"
-        " mode now answers 401; needs an nginx /gw/web/ block with auth_request and a /gw/ API base (streams lane)"
-    ),
-    "GET /umrs/web/dashboard/overview": (
-        "DEFERRED H-1: job counts are zeros for every caller (no JobStore.count_jobs); not a scope gap (streams lane)"
+        "DEFERRED H-1: an admin's ?user_id= page is filtered in memory over a window of all jobs, so a page can"
+        " be empty while pagination.total is positive (use _job_count_owner in _fetch_jobs); nginx has no"
+        " 'location = /gw/web' redirect for the bare shell path (web-shell lane)"
     ),
     "GET /umrs/web/dashboard/models": (
-        "DEFERRED H-1: shows only the active signed project's models (memberships are left out because the"
-        " gateway HMAC does not cover them); revisit once the gateway signs memberships"
+        "DEFERRED H-1: shows only the active signed project's models; the gateway now signs memberships,"
+        " so take them from Depends(_verified_headers.get_verified_memberships) (web-shell lane)"
     ),
     "GET /umrs/projects/{project_id}": (
-        "DEFERRED H-1: a project reachable only through the unsigned memberships header reads 404, and the r4"
-        " client (_project_data_class) fails open on it; r4 must fail closed on 403/404 (projects-sessions lane)"
+        "DEFERRED H-1: a project reachable only through the memberships list reads 404 (_may_read_project"
+        " ignores the now gateway-signed list); the r4 client fails closed on 403/404 since 2026-10-18 except"
+        " for a gateway-less local record (projects lane)"
     ),
-    "GET /umrs/circles/{project_id}": (
-        "DEFERRED H-1: an unknown project answers 404 but another existing project 200 with an empty list,"
-        " which shows that it exists; answer 404 to unaffiliated callers (projects-sessions lane)"
+    "POST /umrs/circles": (
+        "DEFERRED H-1: ESCALATED (ADR-086 §3): any verified caller may create its personal cell in any"
+        " project, which is an existence oracle (404 vs 201) and self-affiliates, defeating the 404/409 hiding"
+        " of GET /umrs/circles/{project_id}, POST /umrs/projects and PUT .../budget; maintainer decision"
     ),
-    "PUT /umrs/projects/{project_id}/budget": (
-        "DEFERRED H-1: a non-owner gets 403 'only the owner or an admin', not 404, while GET hides the project"
-        " (projects-sessions lane)"
-    ),
-    "POST /umrs/buckets": (
-        "DEFERRED H-1: any project segment is accepted, and PUT /umrs/buckets/{bucket}/access later emits"
-        " bucket.access_changed under that project; bind the segment or the audit project to the caller (files lane)"
+    "PATCH /umrs/projects/{project_id}": _PROJECT_403,
+    "GET /umrs/projects/{project_id}/storage": _PROJECT_403,
+    "PUT /umrs/projects/{project_id}/storage": _PROJECT_403,
+    "DELETE /umrs/projects/{project_id}/storage": _PROJECT_403,
+    "POST /umrs/projects/{project_id}/storage/check": _PROJECT_403,
+    "PUT /umrs/buckets/{bucket}/access": (
+        "DEFERRED H-1: a non-owner of an existing bucket"
+        " gets 403 bucket_denied while an unknown one is 404 (GET .../access hides both as 404), an oracle"
+        " on guessable <user>.<project>.<alias> names: answer files.not_found unless the caller is the owner,"
+        " an admin or store.can_access admits it (buckets lane)"
     ),
     "POST /umrs/endpoints/provision": (
-        "DEFERRED H-1: rule 1 passes on _authorize_model_entry_for_caller, but mounts.project_data/rag_index/"
-        "mcp_servers sources are checked only against the site-wide UMRS_ENDPOINT_ALLOWED_MOUNT_PREFIXES"
-        " (/home, /projects, ...), not the caller's project; bind non-admin sources to the caller (endpoints)"
+        "DEFERRED H-1: residual: the caller-root check on mount sources and model paths is lexical at request"
+        " time on the UMRS host (symlink TOCTOU, paths only the compute node sees); re-check realpaths in the"
+        " compute-node launcher (serve.slurm / endpoint_mounts) or run under the caller's own account"
     ),
-    "POST /umrs/companion/workers": (
-        "DEFERRED H-1: an identified caller can still register an ownerless worker (owner_user_id may be empty);"
-        " require owner == caller or default it (projects-sessions lane)"
+    "POST /umrs/endpoints/{job_id}/upgrade": (
+        _ENDPOINT_PATHS
+        + " (request.model_path is not validated at all); "
+        + _ENDPOINT_LOOKUP_FIRST.removeprefix("DEFERRED H-1: ")
     ),
-    "POST /umrs/companion/approvals/{approval_id}/decision": (
-        "DEFERRED H-1: a non-owner of an owned approval gets 401 'approval ownership mismatch', not 404,"
-        " which discloses that it exists (projects-sessions lane)"
+    "PUT /umrs/endpoints/{job_id}/access": _ENDPOINT_LOOKUP_FIRST,
+    "DELETE /umrs/endpoints/{job_id}/deprovision": _ENDPOINT_LOOKUP_FIRST,
+    "POST /umrs/jobs": (
+        _ENDPOINT_PATHS + " (job_type=endpoint_provision spec.model_path / spec.mounts; jobs lane)"
     ),
-    "POST /umrs/a2l/resolve": (
-        "DEFERRED H-1: knowledge/a2l_bridge.py calls /gw/a2l/{resolve,artifacts} with no identity (nginx sends"
-        " them to the ledger); dormant: remove it or give it a service identity (lineage lane)"
+    "GET /umrs/ops/connect-info": (
+        "DEFERRED H-1: gateway /gw/ops/connect-info forwards only X-User-ID, so with strict UMRS and"
+        " UMRS_EMIT_S3CFG=1 the gateway call gets discovery without the s3cfg; forward the signed tuple (gateway)"
     ),
     "POST /umrs/files/presign": (
         "DEFERRED H-1: the gateway presigns downloads with its own S3_BUCKET; where it differs from UMRS's"
@@ -483,14 +432,38 @@ DEFERRED_ELSEWHERE: tuple[str, ...] = (
     " 2026-12; move request_caller_scope (or an adapter) into a non-api module (streams lane)",
     "DEFERRED H-1: parent tests/test_ops_introspection.py must land in the same parent commit as the umrs"
     " pointer bump that carries the new ops.py (admin-identity lane)",
-    "DEFERRED H-1: parent tools/route_inventory.py still whitelists the '/umrs/web' prefix as open; narrow it"
-    " to the static mount, /umrs/web/dashboard/health and /metrics (streams lane)",
-    "DEFERRED H-1: demos/28_egress_audit/README.md posts without identity; strict mode needs a signed admin"
-    " (registries lane)",
-    "DEFERRED H-1: experiments status filter errors are a plain 400 with no typed code (no"
-    " experiments.bad_request in r4-contracts) (registries lane)",
-    "DEFERRED H-1: plan status row, gap analysis and wave ledger for the H-1 item 5/7 and A.2 fixes"
-    " (orchestrator commit)",
+    "DEFERRED H-1: chat.py must land in the same umrs commit as rag.py (rag._verified_caller /"
+    " _verified_admin), never before it (chat-llm lane)",
+    "DEFERRED H-1: _identity.request_identity compares X-Verified-Is-Admin case-sensitively while other"
+    " readers lowercase it; add .lower() so every reader agrees (owner of _identity.py; chat-llm lane note)",
+    "DEFERRED H-1: rag/search.py posts to /gw/llm/v1/chat/completions with no credentials (nginx rejects it);"
+    " send a service bearer token or call the endpoint's litellm_url directly (owner of rag/search.py)",
+    "DEFERRED H-1: rag._get_caller_identity is dead code (HMAC-verified now); delete it and move"
+    " test_identity_consolidation.py and test_h1r_rag_hmac_scope.py to _verified_caller (rag lane)",
+    "DEFERRED H-1: jobs/knowledge_adapters._bridge_a2l_ref imports the deleted knowledge/a2l_bridge.py inside"
+    " a blanket try; delete it, its 4 call sites and the 3 test monkeypatches (knowledge lane)",
+    "DEFERRED H-1: http_sidecar._check_job_store calls the non-existent count_by_status, so /health reports"
+    " pending_jobs 'unknown'; use count_jobs(status='queued') (owner of http_sidecar.py)",
+    "DEFERRED H-1: the endpoint caller-root knob UMRS_ENDPOINT_CALLER_MOUNT_ROOTS (and the mount prefix"
+    " knobs) are undocumented in umrs/deploy/_common/README.md; set it for /lvs0 sites via converge (deploy)",
+    "DEFERRED H-1: parent tools/authz_canaries.yaml 'ops-admin' probes /gw/ops/connect-info with"
+    " expect_denied: true, but connect-info is open discovery; point it at an admin-only ops path (parent)",
+    "DEFERRED H-1: r4 bucket create documents PROJECT as a free name; the server now requires the caller's"
+    " verified project (or none); make it optional and fix the ADR-079 and opossum guides (r4 lane)",
+    "DEFERRED H-1: r4 ADR-062 gate residual: a server project recorded locally without a gateway still"
+    " admits public routes on 404, and 401/5xx still fail open (r4 lane, policy decision)",
+    "DEFERRED H-1: docs: ADR-062 amendment Known limits note (client gate now fails closed on denial),"
+    " ADR-034 / adr README note that knowledge/a2l_bridge.py was deleted, STANDALONE guide /jobs/stats curl,"
+    " security.md / apis.md signed memberships, mvp caller_project_id note (orchestrator commit)",
+    "DEFERRED H-1: nginx -t on gateway/nginx after the /gw/web/ and memberships-HMAC blocks (maintainer,"
+    " converge check before apply)",
+    "DEFERRED H-1: deploy coupling: _verified_headers imports r4_contracts.handshake_hmac.verify_memberships"
+    " (new, parent r4-contracts), so an older r4-contracts install stops every router at import; and strict"
+    " UMRS drops an unsigned memberships list. r4-contracts handshake_hmac.py, gateway/sidecar/main.py and"
+    " gateway/nginx server.conf land in the parent commit with the umrs pointer bump; converge the gateway no"
+    " later than UMRS; the converge check confirms the installed r4-contracts exports verify_memberships"
+    " (maintainer, escalated)",
+    "DEFERRED H-1: plan status row, gap analysis and wave ledger for the H-1 fixes (orchestrator commit)",
 )
 
 
@@ -673,12 +646,35 @@ def _verifies(fn: Any) -> bool:
     return bool(_helper_refs(fn) & IDENTITY_RESOLVERS.keys())
 
 
-def _unsigned_headers(headers: frozenset[str], verifies: bool) -> frozenset[str]:
+def _authenticates(fn: Any) -> bool:
+    """A ``Depends`` target that verifies the caller's tuple for the request.
+    An allowlist inside the verifier modules: only their ``IDENTITY_RESOLVERS``
+    name a caller (``get_verified_memberships`` checks a header but names
+    nobody; a new helper there must be listed before it counts)."""
+    if _scan(fn).module in _VERIFIER_MODULES:
+        return _qualified(inspect.unwrap(fn)) in IDENTITY_RESOLVERS
+    return _verifies(fn)
+
+
+def _signs_memberships(fn: Any) -> bool:
+    """A verifier-module callable that checks the memberships HMAC in its own
+    helpers (only those modules may touch the raw list)."""
+    if _scan(fn).module not in _VERIFIER_MODULES:
+        return False
+    return bool(_helper_refs(fn) & MEMBERSHIP_VERIFIERS.keys())
+
+
+def _unsigned_headers(fn: Any, headers: frozenset[str], verifies: bool) -> frozenset[str]:
     """Headers no HMAC covers. The legacy ``X-Project-ID`` input of a
     callable that verifies the tuple is its mvp fallback (strict resolvers
-    refuse it), not a read."""
+    refuse it), not a read; the memberships list of a callable that checks
+    its own HMAC (``_signs_memberships``) is signed."""
     unsigned = headers & UNSIGNED_HEADERS
-    return unsigned - {"x-project-id"} if verifies else unsigned
+    if verifies:
+        unsigned -= {"x-project-id"}
+    if MEMBERSHIPS_HEADER in unsigned and _signs_memberships(fn):
+        unsigned -= {MEMBERSHIPS_HEADER}
+    return unsigned
 
 
 @dataclass
@@ -688,8 +684,8 @@ class _Facts:
     ``unchecked``: callables that read the signed identity headers (or call
     ``_identity`` without ``verify_hmac=True``) and verify nothing; safe only
     when a ``Depends`` target already verified this request's tuple.
-    ``unsigned``: callables reading headers no HMAC covers (memberships,
-    role, the legacy ``X-Project-ID``); never safe.
+    ``unsigned``: callables reading headers no HMAC covers (role, the legacy
+    ``X-Project-ID``, memberships without their own HMAC); never safe.
     """
 
     refs: set[str] = field(default_factory=set)
@@ -707,7 +703,7 @@ class _Facts:
         verifies = _verifies(fn)
         if not verifies:
             self.unchecked.add(scan.qualname)
-        if _unsigned_headers(headers, verifies):
+        if _unsigned_headers(fn, headers, verifies):
             self.unsigned.add(scan.qualname)
         return scan
 
@@ -755,7 +751,7 @@ def _route_facts(route: APIRoute) -> _RouteFacts:
     if id(route) not in _FACTS:
         subs = [sub for sub in _sub_dependants(route.dependant) if sub.call]
         roots = [(d.call, _header_params(d)) for d in (route.dependant, *subs)]
-        verified = any(_verifies(sub.call) for sub in subs)
+        verified = any(_authenticates(sub.call) for sub in subs)
         _FACTS[id(route)] = (route, _RouteFacts(_walk(roots), verified))
     return _FACTS[id(route)][1]
 
@@ -994,7 +990,13 @@ def test_known_gaps_name_mounted_routes(routes):
 def test_vocabulary_names_real_functions():
     """Every guard and resolver key names an importable function, so a
     rename cannot silently empty the vocabulary."""
-    keys = [*SCOPE_GUARDS, *IDENTITY_RESOLVERS, *IDENTITY_DEPENDENCIES, *_IDENTITY_CALLS]
+    keys = [
+        *SCOPE_GUARDS,
+        *IDENTITY_RESOLVERS,
+        *IDENTITY_DEPENDENCIES,
+        *_IDENTITY_CALLS,
+        *MEMBERSHIP_VERIFIERS,
+    ]
     missing = [key for key in keys if key != HMAC_KEYWORD and not _importable(key)]
     assert not missing, f"no such function: {missing}"
 
@@ -1291,3 +1293,94 @@ def test_verify_hmac_true_counts_as_identity():
     assert unsigned_identity_routes(found) == {
         "GET /umrs/throwaway/unsigned": [f"{__name__}.{unsigned.__qualname__}"]
     }
+
+
+def _raw_user(request: Request) -> str:
+    return request.headers.get("x-user-id", "")
+
+
+def test_signed_memberships_are_not_a_principal():
+    """The gateway-signed memberships reader is signed for the list, but it
+    authenticates nobody: a raw X-User-ID read beside it is still a finding,
+    and a memberships read that skips the HMAC still is too (2026-10-18)."""
+    from umrs.api._verified_headers import get_verified_memberships
+
+    router = APIRouter()
+
+    @router.get("/umrs/throwaway/signed-list")
+    def signed_list(
+        request: Request,
+        own: str = Depends(_verified_project),
+        listed: frozenset[str] = Depends(get_verified_memberships),
+    ) -> dict[str, str]:
+        return {"m": ",".join(sorted(listed)) + own}
+
+    @router.get("/umrs/throwaway/list-only")
+    def list_only(
+        request: Request, listed: frozenset[str] = Depends(get_verified_memberships)
+    ) -> dict[str, str]:
+        return {"user": _raw_user(request), "m": ",".join(sorted(listed))}
+
+    @router.get("/umrs/throwaway/raw-list")
+    def raw_list(
+        request: Request,
+        own: str = Depends(_verified_project),
+        listed: frozenset[str] = Depends(get_verified_memberships),
+    ) -> dict[str, str]:
+        return {"m": request.headers.get("x-verified-project-memberships", "") + own}
+
+    found = unsigned_identity_routes(_routes_of(router))
+    assert found == {
+        "GET /umrs/throwaway/list-only": [f"{__name__}._raw_user"],
+        "GET /umrs/throwaway/raw-list": [f"{__name__}.{raw_list.__qualname__}"],
+    }
+
+
+def _fallback_memberships(request: Request) -> str:
+    """Verify the list when its HMAC is present, else trust it raw (the
+    'old gateways' fallback): reaching verify_memberships is not enough."""
+    from umrs.api._verified_headers import trusted_memberships
+
+    raw = request.headers.get("x-verified-project-memberships", "")
+    if request.headers.get("x-verified-memberships-hmac"):
+        signed = trusted_memberships(
+            strict=True,
+            secret=None,
+            presented_memberships=raw,
+            presented_hmac=request.headers.get("x-verified-memberships-hmac"),
+            user_id=None,
+            project_id=None,
+            is_admin=False,
+        )
+        return ",".join(sorted(signed))
+    return raw
+
+
+def test_a_conditional_memberships_verifier_is_unsigned():
+    """Only the verifier modules may read the raw memberships list: a helper
+    elsewhere that verifies on one branch and returns the raw list on the
+    other is a finding (2026-10-18 review)."""
+    router = APIRouter()
+
+    @router.get("/umrs/throwaway/fallback-list")
+    def fallback_list(request: Request, own: str = Depends(_verified_project)) -> dict[str, str]:
+        return {"m": _fallback_memberships(request) + own}
+
+    found = unsigned_identity_routes(_routes_of(router))
+    assert found == {"GET /umrs/throwaway/fallback-list": [f"{__name__}._fallback_memberships"]}
+
+
+def test_only_listed_resolvers_in_a_verifier_module_authenticate():
+    """A verifier-module helper outside ``IDENTITY_RESOLVERS`` (here the
+    strict-mode probe) used as a Depends does not excuse a raw identity read
+    (2026-10-18 review: the principal rule is an allowlist)."""
+    from umrs.api._verified_headers import _strict_mode_env
+
+    router = APIRouter()
+
+    @router.get("/umrs/throwaway/mode-only")
+    def mode_only(request: Request, strict: bool = Depends(_strict_mode_env)) -> dict[str, str]:
+        return {"user": _raw_user(request), "strict": str(strict)}
+
+    found = unsigned_identity_routes(_routes_of(router))
+    assert found == {"GET /umrs/throwaway/mode-only": [f"{__name__}._raw_user"]}

@@ -62,15 +62,28 @@ class TestRequireVerifiedWorkflowIdentity:
 
 class TestVerifiedWorkflowParamsMembershipsStrict:
     def test_strict_memberships_header_not_trusted(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        _secret_env(monkeypatch)
+        secret = _secret_env(monkeypatch)
         # Even with a forged memberships header naming the victim project,
-        # strict mode must refuse it: memberships are not part of the v1
-        # signature tuple.
+        # strict mode must refuse it: the v1 identity tuple does not cover
+        # the list. H-1 (2026-10-18): the helper now takes the memberships
+        # get_verified_memberships trusted, so the unsigned header goes
+        # through that reader first (it yields nothing without its HMAC).
+        from umrs.api._verified_headers import trusted_memberships
+
+        memberships = trusted_memberships(
+            strict=True,
+            secret=secret,
+            presented_memberships="victim-proj,attacker-proj",
+            presented_hmac=None,
+            user_id="attacker",
+            project_id="attacker-proj",
+            is_admin=False,
+        )
         with pytest.raises(HTTPException) as exc_info:
             _verified_workflow_params(
                 {"project_id": "victim-proj"},
                 "attacker-proj",
-                "victim-proj,attacker-proj",
+                memberships,
                 "false",
             )
         assert exc_info.value.status_code == 403
@@ -87,10 +100,12 @@ class TestVerifiedWorkflowParamsMembershipsStrict:
 
     def test_mvp_mode_memberships_still_honored(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("UMRS_AUTH_MODE", "mvp")
+        # H-1 (2026-10-18): the helper takes the reader's set, not the raw
+        # header; mvp's reader passes the list through as presented.
         params = _verified_workflow_params(
             {"project_id": "team-proj"},
             "alice-proj",
-            "team-proj",
+            frozenset({"team-proj"}),
             "false",
         )
         assert params["project_id"] == "team-proj"

@@ -365,12 +365,15 @@ class TestLoopBudget:
         store = ProjectStore(_BudgetConn())
         store.create("p-own", owner_id="alice")
         client = _client(store)
+        # H-1 (2026-10-18): bob cannot read p-own (not owner, not verified
+        # into it, no circle), so the PUT hides it as GET does: 404, not 403.
+        # A reader who is not owner/admin still gets 403 (test_h1r_projects_*).
         r = client.put(
             "/umrs/projects/p-own/budget",
             json={"max_gpu_hours": 1.0, "max_wall_clock_hours": 2.0},
             headers=_headers("bob"),
         )
-        assert r.status_code == 403
+        assert r.status_code == 404
         ok = client.put(
             "/umrs/projects/p-own/budget",
             json={"max_gpu_hours": 1.0, "max_wall_clock_hours": 2.0},

@@ -29,6 +29,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from ..jobs.models import JobType, RestartPolicy
 from ..jobs.store import DuplicateJobError, JobStore
+from ..knowledge.access_scope import CallerScope, project_writable, writable_project_for
 from ..model_registry.models import (
     ModelCapabilities,
     ModelEntry,
@@ -47,6 +48,8 @@ from ..model_registry.store import (
     PermissionDeniedError,
 )
 from ..shared.config import get_resolved_model_staging_root
+from ._scope_identity import get_caller_scope
+from ._verified_headers import get_verified_memberships
 from .jobs import get_job_store
 from .typed_errors import PlatformError, raise_typed
 
@@ -491,11 +494,15 @@ def _strict_auth_mode() -> bool:
 def _context_from_verified_headers(
     header_user: str,
     header_admin: str,
-    header_memberships: str | None,
+    signed_memberships: frozenset[str],
     x_verified_project_id: str | None,
     x_verified_hmac: str | None,
 ) -> AccessContext:
-    """Build access context from Gateway-verified headers (strict path)."""
+    """Build access context from Gateway-verified headers (strict path).
+
+    Memberships: the signed project plus ``signed_memberships``, which in
+    strict mode holds the gateway list only when its own HMAC verified
+    (H-1, 2026-10-18: the unsigned list widened the ACL)."""
     from ._verified_headers import handshake_secret, verified_headers_trusted
 
     admin = header_admin in ("true", "1")
@@ -514,31 +521,14 @@ def _context_from_verified_headers(
                 "Gateway-verified identity signature rejected",
             ),
         )
-    memberships: set[str] = set()
-    if header_memberships:
-        memberships = {p.strip() for p in header_memberships.split(",") if p.strip()}
+    memberships = set(signed_memberships) | (
+        {primary_project} if primary_project else set()
+    )
     return AccessContext(
         user_id=header_user,
         is_admin=admin,
         project_memberships=memberships,
     )
-
-
-def _normalized_verified_headers(
-    x_user_id: str | None,
-    x_verified_is_admin: str | None,
-    x_verified_project_memberships: str | None,
-    x_verified_project_id: str | None,
-) -> tuple[str | None, str, str | None]:
-    """Normalize the raw verified header values from the request."""
-    header_user = (x_user_id or "").strip() or None
-    header_admin = (x_verified_is_admin or "").strip()
-    header_memberships = (
-        (x_verified_project_memberships or "").strip()
-        or (x_verified_project_id or "").strip()
-        or None
-    )
-    return header_user, header_admin, header_memberships
 
 
 def _legacy_query_context(
@@ -573,34 +563,29 @@ def get_access_context(
     ),
     x_user_id: str | None = Header(None),
     x_verified_is_admin: str | None = Header(None),
-    x_verified_project_memberships: str | None = Header(None),
     x_verified_project_id: str | None = Header(None),
     x_verified_hmac: str | None = Header(None),
+    signed_memberships: frozenset[str] = Depends(get_verified_memberships),
 ) -> AccessContext:
     """
     Build access context from Gateway-verified headers, falling back to
     query params in MVP/testing mode.
 
     In production (strict mode) the identity is derived entirely from
-    ``X-User-ID``, ``X-Verified-Is-Admin``, and
-    ``X-Verified-Project-Memberships`` / ``X-Verified-Project-ID`` headers
-    set by the Gateway after JWT validation.
+    ``X-User-ID``, ``X-Verified-Is-Admin`` and ``X-Verified-Project-ID``
+    headers set by the Gateway after JWT validation, plus the
+    ``X-Verified-Project-Memberships`` list when its own gateway HMAC
+    verifies (``get_verified_memberships``).
 
     Strict mode honors verified headers only with a valid gateway HMAC
     signature over the full identity tuple (live-spoof class closure).
     """
-    header_user, header_admin, header_memberships = _normalized_verified_headers(
-        x_user_id,
-        x_verified_is_admin,
-        x_verified_project_memberships,
-        x_verified_project_id,
-    )
-
+    header_user = (x_user_id or "").strip() or None
     if header_user:
         return _context_from_verified_headers(
             header_user,
-            header_admin,
-            header_memberships,
+            (x_verified_is_admin or "").strip(),
+            signed_memberships,
             x_verified_project_id,
             x_verified_hmac,
         )
@@ -673,6 +658,38 @@ def _resolve_job_project_id(
 ) -> str:
     """Resolve the durable-job project partition used for job API access."""
     return requested_project_id or caller_project_id or ctx.user_id
+
+
+def _caller_job_partition(caller_project_id: str | None, caller: CallerScope) -> str:
+    """The ``?caller_project_id`` job partition, checked against the verified
+    caller: the named project when the caller may write it (admins: any),
+    the caller's verified project when none is named ("" for anonymous mvp
+    callers), 403 otherwise. It was taken unchecked (H-1 Appendix A.1)."""
+    partition = writable_project_for(caller_project_id or "", caller)
+    if partition is None:
+        raise_typed(
+            PlatformError.models(
+                "forbidden",
+                f"caller_project_id '{caller_project_id}' is outside the caller's verified project",
+            ),
+        )
+    return partition
+
+
+def _member_may_write(project_id: str | None, ctx: AccessContext) -> bool:
+    """May the caller put a project-scope model under ``project_id``?
+
+    Admins may; others only for a member project (``ctx`` memberships are the
+    signed project plus the gateway-signed list in strict mode) that
+    ``project_writable`` admits as that member's project, so the ``system``
+    and personal ``user:`` namespaces stay refused even when listed.
+    """
+    if ctx.is_admin:
+        return True
+    pid = (project_id or "").strip()
+    if not pid or pid not in ctx.project_memberships:
+        return False
+    return project_writable(pid, CallerScope(user_id=ctx.user_id, project_id=pid))
 
 
 def _submit_model_download_job(
@@ -957,16 +974,12 @@ def _validate_stage_scope(scope: ModelScope, request, ctx: AccessContext) -> Non
             ),
         )
 
-    if (
-        scope == ModelScope.PROJECT
-        and request.project_id not in ctx.project_memberships
-    ):
-        if not ctx.is_admin:
-            raise_typed(
-                PlatformError.models(
-                    "forbidden", f"Not a member of project {request.project_id}"
-                ),
-            )
+    if scope == ModelScope.PROJECT and not _member_may_write(request.project_id, ctx):
+        raise_typed(
+            PlatformError.models(
+                "forbidden", f"Not a member of project {request.project_id}"
+            ),
+        )
 
 
 _STAGE_ELSEWHERE_HINT = (
@@ -995,6 +1008,7 @@ async def stage_model(
         description="Caller active project ID for durable job scoping",
     ),
     ctx: AccessContext = Depends(get_access_context),
+    caller: CallerScope = Depends(get_caller_scope),
     store: ModelStore = Depends(get_model_store),
     job_store: JobStore = Depends(get_job_store),
 ) -> ModelStageResponse:
@@ -1011,6 +1025,7 @@ async def stage_model(
         scope = ModelScope(request.scope)
 
         _validate_stage_scope(scope, request, ctx)
+        job_partition = _caller_job_partition(caller_project_id, caller)
         storage_ref = _stage_storage_ref(scope, request, ctx)
 
         # Create model entry with staging status
@@ -1030,7 +1045,7 @@ async def stage_model(
         )
 
         job_project_id = _resolve_job_project_id(
-            caller_project_id=caller_project_id,
+            caller_project_id=job_partition,
             requested_project_id=model.project_id,
             ctx=ctx,
         )
@@ -1408,8 +1423,7 @@ def _check_publish_allowed(source_model, request: "ModelPublishRequest", ctx) ->
         )
 
     if (
-        not ctx.is_admin
-        and request.target_project_id not in ctx.project_memberships
+        not _member_may_write(request.target_project_id, ctx)
         and request.target_project_id not in ctx.admin_project_ids
     ):
         raise_typed(
@@ -1719,7 +1733,7 @@ def _check_download_target_scope(store, model_name: str, request, ctx) -> None:
                     "bad_request", "project_id required for project scope"
                 ),
             )
-        if request.project_id not in ctx.project_memberships and not ctx.is_admin:
+        if not _member_may_write(request.project_id, ctx):
             raise_typed(
                 PlatformError.models(
                     "forbidden", f"Not a member of project {request.project_id}"
@@ -1749,6 +1763,7 @@ async def download_model_to_user_space(
         description="Caller active project ID for durable job scoping",
     ),
     ctx: AccessContext = Depends(get_access_context),
+    caller: CallerScope = Depends(get_caller_scope),
     store: ModelStore = Depends(get_model_store),
     job_store: JobStore = Depends(get_job_store),
 ) -> ModelDownloadResponse:
@@ -1771,6 +1786,7 @@ async def download_model_to_user_space(
 
         # Check policy access and target scope permissions
         _check_download_target_scope(store, model_name, request, ctx)
+        job_partition = _caller_job_partition(caller_project_id, caller)
 
         target_scope = ModelScope(request.target_scope)
         target_name = request.custom_name or f"{model_name}-copy"
@@ -1796,7 +1812,7 @@ async def download_model_to_user_space(
         )
 
         job_project_id = _resolve_job_project_id(
-            caller_project_id=caller_project_id,
+            caller_project_id=job_partition,
             requested_project_id=target_model.project_id,
             ctx=ctx,
         )

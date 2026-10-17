@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from fastapi import Header
 from r4_contracts.handshake_hmac import (
     verify_claims,
+    verify_memberships,
     verify_workflow_author_claim,
 )
 
@@ -83,6 +84,64 @@ def workflow_author_trusted(
         (user_id or "").strip(),
         (project_id or "").strip(),
         author=author,
+    )
+
+
+def _membership_items(presented: str | None) -> frozenset[str]:
+    return frozenset(p.strip() for p in (presented or "").split(",") if p.strip())
+
+
+def trusted_memberships(
+    *,
+    strict: bool,
+    secret: str | None,
+    presented_memberships: str | None,
+    presented_hmac: str | None,
+    user_id: str | None,
+    project_id: str | None,
+    is_admin: bool,
+) -> frozenset[str]:
+    """The ``X-Verified-Project-Memberships`` projects this request may use.
+
+    H-1 (2026-10-18): the list had no signature, so a direct sidecar caller
+    could widen its project set. strict=True: the list counts only when
+    ``X-Verified-Memberships-HMAC`` verifies against the (user, project,
+    admin) tuple; anything else is an empty set, so the caller keeps only its
+    signed project (fail closed; a gateway that predates the signature lands
+    here too). strict=False: legacy trust (mvp compatibility).
+    """
+    listed = _membership_items(presented_memberships)
+    if not strict or not listed:
+        return listed
+    signed = verify_memberships(
+        secret,
+        (presented_hmac or "").strip() or None,
+        (user_id or "").strip(),
+        (project_id or "").strip(),
+        is_admin,
+        sorted(listed),
+    )
+    return listed if signed else frozenset()
+
+
+def get_verified_memberships(
+    x_user_id: str | None = Header(None),
+    x_verified_project_id: str | None = Header(None),
+    x_verified_is_admin: str | None = Header(None),
+    x_verified_project_memberships: str | None = Header(None),
+    x_verified_memberships_hmac: str | None = Header(None),
+) -> frozenset[str]:
+    """FastAPI dependency: the gateway-signed memberships (see
+    ``trusted_memberships``). It authenticates nobody: the route still
+    resolves the caller through its own HMAC-verifying resolver."""
+    return trusted_memberships(
+        strict=_strict_mode_env(),
+        secret=handshake_secret(),
+        presented_memberships=x_verified_project_memberships,
+        presented_hmac=x_verified_memberships_hmac,
+        user_id=x_user_id,
+        project_id=x_verified_project_id,
+        is_admin=(x_verified_is_admin or "").strip() == "true",
     )
 
 

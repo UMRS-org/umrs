@@ -1,4 +1,4 @@
-const api = "/umrs/web/dashboard";
+const api = location.pathname.startsWith("/gw/") ? "/gw/web/dashboard" : "/umrs/web/dashboard";
 const jobsBody = document.querySelector("#jobs");
 const modelsBody = document.querySelector("#models");
 const detail = document.querySelector("#job-detail");
