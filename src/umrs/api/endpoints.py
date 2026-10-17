@@ -479,10 +479,20 @@ def _require_internal_endpoint_writer(
     authorization: str | None = Header(None),
     x_user_id: str | None = Header(None),
     x_verified_is_admin: str | None = Header(None),
+    x_verified_project_id: str | None = Header(None),
+    x_verified_hmac: str | None = Header(None),
 ) -> None:
+    # The signed-admin-header path needs the project and HMAC too; they were
+    # not passed, so only a JWT admin could pass (H-1, 2026-10-17).
     if not _strict_auth_mode():
         return
-    if not _caller_is_admin(authorization, x_user_id, x_verified_is_admin):
+    if not _caller_is_admin(
+        authorization,
+        x_user_id,
+        x_verified_is_admin,
+        x_verified_project_id,
+        x_verified_hmac,
+    ):
         raise_typed(
             PlatformError.endpoints(
                 "forbidden",
@@ -3546,6 +3556,7 @@ async def update_endpoint_location(
     job_id: str,
     request: EndpointLocationUpdate,
     registry: EndpointRegistry = Depends(get_registry),
+    _authorized: None = Depends(_require_internal_endpoint_writer),
 ) -> EndpointLocationResponse:
     """Update endpoint host/port and merge metadata.
 
@@ -3553,7 +3564,9 @@ async def update_endpoint_location(
     reconciler cannot auto-resolve an endpoint (e.g. external
     system modified the registry directly).
 
-    Requires strict authentication mode (UMRS_AUTH_MODE=strict).
+    Requires strict authentication mode (UMRS_AUTH_MODE=strict) and an admin
+    caller: the docstring said admin-only, but any caller could rewrite any
+    endpoint's host and port (H-1, 2026-10-17).
     """
     # Default strict (audit B12): mvp is an explicit dev opt-in.
     if os.environ.get("UMRS_AUTH_MODE", "strict").strip().lower() != "strict":
