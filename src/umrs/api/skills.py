@@ -350,6 +350,24 @@ async def search_skills(
     return [_skill_response(skill) for skill in matches[:limit]]
 
 
+def _writable_skill_project(requested: str | None, caller: _CallerIdentity) -> str:
+    """A project-scope skill lands in a project the caller may write; the
+    requested project was honoured unchecked (H-1, 2026-10-17)."""
+    from umrs.knowledge.access_scope import CallerScope, writable_project_for
+
+    scope = CallerScope(
+        user_id=caller.user_id, project_id=caller.project_id, is_admin=caller.is_admin
+    )
+    project = writable_project_for(requested or "", scope)
+    if project is None:
+        raise_typed(
+            PlatformError.skills(
+                "forbidden", f"no write access to project {requested!r}"
+            ),
+        )
+    return project
+
+
 @router.post("", status_code=status.HTTP_201_CREATED, response_model=SkillResponse)
 @router.post("/", status_code=status.HTTP_201_CREATED, response_model=SkillResponse)
 async def register_skill(
@@ -363,7 +381,7 @@ async def register_skill(
             PlatformError.skills("forbidden", "admin required"),
         )
     if scope == SkillScope.PROJECT:
-        project_id = request.project_id or caller.project_id
+        project_id = _writable_skill_project(request.project_id, caller)
     elif scope == SkillScope.SYSTEM:
         project_id = request.project_id
     else:

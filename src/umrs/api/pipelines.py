@@ -27,7 +27,7 @@ import logging
 from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from ..rag.models import (
@@ -452,14 +452,21 @@ class RAGProfileResponse(BaseModel):
 # =============================================================================
 
 
-def extract_user_project(
-    x_user_id: str | None = Header(None),
-    x_project_id: str | None = Header(None),
-) -> tuple[str, str]:
-    """Extract user and project IDs from headers."""
-    user_id = x_user_id or "anonymous"
-    project_id = x_project_id or "default"
-    return user_id, project_id
+def verified_user_project(request: Request) -> tuple[str, str]:
+    """(user, project) of the HMAC-verified caller.
+
+    The routes read the raw ``X-User-ID`` / ``X-Project-ID`` headers, so the
+    project was whatever the client sent (H-1, 2026-10-17). Strict mode now
+    needs the verified identity (401 otherwise); dev (mvp) mode keeps the old
+    ``anonymous`` / ``default`` fallback.
+    """
+    from ._scope_identity import _strict_mode, request_caller_scope
+
+    caller = request_caller_scope(request)
+    # mvp's legacy tier keeps the raw project but not the user; dev clients
+    # still name themselves with the raw header (never in strict mode).
+    raw_user = "" if _strict_mode() else request.headers.get("x-user-id", "").strip()
+    return caller.user_id or raw_user or "anonymous", caller.project_id or "default"
 
 
 def chunker_request_to_spec(req: ChunkerSpecRequest | None) -> ChunkerSpec:
@@ -568,8 +575,7 @@ def rag_profile_to_response(profile: RAGProfile) -> RAGProfileResponse:
 )
 async def create_pipeline(
     request: PipelineCreateRequest,
-    x_user_id: str | None = Header(None),
-    x_project_id: str | None = Header(None),
+    caller: tuple[str, str] = Depends(verified_user_project),
     store: PipelineStore = Depends(get_pipeline_store),
 ) -> PipelineResponse:
     """
@@ -580,7 +586,7 @@ async def create_pipeline(
     - Embedding model selection
     - Metadata extraction rules
     """
-    user_id, project_id = extract_user_project(x_user_id, x_project_id)
+    user_id, project_id = caller
 
     # Governance quota check
     try:
@@ -620,13 +626,12 @@ async def create_pipeline(
 
 @router.get("/pipelines", response_model=list[PipelineResponse])
 async def list_pipelines(
-    x_user_id: str | None = Header(None),
-    x_project_id: str | None = Header(None),
+    caller: tuple[str, str] = Depends(verified_user_project),
     status_filter: str | None = Query(None, description="Filter by status"),
     store: PipelineStore = Depends(get_pipeline_store),
 ) -> list[PipelineResponse]:
     """List pipeline definitions for the current project."""
-    user_id, project_id = extract_user_project(x_user_id, x_project_id)
+    user_id, project_id = caller
 
     status_enum = PipelineStatus(status_filter) if status_filter else None
     pipelines = store.list_pipelines(project_id=project_id, status_filter=status_enum)
@@ -637,12 +642,11 @@ async def list_pipelines(
 @router.get("/pipelines/{pipeline_id}", response_model=PipelineResponse)
 async def get_pipeline(
     pipeline_id: str,
-    x_user_id: str | None = Header(None),
-    x_project_id: str | None = Header(None),
+    caller: tuple[str, str] = Depends(verified_user_project),
     store: PipelineStore = Depends(get_pipeline_store),
 ) -> PipelineResponse:
     """Get pipeline definition by ID."""
-    user_id, project_id = extract_user_project(x_user_id, x_project_id)
+    user_id, project_id = caller
 
     pipeline = store.get_pipeline(pipeline_id)
     if not pipeline:
@@ -663,12 +667,11 @@ async def get_pipeline(
 async def update_pipeline(
     pipeline_id: str,
     request: PipelineUpdateRequest,
-    x_user_id: str | None = Header(None),
-    x_project_id: str | None = Header(None),
+    caller: tuple[str, str] = Depends(verified_user_project),
     store: PipelineStore = Depends(get_pipeline_store),
 ) -> PipelineResponse:
     """Update pipeline definition."""
-    user_id, project_id = extract_user_project(x_user_id, x_project_id)
+    user_id, project_id = caller
 
     pipeline = store.get_pipeline(pipeline_id)
     if not pipeline:
@@ -689,12 +692,11 @@ async def update_pipeline(
 @router.delete("/pipelines/{pipeline_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_pipeline(
     pipeline_id: str,
-    x_user_id: str | None = Header(None),
-    x_project_id: str | None = Header(None),
+    caller: tuple[str, str] = Depends(verified_user_project),
     store: PipelineStore = Depends(get_pipeline_store),
 ) -> None:
     """Delete pipeline definition."""
-    user_id, project_id = extract_user_project(x_user_id, x_project_id)
+    user_id, project_id = caller
 
     pipeline = store.get_pipeline(pipeline_id)
     if not pipeline:
@@ -805,8 +807,7 @@ def _rag_profiles_gone() -> None:
 )
 async def create_rag_profile(
     request: RAGProfileCreateRequest,
-    x_user_id: str | None = Header(None),
-    x_project_id: str | None = Header(None),
+    caller: tuple[str, str] = Depends(verified_user_project),
     store: PipelineStore = Depends(get_pipeline_store),
 ) -> RAGProfileResponse:
     """
@@ -819,7 +820,7 @@ async def create_rag_profile(
     - LLM integration settings
     """
     _rag_profiles_gone()
-    user_id, project_id = extract_user_project(x_user_id, x_project_id)
+    user_id, project_id = caller
 
     # Governance quota check
     try:
@@ -879,14 +880,13 @@ async def create_rag_profile(
 
 @router.get("/rag-profiles", response_model=list[RAGProfileResponse])
 async def list_rag_profiles(
-    x_user_id: str | None = Header(None),
-    x_project_id: str | None = Header(None),
+    caller: tuple[str, str] = Depends(verified_user_project),
     status_filter: str | None = Query(None, description="Filter by status"),
     store: PipelineStore = Depends(get_pipeline_store),
 ) -> list[RAGProfileResponse]:
     """List RAG profiles for the current project."""
     _rag_profiles_gone()
-    user_id, project_id = extract_user_project(x_user_id, x_project_id)
+    user_id, project_id = caller
 
     status_enum = PipelineStatus(status_filter) if status_filter else None
     profiles = store.list_rag_profiles(project_id=project_id, status_filter=status_enum)
@@ -897,13 +897,12 @@ async def list_rag_profiles(
 @router.get("/rag-profiles/{profile_id}", response_model=RAGProfileResponse)
 async def get_rag_profile(
     profile_id: str,
-    x_user_id: str | None = Header(None),
-    x_project_id: str | None = Header(None),
+    caller: tuple[str, str] = Depends(verified_user_project),
     store: PipelineStore = Depends(get_pipeline_store),
 ) -> RAGProfileResponse:
     """Get RAG profile by ID."""
     _rag_profiles_gone()
-    user_id, project_id = extract_user_project(x_user_id, x_project_id)
+    user_id, project_id = caller
 
     profile = store.get_rag_profile(profile_id)
     if not profile:
@@ -925,13 +924,12 @@ async def get_rag_profile(
 async def update_rag_profile(
     profile_id: str,
     request: RAGProfileUpdateRequest,
-    x_user_id: str | None = Header(None),
-    x_project_id: str | None = Header(None),
+    caller: tuple[str, str] = Depends(verified_user_project),
     store: PipelineStore = Depends(get_pipeline_store),
 ) -> RAGProfileResponse:
     """Update RAG profile."""
     _rag_profiles_gone()
-    user_id, project_id = extract_user_project(x_user_id, x_project_id)
+    user_id, project_id = caller
 
     profile = store.get_rag_profile(profile_id)
     if not profile:
@@ -987,13 +985,12 @@ def _rag_profile_updates_from_request(request: RAGProfileUpdateRequest) -> dict:
 @router.delete("/rag-profiles/{profile_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_rag_profile(
     profile_id: str,
-    x_user_id: str | None = Header(None),
-    x_project_id: str | None = Header(None),
+    caller: tuple[str, str] = Depends(verified_user_project),
     store: PipelineStore = Depends(get_pipeline_store),
 ) -> None:
     """Delete RAG profile."""
     _rag_profiles_gone()
-    user_id, project_id = extract_user_project(x_user_id, x_project_id)
+    user_id, project_id = caller
 
     profile = store.get_rag_profile(profile_id)
     if not profile:
