@@ -156,7 +156,9 @@ def test_inference_bindings_flow_through_issue(app):
                 "source_ids": ["11111111-1111-4111-8111-111111111111"],
                 "default_source_id": "11111111-1111-4111-8111-111111111111",
                 "egress_ip": "10.1.1.1",
-                "project": "proj-1",
+                # The caller's own project: a lease for another project is
+                # refused (H-1, test_h1_identity_minting_scope.py).
+                "project": "alice-proj",
                 "max_lifetime_seconds": 86_400,
             },
         )
@@ -169,5 +171,5 @@ def test_inference_bindings_flow_through_issue(app):
         assert lease.source_ids == ("11111111-1111-4111-8111-111111111111",)
         assert lease.default_source_id == "11111111-1111-4111-8111-111111111111"
         assert lease.egress_ip == "10.1.1.1"
-        assert lease.project == "proj-1"
+        assert lease.project == "alice-proj"
         assert lease.max_lifetime_at is not None

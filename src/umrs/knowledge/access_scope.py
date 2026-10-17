@@ -95,6 +95,23 @@ def project_writable(project_id: str, caller: CallerScope) -> bool:
     return project_id == caller.project_id
 
 
+def writable_project_for(requested: str, caller: CallerScope) -> str | None:
+    """The project a caller may act in for a request that names one.
+
+    The requested project when the caller may write it (admins: any), the
+    caller's own verified project when none is named, ``None`` when refused.
+    Identity-minting paths (secret-broker leases, venue starts) honoured any
+    requested project, which let a user obtain signed identity for another
+    project through the venue rail (hardening plan H-1, 2026-10-17).
+    """
+    wanted = (requested or "").strip()
+    if caller.is_admin:
+        return wanted
+    if not wanted:
+        return caller.project_id
+    return wanted if project_writable(wanted, caller) else None
+
+
 def graph_readable(
     *, kind: str, project_id: str | None, owner_id: str, caller: CallerScope
 ) -> bool:

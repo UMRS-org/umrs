@@ -19,7 +19,7 @@ import logging
 from fastapi import APIRouter, Depends, Query, status
 from pydantic import BaseModel
 
-from umrs.knowledge.access_scope import CallerScope
+from umrs.knowledge.access_scope import CallerScope, writable_project_for
 
 from ..jobs.secret_broker import SecretBroker, SecretLease
 from ._scope_identity import get_caller_scope
@@ -163,6 +163,16 @@ def issue_lease(
     """# auth: verified
     """
     owner_id = req.owner_id if caller.is_admin else (caller.user_id or req.owner_id)
+    # The lease's project becomes signed identity on the venue rail: only a
+    # project the caller may write (H-1, 2026-10-17).
+    project = writable_project_for(req.project, caller)
+    if project is None:
+        raise_typed(
+            PlatformError.secretbroker(
+                "forbidden",
+                f"no write access to project {req.project!r} for this lease",
+            )
+        )
     broker = get_broker()
     lease, secret_value = broker.issue_lease(
         job_id=req.job_id,
@@ -176,7 +186,7 @@ def issue_lease(
         source_ids=tuple(req.source_ids),
         default_source_id=req.default_source_id,
         egress_ip=req.egress_ip,
-        project=req.project,
+        project=project,
         max_lifetime_seconds=req.max_lifetime_seconds,
     )
     d = lease.to_dict()
