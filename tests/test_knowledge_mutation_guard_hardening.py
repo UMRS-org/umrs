@@ -62,6 +62,16 @@ def _restore_client(monkeypatch, script, engine):
     return TestClient(app, raise_server_exceptions=False), app.state.umrs_db_pool
 
 
+# Server-path restore is admin-only in every mode (H-1, 2026-10-17); the
+# guard tests below used to restore anonymously (mvp let that through) and
+# now restore as the mvp admin.
+_ADMIN = {
+    "x-user-id": "ops",
+    "x-verified-project-id": "ops",
+    "x-verified-is-admin": "true",
+}
+
+
 @pytest.fixture
 def bundle_dir(tmp_path):
     (tmp_path / "manifest.json").write_text(json.dumps({"project_id": "proj-a"}))
@@ -75,7 +85,7 @@ class TestRestoreGuard:
         resp = client.post(
             "/umrs/knowledge/restore",
             json={"bundle_dir": bundle_dir},
-            headers={"x-r4-actor": "agent", "x-r4-session-id": "s-1"},
+            headers={**_ADMIN, "x-r4-actor": "agent", "x-r4-session-id": "s-1"},
         )
         assert resp.status_code == 409
         assert resp.json()["detail"]["error"] == "proposal_required"
@@ -91,7 +101,7 @@ class TestRestoreGuard:
         resp = client.post(
             "/umrs/knowledge/restore",
             json={"bundle_dir": bundle_dir, "proposal_id": "gp-1"},
-            headers={"x-r4-actor": "agent"},
+            headers={**_ADMIN, "x-r4-actor": "agent"},
         )
         assert resp.status_code == 409
         assert resp.json()["detail"]["error"] == "proposal_target_mismatch"
@@ -111,7 +121,7 @@ class TestRestoreGuard:
         resp = client.post(
             "/umrs/knowledge/restore",
             json={"bundle_dir": bundle_dir, "proposal_id": "gp-1"},
-            headers={"x-r4-actor": "agent", "x-r4-session-id": "s-1"},
+            headers={**_ADMIN, "x-r4-actor": "agent", "x-r4-session-id": "s-1"},
         )
         assert resp.status_code == 200, resp.text
         engine.import_project.assert_awaited_once()
@@ -120,7 +130,9 @@ class TestRestoreGuard:
     def test_human_restore_unchanged(self, monkeypatch, bundle_dir):
         engine = _engine()
         client, _ = _restore_client(monkeypatch, [], engine)
-        resp = client.post("/umrs/knowledge/restore", json={"bundle_dir": bundle_dir})
+        resp = client.post(
+            "/umrs/knowledge/restore", json={"bundle_dir": bundle_dir}, headers=_ADMIN
+        )
         assert resp.status_code == 200, resp.text
         engine.import_project.assert_awaited_once()
 
@@ -128,7 +140,15 @@ class TestRestoreGuard:
 class TestRestoreIsOperatorOnly:
     """bundle_dir resolves on the UMRS host (server rights; write_upgrade
     rewrites its manifest) and project_id retargets anywhere — so server-path
-    restore is admin-only; the legacy anonymous dev scope keeps working."""
+    restore is admin-only — in every mode since H-1 (2026-10-17): the
+    anonymous dev scope no longer passes."""
+
+    def test_anonymous_mvp_caller_refused(self, monkeypatch, bundle_dir):
+        engine = _engine()
+        client, _ = _restore_client(monkeypatch, [], engine)
+        resp = client.post("/umrs/knowledge/restore", json={"bundle_dir": bundle_dir})
+        assert resp.status_code == 403
+        engine.import_project.assert_not_called()
 
     def test_non_admin_caller_refused_by_name(self, monkeypatch, bundle_dir):
         from r4_contracts.errors import ERROR_CODE_HEADER

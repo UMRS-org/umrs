@@ -19,6 +19,14 @@ in-memory ring buffer (development / unit-test mode).
 
 Writes are best-effort — a database failure must not propagate to the
 Gateway, which only treats the audit sink as advisory.
+
+Access (H-1, 2026-10-17): both routes took no identity, so anyone could
+forge audit rows and a GET without filters returned every project's egress
+decisions. POST is admin-only (the operator sink; the Python gateway that
+posted rows was removed under ADR-014 and EgressGuard writes its JSONL file
+locally, so no in-repo service posts here). GET returns the caller's own
+trail in the caller's verified project; admins may filter freely. Dev (mvp)
+callers without identity headers keep the old open behaviour.
 """
 
 from __future__ import annotations
@@ -29,10 +37,13 @@ import uuid
 from collections import deque
 from datetime import datetime, timezone
 from threading import RLock
-from typing import Any
+from typing import Any, NoReturn
 
-from fastapi import APIRouter, Query, status
+from fastapi import APIRouter, Depends, Query, status
 from pydantic import BaseModel, Field
+
+from ._verified_headers import CallerIdentity, get_caller
+from .typed_errors import PlatformError, raise_typed
 
 logger = logging.getLogger(__name__)
 
@@ -316,6 +327,42 @@ def get_store() -> _EgressAuditStore:
 
 
 # =============================================================================
+# Caller checks (H-1)
+# =============================================================================
+
+
+def _forbidden(message: str) -> NoReturn:
+    raise_typed(PlatformError.verified("forbidden", message))
+
+
+def _require_audit_writer(
+    caller: CallerIdentity | None = Depends(get_caller),
+) -> None:
+    """Only a gateway-signed admin writes audit rows (the admin flag is part
+    of the HMAC); anonymous dev (mvp) callers keep the open sink."""
+    if caller is not None and not caller.is_admin:
+        _forbidden("egress audit rows are written by operators only")
+
+
+def _own_user_filter(caller: CallerIdentity, requested: str | None) -> str:
+    """A non-admin reads only their own trail (``r4 agent audit --user`` is
+    documented admins-only)."""
+    wanted = (requested or "").strip()
+    if wanted and wanted != caller.user_id:
+        _forbidden(f"user filter '{wanted}' is outside the caller's own trail")
+    return caller.user_id
+
+
+def _scoped_filters(
+    caller: CallerIdentity | None, user_id: str | None, project_id: str | None
+) -> tuple[str | None, str | None]:
+    """(user_id, project_id) filters the caller may query."""
+    if caller is None or caller.is_admin:
+        return user_id, project_id
+    return _own_user_filter(caller, user_id), caller.scope_filter(project_id)
+
+
+# =============================================================================
 # Routes
 # =============================================================================
 
@@ -324,6 +371,7 @@ def get_store() -> _EgressAuditStore:
     "/audit",
     response_model=EgressAuditCreateResponse,
     status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(_require_audit_writer)],
 )
 def create_audit(record: EgressAuditRecord) -> EgressAuditCreateResponse:
     persisted = get_store().insert(record)
@@ -340,7 +388,9 @@ def list_audit(
     action: str | None = Query(None, pattern="^(allowed|denied)$"),
     since: datetime | None = Query(None),
     limit: int = Query(100, ge=1, le=1000),
+    caller: CallerIdentity | None = Depends(get_caller),
 ) -> EgressAuditListResponse:
+    user_id, project_id = _scoped_filters(caller, user_id, project_id)
     items = get_store().query(
         user_id=user_id,
         project_id=project_id,

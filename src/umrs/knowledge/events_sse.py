@@ -1,7 +1,8 @@
 """SSE endpoint for real-time KnowledgeEvent broadcast.
 
-No imports from ``umrs.api`` or ``umrs.server`` — only stdlib, events/adapter,
-and knowledge modules.
+No module-level imports from ``umrs.api`` or ``umrs.server`` — only stdlib,
+events/adapter, and knowledge modules. The caller-scope resolver is a lazy
+composition import inside ``_caller_scope`` (ADR-024 tolerates it).
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
 from umrs.jobs.knowledge_adapters import KnowledgeEvent
+from umrs.knowledge.access_scope import CallerScope, project_readable
 
 logger = logging.getLogger(__name__)
 
@@ -200,16 +202,39 @@ router = APIRouter(
 )
 
 
+def _caller_scope(request: Request) -> CallerScope:
+    """The HMAC-verified caller (401 in strict mode without identity)."""
+    from umrs.api._scope_identity import request_caller_scope
+
+    return request_caller_scope(request)
+
+
+def _authorize_project(request: Request, project_id: str) -> CallerScope:
+    """The caller when it may read ``project_id``'s events; 403 otherwise.
+
+    The stream and its health took no identity: any caller subscribed to any
+    project's knowledge events (hardening plan H-1 item 5, 2026-10-17).
+    """
+    caller = _caller_scope(request)
+    if not project_readable(project_id, caller):
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "scope_denied",
+                "message": "Project is outside the caller's access tier.",
+            },
+        )
+    return caller
+
+
 @router.get("/projects/{project_id}/events")
 async def sse_events(
     project_id: str,
+    request: Request,
     last_event_id: str | None = Query(None, alias="Last-Event-ID"),
-    request: Request = None,
 ) -> StreamingResponse:
-    """Stream KnowledgeEvents as SSE to the connecting client."""
-    if request is None:
-        request = type("FakeRequest", (), {"scope": {}})()
-
+    """Stream the project's KnowledgeEvents as SSE (callers who may read it)."""
+    _authorize_project(request, project_id)
     _evict_dead()
 
     async with _client_lock:
@@ -344,18 +369,24 @@ def stop_sse() -> None:
 
 
 @router.get("/projects/{project_id}/events/health")
-async def sse_health(project_id: str) -> dict[str, Any]:
-    """Return SSE client counts for monitoring."""
+async def sse_health(project_id: str, request: Request) -> dict[str, Any]:
+    """Return SSE client counts for monitoring.
+
+    Platform-wide figures (all projects' clients, the shared broadcast
+    queue) are for admins only; other callers get ``None`` there.
+    """
+    caller = _authorize_project(request, project_id)
+    unrestricted = caller.is_admin or caller.anonymous
     _evict_dead()
     async with _client_lock:
         total = len(_clients)
         project_count = _project_client_count(project_id)
     return {
-        "total_clients": total,
+        "total_clients": total if unrestricted else None,
         "project_clients": project_count,
         "max_clients": sse_max_clients,
         "timeout_sec": sse_timeout_sec,
-        "broadcast_queue_size": _broadcast_queue.qsize(),
+        "broadcast_queue_size": _broadcast_queue.qsize() if unrestricted else None,
     }
 
 

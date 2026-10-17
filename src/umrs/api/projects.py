@@ -15,6 +15,7 @@ module (no imports from umrs.api).
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any, NoReturn
 
 from fastapi import APIRouter, Depends, Request, status
@@ -22,6 +23,8 @@ from pydantic import BaseModel, Field
 
 from .jobs import CallerIdentity, get_caller_identity
 from .typed_errors import PlatformError, raise_typed
+
+logger = logging.getLogger(__name__)
 
 
 class ProjectNotFound(Exception):
@@ -125,6 +128,20 @@ class ProjectStore:
         if row is None:
             raise ProjectNotFound(project_id)
         return row
+
+    def circle_affiliated(self, project_id: str, user_id: str) -> bool:
+        """True when the user holds an active circle in the project (ADR-086:
+        project affiliation derives from circle membership). Fails closed."""
+        if not user_id:
+            return False
+        from .circles import CirclesStore
+
+        try:
+            return CirclesStore(self._conn).affiliated(project_id, user_id)
+        except Exception:  # noqa: BLE001 - an unreadable roster grants nothing
+            logger.warning("circle affiliation unreadable for %s", project_id)
+            self._conn.rollback()
+            return False
 
     def list(
         self, *, owner: str | None = None, include_retired: bool = False
@@ -462,17 +479,44 @@ def list_my_projects(
     }
 
 
-@router.get("/{project_id}")
-def get_project(
-    project_id: str, store: ProjectStore = Depends(_store_dep)
+def _may_read_project(
+    store: ProjectStore, row: dict[str, Any], identity: CallerIdentity
+) -> bool:
+    """Owner, admin, a caller verified into the project, or a circle member."""
+    user = (identity.user_id or "").strip()
+    if identity.is_admin or (user and user == row["owner_id"]):
+        return True
+    if (identity.project_id or "").strip() == row["project_id"]:
+        return True
+    return store.circle_affiliated(row["project_id"], user)
+
+
+def _readable_project(
+    store: ProjectStore, project_id: str, identity: CallerIdentity
 ) -> dict[str, Any]:
-    """# auth: verified"""
+    """The project row for its owner, members and admins; anyone else reads
+    "not found" (H-1, 2026-10-17: these reads took no identity at all)."""
     try:
         row = store.get(project_id)
     except ProjectNotFound:
+        row = None
+    if row is None or not _may_read_project(store, row, identity):
         raise_typed(
             PlatformError.projects("not_found", f"project {project_id} not found")
         )
+    return row
+
+
+@router.get("/{project_id}")
+def get_project(
+    project_id: str,
+    store: ProjectStore = Depends(_store_dep),
+    identity: CallerIdentity = Depends(get_caller_identity),
+) -> dict[str, Any]:
+    """Owner, member or admin (another project reads as not found).
+    # auth: verified
+    """
+    row = _readable_project(store, project_id, identity)
     return {"status": "ok", "project": _row_response(row)}
 
 
@@ -515,18 +559,16 @@ class BudgetBody(BaseModel):
 
 @router.get("/{project_id}/budget")
 def get_project_budget(
-    project_id: str, store: ProjectStore = Depends(_store_dep)
+    project_id: str,
+    store: ProjectStore = Depends(_store_dep),
+    identity: CallerIdentity = Depends(get_caller_identity),
 ) -> dict[str, Any]:
-    """Loop budget caps for a project (zeros = uncapped when absent).
+    """Loop budget caps for a project (zeros = uncapped when absent);
+    owner, member or admin (another or unknown project reads as not found).
     # auth: verified
     """
-    try:
-        budget = store.get_budget(project_id)
-    except ProjectNotFound:
-        raise_typed(
-            PlatformError.projects("not_found", f"project {project_id} not found")
-        )
-    return {"status": "ok", "budget": budget}
+    _readable_project(store, project_id, identity)
+    return {"status": "ok", "budget": store.get_budget(project_id)}
 
 
 @router.put("/{project_id}/budget")

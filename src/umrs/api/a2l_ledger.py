@@ -411,6 +411,11 @@ async def create_decision(
         raise_typed(PlatformError.a2l("forbidden", "decided_by must be the verified caller"))
     if body.job_id:
         _job_for(identity, body.job_id)
+    if body.artifact_id:
+        # H-1 A.2 (2026-10-18): the job was checked, the artifact was not, so a
+        # decision could point at another project's artifact. Same rule as the
+        # artifact routes: one the caller may not read is not found.
+        await _visible_artifact(store, identity, body.artifact_id)
     req = DecisionCreate(**body.model_dump())
     record = await store.create_decision(req)
     return {

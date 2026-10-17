@@ -116,13 +116,31 @@ class SessionSnapshotBody(BaseModel):
 
 
 def _uid(request: Request) -> str:
-    """Owner identity, as asserted by the gateway-verified header."""
-    uid = request.headers.get("x-user-id", "").strip()
+    """Owner identity: the HMAC-verified gateway caller in strict mode.
+
+    A bare ``X-User-ID`` used to name the owner, so any caller reaching the
+    sidecar read, wrote or tore down another user's sessions (H-1 item 7,
+    2026-10-17); strict mode now verifies the gateway signature over the
+    identity tuple (401 when absent or rejected). Mvp mode keeps the raw
+    header (dev contract). The venue owner routes share this helper.
+    """
+    from ._verified_headers import _strict_mode_env, resolve_caller
+
+    headers = request.headers
+    uid = headers.get("x-user-id", "").strip()
     if not uid:
         raise_typed(
             PlatformError.companionsessions("unauthorized", "identity header missing")
         )
-    return uid
+    if not _strict_mode_env():
+        return uid
+    caller = resolve_caller(
+        uid,
+        headers.get("x-verified-project-id"),
+        headers.get("x-verified-is-admin"),
+        headers.get("x-verified-hmac"),
+    )
+    return caller.user_id
 
 
 def _pool(request: Request) -> Any:

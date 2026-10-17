@@ -249,6 +249,34 @@ async def update_session(
     return SessionResponse(session=session.to_dict())
 
 
+def _loop_attachable(loop: Any, project_id: str, caller: CallerIdentity) -> bool:
+    """A server loop joins only a session of its own project, by its owner
+    (an ownerless loop: by any caller of that project) or an admin."""
+    if str(getattr(loop, "project_id", "") or "") != project_id:
+        return False
+    owner = str((getattr(loop, "metadata", None) or {}).get("owner_user_id") or "")
+    return caller.is_admin or not owner or owner == caller.user_id
+
+
+def _authorize_loop_link(
+    request: AttachLoopRequest, project_id: str, caller: CallerIdentity | None
+) -> None:
+    """The loop id was linked unchecked (H-1, 2026-10-17): another user's or
+    another project's loop reads as not found. A ``local`` loop is client-held
+    (nothing server-side to check) unless the id names a server loop."""
+    if caller is None:
+        return  # mvp without identity: dev behaviour unchanged
+    from umrs.api import loop as loop_api
+
+    loop = loop_api._loop_store.get(request.loop_id)
+    if loop is None and request.venue == "local":
+        return
+    if loop is None or not _loop_attachable(loop, project_id, caller):
+        raise_typed(
+            PlatformError.session("not_found", f"Loop {request.loop_id} not found")
+        )
+
+
 @router.post("/{session_id}/loops", status_code=201)
 async def attach_loop(
     session_id: str,
@@ -264,6 +292,7 @@ async def attach_loop(
         )
     if caller is not None:
         caller.assert_can_access(existing.project_id)
+    _authorize_loop_link(request, existing.project_id, caller)
 
     link = SessionLoopLink(
         session_id=session_id,

@@ -39,27 +39,41 @@ def _get_pool(request: Request):
     return pool
 
 
-def _caller_user_id(request: Request) -> str:
-    uid = request.headers.get("x-user-id", "").strip()
+def _caller(request: Request) -> tuple[str, bool]:
+    """``(user_id, is_admin)`` of the caller.
+
+    Strict mode: the HMAC-verified gateway identity (401 when absent or
+    unsigned). Admin used to come from an unverified ``X-Verified-Is-Admin``
+    or an ``X-User-Role: admin`` header, and the user from a bare
+    ``X-User-ID`` (H-1 item 7, 2026-10-17); ``X-User-Role`` has no sender
+    and is no longer read. Mvp mode keeps the legacy header trust.
+    """
+    from ._verified_headers import _strict_mode_env, resolve_caller
+
+    headers = request.headers
+    uid = headers.get("x-user-id", "").strip()
     if not uid:
         raise_typed(PlatformError.auth("missing_header", "Missing X-User-ID header"))
-    return uid
+    admin_header = headers.get("x-verified-is-admin")
+    if not _strict_mode_env():
+        return uid, (admin_header or "").strip().lower() == "true"
+    caller = resolve_caller(
+        uid,
+        headers.get("x-verified-project-id"),
+        admin_header,
+        headers.get("x-verified-hmac"),
+    )
+    return caller.user_id, caller.is_admin
 
 
-def _is_admin(request: Request) -> bool:
-    """Check if caller has admin role (set by auth sidecar).
-
-    The auth sidecar emits ``X-Verified-Is-Admin: true|false`` after
-    JWT validation (see gateway/sidecar/main.py).  We honour that
-    signal and fall back to ``X-User-Role`` for older sidecar
-    revisions or direct-UMRS clients.
-    """
-    verified_admin = request.headers.get("x-verified-is-admin", "").strip().lower()
-    if verified_admin == "true":
-        return True
-
-    role = request.headers.get("x-user-role", "").strip().lower()
-    return role in ("admin", "operator")
+def _require_admin(request: Request) -> None:
+    _uid, admin = _caller(request)
+    if not admin:
+        raise_typed(
+            PlatformError.auth(
+                "admin_required", "Admin token required for billing aggregation"
+            )
+        )
 
 
 def _date_to_ts(d: date | None) -> datetime | None:
@@ -82,7 +96,7 @@ async def my_usage(
 ):
     """Return token usage summary for the authenticated user."""
     pool = _get_pool(request)
-    user_id = _caller_user_id(request)
+    user_id, _admin = _caller(request)
 
     rows = _query_summary(
         pool, user_id=user_id, since=since, until=until, group_by=group_by
@@ -109,10 +123,10 @@ async def usage_summary(
 ):
     """Return token usage summary (admin-level, filterable)."""
     pool = _get_pool(request)
-    caller = _caller_user_id(request)
+    caller, admin = _caller(request)
 
     # Non-admins can only see their own data
-    if not _is_admin(request):
+    if not admin:
         user_id = caller
 
     rows = _query_summary(
@@ -145,9 +159,9 @@ async def usage_records(
 ):
     """Return raw usage records (admin or own data)."""
     pool = _get_pool(request)
-    caller = _caller_user_id(request)
+    caller, admin = _caller(request)
 
-    if not _is_admin(request):
+    if not admin:
         user_id = caller
 
     rows = _query_records(
@@ -185,35 +199,11 @@ async def usage_billing(
     - ``cached_read_tokens`` — cache hits (billed at lower rate)
     - ``cached_write_tokens`` — cache writes
 
-    Requires admin authentication.
+    Requires admin authentication (HMAC-verified in strict mode).
     """
-    if not _is_admin(request):
-        raise_typed(
-            PlatformError.auth(
-                "admin_required", "Admin token required for billing aggregation"
-            )
-        )
-
+    _require_admin(request)
     pool = _get_pool(request)
-    _caller_user_id(request)  # validate caller identity
-
-    where_parts = []
-    params: list = []
-
-    if project_id:
-        where_parts.append("project_id = %s")
-        params.append(project_id)
-    if model:
-        where_parts.append("model = %s")
-        params.append(model)
-    if since:
-        where_parts.append("event_time >= %s")
-        params.append(_date_to_ts(since))
-    if until:
-        where_parts.append("event_time < %s")
-        params.append(_date_to_ts(until))
-
-    where_clause = ("WHERE " + " AND ".join(where_parts)) if where_parts else ""
+    where_clause, params = _billing_where(project_id, model, since, until)
 
     sql = f"""
         SELECT user_id,
@@ -248,6 +238,25 @@ async def usage_billing(
 # ------------------------------------------------------------------
 # Query helpers (sync, run in pool.getconn/putconn)
 # ------------------------------------------------------------------
+
+
+def _billing_where(
+    project_id: str | None,
+    model: str | None,
+    since: date | None,
+    until: date | None,
+) -> tuple[str, list]:
+    """WHERE clause + params for the billing aggregation filters."""
+    filters = (
+        ("project_id = %s", project_id),
+        ("model = %s", model),
+        ("event_time >= %s", _date_to_ts(since)),
+        ("event_time < %s", _date_to_ts(until)),
+    )
+    where_parts = [clause for clause, value in filters if value]
+    params: list = [value for _clause, value in filters if value]
+    where_clause = ("WHERE " + " AND ".join(where_parts)) if where_parts else ""
+    return where_clause, params
 
 
 _GROUP_COLUMNS = {

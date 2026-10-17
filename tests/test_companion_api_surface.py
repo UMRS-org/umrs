@@ -161,31 +161,36 @@ class TestTurnRoutes:
         assert resp.status_code == 404
 
     def test_get_turn_attempt_returns_row(self):
-        client = _app(FakePool([_turn_row()]))
+        # The turn read checks the worker row's owner (H-1): the script
+        # carries the attempt, then its worker row.
+        client = _app(FakePool([_turn_row(), _worker_row()]))
         resp = client.get("/umrs/companion/turns/at-1", headers=HEADERS)
         assert resp.status_code == 200
         assert resp.json()["request_token"] == "rt-1"
 
 
+def _owned(*rows):
+    """The events stream first checks the attempt's worker owner (H-1):
+    attempt + worker row, then the rows the stream itself reads."""
+    return FakePool([rows[0], _worker_row(), *rows])
+
+
 class TestTurnEvents:
     def test_committed_turn_streams_result(self):
-        rows = [
-            _turn_row(state="committed", committed_response_ref="resp-1"),
-        ]
-        client = _app(FakePool(list(rows)))
+        client = _app(_owned(_turn_row(state="committed", committed_response_ref="resp-1")))
         resp = client.get("/umrs/companion/turns/at-1/events", headers=HEADERS)
         assert resp.status_code == 200
         assert '"type": "result"' in resp.text
         assert "[DONE]" in resp.text
 
     def test_failed_turn_emits_terminal_error(self):
-        client = _app(FakePool([_turn_row(state="failed")]))
+        client = _app(_owned(_turn_row(state="failed")))
         resp = client.get("/umrs/companion/turns/at-1/events", headers=HEADERS)
         assert '"type": "attempt_failed"' in resp.text
 
     def test_in_flight_polls_then_times_out_cleanly(self):
         rows = [_turn_row(state="in_flight")] * 90  # 25s timeout reaches
-        client = _app(FakePool(rows))
+        client = _app(_owned(*rows))
         resp = client.get("/umrs/companion/turns/at-1/events", headers=HEADERS)
         assert '"type": "in_flight"' in resp.text
 
@@ -211,8 +216,10 @@ class TestApprovalSurface:
         """Real registry contract (ADR-028): gate intent → decision unblocks."""
         from umrs.knowledge import tool_approvals
 
+        # Owned by the caller: an ownerless intent belongs to its loop's
+        # project only (H-1; covered in test_h1_projects_sessions_scope).
         tool_approvals.request_approval(
-            "loop-x", 1, {"kind": "workflow_trigger"}, approval_id="ap-1"
+            "loop-x", 1, {"kind": "workflow_trigger"}, approval_id="ap-1", user_id="alice"
         )
         client = _app(FakePool([]))
         resp = client.post(
@@ -239,7 +246,7 @@ class TestApprovalSurface:
         from umrs.knowledge import tool_approvals
 
         tool_approvals.request_approval(
-            "loop-y", 1, {"kind": "workflow_trigger"}, approval_id="ap-2"
+            "loop-y", 1, {"kind": "workflow_trigger"}, approval_id="ap-2", user_id="alice"
         )
         client = _app(FakePool([]))
         resp = client.get("/umrs/companion/approvals/pending", headers=HEADERS)
@@ -277,14 +284,12 @@ class TestTurnRoundtripSurface:
 
     def test_committed_turn_stream_carries_response_content(self):
         client = _app(
-            FakePool(
-                [
-                    _turn_row(
-                        state="committed",
-                        committed_response_ref="attempt:at-1",
-                        response_content="the answer",
-                    )
-                ]
+            _owned(
+                _turn_row(
+                    state="committed",
+                    committed_response_ref="attempt:at-1",
+                    response_content="the answer",
+                )
             )
         )
         resp = client.get("/umrs/companion/turns/at-1/events", headers=HEADERS)
@@ -293,7 +298,7 @@ class TestTurnRoundtripSurface:
         assert "[DONE]" in resp.text
 
     def test_turn_row_response_includes_content_and_mode(self):
-        client = _app(FakePool([_turn_row(mode="auto", response_content="body")]))
+        client = _app(FakePool([_turn_row(mode="auto", response_content="body"), _worker_row()]))
         resp = client.get("/umrs/companion/turns/at-1", headers=HEADERS)
         assert resp.status_code == 200
         assert resp.json()["mode"] == "auto"
@@ -307,7 +312,7 @@ class TestTurnRoundtripSurface:
             "fail_if_stale",
             lambda *_a, **_k: True,
         )
-        client = _app(FakePool([_turn_row(state="in_flight")]))
+        client = _app(_owned(_turn_row(state="in_flight")))
         resp = client.get("/umrs/companion/turns/at-1/events", headers=HEADERS)
         assert "stale_reaped" in resp.text
         assert '"type": "attempt_failed"' in resp.text

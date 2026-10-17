@@ -20,20 +20,22 @@ and then pass the mutation guard.
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, Field
 
-from umrs.knowledge.access_scope import CallerScope, graph_writable
+from umrs.knowledge.access_scope import CallerScope, graph_readable, graph_writable
 from umrs.knowledge.graph_registry import (
     GraphRegistryStore,
     KnowledgeGraphMeta,
     ProposalStore,
 )
 
-from ._access import graph_meta_readable
+from ..shared.access_scopes import access_admits
+from ._access import graph_meta_readable, resource_caller
 from ._knowledge_mutation_guard import AGENT_ACTOR, request_actor
 from .jobs import CallerIdentity, get_caller_identity
 from .typed_errors import PlatformError, raise_typed
@@ -123,6 +125,73 @@ def _refuse_agent_decision(request: Request) -> None:
         )
 
 
+class _PerGraphStats(ProposalStore):
+    """Proposal counts per target graph with the graph's access fields.
+
+    One query (review 2026-10-18): the counts are joined with
+    ``knowledge_graphs`` so the caller filters in Python instead of one
+    registry lookup per graph. Proposals of a graph missing from the registry
+    drop out of the inner join, as before.
+    """
+
+    def per_graph_counts(self) -> list[dict[str, Any]]:
+        with self._cursor() as cur:
+            cur.execute(
+                "SELECT c.target_graph_id, c.accepted, c.declined, c.pending,"
+                " g.kind, g.project_id, g.owner_id, g.access"
+                " FROM (SELECT target_graph_id,"
+                " COUNT(*) FILTER (WHERE status IN ('approved','executed')) AS accepted,"
+                " COUNT(*) FILTER (WHERE status = 'declined') AS declined,"
+                " COUNT(*) FILTER (WHERE status = 'pending') AS pending"
+                " FROM knowledge_graph_proposals GROUP BY target_graph_id) c"
+                " JOIN knowledge_graphs g ON g.graph_id = c.target_graph_id"
+            )
+            return list(cur.fetchall() or [])
+
+
+def _stored_access(raw: Any) -> Any:
+    """The row's access list; a JSON string column decodes like the registry."""
+    return json.loads(raw) if isinstance(raw, str) else raw
+
+
+def _row_readable(row: dict[str, Any], scope: CallerScope, caller: Any) -> bool:
+    """``graph_meta_readable`` for a joined stats row, with one shared caller
+    so the ADR-080 circle lookup runs at most once per request."""
+    if graph_readable(
+        kind=row.get("kind") or "",
+        project_id=row.get("project_id"),
+        owner_id=row.get("owner_id") or "",
+        caller=scope,
+    ):
+        return True
+    return access_admits(_stored_access(row.get("access")), caller)
+
+
+def _readable_stats(request: Request, identity: CallerIdentity) -> dict[str, Any]:
+    """``acceptance_stats`` summed over the graphs the caller may read."""
+    pool = getattr(request.app.state, "umrs_db_pool", None)
+    if pool is None:
+        raise_typed(PlatformError.proposals("unavailable", "Database unavailable"))
+    scope = _scope(identity)
+    caller = resource_caller(
+        request,
+        user_id=scope.user_id,
+        project_id=scope.project_id,
+        is_admin=scope.is_admin,
+    )
+    totals = {"accepted": 0, "declined": 0, "pending": 0}
+    for row in _PerGraphStats(pool).per_graph_counts():
+        if _row_readable(row, scope, caller):
+            for key in totals:
+                totals[key] += int(row.get(key) or 0)
+    decided = totals["accepted"] + totals["declined"]
+    return {
+        **totals,
+        "decided": decided,
+        "acceptance_rate": (totals["accepted"] / decided) if decided else None,
+    }
+
+
 @router.post("/graphs/{graph_id}/proposals", status_code=201)
 async def create_proposal(
     graph_id: str,
@@ -169,9 +238,15 @@ async def proposal_stats(
     """Proposal acceptance rate (D-44): quality signal for the knowledge
     graph's semi-automatic growth — how often the loop's proposals survive
     the scientist's review. rate is null when nothing was ever decided
-    (no fabricated 100%)."""
+    (no fabricated 100%).
+
+    Without ``graph_id`` it counted every graph's proposals (H-1 A.2,
+    2026-10-17): a non-admin caller now gets the graphs it may read only.
+    """
     if graph_id is not None:
         graph_id = _require_graph(request, graph_id, identity).graph_id
+    elif not identity.is_admin:
+        return _readable_stats(request, identity)
     return _proposal_store(request).acceptance_stats(target_graph_id=graph_id)
 
 

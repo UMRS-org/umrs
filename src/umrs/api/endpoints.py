@@ -2219,70 +2219,109 @@ async def get_registry_stats(
     """,
 )
 async def health_check(
+    request: Request,
     include_details: bool = Query(False, description="Include per-endpoint details"),
     registry: EndpointRegistry = Depends(get_registry),
 ) -> HealthResponse:
-    """Comprehensive health check endpoint."""
-    from datetime import datetime
+    """Comprehensive health check endpoint.
 
-    # Get all endpoints
+    The counts stay open (monitors call it bare). Per-endpoint details
+    (host, port, model, errors) listed every project's endpoints to any
+    caller (H-1, 2026-10-17): they now need a caller identity (401 in strict
+    mode without one); a non-admin sees its own project's endpoints, a
+    signed admin sees all. Mvp anonymous callers keep the full list.
+    """
+    detail_project = _health_detail_project(request) if include_details else None
     all_endpoints = registry.list_all()
-
-    # Count by health status
-    healthy = 0
-    unhealthy = 0
-    provisioning = 0
-
-    endpoint_details = []
-
-    for ep in all_endpoints:
-        if ep.status == EndpointStatus.READY:
-            healthy += 1
-            is_healthy = True
-        elif ep.status == EndpointStatus.PENDING:
-            provisioning += 1
-            is_healthy = True  # Still healthy, just starting
-        elif ep.status in (EndpointStatus.FAILED, EndpointStatus.TERMINATED):
-            unhealthy += 1
-            is_healthy = False
-        else:
-            is_healthy = ep.is_usable
-
-        if include_details:
-            uptime = None
-            if ep.ready_at:
-                uptime = (datetime.utcnow() - ep.ready_at).total_seconds()
-
-            endpoint_details.append(
-                EndpointHealthInfo(
-                    job_id=ep.job_id,
-                    project_id=ep.project_id,
-                    model=ep.model,
-                    status=ep.status.value,
-                    host=ep.host,
-                    port=ep.port,
-                    healthy=is_healthy,
-                    last_health_check=ep.last_used_at.isoformat()
-                    if ep.last_used_at
-                    else None,
-                    uptime_seconds=uptime,
-                    error=ep.error_message,
-                )
-            )
+    counts = _health_counts(all_endpoints)
+    endpoint_details = (
+        [
+            _endpoint_health_info(ep)
+            for ep in all_endpoints
+            if detail_project is None or ep.project_id == detail_project
+        ]
+        if include_details
+        else []
+    )
 
     # Determine overall status
     overall_status, message = _overall_health(
-        total=len(all_endpoints), unhealthy=unhealthy
+        total=len(all_endpoints), unhealthy=counts["unhealthy"]
     )
     return HealthResponse(
         status=overall_status,
         registry_ok=True,
         total_endpoints=len(all_endpoints),
-        healthy_endpoints=healthy,
-        unhealthy_endpoints=unhealthy,
-        provisioning_endpoints=provisioning,
-        endpoints=endpoint_details if include_details else [],
+        healthy_endpoints=counts["healthy"],
+        unhealthy_endpoints=counts["unhealthy"],
+        provisioning_endpoints=counts["provisioning"],
+        endpoints=endpoint_details,
         message=message,
+    )
+
+
+def _health_detail_project(request: Request) -> str | None:
+    """Project whose endpoint details the caller may see (None = all).
+
+    ``request_caller_scope`` verifies the gateway HMAC (admin flag included)
+    and 401s in strict mode without an identity; the mvp legacy
+    ``X-Project-ID`` tier scopes to that project. An mvp anonymous caller
+    (anyone who can reach the port) gets 403, the same admin-only rule as
+    the cross-project ``GET /umrs/endpoints`` listing.
+    """
+    from ._scope_identity import request_caller_scope
+
+    scope = request_caller_scope(request)
+    if scope.is_admin:
+        return None
+    if scope.anonymous or not scope.project_id:
+        raise_typed(
+            PlatformError.endpoints(
+                "forbidden", "Cross-project endpoint health details require admin role"
+            ),
+        )
+    return scope.project_id
+
+
+def _endpoint_is_healthy(ep: Any) -> bool:
+    if ep.status in (EndpointStatus.READY, EndpointStatus.PENDING):
+        return True  # PENDING: still healthy, just starting
+    if ep.status in (EndpointStatus.FAILED, EndpointStatus.TERMINATED):
+        return False
+    return ep.is_usable
+
+
+def _health_counts(endpoints: list) -> dict[str, int]:
+    """Healthy / unhealthy / provisioning counts by endpoint status."""
+    counts = {"healthy": 0, "unhealthy": 0, "provisioning": 0}
+    for ep in endpoints:
+        if ep.status == EndpointStatus.READY:
+            counts["healthy"] += 1
+        elif ep.status == EndpointStatus.PENDING:
+            counts["provisioning"] += 1
+        elif ep.status in (EndpointStatus.FAILED, EndpointStatus.TERMINATED):
+            counts["unhealthy"] += 1
+    return counts
+
+
+def _endpoint_health_info(ep: Any) -> EndpointHealthInfo:
+    """One endpoint's health detail row."""
+    from datetime import datetime
+
+    uptime = None
+    if ep.ready_at:
+        uptime = (datetime.utcnow() - ep.ready_at).total_seconds()
+    return EndpointHealthInfo(
+        job_id=ep.job_id,
+        project_id=ep.project_id,
+        model=ep.model,
+        status=ep.status.value,
+        host=ep.host,
+        port=ep.port,
+        healthy=_endpoint_is_healthy(ep),
+        last_health_check=ep.last_used_at.isoformat() if ep.last_used_at else None,
+        uptime_seconds=uptime,
+        error=ep.error_message,
     )
 
 

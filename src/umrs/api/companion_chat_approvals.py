@@ -34,12 +34,19 @@ class ApprovalDecision(BaseModel):
 
 
 def _uid(request: Request) -> str:
-    """Verified caller id (400/401 without it; never invented)."""
+    """Verified caller id (401 without it; never invented).
+
+    The header fallback read a bare ``X-User-ID`` (H-1 item 7, 2026-10-17);
+    it now goes through the session routes' owner helper, which verifies the
+    gateway HMAC in strict mode (mvp keeps the raw header).
+    """
+    from .companion_sessions import _uid as verified_owner
+
     identity = getattr(request.state, "identity", None)
-    uid = getattr(identity, "user_id", "") or request.headers.get("x-user-id", "")
-    if not uid:
-        raise_typed(PlatformError.companionsessions("unauthorized", "identity required"))
-    return str(uid)
+    uid = getattr(identity, "user_id", "")
+    if uid:
+        return str(uid)
+    return verified_owner(request)
 
 
 def _owner_session_or_404(conn: Any, session_id: str, uid: str) -> None:

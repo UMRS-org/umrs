@@ -17,8 +17,9 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 import time
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -26,6 +27,39 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+# H-1 item 5 (2026-10-18): derive and lineage now resolve the gateway-verified
+# caller (401 without one in strict mode) and act only inside the caller's
+# project, so the direct handler calls carry a signed request for the E2E
+# project instead of calling the handlers with no caller at all.
+_SECRET = "a2l-lineage-e2e-secret"
+
+
+def _sign(project_id: str) -> str:
+    from r4_contracts.handshake_hmac import sign_claims
+
+    return sign_claims(_SECRET, "e2e-user", project_id, False)
+
+
+@contextmanager
+def _signed_caller(project_id: str):
+    """A request signed for ``project_id`` (strict mode) for direct handler calls."""
+    from starlette.requests import Request
+
+    headers = {
+        "x-user-id": "e2e-user",
+        "x-verified-project-id": project_id,
+        "x-verified-is-admin": "false",
+        "x-verified-hmac": _sign(project_id),
+    }
+    scope = {
+        "type": "http",
+        "headers": [(k.encode(), v.encode()) for k, v in headers.items()],
+    }
+    env = {"UMRS_AUTH_MODE": "strict", "UMRS_HANDSHAKE_HMAC_SECRET": _SECRET}
+    with patch.dict(os.environ, env):
+        yield Request(scope)
+
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -281,7 +315,10 @@ def test_03_call_a2l_derive_endpoint(e2e_ctx: E2EContext) -> None:
 
     mock_store.fetchrow = AsyncMock(return_value={"id": 1})
 
-    with patch("umrs.knowledge.store.get_store", return_value=mock_store):
+    with (
+        patch("umrs.knowledge.store.get_store", return_value=mock_store),
+        _signed_caller(e2e_ctx.project_id) as caller,
+    ):
 
         async def _test():
             result = await derive_a2l_link(
@@ -290,7 +327,8 @@ def test_03_call_a2l_derive_endpoint(e2e_ctx: E2EContext) -> None:
                     a2l_artifact_id=e2e_ctx.a2l_artifact_id,
                     job_id="e2e-derive-test",
                     edge_kind="derived",
-                )
+                ),
+                caller,
             )
             return result
 
@@ -317,11 +355,15 @@ def test_04_verify_lineage_query(e2e_ctx: E2EContext) -> None:
         ]
     )
 
-    with patch("umrs.knowledge.store.get_store", return_value=mock_store):
+    with (
+        patch("umrs.knowledge.store.get_store", return_value=mock_store),
+        _signed_caller(e2e_ctx.project_id) as caller,
+    ):
 
         async def _test():
             result = await get_artifact_lineage(
                 artifact_id=e2e_ctx.artifact_id,
+                request=caller,
                 project_id=e2e_ctx.project_id,
                 depth=3,
             )
@@ -461,11 +503,15 @@ def test_08_verify_lineage_after_reimport(e2e_ctx: E2EContext) -> None:
         ]
     )
 
-    with patch("umrs.knowledge.store.get_store", return_value=mock_store):
+    with (
+        patch("umrs.knowledge.store.get_store", return_value=mock_store),
+        _signed_caller(e2e_ctx.project_id) as caller,
+    ):
 
         async def _test():
             result = await get_artifact_lineage(
                 artifact_id=e2e_ctx.artifact_id,
+                request=caller,
                 project_id=e2e_ctx.project_id,
                 depth=3,
             )
