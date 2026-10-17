@@ -70,12 +70,19 @@ def _require_operator(request: Request) -> None:
     """Server-path restore is an operator facility: ``bundle_dir`` names a
     directory on the UMRS host (read with server rights; ``write_upgrade``
     rewrites its manifest) and ``project_id`` retargets into any project —
-    so only admins (or the legacy anonymous dev scope) may call it. A
-    user-facing import takes the bundle's bytes, not a server path."""
+    so only admins may call it, in every mode. A user-facing import takes
+    the bundle's bytes, not a server path.
+
+    The anonymous dev scope used to pass too (H-1, 2026-10-17): in mvp mode
+    "anonymous" is anyone who reaches the port, and the facility reads and
+    rewrites server paths with UMRS's rights. A dev operator sends the mvp
+    admin headers instead (``X-User-ID`` + ``X-Verified-Project-ID`` +
+    ``X-Verified-Is-Admin: true``); strict mode needs the gateway HMAC over
+    them (``request_caller_scope`` verifies it, admin flag included)."""
     from umrs.api._scope_identity import request_caller_scope
 
     scope = request_caller_scope(request)
-    if not (scope.is_admin or scope.anonymous):
+    if not scope.is_admin:
         raise_typed(
             PlatformError.bundle(
                 "forbidden",

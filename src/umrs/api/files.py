@@ -489,6 +489,7 @@ async def generate_presigned_url(
     request: PresignRequest,
     project_id: str = Depends(get_project_id),
     config: S3Config = Depends(get_project_s3_config),
+    x_user_id: str | None = Header(None),
 ) -> PresignResponse:
     """Generate presigned URL for upload or download.
 
@@ -496,7 +497,9 @@ async def generate_presigned_url(
     the job's task has completed before generating the URL.
     If blocking=true, waits until the download is ready or timeout.
     """
-    return await _generate_presigned_url_impl(request, project_id, config)
+    return await _generate_presigned_url_impl(
+        request, project_id, config, x_user_id=x_user_id
+    )
 
 
 def _download_not_ready_error(job_id: str, attempt_status: str) -> UMRSWarningError:
@@ -603,13 +606,15 @@ async def _generate_presigned_url_impl(
     request: PresignRequest,
     project_id: str = Depends(get_project_id),
     config: S3Config = Depends(get_project_s3_config),
+    *,
+    x_user_id: str | None = None,
 ) -> PresignResponse:
     """Core presign implementation split by operation (upload/download)."""
+    bucket = _namespace_bucket(request.bucket, config, x_user_id)
     if request.operation == PresignedOperation.DOWNLOAD and request.job_id:
         await _await_download_readiness(request)
 
     key = validate_key(request.key, project_id, warn_on_rename=True)
-    bucket = request.bucket or config.bucket
     ttl_sec = min(request.ttl_sec or config.default_ttl, config.max_ttl)
 
     try:
@@ -682,6 +687,7 @@ async def generate_presigned_urls_batch(
     request: PresignBatchRequest,
     project_id: str = Depends(get_project_id),
     config: S3Config = Depends(get_project_s3_config),
+    x_user_id: str | None = Header(None),
 ) -> PresignBatchResponse:
     """Generate multiple presigned URLs."""
 
@@ -690,7 +696,7 @@ async def generate_presigned_urls_batch(
 
     for idx, req in enumerate(request.requests):
         try:
-            result = await generate_presigned_url(req, project_id, config)
+            result = await generate_presigned_url(req, project_id, config, x_user_id)
             results.append(result)
         except HTTPException as e:
             errors.append(
@@ -723,12 +729,13 @@ async def get_file_metadata(
     bucket: str | None = None,
     project_id: str = Depends(get_project_id),
     config: S3Config = Depends(get_project_s3_config),
+    x_user_id: str | None = Header(None),
 ) -> FileMetadata:
     """Get file metadata."""
 
     # Validate and namespace the key
     key = validate_key(file_id, project_id, warn_on_rename=True)
-    bucket_name = bucket or config.bucket
+    bucket_name = _namespace_bucket(bucket, config, x_user_id)
 
     try:
         s3_client = config.get_client()
@@ -771,11 +778,12 @@ async def delete_file(
     bucket: str | None = None,
     project_id: str = Depends(get_project_id),
     config: S3Config = Depends(get_project_s3_config),
+    x_user_id: str | None = Header(None),
 ) -> None:
     """Delete a file."""
 
     key = validate_key(file_id, project_id, warn_on_rename=True)
-    bucket_name = bucket or config.bucket
+    bucket_name = _namespace_bucket(bucket, config, x_user_id)
 
     try:
         s3_client = config.get_client()
@@ -824,6 +832,26 @@ def _require_owned_bucket(bucket: str, user_id: str | None) -> None:
                 "`r4 bucket list`)",
             )
         )
+
+
+def _namespace_bucket(bucket: str | None, config: S3Config, user_id: str | None) -> str:
+    """Bucket for a project-namespaced key operation (presign, metadata,
+    delete, exists): the caller project's store bucket, its ``-output`` pair,
+    an ``S3_DOWNLOAD_EXTRA_BUCKETS`` entry or the server default bucket (the
+    one the gateway's download ACL names) pass as before; any other bucket
+    must be one the caller owns or is shared (``_require_owned_bucket``).
+
+    These four routes honoured any caller-named ``bucket`` (H-1, 2026-10-17);
+    the key stays project-prefixed either way. ``user_id`` is the
+    ``X-User-ID`` that ``get_project_id`` verified with the identity tuple
+    in strict mode.
+    """
+    if not bucket:
+        return config.bucket
+    if bucket in _cross_bucket_allowlist(config) or bucket == get_s3_config().bucket:
+        return bucket
+    _require_owned_bucket(bucket, user_id)
+    return bucket
 
 
 def _raw_key(key: str) -> str:
@@ -1077,10 +1105,11 @@ async def check_files_exist(
     bucket: str | None = None,
     project_id: str = Depends(get_project_id),
     config: S3Config = Depends(get_project_s3_config),
+    x_user_id: str | None = Header(None),
 ) -> dict[str, bool]:
     """Check if files exist."""
 
-    bucket_name = bucket or config.bucket
+    bucket_name = _namespace_bucket(bucket, config, x_user_id)
     results = {}
 
     try:

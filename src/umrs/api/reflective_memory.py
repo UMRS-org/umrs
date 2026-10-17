@@ -4,6 +4,15 @@ Provides:
 - GET    /umrs/reflective-memory                    Inspect all reflective memory
 - DELETE /umrs/reflective-memory/{tier}/{entry_id}  Delete a specific entry
 - POST   /umrs/reflective-memory/{tier}/reset       Reset (deactivate) a tier
+
+Access (H-1, 2026-10-17): admin-only. The routes took no identity, so any
+caller read every project's workflow outcomes and routing feedback, deleted
+entries, or deactivated every planning heuristic. This memory is
+platform-global (heuristics are derived across all projects and carry no
+project) and the inspector has no project filter, so a caller-scoped read is
+not possible here; the module is the operator inspection surface. No gateway
+location serves it and the r4 ``/memory`` command is retired. Dev (mvp)
+callers without identity headers keep the old open behaviour.
 """
 
 from __future__ import annotations
@@ -12,18 +21,35 @@ import logging
 import os
 from typing import Any
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
 
 from ..jobs.adaptive_planning import AdaptivePlanningEngine
 from ..jobs.reflective_memory import ReflectiveMemoryInspector
 from ..jobs.routing_feedback import RoutingFeedbackStore
 from ..jobs.workflow_outcome import WorkflowOutcomeStore
+from ._verified_headers import CallerIdentity, get_caller
 from .typed_errors import PlatformError, raise_typed
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/umrs/reflective-memory", tags=["reflective-memory"])
+
+def _require_admin(caller: CallerIdentity | None = Depends(get_caller)) -> None:
+    """Gateway-signed admin only (the admin flag is part of the HMAC, so a
+    forged flag is a 401 in ``get_caller``); anonymous dev (mvp) passes."""
+    if caller is not None and not caller.is_admin:
+        raise_typed(
+            PlatformError.verified(
+                "forbidden", "reflective memory is an operator surface"
+            ),
+        )
+
+
+router = APIRouter(
+    prefix="/umrs/reflective-memory",
+    tags=["reflective-memory"],
+    dependencies=[Depends(_require_admin)],
+)
 
 
 # ---------------------------------------------------------------------------

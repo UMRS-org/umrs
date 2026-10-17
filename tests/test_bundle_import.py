@@ -531,6 +531,15 @@ class TestLegacyVersions:
 
 # ── Route tests ───────────────────────────────────────────────────────────
 
+# Server-path restore is admin-only in every mode (H-1, 2026-10-17): these
+# tests used to call it anonymously, which mvp mode let through. They now send
+# the mvp admin headers (legacy trust; strict needs the gateway HMAC).
+_ADMIN = {
+    "X-User-ID": "ops",
+    "X-Verified-Project-ID": "ops",
+    "X-Verified-Is-Admin": "true",
+}
+
 
 @pytest.fixture
 def app(tmp_path, monkeypatch) -> FastAPI:
@@ -563,7 +572,7 @@ class TestRestoreRoute:
         bare = FastAPI()
         bare.include_router(restore_router)
         client = TestClient(bare)
-        resp = client.post("/umrs/knowledge/restore", json={"bundle_dir": "/tmp/x"})
+        resp = client.post("/umrs/knowledge/restore", json={"bundle_dir": "/tmp/x"}, headers=_ADMIN)
         assert resp.status_code == 503
 
     def test_route_happy_path(self, app, tmp_path):
@@ -572,6 +581,7 @@ class TestRestoreRoute:
         resp = client.post(
             "/umrs/knowledge/restore",
             json={"bundle_dir": str(bundle), "allow_unsigned": True},
+            headers=_ADMIN,
         )
         assert resp.status_code == 200, resp.text
         payload = resp.json()["restore"]
@@ -584,6 +594,7 @@ class TestRestoreRoute:
         resp = client.post(
             "/umrs/knowledge/restore",
             json={"bundle_dir": str(bad), "allow_unsigned": True},
+            headers=_ADMIN,
         )
         assert resp.status_code == 400
 

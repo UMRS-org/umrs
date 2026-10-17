@@ -1208,6 +1208,41 @@ async def knowledge_findings(
         raise_typed(PlatformError.knowledge("failure", str(exc)), cause=exc)
 
 
+async def _report_in_scope(ver: Any, report_id: str, caller: Any, allowed: Any) -> Any:
+    """The report when ``allowed(report.project_id, caller)``, else None."""
+    report = await ver.get_report(report_id)
+    if report is None or not allowed(report.project_id, caller):
+        return None
+    return report
+
+
+async def _require_writable_finding(
+    ver: Any, finding_key: str, request: Request
+) -> None:
+    """404 unless the finding's report is in a project the caller may write.
+
+    The route wrote any project's finding by key (H-1 A.2, 2026-10-17); a
+    finding of another project reads as not found, as an absent one does.
+    """
+    from umrs.api._scope_identity import request_caller_scope
+    from umrs.knowledge.access_scope import project_writable
+
+    caller = request_caller_scope(request)
+    try:
+        finding = await ver.get_finding(finding_key)
+    except ValueError:
+        finding = None
+    report = (
+        await _report_in_scope(ver, finding.report_id, caller, project_writable)
+        if finding is not None
+        else None
+    )
+    if report is None:
+        raise_typed(
+            PlatformError.knowledge("not_found", f"Finding not found: {finding_key}")
+        )
+
+
 @router.patch("/findings/{finding_key}", response_model=dict[str, Any])
 async def transition_finding(
     finding_key: str,
@@ -1215,10 +1250,12 @@ async def transition_finding(
     request: Request,
     _get_project_id: str = Depends(get_project_id),
 ) -> dict[str, Any]:
-    """Transition a finding status (acknowledged, resolved, waived)."""
+    """Transition a finding status (acknowledged, resolved, waived) in a
+    project the caller may write."""
     try:
         pool = await knowledge_asyncpg_pool(request)
         ver = VerificationStore(pool)
+        await _require_writable_finding(ver, finding_key, request)
 
         finding = await ver.transition_finding(
             finding_key=finding_key,
@@ -1259,16 +1296,22 @@ async def approve_knowledge(
 ) -> dict[str, Any]:
     """Approve knowledge with confidence threshold and blocking findings check.
 
-    Force approval is audited (logged).
+    Force approval is audited (logged). The report must be in a project the
+    caller may read: any report was read by id (H-1 A.2, 2026-10-17); another
+    project's reads as not found.
     """
+    from umrs.api._scope_identity import request_caller_scope
+    from umrs.knowledge.access_scope import project_readable
+
     report_id = body.report_id
     force = body.force
     confidence_threshold = 0.8
 
     try:
+        caller = request_caller_scope(request)
         pool = await knowledge_asyncpg_pool(request)
         ver = VerificationStore(pool)
-        report = await ver.get_report(report_id)
+        report = await _report_in_scope(ver, report_id, caller, project_readable)
 
         if report is None:
             raise_typed(

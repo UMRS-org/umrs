@@ -472,22 +472,49 @@ def list_project_circles(
     }
 
 
-@router.get("/{project_id}/{circle_id}")
-def get_circle(
-    project_id: str,
-    circle_id: str,
-    store: CirclesStore = Depends(_store_dep),
+def _may_see_circle(
+    store: CirclesStore, row: dict[str, Any], identity: CallerIdentity
+) -> bool:
+    """The project listing's rule (admin, project owner, affiliated caller)
+    plus the circle's own owner and members (a retired circle included)."""
+    actor = (identity.user_id or "").strip()
+    if identity.is_admin or actor == row["owner_id"]:
+        return True
+    project = store.project_row(row["project_id"]) or {}
+    if actor == project.get("owner_id") or store.affiliated(row["project_id"], actor):
+        return True
+    return store.member_role(row["project_id"], row["circle_id"], actor) is not None
+
+
+def _visible_circle(
+    store: CirclesStore, project_id: str, circle_id: str, identity: CallerIdentity
 ) -> dict[str, Any]:
-    """# auth: verified"""
-    # auth: verified
+    """The circle when the caller may see it; otherwise "not found" (H-1,
+    2026-10-17: the circle and roster reads took no identity at all)."""
     try:
         row = store.get(project_id, circle_id)
     except CircleNotFound:
+        row = None
+    if row is None or not _may_see_circle(store, row, identity):
         raise_typed(
             PlatformError.circles(
                 "not_found", f"circle {project_id}/{circle_id} not found"
             )
         )
+    return row
+
+
+@router.get("/{project_id}/{circle_id}")
+def get_circle(
+    project_id: str,
+    circle_id: str,
+    store: CirclesStore = Depends(_store_dep),
+    identity: CallerIdentity = Depends(get_caller_identity),
+) -> dict[str, Any]:
+    """One circle — admin, project owner, affiliated caller, circle member.
+    # auth: verified
+    """
+    row = _visible_circle(store, project_id, circle_id, identity)
     return {"status": "ok", "circle": _row_response(row)}
 
 
@@ -526,17 +553,12 @@ def list_members(
     project_id: str,
     circle_id: str,
     store: CirclesStore = Depends(_store_dep),
+    identity: CallerIdentity = Depends(get_caller_identity),
 ) -> dict[str, Any]:
-    """# auth: verified"""
+    """The roster — same visibility as the circle itself.
     # auth: verified
-    try:
-        store.get(project_id, circle_id)
-    except CircleNotFound:
-        raise_typed(
-            PlatformError.circles(
-                "not_found", f"circle {project_id}/{circle_id} not found"
-            )
-        )
+    """
+    _visible_circle(store, project_id, circle_id, identity)
     members = store.members(project_id, circle_id)
     return {
         "status": "ok",

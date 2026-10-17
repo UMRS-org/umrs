@@ -7,8 +7,10 @@ Routes (mounted under the gateway ``/gw/knowledge/`` prefix — no nginx edits):
   GET   /umrs/knowledge/graphs/{graph_id} — graph detail
   PATCH /umrs/knowledge/graphs/{graph_id} — metadata update / archive (no hard delete)
 
-Backward compatibility: listing with ``project_id`` materializes the project's
-deterministic default graph first, so existing projects appear automatically.
+Backward compatibility: listing with a ``project_id`` the caller may write
+materializes that project's deterministic default graph first (H-1,
+2026-10-17: never for another project), so existing projects appear
+automatically.
 """
 
 from __future__ import annotations
@@ -26,8 +28,13 @@ from umrs.knowledge.access_scope import (
     CallerScope,
     graph_readable,
     graph_writable,
+    project_writable,
 )
-from umrs.knowledge.graph_registry import GRAPH_STATUSES, GraphRegistryStore
+from umrs.knowledge.graph_registry import (
+    GRAPH_STATUSES,
+    GraphRegistryStore,
+    graph_id_is_default,
+)
 from umrs.shared.access_scopes import access_admits
 
 from ._access import checked_access, resource_caller
@@ -105,9 +112,7 @@ def _base_graph_list(
     q: str | None,
     limit: int,
 ) -> list[Any]:
-    """The tier-ladder listing (project default materialized on demand)."""
-    if project_id:
-        registry.ensure_default_graph(project_id)
+    """The tier-ladder listing (the caller materializes its default graph)."""
     if q:
         graphs = registry.search_graphs(q, project_id=project_id, limit=limit)
         if status:
@@ -144,14 +149,18 @@ async def list_graphs(
 ) -> dict[str, Any]:
     """List registered knowledge graphs with optional filters.
 
-    When ``project_id`` is given, its default graph is materialized first
-    so legacy projects are listed without any manual migration.
+    When ``project_id`` names a project the caller may write, its default
+    graph is materialized first so legacy projects are listed without any
+    manual migration. That write ran before the scope check, for any named
+    project (H-1, 2026-10-17); it now follows a passing check.
     """
+    scope = get_caller_scope(request)
     registry = _registry(request)
+    if project_id and project_writable(project_id, scope):
+        registry.ensure_default_graph(project_id)
     graphs = _base_graph_list(
         registry, project_id=project_id, status=status, q=q, limit=limit
     )
-    scope = get_caller_scope(request)
     visible = [
         g
         for g in graphs
@@ -469,17 +478,93 @@ def _refuse_agent_promotion(request: Request) -> None:
         )
 
 
-async def _establish_target(request: Request) -> KnowledgeStore:
-    from ._asyncpg_pool import knowledge_asyncpg_pool
+# Tier rows the establish routes promote: kind -> (table, key column, label).
+_ESTABLISH_ROWS = {
+    "node": ("knowledge_nodes", "node_id", "Node"),
+    "edge": ("knowledge_edges", "edge_id", "Edge"),
+}
 
-    pool = await knowledge_asyncpg_pool(request)
+
+async def _knowledge_pool(request: Request) -> Any:
+    from . import _asyncpg_pool
+
+    pool = await _asyncpg_pool.knowledge_asyncpg_pool(request)
     if pool is None:
         raise_typed(
             PlatformError.knowledgegraphs("unavailable", "Knowledge store unavailable")
         )
+    return pool
+
+
+def _knowledge_store(pool: Any) -> KnowledgeStore:
     from umrs.knowledge.store import KnowledgeStore
 
     return KnowledgeStore(pool)
+
+
+async def _row_placement(pool: Any, kind: str, row_id: str) -> Any:
+    """The (project_id, graph_id) of one node/edge row, or None."""
+    table, key, _label = _ESTABLISH_ROWS[kind]
+    async with pool.acquire() as conn:
+        return await conn.fetchrow(
+            f"SELECT project_id, graph_id FROM {table} WHERE {key} = $1", row_id
+        )
+
+
+def _row_in_graph(row: Any, graph_id: str) -> bool:
+    """Legacy rows (graph_id '') belong to their project's default graph."""
+    stored = str(row["graph_id"] or "")
+    if stored:
+        return stored == graph_id
+    return graph_id_is_default(graph_id, str(row["project_id"] or ""))
+
+
+def _graph_admits_write(
+    request: Request, graph_id: str, row_project: str, scope: CallerScope
+) -> bool:
+    """May the caller write the graph? A default graph not yet materialized
+    in the registry follows its project."""
+    meta = _registry(request).get_graph(graph_id)
+    if meta is None:
+        return graph_id_is_default(graph_id, row_project) and project_writable(
+            row_project, scope
+        )
+    return graph_writable(
+        kind=meta.kind, project_id=meta.project_id, owner_id=meta.owner_id, caller=scope
+    )
+
+
+async def _require_establishable(
+    request: Request,
+    pool: Any,
+    *,
+    graph_id: str,
+    kind: str,
+    row_id: str,
+    identity: CallerIdentity,
+) -> None:
+    """404 unless the row is in ``graph_id`` and the caller may write it.
+
+    The establish routes ignored ``graph_id`` and promoted any project's
+    node or edge (H-1 A.2, 2026-10-17); a foreign row reads as not found.
+    """
+    scope = CallerScope(
+        user_id=identity.user_id or "",
+        project_id=identity.project_id or "",
+        is_admin=identity.is_admin,
+    )
+    row = await _row_placement(pool, kind, row_id)
+    if (
+        row is None
+        or not _row_in_graph(row, graph_id)
+        or not _graph_admits_write(
+            request, graph_id, str(row["project_id"] or ""), scope
+        )
+    ):
+        label = _ESTABLISH_ROWS[kind][2]
+        raise_typed(
+            PlatformError.knowledgegraphs("not_found", f"{label} {row_id} not found")
+        )
 
 
 @router.post("/{graph_id}/nodes/{node_id}/establish", response_model=EstablishResponse)
@@ -493,12 +578,17 @@ async def establish_node(
     """Promote one node proposed → established (D-35 two-tier knowledge).
 
     Human-only (agent actor refused by name); idempotent on established
-    rows; 404 when the node does not exist. The optional body carries
+    rows; 404 when the node does not exist, is not in ``graph_id`` or the
+    caller may not write that graph. The optional body carries
     the promotion's evidence refs and settled confidence (D-35 tail:
     evidence links on tiered rows).
     """
     _refuse_agent_promotion(request)
-    store = await _establish_target(request)
+    pool = await _knowledge_pool(request)
+    await _require_establishable(
+        request, pool, graph_id=graph_id, kind="node", row_id=node_id, identity=identity
+    )
+    store = _knowledge_store(pool)
     established_by = (identity.user_id or "user").strip() or "user"
     refs = list(body.evidence_refs) if body else []
     confidence = body.confidence if body else None
@@ -531,7 +621,11 @@ async def establish_edge(
 ) -> EstablishResponse:
     """Promote one edge proposed → established (same rules as nodes)."""
     _refuse_agent_promotion(request)
-    store = await _establish_target(request)
+    pool = await _knowledge_pool(request)
+    await _require_establishable(
+        request, pool, graph_id=graph_id, kind="edge", row_id=edge_id, identity=identity
+    )
+    store = _knowledge_store(pool)
     established_by = (identity.user_id or "user").strip() or "user"
     refs = list(body.evidence_refs) if body else []
     confidence = body.confidence if body else None

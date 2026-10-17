@@ -19,6 +19,14 @@ Endpoints:
 - GET /umrs/web/dashboard/sse/jobs — Server-Sent Events stream for job updates
 - GET /umrs/web/dashboard/sse/workflows — Workflow execution SSE snapshots
 - GET /umrs/web/dashboard/sse/intake — Connector intake SSE snapshots
+
+Scope (hardening plan H-1 item 5, 2026-10-17): every route except /health and
+/metrics resolves the gateway-verified caller (401 in strict mode without
+it). Non-admin callers see their own jobs (as GET /umrs/jobs), the models,
+notifications, workflow executions and knowledge of their verified project;
+another project's job or model reads as not found. Connector sync rows carry
+no project and are admin-only. Admins see every project; anonymous callers
+exist only in dev (mvp) mode and keep the unscoped view.
 """
 
 from __future__ import annotations
@@ -29,16 +37,96 @@ import logging
 import os
 from typing import Any
 
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from ..api.jobs import get_job_store, get_optional_job_store
 from ..api.models import get_optional_model_store
+from ..knowledge.access_scope import CallerScope, project_readable
+from ._scope_identity import get_caller_scope
 from .typed_errors import PlatformError, raise_typed
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/umrs/web/dashboard", tags=["web-dashboard"])
+
+
+# ===========================================================================
+# Caller scope (H-1 item 5)
+# ===========================================================================
+
+
+def _unrestricted(scope: CallerScope) -> bool:
+    """Admins (and anonymous dev-mode callers) see every project's rows."""
+    return scope.is_admin or scope.anonymous
+
+
+def _project_filter(scope: CallerScope) -> str | None:
+    """The caller's verified project, or None (no filter) when unrestricted."""
+    return None if _unrestricted(scope) else scope.project_id
+
+
+def _job_owner_filter(scope: CallerScope) -> tuple[str | None, str | None]:
+    """(project, user) job filter: the caller's own jobs, as GET /umrs/jobs."""
+    if _unrestricted(scope):
+        return None, None
+    return scope.project_id, scope.user_id or None
+
+
+def _job_visible(job: Any, scope: CallerScope) -> bool:
+    """May the caller see this job (its project and, when known, its owner)?"""
+    project, user = _job_owner_filter(scope)
+    if project is None:
+        return True
+    return job.project_id == project and user in (None, job.user_id)
+
+
+def _model_access_context(scope: CallerScope) -> Any:
+    """Model-registry ACL context for the caller (verified project only).
+
+    Deliberately stricter than ``api.models.get_access_context``: the
+    ``X-Verified-Project-Memberships`` header is not covered by the gateway
+    HMAC (``sign_claims`` binds user, project and admin only), so a replayed
+    signed tuple could carry any membership list. The dashboard trusts the
+    signed project alone; a multi-project user sees other projects' models
+    here only after switching the active project. Revisit once the gateway
+    signs the memberships list.
+    """
+    from ..model_registry.store import AccessContext
+
+    return AccessContext(
+        user_id=scope.user_id,
+        is_admin=_unrestricted(scope),
+        project_memberships={scope.project_id} if scope.project_id else set(),
+    )
+
+
+def _visible_executions(scope: CallerScope) -> list[Any]:
+    """Workflow executions the caller may read (raises when the registry fails)."""
+    from ..server.workflow_execution_registry import get_execution_registry
+    from .workflow_auth import can_access_execution
+
+    if _unrestricted(scope):
+        return get_execution_registry().list()
+    records = get_execution_registry().list(user_id=scope.user_id)
+    return [
+        r
+        for r in records
+        if can_access_execution(scope.user_id, scope.project_id or None, record=r)
+    ]
+
+
+def _require_readable_project(project_id: str, scope: CallerScope) -> None:
+    """403 when the requested project is outside the caller's access tier."""
+    if not project_readable(project_id, scope):
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "scope_denied",
+                "message": "Project is outside the caller's access tier.",
+            },
+        )
+
 
 # ===========================================================================
 # Response Models
@@ -252,27 +340,12 @@ class ModelDetailResponse(BaseModel):
     summary="System overview",
     description=("Aggregate counts and system health for the dashboard home page."),
 )
-async def get_overview(request: Request) -> OverviewResponse:
+async def get_overview(
+    request: Request, scope: CallerScope = Depends(get_caller_scope)
+) -> OverviewResponse:
     """Return aggregate job and model counts plus system health."""
     app = request.app
-    # Job counts
-    job_store = get_optional_job_store()
-    running = queued = completed = failed = 0
-    if job_store:
-        for status_val in ("running", "queued", "completed", "failed"):
-            try:
-                count = job_store.count_by_status(status_val)
-            except Exception:  # noqa: BLE001 — dashboard probes degrade to honest empty
-                count = 0
-            if status_val == "running":
-                running = count
-            elif status_val == "queued":
-                queued = count
-            elif status_val == "completed":
-                completed = count
-            elif status_val == "failed":
-                failed = count
-
+    running, queued, completed, failed = _job_status_counts(scope)
     total_jobs = running + queued + completed + failed
 
     # Model counts
@@ -281,7 +354,7 @@ async def get_overview(request: Request) -> OverviewResponse:
         available_models,
         staging_models,
         deprecated_models,
-    ) = _model_status_counts()
+    ) = _model_status_counts(scope)
 
     # Health
     health = _probe_db_health(getattr(app.state, "umrs_db_pool", None))
@@ -297,9 +370,27 @@ async def get_overview(request: Request) -> OverviewResponse:
         staging_models=staging_models,
         deprecated_models=deprecated_models,
         system_health=health,
-        workflows=_workflow_execution_counts(),
-        connectors=_connector_inventory(),
+        workflows=_workflow_execution_counts(scope),
+        connectors=_connector_inventory(scope),
     )
+
+
+def _job_status_counts(scope: CallerScope) -> tuple[int, int, int, int]:
+    """(running, queued, completed, failed) platform-wide job counts.
+
+    The counts span every project, so only unrestricted callers get them;
+    other callers get zeros (the per-project list is GET /jobs).
+    """
+    job_store = get_optional_job_store()
+    if not job_store or not _unrestricted(scope):
+        return 0, 0, 0, 0
+    counts = []
+    for status_val in ("running", "queued", "completed", "failed"):
+        try:
+            counts.append(job_store.count_by_status(status_val))
+        except Exception:  # noqa: BLE001 — dashboard probes degrade to honest empty
+            counts.append(0)
+    return counts[0], counts[1], counts[2], counts[3]
 
 
 # Connector implementers ship one module per source under umrs.connectors.
@@ -316,12 +407,11 @@ _CONNECTOR_TYPES = [
 ]
 
 
-def _workflow_execution_counts() -> WorkflowExecutionCounts | None:
-    """Aggregate workflow executions; None when the registry is unavailable."""
+def _workflow_execution_counts(scope: CallerScope) -> WorkflowExecutionCounts | None:
+    """Aggregate the caller's visible workflow executions; None when the
+    registry is unavailable."""
     try:
-        from ..server.workflow_execution_registry import get_execution_registry
-
-        records = get_execution_registry().list()
+        records = _visible_executions(scope)
     except Exception:
         logger.debug("workflow execution registry unavailable", exc_info=True)
         return None
@@ -339,11 +429,12 @@ def _workflow_execution_counts() -> WorkflowExecutionCounts | None:
     return counts
 
 
-def _connector_inventory() -> ConnectorInventory | None:
+def _connector_inventory(scope: CallerScope) -> ConnectorInventory | None:
     """Connector inventory with availability probe (U3).
 
     Falls back to the static U1 type list when the introspection module is
     unavailable; None only when the connectors package itself is missing.
+    Per-instance sync rows carry no project: admins only.
     """
     try:
         from ..connectors import introspect
@@ -356,7 +447,7 @@ def _connector_inventory() -> ConnectorInventory | None:
         available_types=report.available,
         unavailable=report.unavailable,
         details={c.name: c.to_dict() for c in report.connectors},
-        sync=_connector_sync_view(),
+        sync=_connector_sync_view() if _unrestricted(scope) else {},
     )
 
 
@@ -388,13 +479,14 @@ def _connector_sync_view() -> dict[str, dict]:
 # ── Overview/health/list helpers (complexity decomposition) ─────────────
 
 
-def _model_status_counts() -> tuple[int, int, int, int]:
-    """Return (total, available, staging, deprecated) model counts."""
+def _model_status_counts(scope: CallerScope) -> tuple[int, int, int, int]:
+    """Return (total, available, staging, deprecated) counts of the models
+    the caller may read."""
     model_store = get_optional_model_store()
     if not model_store:
         return 0, 0, 0, 0
     try:
-        models = model_store.list_models(ctx=None)  # type: ignore[arg-type]
+        models = model_store.list_models(ctx=_model_access_context(scope))
     except Exception:  # noqa: BLE001 — degrade to zero counts
         return 0, 0, 0, 0
     counts = {"available": 0, "staging": 0, "deprecated": 0}
@@ -449,18 +541,22 @@ def _fetch_jobs(
     status: str | None,
     job_type: str | None,
     user_id: str | None,
-    limit: int,
-    offset: int,
+    page: tuple[int, int],
+    scope: CallerScope,
 ) -> list[Any]:
-    """Store query + in-memory user filter; empty on any failure."""
+    """Store query scoped to the caller + in-memory user filter; empty on
+    any failure."""
     from ..jobs.models import JobStatus, JobType
 
+    project, owner = _job_owner_filter(scope)
     try:
         jobs = job_store.list_jobs(
+            project_id=project,
             status=JobStatus(status) if status else None,
             job_type=JobType(job_type) if job_type else None,
-            limit=limit,
-            offset=offset,
+            limit=page[0],
+            offset=page[1],
+            user_id=owner,
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("Dashboard job query failed: %s", exc)
@@ -470,10 +566,13 @@ def _fetch_jobs(
     return jobs
 
 
-def _job_total(job_store: Any, jobs: list[Any], status_filter: Any) -> int:
-    """Store-backed total when available, else the window size."""
+def _job_total(
+    job_store: Any, jobs: list[Any], status_filter: Any, scope: CallerScope
+) -> int:
+    """Store-backed total when available (platform-wide, so unrestricted
+    callers only), else the window size."""
     try:
-        if hasattr(job_store, "count_all"):
+        if _unrestricted(scope) and hasattr(job_store, "count_all"):
             return job_store.count_all(status=status_filter)
     except Exception as exc:  # noqa: BLE001
         logger.warning("Dashboard job count failed: %s", exc)
@@ -553,8 +652,9 @@ async def list_jobs(
     limit: int = Query(20, ge=1, le=200, description="Page size"),
     offset: int = Query(0, ge=0, description="Page offset"),
     request: Request = None,
+    scope: CallerScope = Depends(get_caller_scope),
 ) -> PaginatedJobsResponse:
-    """List jobs with pagination and filters."""
+    """List the caller's jobs (admin: all) with pagination and filters."""
     from ..jobs.models import JobStatus
 
     job_store = get_job_store()
@@ -566,9 +666,10 @@ async def list_jobs(
             ),
         )
 
-    jobs = _fetch_jobs(job_store, status, job_type, user_id, limit, offset)
-    items = [_job_summary(j) for j in jobs]
-    total = _job_total(job_store, jobs, JobStatus(status) if status else None)
+    jobs = _fetch_jobs(job_store, status, job_type, user_id, (limit, offset), scope)
+    # The envelope holds dicts: a JobSummary model failed validation (500).
+    items = [_job_summary(j).model_dump() for j in jobs]
+    total = _job_total(job_store, jobs, JobStatus(status) if status else None, scope)
     has_next = offset + limit < total
     has_prev = offset > 0
 
@@ -597,8 +698,9 @@ async def list_models(
     limit: int = Query(20, ge=1, le=200, description="Page size"),
     offset: int = Query(0, ge=0, description="Page offset"),
     request: Request = None,
+    caller: CallerScope = Depends(get_caller_scope),
 ) -> PaginatedModelsResponse:
-    """List models with pagination and filters."""
+    """List the models the caller may read, with pagination and filters."""
     from ..model_registry.models import ModelScope, ModelStatus, ModelType
 
     model_store = get_optional_model_store()
@@ -612,7 +714,7 @@ async def list_models(
 
     try:
         models = model_store.list_models(
-            ctx=None,  # type: ignore[arg-type]
+            ctx=_model_access_context(caller),
             model_type=ModelType(model_type) if model_type else None,
             status=ModelStatus(status) if status else None,
             scope=ModelScope(scope) if scope else None,
@@ -622,7 +724,7 @@ async def list_models(
     except Exception:  # noqa: BLE001 — dashboard probes degrade to honest empty
         models = []
 
-    items = [_model_summary(model_store, model) for model in models]
+    items = [_model_summary(model_store, model).model_dump() for model in models]
 
     total = len(models)
     has_next = offset + limit < total
@@ -694,14 +796,17 @@ async def get_health(request: Request) -> HealthResponse:
     summary="Job detail",
     description="Detailed view of a single job with its attempts.",
 )
-async def get_job_detail(job_id: str) -> JobDetailResponse:
-    """Get detailed job information including attempts."""
-    from ..api.jobs import get_job_store
-
+async def get_job_detail(
+    job_id: str, scope: CallerScope = Depends(get_caller_scope)
+) -> JobDetailResponse:
+    """Get detailed job information including attempts (the caller's own
+    jobs; another project's or user's job reads as not found)."""
     store = get_job_store()
     try:
         job = store.get_job(job_id)
     except Exception:  # noqa: BLE001 — dashboard probes degrade to honest empty
+        job = None
+    if job is None or not _job_visible(job, scope):
         raise_typed(
             PlatformError.dashboard("not_found", f"Job not found: {job_id}"),
         )
@@ -720,14 +825,15 @@ async def get_job_detail(job_id: str) -> JobDetailResponse:
 )
 async def get_model_detail(
     model_id: str,
-    model_store: Any = None,  # Will be injected by FastAPI
+    scope: CallerScope = Depends(get_caller_scope),
 ) -> ModelDetailResponse:
-    """Get detailed model information including versions."""
+    """Get detailed model information including versions (models the caller
+    may read; any other reads as not found)."""
     from ..api.models import get_model_store as _get_model_store
 
     store = _get_model_store()
     try:
-        model = store.get_model(model_id)
+        model = store.get_model(model_id, ctx=_model_access_context(scope))
     except Exception:  # noqa: BLE001 — dashboard probes degrade to honest empty
         raise_typed(
             PlatformError.dashboard("not_found", f"Model not found: {model_id}"),
@@ -788,12 +894,14 @@ async def get_metrics(request: Request):
 )
 async def get_notifications(
     request: Request,
+    scope: CallerScope = Depends(get_caller_scope),
 ) -> NotificationsResponse:
     """Return pending notifications — store-backed since 0109 (D-36 leg B).
 
     Unread rows from ``platform_notifications`` (budget-exhausted stops
     and kindred operator-visible events), newest-first. The store being
     absent (no pool) returns the honest empty list — never fabricated.
+    Non-admin callers see their verified project's rows only.
     """
     pool = getattr(request.app.state, "umrs_db_pool", None)
     if pool is None:
@@ -805,7 +913,9 @@ async def get_notifications(
     def _load():
         conn = pool.getconn()
         try:
-            return NotificationStore(conn).list(unread_only=True, limit=50)
+            return NotificationStore(conn).list(
+                project_id=_project_filter(scope), unread_only=True, limit=50
+            )
         finally:
             pool.putconn(conn)
 
@@ -830,6 +940,7 @@ async def get_notifications(
 
 @router.get(
     "/sse/jobs",
+    dependencies=[Depends(get_caller_scope)],
     summary="Job updates via Server-Sent Events",
     description=(
         "SSE stream for real-time job status changes. "
@@ -931,12 +1042,13 @@ def _workflow_summary(record: Any) -> WorkflowRunSummary:
     )
 
 
-def _workflows_panel_payload(*, recent_limit: int = 25) -> WorkflowsPanelResponse:
-    """Registry counts + recent executions (null-safe when unavailable)."""
+def _workflows_panel_payload(
+    scope: CallerScope, *, recent_limit: int = 25
+) -> WorkflowsPanelResponse:
+    """Counts + recent executions the caller may read (null-safe when the
+    registry is unavailable)."""
     try:
-        from ..server.workflow_execution_registry import get_execution_registry
-
-        records = get_execution_registry().list()
+        records = _visible_executions(scope)
     except Exception as exc:  # noqa: BLE001 — dashboard probes degrade to honest empty
         logger.warning("Workflow panel degraded: %s", exc)
         return WorkflowsPanelResponse(
@@ -959,13 +1071,20 @@ def _workflows_panel_payload(*, recent_limit: int = 25) -> WorkflowsPanelRespons
     summary="Workflow executions panel",
     description="Counts by status plus the most recent workflow executions.",
 )
-async def get_workflows_panel() -> WorkflowsPanelResponse:
+async def get_workflows_panel(
+    scope: CallerScope = Depends(get_caller_scope),
+) -> WorkflowsPanelResponse:
     """Workflow executions panel (W1 registry view for the dashboard)."""
-    return _workflows_panel_payload()
+    return _workflows_panel_payload(scope)
 
 
-def _connectors_panel_payload() -> ConnectorsPanelResponse:
-    """Connector intake rows from the sync-state store (null-safe)."""
+def _connectors_panel_payload(scope: CallerScope) -> ConnectorsPanelResponse:
+    """Connector intake rows from the sync-state store (null-safe).
+
+    The rows carry no project: admins only, others get an empty map.
+    """
+    if not _unrestricted(scope):
+        return ConnectorsPanelResponse(connectors={})
     try:
         from ..connectors.sync_state import build_default_store
 
@@ -997,9 +1116,11 @@ def _connectors_panel_payload() -> ConnectorsPanelResponse:
     summary="Connector intake panel",
     description="Per-connector sync state (status, last sync, counts, DLQ depth).",
 )
-async def get_connectors_panel() -> ConnectorsPanelResponse:
+async def get_connectors_panel(
+    scope: CallerScope = Depends(get_caller_scope),
+) -> ConnectorsPanelResponse:
     """Connector intake panel (I-sync state view)."""
-    return _connectors_panel_payload()
+    return _connectors_panel_payload(scope)
 
 
 async def _knowledge_panel_payload(
@@ -1047,8 +1168,10 @@ async def get_knowledge_panel(
     project_id: str = Query(
         ..., description="Project scope (knowledge is project-bound)"
     ),
+    scope: CallerScope = Depends(get_caller_scope),
 ) -> KnowledgePanelResponse:
-    """Per-project knowledge panel for the dashboard."""
+    """Per-project knowledge panel for the dashboard (readable projects only)."""
+    _require_readable_project(project_id, scope)
     pool = getattr(request.app.state, "umrs_db_pool", None)
     if pool is None:
         return KnowledgePanelResponse(
@@ -1097,15 +1220,15 @@ async def _sse_snapshot_stream(
         await asyncio.sleep(interval)
 
 
-def _workflow_sse_payload() -> dict[str, Any]:
-    """JSON-safe view of the workflows panel."""
-    panel = _workflows_panel_payload(recent_limit=10)
+def _workflow_sse_payload(scope: CallerScope) -> dict[str, Any]:
+    """JSON-safe view of the caller's workflows panel."""
+    panel = _workflows_panel_payload(scope, recent_limit=10)
     return json.loads(panel.model_dump_json())
 
 
-def _intake_sse_payload() -> dict[str, Any]:
-    """JSON-safe view of the connectors panel."""
-    panel = _connectors_panel_payload()
+def _intake_sse_payload(scope: CallerScope) -> dict[str, Any]:
+    """JSON-safe view of the caller's connectors panel."""
+    panel = _connectors_panel_payload(scope)
     return json.loads(panel.model_dump_json())
 
 
@@ -1114,13 +1237,15 @@ def _intake_sse_payload() -> dict[str, Any]:
     summary="Workflow execution SSE snapshots",
     description="Immediate workflow panel snapshot frame + keepalives.",
 )
-async def workflows_sse(request: Request):
+async def workflows_sse(
+    request: Request, scope: CallerScope = Depends(get_caller_scope)
+):
     """SSE channel for workflow executions (snapshot-on-connect)."""
     from fastapi.responses import StreamingResponse
 
     return StreamingResponse(
         _sse_snapshot_stream(
-            snapshot_fn=_workflow_sse_payload,
+            snapshot_fn=lambda: _workflow_sse_payload(scope),
             channel="workflows",
             interval=float(os.getenv("UMRS_SSE_POLL_SECONDS", "30")),
         ),
@@ -1134,13 +1259,13 @@ async def workflows_sse(request: Request):
     summary="Connector intake SSE snapshots",
     description="Immediate intake panel snapshot frame + keepalives.",
 )
-async def intake_sse(request: Request):
+async def intake_sse(request: Request, scope: CallerScope = Depends(get_caller_scope)):
     """SSE channel for connector intake (snapshot-on-connect)."""
     from fastapi.responses import StreamingResponse
 
     return StreamingResponse(
         _sse_snapshot_stream(
-            snapshot_fn=_intake_sse_payload,
+            snapshot_fn=lambda: _intake_sse_payload(scope),
             channel="intake",
             interval=float(os.getenv("UMRS_SSE_POLL_SECONDS", "30")),
         ),

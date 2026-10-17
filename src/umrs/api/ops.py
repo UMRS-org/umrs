@@ -106,6 +106,61 @@ def _lazy_get_optional_job_store() -> Any:
     return get_optional_job_store()
 
 
+def _hdr(value: Any) -> str:
+    """A header value as a clean string (direct calls pass ``Header`` defaults)."""
+    return value.strip() if isinstance(value, str) else ""
+
+
+def _strict_mode() -> bool:
+    # Default strict (audit B12): mvp is an explicit dev opt-in.
+    return os.environ.get("UMRS_AUTH_MODE", "strict").strip().lower() == "strict"
+
+
+def _header_caller(
+    x_user_id: Any,
+    x_verified_project_id: Any,
+    x_verified_is_admin: Any,
+    x_verified_hmac: Any,
+) -> CallerIdentity:
+    """The presented gateway identity, HMAC-checked in strict mode.
+
+    The ops dependencies honoured ``X-Verified-Is-Admin`` (and the identity
+    tuple) on presence alone, so anyone reaching the sidecar port was an ops
+    admin and any header named a caller (H-1 item 7, 2026-10-17). The flag
+    takes part in the signature, so a flipped flag rejects; mvp mode keeps
+    the legacy trust (``verified_headers_trusted``).
+    """
+    from ._verified_headers import handshake_secret, verified_headers_trusted
+
+    uid, pid = _hdr(x_user_id), _hdr(x_verified_project_id)
+    admin = _hdr(x_verified_is_admin).lower() in ("true", "1")
+    if not verified_headers_trusted(
+        strict=_strict_mode(),
+        secret=handshake_secret(),
+        presented_hmac=_hdr(x_verified_hmac) or None,
+        user_id=uid,
+        project_id=pid,
+        is_admin=admin,
+    ):
+        raise_typed(
+            PlatformError.auth(
+                "gateway_signature_rejected",
+                "Gateway-verified identity signature rejected",
+            )
+        )
+    return CallerIdentity(user_id=uid, project_id=pid, is_admin=admin)
+
+
+def _require_gateway_identity_in_strict() -> None:
+    """Strict mode (the audit B12 default): no verified headers is a 401."""
+    if _strict_mode():
+        raise_typed(
+            PlatformError.auth(
+                "gateway_identity_required", "Missing Gateway-verified caller identity"
+            )
+        )
+
+
 def require_ops_admin(
     x_user_id: str | None = Header(None),
     x_verified_project_id: str | None = Header(None),
@@ -115,22 +170,21 @@ def require_ops_admin(
     is_admin: bool = Query(
         False, description="Admin flag (legacy, ignored in strict mode)"
     ),
+    x_verified_hmac: str | None = Header(None),
 ) -> None:
     """Enforce admin-only access for ops endpoints.
 
     Ops endpoints expose internal infrastructure details (instance IDs,
     transport config, active backends, job timelines). Only admin callers
-    may access them.
-
-    Uses the same verified-header pattern as ``get_caller_identity`` but
-    avoids importing it directly to prevent circular imports in tests.
+    may access them; the admin flag must carry the gateway signature in
+    strict mode (H-1 item 7).
     """
-    import os
-
-    # Check Gateway-verified headers first (production path)
-    if x_user_id and x_verified_project_id:
-        admin = (x_verified_is_admin or "").strip() in ("true", "1")
-        if not admin:
+    del caller_user_id, caller_project_id  # legacy query surface (mvp only)
+    if _hdr(x_user_id) and _hdr(x_verified_project_id):
+        caller = _header_caller(
+            x_user_id, x_verified_project_id, x_verified_is_admin, x_verified_hmac
+        )
+        if not caller.is_admin:
             raise_typed(
                 PlatformError.auth(
                     "admin_required", "Ops endpoints require admin privileges"
@@ -138,25 +192,18 @@ def require_ops_admin(
             )
         return
 
-    # Strict mode (the audit B12 default): reject if no verified headers
-    if os.environ.get("UMRS_AUTH_MODE", "strict").strip().lower() == "strict":
-        raise_typed(
-            PlatformError.auth(
-                "gateway_identity_required", "Missing Gateway-verified caller identity"
-            )
-        )
+    _require_gateway_identity_in_strict()
 
     from ._identity import warn_legacy_params_once
 
     warn_legacy_params_once("ops.require_ops_admin")
     # MVP/test mode: check query-param is_admin
-    if not is_admin:
+    if is_admin is not True:
         raise_typed(
             PlatformError.auth(
                 "admin_required", "Ops endpoints require admin privileges"
             )
         )
-    return
 
 
 def require_authenticated(
@@ -164,33 +211,59 @@ def require_authenticated(
     x_verified_project_id: str | None = Header(None),
     x_verified_is_admin: str | None = Header(None),
     caller_user_id: str | None = Query(None, description="Caller's user ID"),
-) -> None:
+    x_verified_hmac: str | None = Header(None),
+) -> CallerIdentity | None:
     """Require a valid authenticated caller but not necessarily admin.
 
-    Used for endpoints like reload that any authenticated user may invoke.
+    Returns the verified caller (HMAC-checked in strict mode; header
+    presence alone used to pass, H-1 item 7), or ``None`` for the mvp
+    legacy ``caller_user_id`` query identity.
     """
-    import os
-
-    # Gateway-verified headers present → authenticated
-    if x_user_id and x_verified_project_id:
-        return
-
-    # Strict mode (the audit B12 default): reject if no verified headers
-    if os.environ.get("UMRS_AUTH_MODE", "strict").strip().lower() == "strict":
-        raise_typed(
-            PlatformError.auth(
-                "gateway_identity_required", "Missing Gateway-verified caller identity"
-            )
+    if _hdr(x_user_id) and _hdr(x_verified_project_id):
+        return _header_caller(
+            x_user_id, x_verified_project_id, x_verified_is_admin, x_verified_hmac
         )
+
+    _require_gateway_identity_in_strict()
 
     from ._identity import warn_legacy_params_once
 
     warn_legacy_params_once("ops.require_authenticated")
     # MVP/test mode: accept if any caller identity is provided
-    if caller_user_id:
-        return
+    if _hdr(caller_user_id):
+        return None
 
     raise_typed(PlatformError.auth("missing_header", "Authentication required"))
+
+
+def _scoped_project(caller: CallerIdentity | None, requested: str) -> str:
+    """Project filter a governance read may use: a non-admin caller reads
+    only its own project (403 on another; H-1 item 7)."""
+    if caller is None or caller.is_admin:
+        return requested
+    return caller.scope_filter(requested or None) or caller.project_id
+
+
+def governance_user_id(
+    x_user_id: str | None = Header(None),
+    x_verified_project_id: str | None = Header(None),
+    x_verified_is_admin: str | None = Header(None),
+    x_verified_hmac: str | None = Header(None),
+) -> str:
+    """The user a governance share route acts as (owner check).
+
+    A bare ``X-User-ID`` named the owner (H-1 item 7). Strict mode honours
+    only a signed identity tuple; without one the caller is nobody ("") and
+    only the ``x-admin-token`` path remains. Mvp keeps the raw header.
+    """
+    uid = _hdr(x_user_id)
+    if not uid or not _strict_mode():
+        return uid
+    if not _hdr(x_verified_project_id):
+        return ""
+    return _header_caller(
+        x_user_id, x_verified_project_id, x_verified_is_admin, x_verified_hmac
+    ).user_id
 
 
 # ---------------------------------------------------------------------------
@@ -1045,10 +1118,12 @@ async def governance_ownership(
     owner_id: str = Query("", description="Filter by owner"),
     project_id: str = Query("", description="Filter by project"),
     resource_type: str = Query("", description="Filter by resource type"),
-    _auth: None = Depends(require_authenticated),
+    caller: CallerIdentity | None = Depends(require_authenticated),
 ):
-    """List resource ownership records."""
+    """List resource ownership records (a non-admin reads its own project)."""
     from .governance import get_governance_store
+
+    project_id = _scoped_project(caller, project_id)
 
     store = get_governance_store()
     if store is None:
@@ -1131,10 +1206,12 @@ async def governance_transfer(
 @router.get("/governance/quotas")
 async def governance_quotas(
     project_id: str = Query(..., description="Project ID"),
-    _auth: None = Depends(require_authenticated),
+    caller: CallerIdentity | None = Depends(require_authenticated),
 ):
-    """List quotas for a project."""
+    """List quotas for a project (a non-admin reads its own project)."""
     from .governance import get_governance_store
+
+    project_id = _scoped_project(caller, project_id)
 
     store = get_governance_store()
     if store is None:
@@ -1354,7 +1431,7 @@ async def governance_create_share(
     granted_to_type: str = Query("user", description="'user' or 'group'"),
     access_level: str = Query("read", description="'read' or 'write'"),
     expires_at: str | None = Query(None, description="ISO 8601 expiry (optional)"),
-    user_id: str = Header("", alias="x-user-id"),
+    user_id: str = Depends(governance_user_id),
     admin_token: str = Header("", alias="x-admin-token"),
 ):
     """Share a resource with a user or group.
@@ -1411,7 +1488,7 @@ async def governance_revoke_share(
     resource_id: str = Query(..., description="Resource ID"),
     granted_to: str = Query(..., description="User or group ID to revoke"),
     granted_to_type: str = Query("user", description="'user' or 'group'"),
-    user_id: str = Header("", alias="x-user-id"),
+    user_id: str = Depends(governance_user_id),
     admin_token: str = Header("", alias="x-admin-token"),
 ):
     """Revoke a specific share. Caller must be resource owner or admin."""
@@ -1466,7 +1543,7 @@ async def governance_revoke_share(
 async def governance_list_shares(
     resource_type: str = Query("", description="Filter by resource type"),
     resource_id: str = Query("", description="Filter by resource ID"),
-    user_id: str = Header("", alias="x-user-id"),
+    user_id: str = Depends(governance_user_id),
     admin_token: str = Header("", alias="x-admin-token"),
 ):
     """List shares for a resource or for the current user."""

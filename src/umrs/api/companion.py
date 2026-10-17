@@ -508,6 +508,19 @@ async def get_worker(
     return _worker_row_to_response(row)
 
 
+def _turn_worker(
+    managers: CompanionWorkerManager, registry_key: str, x_user_id: str
+) -> dict:
+    """The worker a turn begins on. Another user's is refused as before; an
+    ownerless one reads as not found to an identified caller, as its turns
+    would (review 2026-10-18: anyone could begin turns on it)."""
+    row = managers.get(registry_key)
+    if row is None or (x_user_id and not row.get("owner_user_id")):
+        raise_typed(PlatformError.companion("not_found", "worker not found"))
+    _enforce_ownership(row, x_user_id)
+    return row
+
+
 @router.post("/chat", status_code=status.HTTP_202_ACCEPTED)
 async def begin_turn_attempt(
     body: TurnBeginRequest,
@@ -515,10 +528,7 @@ async def begin_turn_attempt(
     x_user_id: str = Depends(_strict_headers),
 ) -> TurnAcceptedResponse:
     managers, turns = _managers(request)
-    row = managers.get(body.registry_key)
-    if row is None:
-        raise_typed(PlatformError.companion("not_found", "worker not found"))
-    _enforce_ownership(row, x_user_id)
+    row = _turn_worker(managers, body.registry_key, x_user_id)
     token = (body.request_token or "").strip() or f"rt-{secrets.token_hex(8)}"
     mode = _validated_mode(body.mode)
     try:
@@ -539,18 +549,41 @@ async def begin_turn_attempt(
     return TurnAcceptedResponse(attempt_id=attempt.attempt_id, state=attempt.state)
 
 
+def _owns_turn(managers: CompanionWorkerManager, attempt: Any, x_user_id: str) -> bool:
+    """A turn belongs to the owner of its worker row (a missing row: nobody).
+
+    The turn reads returned any attempt's content to any caller (H-1,
+    2026-10-17). An identity-less mvp caller keeps the dev behaviour.
+    """
+    if not x_user_id:
+        return True
+    row = managers.get(str(attempt.registry_key or "")) or {}
+    return str(row.get("owner_user_id") or "") == x_user_id
+
+
+def _foreign_turn(request: Request, attempt_id: str, x_user_id: str) -> bool:
+    """True when the attempt exists but belongs to another user."""
+    managers, turns = _managers(request)
+    attempt = turns.get(attempt_id)
+    return attempt is not None and not _owns_turn(managers, attempt, x_user_id)
+
+
+async def _attempt_not_found_events(attempt_id: str) -> Iterator[str]:
+    """What a missing attempt streams; a foreign one streams the same."""
+    yield f"data: {json.dumps({'type': 'attempt_not_found', 'attempt_id': attempt_id})}\n\n"
+
+
 @router.get("/turns/{attempt_id}")
 async def get_turn_attempt(
     attempt_id: str,
     request: Request,
     x_user_id: str = Depends(_strict_headers),
 ) -> TurnRowResponse:
-    _, turns = _managers(request)
-    try:
-        attempt = turns._required(attempt_id)
-        return _attempt_to_response(attempt)
-    except TurnAttemptNotFound as exc:
-        raise _http_error_from(exc) from exc
+    managers, turns = _managers(request)
+    attempt = turns.get(attempt_id)
+    if attempt is None or not _owns_turn(managers, attempt, x_user_id):
+        raise _http_error_from(TurnAttemptNotFound(attempt_id))
+    return _attempt_to_response(attempt)
 
 
 @router.get("/turns/{attempt_id}/events")
@@ -560,8 +593,13 @@ async def stream_turn_events(
     x_user_id: str = Depends(_strict_headers),
 ) -> StreamingResponse:
     _, turns = _managers(request)
+    events = (
+        _attempt_not_found_events(attempt_id)
+        if _foreign_turn(request, attempt_id, x_user_id)
+        else _sse_events(turns, attempt_id)
+    )
     return StreamingResponse(
-        _sse_events(turns, attempt_id),
+        events,
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
@@ -588,21 +626,70 @@ async def list_pending_approvals(
         _enforce_ownership(row or {}, x_user_id)
     from umrs.knowledge import tool_approvals
 
+    rows = tool_approvals.pending(
+        loop_id=request.query_params.get("loop_id") or None,
+        user_id=x_user_id,
+    )
     return ApprovalsPendingResponse(
-        pending=tool_approvals.pending(
-            loop_id=request.query_params.get("loop_id") or None,
-            user_id=x_user_id,
-        ),
+        pending=_visible_approvals(rows, request),
         durability=tool_approvals.durability(),
     )
 
 
-def _enforce_approval_ownership(record: dict, x_user_id: str) -> None:
-    """An approval intent is decidable only by the loop owner (ownerless: anyone)."""
+def _loop_project_and_owner(loop_id: str) -> tuple[str, str]:
+    """A server-hosted loop's project and owner ('' for what is unknown)."""
+    from umrs.api import loop as loop_api
+
+    loop = loop_api._loop_store.get(loop_id) if loop_id else None
+    metadata = getattr(loop, "metadata", None) or {}
+    return (
+        str(getattr(loop, "project_id", "") or ""),
+        str(metadata.get("owner_user_id") or ""),
+    )
+
+
+def _ownerless_approval_open(record: dict, scope: Any) -> bool:
+    """An ownerless intent follows its loop's own access rule: an owned loop's
+    owner (or an admin); an ownerless loop's project writers. It was listed
+    to and decidable by anyone (H-1, 2026-10-17); a project writer could
+    decide an owned loop's ownerless intent (review 2026-10-18)."""
+    from umrs.knowledge.access_scope import project_writable
+
+    if scope.is_admin or scope.anonymous:
+        return True
+    project, owner = _loop_project_and_owner(str(record.get("loop_id") or ""))
+    if owner:
+        return scope.user_id == owner
+    return bool(project) and project_writable(project, scope)
+
+
+def _visible_approvals(rows: list[dict], request: Request) -> list[dict]:
+    """Owned rows as listed; ownerless rows only for their loop's project."""
+    if all(row.get("user_id") for row in rows):
+        return rows
+    from ._scope_identity import request_caller_scope
+
+    scope = request_caller_scope(request)
+    return [r for r in rows if r.get("user_id") or _ownerless_approval_open(r, scope)]
+
+
+def _enforce_approval_ownership(record: dict, x_user_id: str, request: Request) -> None:
+    """An approval intent is decidable only by the loop owner; an ownerless
+    one by its loop's project (another project's reads as not found)."""
     owner = str(record.get("user_id") or "")
     if owner and owner != x_user_id:
         raise_typed(
             PlatformError.companion("unauthorized", "approval ownership mismatch")
+        )
+    if owner:
+        return
+    from ._scope_identity import request_caller_scope
+
+    if not _ownerless_approval_open(record, request_caller_scope(request)):
+        raise_typed(
+            PlatformError.companion(
+                "not_found", f"approval not found: {record.get('id', '')}"
+            )
         )
 
 
@@ -655,6 +742,7 @@ def _apply_always_decision(record: dict, x_user_id: str) -> None:
 async def record_approval_decision(
     approval_id: str,
     body: ApprovalDecisionRequest,
+    request: Request,
     x_user_id: str = Depends(_strict_headers),
 ) -> dict:
     """Decide one pending intent (durable inbox; loop drivers park on these).
@@ -671,7 +759,7 @@ async def record_approval_decision(
         raise_typed(
             PlatformError.companion("not_found", f"approval not found: {approval_id}")
         )
-    _enforce_approval_ownership(existing, x_user_id)
+    _enforce_approval_ownership(existing, x_user_id, request)
     try:
         record = tool_approvals.decide(approval_id, body.decision, decided_by=x_user_id)
     except KeyError as exc:
