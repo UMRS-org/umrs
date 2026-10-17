@@ -454,6 +454,23 @@ async def _sse_events(
 # ── routes ────────────────────────────────────────────────────────────────────
 
 
+def _writable_worker_project(request: Request, requested: str | None) -> str:
+    """The worker's durable job lands in a project the caller may write; the
+    requested project was honoured unchecked (H-1, 2026-10-17)."""
+    from umrs.knowledge.access_scope import writable_project_for
+
+    from ._scope_identity import request_caller_scope
+
+    project = writable_project_for(requested or "", request_caller_scope(request))
+    if project is None:
+        raise_typed(
+            PlatformError.companion(
+                "forbidden", f"no write access to project {requested!r}"
+            )
+        )
+    return project
+
+
 @router.post("/workers", status_code=status.HTTP_201_CREATED)
 async def register_worker(
     body: WorkerRegisterRequest,
@@ -461,15 +478,14 @@ async def register_worker(
     x_user_id: str = Depends(_strict_headers),
 ) -> WorkerRowResponse:
     managers, _ = _managers(request)
-    spec = CompanionWorkerSpec(
-        owner_user_id=body.owner_user_id, project_id=body.project_id
-    )
+    project_id = _writable_worker_project(request, body.project_id)
+    spec = CompanionWorkerSpec(owner_user_id=body.owner_user_id, project_id=project_id)
     _enforce_ownership(
         {"owner_user_id": body.owner_user_id}, x_user_id or body.owner_user_id
     )
     try:
         job_id = body.job_id or await _submit_companion_job(
-            request, body.owner_user_id, body.project_id
+            request, body.owner_user_id, project_id
         )
         row = managers.register_active(spec, job_id=job_id)
         return _worker_row_to_response(row)

@@ -165,6 +165,7 @@ async def chat_completions(
     user_id, project_id = _get_caller_identity(request)
     body = await request.body()
     parsed = _parse_body(body)
+    _require_rag_corpus(request, parsed)
     model = parsed.get("model")
     is_streaming = parsed.get("stream", False)
 
@@ -198,6 +199,17 @@ async def chat_completions(
     finally:
         if registry:
             registry.decrement_requests(endpoint.job_id)
+
+
+def _require_rag_corpus(request: Request, parsed: dict) -> None:
+    """The body's ``project_id`` is the Assistant Service's RAG scope; it was
+    passed through unchecked (H-1, 2026-10-17). It must be readable by the
+    caller, as for ``/umrs/rag/query`` (read tier, then the ADR-080 list)."""
+    target = parsed.get("project_id") if isinstance(parsed, dict) else None
+    if target:
+        from .rag import _require_rag_scope
+
+        _require_rag_scope(request, str(target), write=False)
 
 
 async def _proxy_oneshot(

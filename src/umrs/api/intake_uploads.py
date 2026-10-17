@@ -36,7 +36,9 @@ from umrs.data_catalog.intake_uploads import (
 )
 from umrs.shared.storage.s3_presign import generate_presigned_put
 
+from ..knowledge.access_scope import project_writable, writable_project_for
 from ..shared.storage.s3_config import S3Config, get_s3_config
+from ._scope_identity import request_caller_scope
 from .files import get_project_id, validate_key
 from .typed_errors import PlatformError, raise_typed
 
@@ -86,9 +88,16 @@ class RecordPartRequest(BaseModel):
     size_bytes: int = Field(default=0, ge=0)
 
 
-def _require_manifest(manifest_id: str) -> IntakeUploadManifest:
+def _require_manifest(manifest_id: str, request: Request) -> IntakeUploadManifest:
+    """The manifest, when the caller may write its project.
+
+    The manifest-id routes took no identity: anyone holding an id could read
+    it, presign PUTs into its project's storage, record parts and complete it
+    (H-1, 2026-10-17). Another project's manifest reads as not found.
+    """
     manifest = _get_store().get(manifest_id)
-    if manifest is None:
+    caller = request_caller_scope(request)
+    if manifest is None or not project_writable(manifest.project_id, caller):
         raise_typed(
             PlatformError.intake("not_found", f"Manifest '{manifest_id}' not found"),
         )
@@ -114,10 +123,24 @@ def _require_uploading(manifest: IntakeUploadManifest) -> None:
 @router.post("/manifests", response_model=dict[str, Any])
 def create_manifest(
     body: CreateManifestRequest,
+    request: Request,
     project_id: str = Depends(get_project_id),
 ) -> dict[str, Any]:
-    """Create a chunked-upload manifest (I3)."""
-    scoped_project = body.project_id or project_id
+    """Create a chunked-upload manifest (I3) in a project the caller may write.
+
+    ``body.project_id`` won over the caller's project, even in strict mode
+    (H-1, 2026-10-17).
+    """
+    scoped_project = writable_project_for(
+        body.project_id or "", request_caller_scope(request)
+    )
+    if scoped_project is None:
+        raise_typed(
+            PlatformError.intake(
+                "forbidden", f"no write access to project {body.project_id!r}"
+            ),
+        )
+    scoped_project = scoped_project or project_id
     target_key = validate_key(body.target_key, scoped_project)
     config = get_s3_config()
     manifest = new_manifest(
@@ -139,9 +162,9 @@ def create_manifest(
 
 
 @router.get("/manifests/{manifest_id}", response_model=dict[str, Any])
-def get_manifest(manifest_id: str = FPath(...)) -> dict[str, Any]:
+def get_manifest(request: Request, manifest_id: str = FPath(...)) -> dict[str, Any]:
     """Manifest status with missing-part derivation (resume aid)."""
-    manifest = _require_manifest(manifest_id)
+    manifest = _require_manifest(manifest_id, request)
     return {"status": "ok", "manifest": manifest.to_dict()}
 
 
@@ -149,11 +172,12 @@ def get_manifest(manifest_id: str = FPath(...)) -> dict[str, Any]:
     "/manifests/{manifest_id}/parts/{part_no}/presign", response_model=dict[str, Any]
 )
 def presign_part(
+    request: Request,
     manifest_id: str = FPath(...),
     part_no: int = FPath(..., ge=1),
 ) -> dict[str, Any]:
     """Presigned PUT URL for one part (client uploads the chunk here)."""
-    manifest = _require_manifest(manifest_id)
+    manifest = _require_manifest(manifest_id, request)
     _require_uploading(manifest)
     if part_no > manifest.expected_parts:
         raise_typed(
@@ -184,11 +208,12 @@ def presign_part(
 @router.post("/manifests/{manifest_id}/parts/{part_no}", response_model=dict[str, Any])
 def record_part(
     body: RecordPartRequest,
+    request: Request,
     manifest_id: str = FPath(...),
     part_no: int = FPath(..., ge=1),
 ) -> dict[str, Any]:
     """Record a confirmed part upload (post-PUT handshake + provenance)."""
-    manifest = _require_manifest(manifest_id)
+    manifest = _require_manifest(manifest_id, request)
     _require_uploading(manifest)
     if part_no > manifest.expected_parts:
         raise_typed(
@@ -382,7 +407,7 @@ def complete_manifest(
     x_user_id: str | None = Header(None),
 ) -> dict[str, Any]:
     """Verify, assemble, ingest, and close the manifest (idempotent)."""
-    manifest = _require_manifest(manifest_id)
+    manifest = _require_manifest(manifest_id, request)
     if manifest.status == "assembled":
         return {
             "status": "assembled",

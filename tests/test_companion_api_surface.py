@@ -82,7 +82,8 @@ class TestWorkerRoutes:
         client = _app(FakePool([None, _worker_row()]))
         resp = client.post(
             "/umrs/companion/workers",
-            headers=HEADERS,
+            # A worker lands in a project the caller may write (H-1).
+            headers=_headers(project="default"),
             json={"owner_user_id": "alice", "project_id": "default", "job_id": "job-w1"},
         )
         assert resp.status_code == 201
@@ -101,7 +102,8 @@ class TestWorkerRoutes:
         client.app.state.companion_job_submitter = _submitter
         resp = client.post(
             "/umrs/companion/workers",
-            headers=HEADERS,
+            # A worker lands in a project the caller may write (H-1).
+            headers=_headers(project="default"),
             json={"owner_user_id": "alice", "project_id": "default"},
         )
         assert resp.status_code == 201
