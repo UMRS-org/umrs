@@ -28,11 +28,17 @@ def _try_fastapi():
 
 
 @pytest.fixture(autouse=True)
-def _clean_loop_store():
+def _clean_loop_store(monkeypatch):
     from umrs.api import loop as loop_api
     from umrs.api.loop import clear_loop_store
     from umrs.knowledge.loop import AutonomousResearchLoop
+    from umrs.knowledge.loop_store import LoopStore
 
+    # A memory store of its own (2026-10-18): in a full run an earlier test
+    # can leave the module store bound to Postgres, where each request loads
+    # its own copy and the simulated runner's save overwrote a PAUSED status
+    # (test_resume answered 400 intermittently).
+    monkeypatch.setattr(loop_api, "_loop_store", LoopStore.memory())
     clear_loop_store()
     # Server-side driver (engine runner) advances REST-started loops. Use a
     # simulated engine so test loops complete deterministically; real mode

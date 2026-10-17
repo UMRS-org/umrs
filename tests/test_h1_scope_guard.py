@@ -513,30 +513,45 @@ def _lazy_imports(instructions: list[dis.Instruction], package: str) -> dict[str
     return found
 
 
-def _constant_keyword(instructions: list[dis.Instruction], index: int, name: str) -> Any:
+def _kwnames(ins: dis.Instruction, consts: tuple[Any, ...]) -> tuple[str, ...] | None:
+    """The keyword-names tuple an instruction carries, if any.
+
+    3.10 and 3.13 push it as a ``LOAD_CONST`` tuple; 3.11/3.12 ``KW_NAMES``
+    holds a ``co_consts`` index that ``dis`` does not resolve (its argval is
+    ``<unknown>`` on 3.11), so it is read from the code object's constants.
+    """
+    if ins.opname == "KW_NAMES":
+        value = consts[ins.arg] if ins.arg is not None and ins.arg < len(consts) else None
+        return value if isinstance(value, tuple) else None
+    if ins.opname == "LOAD_CONST" and isinstance(ins.argval, tuple):
+        return ins.argval
+    return None
+
+
+def _constant_keyword(
+    instructions: list[dis.Instruction], index: int, kwnames: tuple[str, ...], name: str
+) -> Any:
     """The constant value pushed for keyword ``name`` of the call whose
     keyword-names tuple is ``instructions[index]`` (``None`` if not constant)."""
-    kwnames = instructions[index].argval
     values = instructions[max(index - len(kwnames), 0) : index]
     if len(values) != len(kwnames) or any(v.opname != "LOAD_CONST" for v in values):
         return None
     return values[kwnames.index(name)].argval
 
 
-def _passes_verify_hmac(instructions: list[dis.Instruction]) -> bool:
+def _passes_verify_hmac(instructions: list[dis.Instruction], consts: tuple[Any, ...]) -> bool:
     """A call in this block passes the constant keyword ``verify_hmac=True``.
 
     The keyword-names tuple follows the pushed keyword values (3.10
     ``CALL_FUNCTION_KW``, 3.11/3.12 ``KW_NAMES``, 3.13 ``CALL_KW``); only
     constant keyword values are read, so write the call with literals.
     """
-    return any(
-        ins.opname in ("LOAD_CONST", "KW_NAMES")
-        and isinstance(ins.argval, tuple)
-        and "verify_hmac" in ins.argval
-        and _constant_keyword(instructions, index, "verify_hmac") is True
-        for index, ins in enumerate(instructions)
-    )
+    for index, ins in enumerate(instructions):
+        names = _kwnames(ins, consts)
+        if names and "verify_hmac" in names:
+            if _constant_keyword(instructions, index, names, "verify_hmac") is True:
+                return True
+    return False
 
 
 def _resolve(names: set[str], lookup: Callable[[str], Any]) -> list[Any]:
@@ -576,7 +591,7 @@ def _block_facts(
         names.update(block.co_names)
         lazy.update(_lazy_imports(instructions, package))
         consts.update(c.lower() for c in block.co_consts if isinstance(c, str))
-        hmac_kw = hmac_kw or _passes_verify_hmac(instructions)
+        hmac_kw = hmac_kw or _passes_verify_hmac(instructions, block.co_consts)
     return names, lazy, consts, hmac_kw
 
 
