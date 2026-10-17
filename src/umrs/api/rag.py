@@ -16,7 +16,7 @@ import os
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from pydantic import BaseModel, Field
 
 from umrs.knowledge.access_scope import (
@@ -780,11 +780,21 @@ def _documents_from(payload: Any) -> list[dict[str, Any]]:
 async def list_documents(
     request: Request,
     registry: EndpointRegistry = Depends(get_registry),
+    project_id: str | None = Query(
+        None, description="Corpus to list (default: the caller's)"
+    ),
 ):
-    """List all documents in a project."""
-    _user_id, project_id = _require_rag_scope(request, write=False)
+    """List all documents in a project.
 
-    rag_base = _discover_rag_endpoint(registry, project_id)
+    ``project_id`` was not a parameter, so the r4 client's project (``r4 rag
+    docs <project>``, ``/rag docs <project>``) was dropped and the caller's own
+    corpus listed under it (TUI audit 2026-10-17). It now names the corpus,
+    checked like ``/query``: read tier, then the ADR-080 access list.
+    """
+    _user_id, caller_project = _require_rag_scope(request, project_id, write=False)
+    # The caller's endpoint serves the call; the parameter names the corpus.
+    rag_base = _discover_rag_endpoint(registry, caller_project)
+    project_id = project_id or caller_project
     rag_url = f"{rag_base}/rag/documents"
 
     try:

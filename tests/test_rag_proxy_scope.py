@@ -120,3 +120,53 @@ def test_delete_foreign_project_denied():
         headers={"x-user-id": "u2", "x-project-id": "user:u1"},
     )
     assert response.status_code == 403
+
+
+def _mock_get(payload, seen: list):
+    async def fake_get(self, url, **kwargs):
+        seen.append(kwargs.get("params"))
+        return _mock_rag_response(payload)
+
+    return fake_get
+
+
+# TUI audit 2026-10-17: project_id was not a parameter of GET /documents, so
+# `r4 rag docs <project>` listed the caller's own corpus under that name.
+
+
+def test_documents_lists_the_named_corpus():
+    client = _create_client()
+    seen: list = []
+    docs = {"documents": [{"document_id": "d1", "filename": "a.pdf"}]}
+    with patch.object(httpx.AsyncClient, "get", _mock_get(docs, seen)):
+        response = client.get(
+            "/umrs/rag/documents",
+            params={"project_id": "system"},
+            headers={"x-user-id": "u1", "x-project-id": "test-project"},
+        )
+    assert response.status_code == 200
+    assert seen == [{"project_id": "system"}]
+    assert response.json()[0]["project_id"] == "system"
+
+
+def test_documents_defaults_to_the_caller_corpus():
+    client = _create_client()
+    seen: list = []
+    with patch.object(httpx.AsyncClient, "get", _mock_get({"documents": []}, seen)):
+        response = client.get(
+            "/umrs/rag/documents",
+            headers={"x-user-id": "u1", "x-project-id": "test-project"},
+        )
+    assert response.status_code == 200
+    assert seen == [{"project_id": "test-project"}]
+
+
+def test_documents_of_a_foreign_project_denied():
+    client = _create_client()
+    response = client.get(
+        "/umrs/rag/documents",
+        params={"project_id": "other-project"},
+        headers={"x-user-id": "u1", "x-project-id": "test-project"},
+    )
+    assert response.status_code == 403
+    assert "other-project" in response.json()["detail"]

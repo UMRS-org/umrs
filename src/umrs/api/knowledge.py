@@ -27,7 +27,7 @@ from umrs.knowledge.knowledge_dashboard_controller import (
     ObjectDetail,
 )
 from umrs.knowledge.project import ProjectPhase, ResearchProject
-from umrs.knowledge.research_readiness_controller import ResearchReadinessController
+from umrs.knowledge.readiness_approvals import ReadinessApprovalStore
 from umrs.knowledge.verification_store import VerificationStore
 from umrs.knowledge_model import InMemoryKnowledgeModelStore
 from umrs.scientific_memory import InMemoryScientificMemoryStore
@@ -97,6 +97,42 @@ class VerifyRequest(BaseModel):
     question: str = Field(..., min_length=1, description="Verification question")
 
 
+def _readable_project(request: Request, project_id: str | None, route: str) -> str:
+    """The explicit or caller project, fail-closed (audit B10): 403 when there
+    is none or it is outside the caller's access tier."""
+    from umrs.knowledge.access_scope import project_readable
+
+    return _scoped_project(request, project_id, route, project_readable)
+
+
+def _scoped_project(
+    request: Request, project_id: str | None, route: str, allowed: Any
+) -> str:
+    """The explicit or caller project when ``allowed(project, caller)``; 403
+    when there is none or the predicate refuses it."""
+    from umrs.api._scope_identity import request_caller_scope
+
+    caller = request_caller_scope(request)
+    effective_project = project_id or caller.project_id
+    if not effective_project:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "scope_required",
+                "message": f"{route} requires a project scope (authenticated or explicit).",
+            },
+        )
+    if not allowed(effective_project, caller):
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "scope_denied",
+                "message": "Project is outside the caller's access tier.",
+            },
+        )
+    return effective_project
+
+
 @router.get("/search")
 async def search_knowledge(
     request: Request,
@@ -112,28 +148,7 @@ async def search_knowledge(
     no identity dependency at all — omitting ``project_id`` searched every
     project's memory_items. Anonymous or unscoped calls fail closed.
     """
-    from umrs.api._scope_identity import request_caller_scope
-    from umrs.knowledge.access_scope import project_readable as _scope_readable
-
-    caller = request_caller_scope(request)
-    effective_project = project_id or caller.project_id
-    if not effective_project:
-        raise HTTPException(
-            status_code=403,
-            detail={
-                "error": "scope_required",
-                "message": "knowledge/search requires a project scope (authenticated or explicit).",
-            },
-        )
-    if not _scope_readable(effective_project, caller):
-        raise HTTPException(
-            status_code=403,
-            detail={
-                "error": "scope_denied",
-                "message": "Project is outside the caller's access tier.",
-            },
-        )
-
+    effective_project = _readable_project(request, project_id, "knowledge/search")
     engine = _get_engine()
     ns_list = (
         [n.strip() for n in namespaces.split(",") if n.strip()] if namespaces else None
@@ -242,10 +257,6 @@ _dashboard_controller = KnowledgeDashboardController(
 _correction_controller = KnowledgeCorrectionController(
     knowledge_graph=_m35_knowledge_graph,
 )
-_readiness_controller = ResearchReadinessController(
-    knowledge_model=_m35_knowledge_model,
-    knowledge_graph=_m35_knowledge_graph,
-)
 
 
 class RelatedObjectRef(BaseModel):
@@ -283,9 +294,13 @@ class CorrectionRequest(BaseModel):
     details: dict[str, Any] = Field(default_factory=dict)
 
 
-class ApprovalRequest(BaseModel):
-    approved: bool = Field(..., description="Approval decision")
-    approved_by: str = Field(..., description="User making the decision")
+class ReadinessApproveRequest(BaseModel):
+    """Per-project readiness approval; the approver is the verified caller."""
+
+    project_id: str | None = Field(
+        None, description="Project to approve (default: the caller's)"
+    )
+    reason: str = Field("", max_length=2000, description="Why (audited)")
 
 
 def _object_title(obj: ObjectDetail | None) -> str:
@@ -607,29 +622,208 @@ async def get_project_graph_pg(
     }
 
 
+def _readiness_level_for(artifact_count: int, latest: Any | None) -> tuple[str, str]:
+    """(readiness_level, blocker) from the project's artifacts and latest report."""
+    if artifact_count == 0:
+        return "not_ready", "no artifacts ingested; run r4 project ingest"
+    if latest is None:
+        return "not_ready", "no verification report yet; run r4 project verify"
+    if latest.degraded:
+        return "not_ready", "the latest verification ran degraded"
+    if latest.confidence >= 0.8:
+        return "ready", ""
+    if latest.confidence >= 0.5:
+        return "partially_ready", ""
+    return "not_ready", f"verification confidence {latest.confidence:.2f} is below 0.50"
+
+
+def project_readiness_payload(
+    project_id: str, artifact_count: int, latest: Any | None
+) -> dict[str, Any]:
+    """Project readiness in the knowledge/readiness.py level vocabulary.
+
+    ``partially_ready`` can run (gaps remain), as in the CLI and the TUI.
+    """
+    level, blocker = _readiness_level_for(artifact_count, latest)
+    checks = [
+        {
+            "check": "artifacts",
+            "passed": artifact_count > 0,
+            "details": f"{artifact_count} ingested",
+        },
+        {
+            "check": "verification",
+            "passed": latest is not None and not latest.degraded,
+            "details": "none"
+            if latest is None
+            else f"confidence {latest.confidence:.2f}",
+        },
+    ]
+    return {
+        "project_id": project_id,
+        "readiness_level": level,
+        "can_run": level in ("ready", "partially_ready"),
+        "confidence": latest.confidence if latest is not None else 0.0,
+        "readiness_checks": checks,
+        "blockers": [blocker] if blocker else [],
+        "artifact_count": artifact_count,
+        "has_verification": latest is not None,
+    }
+
+
 @router.get("/readiness")
-async def get_research_readiness(request: Request) -> dict[str, Any]:
-    """Get the research readiness report."""
+async def get_research_readiness(
+    request: Request,
+    project_id: str | None = Query(
+        None, description="Project ID (default: the caller's)"
+    ),
+) -> dict[str, Any]:
+    """Research readiness for one project, from its artifacts and latest
+    verification report.
+
+    It returned the module-global explorer report (project "default", counted
+    from an in-memory model nothing fills) whatever project was asked for, so
+    every client saw "not_ready" (TUI audit 2026-10-17).
+    """
     await _explorer_caller(request)
-    return _readiness_controller.evaluate_readiness().to_dict()
+    effective = _readable_project(request, project_id, "knowledge/readiness")
+    from umrs.knowledge.store import KnowledgeStore
+
+    try:
+        pool = await knowledge_asyncpg_pool(request)
+        artifacts, _total = await KnowledgeStore(pool).list_artifacts(
+            project_id=effective
+        )
+        reports = await VerificationStore(pool).list_reports(
+            project_id=effective, limit=1
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("readiness failed for project %s", effective)
+        raise_typed(PlatformError.knowledge("failure", str(exc)), cause=exc)
+    latest = reports[0] if reports else None
+    payload = project_readiness_payload(effective, len(artifacts), latest)
+    payload.update(await _approval_fields(pool, effective, latest))
+    return payload
 
 
-@router.post("/approval")
-async def submit_approval(req: ApprovalRequest, request: Request) -> dict[str, Any]:
-    """Approve or reject autonomous research (write-gated: R2 scope)."""
-    await _explorer_caller(request)
-    if req.approved:
-        report = _readiness_controller.evaluate_readiness()
-        record = _readiness_controller.approve(
-            user_id=req.approved_by,
-            readiness_report=report,
+async def _approval_fields(
+    pool: Any, project_id: str, latest: Any | None
+) -> dict[str, Any]:
+    """The project's latest unexpired readiness approval, as payload fields.
+
+    The approval holds only while the latest verification report is clean and
+    its confidence is still at least the approved threshold; otherwise it is
+    reported as ``approval_stale`` with ``user_approved`` false.  A failed
+    lookup reads as "not approved" so readiness itself still answers.
+    """
+    try:
+        approval = await ReadinessApprovalStore(pool).latest_active(project_id)
+    except Exception:
+        logger.warning(
+            "readiness approval lookup failed for %s", project_id, exc_info=True
         )
-    else:
-        record = _readiness_controller.reject(
-            user_id=req.approved_by,
-            reason="",
+        approval = None
+    if approval is None:
+        return {"user_approved": False, "approved_at": None}
+    row = approval.to_dict()
+    if not approval.holds_for(latest):
+        return {
+            "user_approved": False,
+            "approved_at": None,
+            "approval_stale": True,
+            "approval_threshold": row["threshold"],
+        }
+    return {
+        "user_approved": True,
+        "approved_at": row["approved_at"],
+        "approved_by": row["approved_by"],
+        "approval_expires_at": row["expires_at"],
+        "approval_threshold": row["threshold"],
+    }
+
+
+def _refuse_agent_approval(request: Request) -> None:
+    """Readiness approval is the person's decision, never the agent's own."""
+    from umrs.api._knowledge_mutation_guard import AGENT_ACTOR, request_actor
+
+    if request_actor(request) == AGENT_ACTOR:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "approval_forbidden_for_agent",
+                "message": "Agents may not approve readiness; the user runs "
+                "the approval themselves.",
+            },
         )
-    return record.to_dict()
+
+
+@router.post("/readiness/approve")
+async def approve_project_readiness(
+    body: ReadinessApproveRequest, request: Request
+) -> dict[str, Any]:
+    """Approve one project's knowledge base for autonomous operation.
+
+    The caller must be able to write the project and must not be an agent
+    actor (403 otherwise). One ``readiness_approvals`` row records the
+    approver, the latest verification confidence as the threshold, the reason
+    and an expiry; the readiness route reports the newest unexpired row as
+    ``user_approved`` while the confidence stays at or above that threshold.
+    # auth: verified
+    """
+    from umrs.api._scope_identity import request_caller_scope
+    from umrs.knowledge.access_scope import project_writable
+
+    _refuse_agent_approval(request)
+    effective = _scoped_project(
+        request, body.project_id, "knowledge/readiness/approve", project_writable
+    )
+    approver = request_caller_scope(request).user_id or "anonymous"
+    try:
+        pool = await knowledge_asyncpg_pool(request)
+        reports = await VerificationStore(pool).list_reports(
+            project_id=effective, limit=1
+        )
+        approval = await ReadinessApprovalStore(pool).record(
+            project_id=effective,
+            confidence=reports[0].confidence if reports else 0.0,
+            approved_by=approver,
+            reason=body.reason,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("readiness approval failed for project %s", effective)
+        raise_typed(PlatformError.knowledge("failure", str(exc)), cause=exc)
+    logger.info(
+        "AUDIT: readiness approval project=%s by=%s threshold=%.2f",
+        effective,
+        approver,
+        approval.threshold,
+    )
+    return {"user_approved": True, **approval.to_dict()}
+
+
+@router.post("/approval", status_code=410)
+async def submit_approval(request: Request) -> dict[str, Any]:
+    """Retired: use ``POST /umrs/knowledge/readiness/approve``.
+
+    It held ONE approval for the whole server in the module-global explorer
+    controller, with a client-asserted ``approved_by`` and no project (TUI
+    audit 2026-10-17, round 2). The caller is still authenticated first.
+    """
+    from umrs.api._scope_identity import request_caller_scope
+
+    request_caller_scope(request)
+    raise HTTPException(
+        status_code=410,
+        detail={
+            "error": "gone",
+            "message": "Readiness approval is per project: "
+            "POST /umrs/knowledge/readiness/approve {project_id, reason}.",
+        },
+    )
 
 
 @router.post("/understand", response_model=UnderstandResponse)
@@ -906,6 +1100,8 @@ async def knowledge_status(
     _get_project_id: str = Depends(get_project_id),
 ) -> dict[str, Any]:
     """Get knowledge status: artifacts, graph stats, verification state."""
+    # ?project_id= was never compared with the caller (2026-10-17).
+    project_id = _readable_project(request, project_id, "knowledge/status")
     try:
         from umrs.knowledge.store import KnowledgeStore
 
@@ -940,9 +1136,14 @@ async def knowledge_status(
         raise_typed(PlatformError.knowledge("failure", str(exc)), cause=exc)
 
 
-async def _list_findings_filtered(ver, report_id, status, severity):
+async def _list_findings_filtered(ver, project_id, report_id, status, severity):
     """Filter wrapper — keeps the handler body single-expression."""
-    kwargs: dict[str, Any] = {"status": status, "severity": severity, "limit": 500}
+    kwargs: dict[str, Any] = {
+        "project_id": project_id,
+        "status": status,
+        "severity": severity,
+        "limit": 500,
+    }
     if report_id:
         kwargs["report_id"] = report_id
     return await ver.list_findings(**kwargs)
@@ -988,12 +1189,19 @@ async def knowledge_findings(
     severity: str | None = Query(None, description="Filter by severity"),
     _get_project_id: str = Depends(get_project_id),
 ) -> dict[str, Any]:
-    """List verification findings with filters."""
+    """List verification findings with filters.
+
+    It never filtered by project: any caller got up to 500 findings from every
+    project (2026-10-17). Findings are now the readable project's only.
+    """
+    project_id = _readable_project(request, project_id, "knowledge/findings")
     try:
         pool = await knowledge_asyncpg_pool(request)
         ver = VerificationStore(pool)
 
-        findings = await _list_findings_filtered(ver, report_id, status, severity)
+        findings = await _list_findings_filtered(
+            ver, project_id, report_id, status, severity
+        )
         return _findings_payload(findings)
     except Exception as exc:
         logger.exception("Failed to list findings")
@@ -1120,6 +1328,8 @@ async def knowledge_readiness(
     Renamed from ``GET /readiness`` (shadowed duplicate; G-P2-9): the
     research-readiness controller handler registered earlier owns that path.
     """
+    # ?project_id= was never compared with the caller (2026-10-17).
+    project_id = _readable_project(request, project_id, "knowledge/readiness/graph")
     try:
         from umrs.knowledge.store import KnowledgeStore
 
