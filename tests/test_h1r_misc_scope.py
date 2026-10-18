@@ -20,6 +20,8 @@ Each block names the defect it pins:
    raises 401 on a missing or forged tuple); the anonymous dev (mvp) caller
    could still transition projectless findings, so the route now needs a
    verified admin in every mode.
+   Since 2026-10-18 (H-10.1 follow-up) the route is retired (410); it still
+   needs a verified caller in every mode.
 6. The experiment registry's status filter answered a plain 400 with no
    typed code; it is now ``experiments.bad_request``.
 7. ``knowledge/a2l_bridge.py`` called ``/gw/a2l/{resolve,artifacts}`` with no
@@ -353,20 +355,11 @@ def test_owner_still_decides_own_approval(strict, inbox):
 
 @pytest.fixture
 def findings():
-    """A fake findings store; records each transition."""
+    """The route is retired since 2026-10-18 (H-10.1 follow-up: 410, pointer
+    to ``PATCH /umrs/knowledge/findings``); the identity rule stays."""
     from umrs.api import verification
 
-    calls: list[tuple[str, str, str]] = []
-
-    class _Store:
-        async def transition_finding(self, key: str, frm: str, to: str):
-            calls.append((key, frm, to))
-            return SimpleNamespace(finding_key=key, status=to, title="t")
-
-    previous = verification._store
-    verification.set_store(_Store())
-    yield _client(verification.router), calls
-    verification._store = previous
+    return _client(verification.router)
 
 
 def _transition(client: TestClient, headers: dict[str, str]):
@@ -378,34 +371,22 @@ def _transition(client: TestClient, headers: dict[str, str]):
 
 
 def test_finding_transition_without_identity_is_refused_in_strict(strict, findings):
-    client, calls = findings
-    assert _transition(client, {}).status_code == 401
-    assert calls == []
+    assert _transition(findings, {}).status_code == 401
 
 
 def test_finding_transition_with_a_forged_admin_is_refused(strict, findings):
-    client, calls = findings
-    assert _transition(client, FORGED).status_code == 401
-    assert calls == []
+    assert _transition(findings, FORGED).status_code == 401
 
 
-def test_finding_transition_by_a_signed_non_admin_is_forbidden(strict, findings):
-    client, calls = findings
-    assert _transition(client, ALICE).status_code == 403
-    assert calls == []
-
-
-def test_finding_transition_by_a_signed_admin_runs(strict, findings):
-    client, calls = findings
-    resp = _transition(client, ADMIN)
-    assert resp.status_code == 200
-    assert calls == [("f-1", "open", "resolved")]
+@pytest.mark.parametrize("who", ["member", "admin"])
+def test_finding_transition_by_a_signed_caller_is_gone(strict, findings, who):
+    resp = _transition(findings, ALICE if who == "member" else ADMIN)
+    assert resp.status_code == 410
+    assert "/umrs/knowledge/findings" in resp.json()["detail"]
 
 
 def test_finding_transition_needs_identity_in_dev_mode_too(mvp, findings):
-    client, calls = findings
-    assert _transition(client, {}).status_code == 401
-    assert calls == []
+    assert _transition(findings, {}).status_code == 401
 
 
 # ── 6. experiments status filter ───────────────────────────────────────────

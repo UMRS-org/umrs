@@ -5,7 +5,8 @@ project without a check.
   manifest-id routes took no identity (presigned PUTs into any project).
 - skills: a project-scope skill was registered into any ``body.project_id``.
 - companion workers: the durable job went to any ``body.project_id``.
-- pipelines: the project came from the raw, unsigned ``X-Project-ID`` header.
+- pipelines: the project came from the raw, unsigned ``X-Project-ID`` header
+  (the CRUD is retired since 2026-10-18; it still resolves the caller first).
 - chat completions: the raw body ``project_id`` became the Assistant
   Service's RAG scope.
 """
@@ -128,27 +129,22 @@ def test_companion_worker_for_another_project_is_refused():
 
 @pytest.fixture
 def pipelines():
+    """The pipelines CRUD is retired (H-10.1 follow-up, 2026-10-18; 410), but
+    it still resolves the verified caller first."""
     from umrs.api import pipelines as mod
 
-    store = MagicMock()
-    store.list_pipelines.return_value = []
     app = FastAPI()
     app.include_router(mod.router)
-    app.dependency_overrides[mod.get_pipeline_store] = lambda: store
-    return TestClient(app), store
+    return TestClient(app)
 
 
-def test_pipelines_take_the_verified_project_not_the_raw_header(pipelines):
-    client, store = pipelines
+def test_pipelines_answer_gone_to_a_verified_caller(pipelines):
     headers = {**_headers("alice", "proj-a"), "X-Project-ID": "proj-b"}
-    assert client.get("/umrs/pipelines", headers=headers).status_code == 200
-    assert store.list_pipelines.call_args.kwargs["project_id"] == "proj-a"
+    assert pipelines.get("/umrs/pipelines", headers=headers).status_code == 410
 
 
 def test_pipelines_need_identity_in_strict_mode(pipelines):
-    client, store = pipelines
-    assert client.get("/umrs/pipelines", headers={"X-Project-ID": "proj-b"}).status_code == 401
-    store.list_pipelines.assert_not_called()
+    assert pipelines.get("/umrs/pipelines", headers={"X-Project-ID": "proj-b"}).status_code == 401
 
 
 # ── chat completions ─────────────────────────────────────────────────────────

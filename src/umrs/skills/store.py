@@ -13,7 +13,7 @@ from typing import Any
 
 import psycopg2
 
-from . import RegisteredSkill, SkillScope
+from . import RegisteredSkill, SkillScope, project_key, skill_key
 
 logger = logging.getLogger(__name__)
 
@@ -63,10 +63,17 @@ class SkillStore:
     ) -> RegisteredSkill:
         """Register or update a skill (upsert).
 
+        The key is ``(scope, owner_id, project_key, name)`` (migration 0123):
+        a project skill is one row per project. It was
+        ``(scope, owner_id, name)``, so registering a project skill in a
+        second project moved the first project's row (H-10.1 follow-up,
+        2026-10-18). On a conflict the stored ``skill_id`` is returned, also
+        for rows written under the pre-0123 id formula.
+
         Returns:
             The registered ``RegisteredSkill``.
         """
-        skill_id = f"skl-{_hash_str(f'{scope.value}:{owner_id}:{name}')}"
+        skill_id = f"skl-{_hash_str(skill_key(scope, owner_id, project_id, name))}"
         manifest_json = json.dumps(manifest or {})
 
         with self.conn.cursor() as cur:
@@ -79,7 +86,7 @@ class SkillStore:
                     %s, %s, %s, %s, %s, %s,
                     %s, %s, %s, NOW(), NOW()
                 )
-                ON CONFLICT (scope, owner_id, name) DO UPDATE SET
+                ON CONFLICT (scope, owner_id, project_key, name) DO UPDATE SET
                     version = EXCLUDED.version,
                     project_id = EXCLUDED.project_id,
                     skill_md = EXCLUDED.skill_md,
@@ -144,16 +151,22 @@ class SkillStore:
         name: str,
         scope: SkillScope,
         owner_id: str,
+        project_id: str | None = None,
     ) -> RegisteredSkill | None:
-        """Get a skill by (scope, owner, name)."""
+        """Get a skill by its registry key (scope, owner, project, name).
+
+        ``project_id`` counts for project-scope skills only (``project_key``,
+        migration 0123); user and system skills ignore it.
+        """
         with self.conn.cursor() as cur:
             cur.execute(
                 f"""
                 SELECT {_SKILL_COLUMNS}
                 FROM skills
                 WHERE name = %s AND scope = %s AND owner_id = %s
+                  AND project_key = %s
                 """,
-                (name, scope.value, owner_id),
+                (name, scope.value, owner_id, project_key(scope, project_id)),
             )
             row = cur.fetchone()
             if row is None:

@@ -26,6 +26,26 @@ from r4_contracts.skills import SkillManifest, SkillScope
 logger = logging.getLogger(__name__)
 
 
+def project_key(scope: SkillScope, project_id: str | None) -> str:
+    """The ``skills.project_key`` value (migration 0123): the project of a
+    project-scope skill, else ``''``."""
+    return (project_id or "") if scope == SkillScope.PROJECT else ""
+
+
+def skill_key(
+    scope: SkillScope, owner_id: str, project_id: str | None, name: str
+) -> str:
+    """Identity string a skill id hashes; it follows the registry key.
+
+    User and system skills keep the pre-0123 ``scope:owner:name`` form, so
+    their stored ids stay valid; a project skill adds its project.
+    """
+    key = project_key(scope, project_id)
+    if key:
+        return f"{scope.value}:{owner_id}:{key}:{name}"
+    return f"{scope.value}:{owner_id}:{name}"
+
+
 @dataclass
 class RegisteredSkill:
     """A skill stored in the UMRS registry."""
@@ -41,10 +61,14 @@ class RegisteredSkill:
     review_state: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
+        # The id follows the registry key: a project skill is one per project
+        # (migration 0123; it was one per owner, so registering it in a second
+        # project replaced the first, H-10.1 follow-up 2026-10-18).
         if not self.skill_id and self.manifest.name:
-            self.skill_id = hashlib.sha256(
-                f"{self.scope.value}:{self.owner_id}:{self.manifest.name}".encode()
-            ).hexdigest()[:16]
+            identity = skill_key(
+                self.scope, self.owner_id, self.project_id, self.manifest.name
+            )
+            self.skill_id = hashlib.sha256(identity.encode()).hexdigest()[:16]
 
 
 REVIEW_STATUS_PENDING = "pending_review"
@@ -216,4 +240,6 @@ __all__ = [
     "SkillScope",
     "SkillValidationError",
     "is_pending_proposal",
+    "project_key",
+    "skill_key",
 ]

@@ -1386,8 +1386,11 @@ def _import_skill_refs(
     """Register disabled stubs for refs the target install does not have.
 
     Stubs carry ``manifest._bundle_ref`` so a later full registration (with
-    the SKILL.md body) clearly supersedes them; a ref whose (scope, owner,
-    name) row already exists is counted as existing, never stomped.
+    the SKILL.md body) clearly supersedes them; a ref whose registry row
+    already exists is counted as existing, never stomped. A project ref is
+    looked up in the target project: the lookup ignored the project, so a
+    stub another project held counted as this one's (H-10.1 follow-up,
+    2026-10-18; key: migration 0123).
     """
     from r4_contracts.skills import SkillScope
 
@@ -1406,7 +1409,9 @@ def _import_skill_refs(
             continue
         project_id = target_project if scope is SkillScope.PROJECT else None
         if (
-            skill_store.get_skill_by_name(name, scope, owner_id="bundle-import")
+            skill_store.get_skill_by_name(
+                name, scope, owner_id="bundle-import", project_id=project_id
+            )
             is not None
         ):
             existing += 1
