@@ -187,9 +187,10 @@ class TestSurfaceParity:
     def test_rag_delegates(self):
         from umrs.api import rag
 
-        assert rag._get_caller_identity(
-            _request({"x-user-id": "a", "x-verified-project-id": "p"})
-        ) == ("a", "p")
+        # H-1 (2026-10-18): rag._get_caller_identity was dead and is deleted;
+        # every rag route reads the caller through _verified_caller.
+        identity = rag._verified_caller(_request({"x-user-id": "a", "x-verified-project-id": "p"}))
+        assert (identity.user_id, identity.project_id, identity.is_admin) == ("a", "p", False)
 
     def test_skills_delegates(self):
         from umrs.api.skills import _caller_identity

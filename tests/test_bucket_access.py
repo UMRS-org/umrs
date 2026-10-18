@@ -225,7 +225,9 @@ def test_non_owner_cannot_set_access(store):
         json={"access": ["user:bob"]},
         headers=_headers("carol", "proj-b"),
     )
-    assert r.status_code == 403
+    # 404, not 403 (H-1, 2026-10-18): a non-owner who may not use the bucket
+    # gets the same answer as for an unknown name (no existence oracle).
+    assert r.status_code == 404
 
 
 def test_system_entry_is_admin_only(store):

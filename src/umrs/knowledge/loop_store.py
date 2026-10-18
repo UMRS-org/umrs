@@ -9,6 +9,7 @@ API shape (sync-friendly; the engine is sync):
     store = LoopStore.memory()                       # in-memory fallback
 
     store.save(loop)            # upsert loop + iterations
+    store.save_keeping_control(loop)  # runner save: never undoes a pause/stop
     store.get(loop_id)          # ResearchLoop | None
     store.list_all()            # list[ResearchLoop]
     store.delete(loop_id)
@@ -18,6 +19,7 @@ API shape (sync-friendly; the engine is sync):
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import logging
 import threading
@@ -61,6 +63,30 @@ def _row_to_loop(row: Any) -> ResearchLoop:
             raw_plan if not isinstance(raw_plan, str) else json.loads(raw_plan)
         )
     return loop
+
+
+# A pause or stop the REST routes stored while a runner held its own copy.
+_CONTROL_STATUSES = (LoopStatus.PAUSED, LoopStatus.STOPPED)
+
+
+def control_kept(
+    loop: ResearchLoop, stored_status: Any, stored_completed_at: Any
+) -> ResearchLoop:
+    """The record a runner save writes, given the stored status (H-1, 2026-10-18).
+
+    While the stored status is PAUSED or STOPPED and the runner's copy still
+    says RUNNING, the copy is written with the stored status (and a stop's
+    completed_at); the runner's own object is not changed. Otherwise (no
+    record, a resume already stored RUNNING, or a terminal status the runner
+    reached itself) the copy is written as is.
+    """
+    if loop.status != LoopStatus.RUNNING or stored_status not in _CONTROL_STATUSES:
+        return loop
+    held = copy.copy(loop)  # shallow: same iterations and metadata
+    held.status = LoopStatus(stored_status)
+    if held.status == LoopStatus.STOPPED and stored_completed_at:
+        held.completed_at = stored_completed_at
+    return held
 
 
 _F_KEYS = (
@@ -307,10 +333,22 @@ class LoopStore:
 
     # -- sync psycopg2 ops (runner/driver threads) ------------------------ #
 
-    def _save_sync(self, loop: ResearchLoop) -> None:
+    @staticmethod
+    def _locked_control(cur: Any, loop: ResearchLoop) -> ResearchLoop:
+        """Lock the loop row for this transaction and apply control_kept."""
+        cur.execute(
+            "SELECT status, completed_at FROM research_loops WHERE loop_id = %s FOR UPDATE",
+            (loop.loop_id,),
+        )
+        row = cur.fetchone()
+        return control_kept(loop, row[0], row[1]) if row else loop
+
+    def _save_sync(self, loop: ResearchLoop, keep_control: bool = False) -> None:
         from psycopg2.extras import Json
 
         with self._sync_pool.cursor() as cur:
+            if keep_control:
+                loop = self._locked_control(cur, loop)
             cur.execute(
                 """INSERT INTO research_loops
                    (loop_id, project_id, research_goal, status, phase,
@@ -450,6 +488,31 @@ class LoopStore:
         else:
             self._run(self._save_pg(loop))
 
+    def save_keeping_control(self, loop: ResearchLoop) -> None:
+        """A runner's save: never undoes a concurrent pause or stop.
+
+        Lost update (ledger 2026-10-18 (8)): a runner saving its RUNNING copy
+        after an iteration overwrote a PAUSED or STOPPED status the REST routes
+        stored meanwhile. On the psycopg2 store (what runner threads use) the
+        stored status is read with SELECT ... FOR UPDATE and the upsert runs in
+        the same transaction under the store lock, so this save cannot write
+        over a resume stored after its read. The memory and asyncpg modes re-read and
+        save under the store lock only (memory hands out the same object; the
+        asyncpg facade cannot run in runner threads). REST routes keep save().
+        """
+        if self._sync_pool is not None:
+            self._sync_call(self._save_sync, loop, True)
+            return
+        with self._sync_lock:
+            stored = self.get(loop.loop_id)
+            self.save(
+                control_kept(
+                    loop,
+                    getattr(stored, "status", None),
+                    getattr(stored, "completed_at", ""),
+                )
+            )
+
     def get(self, loop_id: str) -> ResearchLoop | None:
         if self._sync_pool is not None:
             return self._sync_call(self._get_sync, loop_id)
@@ -494,4 +557,4 @@ class LoopStore:
         return cls(pool=None)
 
 
-__all__ = ["LoopStore"]
+__all__ = ["LoopStore", "control_kept"]

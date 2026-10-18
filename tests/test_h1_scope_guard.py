@@ -44,9 +44,11 @@ compare its project or owner, a foreign id reads as not found). The fix
 lanes' tests cover the ones they fixed; the known open ones are listed by
 hand in ``KNOWN_GAPS`` or the allowlists. A guard anywhere in the closure
 covers every project field of the route (rule 1 cannot tie a guard to a
-field: POST /umrs/endpoints/{job_id}/upgrade passes on
-``_forbid_if_project_mismatch`` while ``request.model_path`` is unchecked,
-listed in ``KNOWN_GAPS``). Raw ``request.query_params`` /
+field: POST /umrs/endpoints/{job_id}/upgrade passed on
+``_forbid_if_project_mismatch`` while ``request.model_path`` was unchecked,
+until 2026-10-18). A guard that checks something other than the route's
+requested project is dropped for that route in ``NOT_A_PROJECT_GUARD_FOR``,
+so the route stays in ``ALLOWLIST`` with its real reason. Raw ``request.query_params`` /
 ``request.json()`` reads are not discovered as fields, and ``Header``
 project params are skipped (strict-mode resolvers ignore ``X-Project-ID``).
 
@@ -144,6 +146,18 @@ SCOPE_GUARDS: dict[str, str] = {
 METHOD_GUARDS: dict[str, str] = {
     "scope_filter": "CallerIdentity: non-admins read only their own project",
     "bind_for_write": "CallerIdentity: declared project must be the caller's",
+}
+
+# Per route: guards in the closure that check something other than the
+# requested project. Rule 1 ignores them for that route, so the route keeps
+# its ALLOWLIST entry and its real reason (review 2026-10-18).
+NOT_A_PROJECT_GUARD_FOR: dict[str, dict[str, str]] = {
+    "POST /umrs/jobs": {
+        "umrs.api.endpoints._authorize_model_entry_for_caller": (
+            "catalog-model scope of an endpoint_provision spec; the job's project and user come from"
+            " _resolve_job_create_identity_primitive (IDENTITY-ONLY)"
+        ),
+    },
 }
 
 # HMAC-verified gateway identity or another authenticated principal.
@@ -351,22 +365,20 @@ UNSIGNED_READER_ALLOWLIST: dict[str, str] = {}
 # Checked and closed, so not listed: PATCH /umrs/verification/findings/{key}
 # (knowledge-objects lane question): get_verified_caller + is_admin, so only a
 # verified admin transitions there, in every mode (2026-10-18; mvp anonymous
-# refused).
+# refused). Closed 2026-10-18 (h1-leftovers lane, tests/test_h1x_*.py): the
+# upgrade model_path and POST /umrs/jobs endpoint_provision host paths take
+# the per-caller root rule (orchestrator/caller_roots.py), and the jobs spec
+# also the provision recipe policy (env_vars, container_image, tier=system
+# admin-only) and a model that must resolve (review round); upgrade, PUT
+# .../access, DELETE .../deprovision and PUT .../used check identity before
+# the lookup; PUT /umrs/buckets/{bucket}/access answers a caller the list does
+# not admit files.not_found; nginx /gw/ops/connect-info forwards the signed
+# tuple; rag._get_caller_identity is deleted.
 
 _PROJECT_403 = (
     "DEFERRED H-1: answers 403 (owner or admin only) to a caller who cannot read the project, while"
     " GET /umrs/projects/{project_id} hides it as 404; refuse non-readers with not_found via"
     " _may_read_project first (projects lane)"
-)
-_ENDPOINT_LOOKUP_FIRST = (
-    "DEFERRED H-1: looks the endpoint up (404) before _require_identity_for_mutation (401), so in strict"
-    " mode an anonymous direct sidecar caller learns whether a job_id exists; call it before"
-    " registry.get_by_job_id (endpoints lane)"
-)
-_ENDPOINT_PATHS = (
-    "DEFERRED H-1: caller-named host paths (model_path, mounts) skip the per-caller root check"
-    " that POST /umrs/endpoints/provision applies (endpoints._enforce_mount_scope /"
-    " _enforce_model_path_scope); apply the same rule here"
 )
 
 KNOWN_GAPS: dict[str, str] = {
@@ -394,30 +406,10 @@ KNOWN_GAPS: dict[str, str] = {
     "PUT /umrs/projects/{project_id}/storage": _PROJECT_403,
     "DELETE /umrs/projects/{project_id}/storage": _PROJECT_403,
     "POST /umrs/projects/{project_id}/storage/check": _PROJECT_403,
-    "PUT /umrs/buckets/{bucket}/access": (
-        "DEFERRED H-1: a non-owner of an existing bucket"
-        " gets 403 bucket_denied while an unknown one is 404 (GET .../access hides both as 404), an oracle"
-        " on guessable <user>.<project>.<alias> names: answer files.not_found unless the caller is the owner,"
-        " an admin or store.can_access admits it (buckets lane)"
-    ),
     "POST /umrs/endpoints/provision": (
         "DEFERRED H-1: residual: the caller-root check on mount sources and model paths is lexical at request"
         " time on the UMRS host (symlink TOCTOU, paths only the compute node sees); re-check realpaths in the"
         " compute-node launcher (serve.slurm / endpoint_mounts) or run under the caller's own account"
-    ),
-    "POST /umrs/endpoints/{job_id}/upgrade": (
-        _ENDPOINT_PATHS
-        + " (request.model_path is not validated at all); "
-        + _ENDPOINT_LOOKUP_FIRST.removeprefix("DEFERRED H-1: ")
-    ),
-    "PUT /umrs/endpoints/{job_id}/access": _ENDPOINT_LOOKUP_FIRST,
-    "DELETE /umrs/endpoints/{job_id}/deprovision": _ENDPOINT_LOOKUP_FIRST,
-    "POST /umrs/jobs": (
-        _ENDPOINT_PATHS + " (job_type=endpoint_provision spec.model_path / spec.mounts; jobs lane)"
-    ),
-    "GET /umrs/ops/connect-info": (
-        "DEFERRED H-1: gateway /gw/ops/connect-info forwards only X-User-ID, so with strict UMRS and"
-        " UMRS_EMIT_S3CFG=1 the gateway call gets discovery without the s3cfg; forward the signed tuple (gateway)"
     ),
     "POST /umrs/files/presign": (
         "DEFERRED H-1: the gateway presigns downloads with its own S3_BUCKET; where it differs from UMRS's"
@@ -438,8 +430,6 @@ DEFERRED_ELSEWHERE: tuple[str, ...] = (
     " readers lowercase it; add .lower() so every reader agrees (owner of _identity.py; chat-llm lane note)",
     "DEFERRED H-1: rag/search.py posts to /gw/llm/v1/chat/completions with no credentials (nginx rejects it);"
     " send a service bearer token or call the endpoint's litellm_url directly (owner of rag/search.py)",
-    "DEFERRED H-1: rag._get_caller_identity is dead code (HMAC-verified now); delete it and move"
-    " test_identity_consolidation.py and test_h1r_rag_hmac_scope.py to _verified_caller (rag lane)",
     "DEFERRED H-1: jobs/knowledge_adapters._bridge_a2l_ref imports the deleted knowledge/a2l_bridge.py inside"
     " a blanket try; delete it, its 4 call sites and the 3 test monkeypatches (knowledge lane)",
     "DEFERRED H-1: http_sidecar._check_job_store calls the non-existent count_by_status, so /health reports"
@@ -776,7 +766,8 @@ def _route_facts(route: APIRoute) -> _RouteFacts:
 
 def _is_guarded(route: APIRoute) -> bool:
     facts = _route_facts(route).facts
-    return bool(facts.refs & SCOPE_GUARDS.keys() or facts.names & METHOD_GUARDS.keys())
+    refs = facts.refs - NOT_A_PROJECT_GUARD_FOR.get(_route_key(route), {}).keys()
+    return bool(refs & SCOPE_GUARDS.keys() or facts.names & METHOD_GUARDS.keys())
 
 
 def _resolves_identity(route: APIRoute) -> bool:
@@ -935,6 +926,23 @@ def test_every_project_taking_route_is_guarded_or_allowlisted(routes):
 def test_allowlist_has_no_stale_entries(routes):
     stale = sorted(set(ALLOWLIST) - set(unguarded_project_routes(routes)))
     assert not stale, f"guarded or gone now; remove from ALLOWLIST: {stale}"
+
+
+def _reached_refs(routes: list[APIRoute], key: str) -> set[str]:
+    found = [route for route in routes if _route_key(route) == key]
+    return set(_route_facts(found[0]).facts.refs) if found else set()
+
+
+def test_not_a_project_guard_entries_are_live(routes):
+    """Each entry names a mounted route whose closure still reaches the guard."""
+    stale = [
+        f"{key}: {ref}"
+        for key, refs in NOT_A_PROJECT_GUARD_FOR.items()
+        for ref in sorted(set(refs) - _reached_refs(routes, key))
+    ]
+    assert not stale, f"remove from NOT_A_PROJECT_GUARD_FOR: {stale}"
+    excluded = {ref for refs in NOT_A_PROJECT_GUARD_FOR.values() for ref in refs}
+    assert excluded <= SCOPE_GUARDS.keys()
 
 
 def test_every_router_module_resolves_identity(routes):

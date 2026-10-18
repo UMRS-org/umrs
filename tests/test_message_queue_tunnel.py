@@ -497,9 +497,13 @@ class TestGetDataQueueTunnelMode:
             control_mq.close()
             data_mq.close()
 
-    def test_get_data_queue_reports_range_exhaustion(self):
+    def test_get_data_queue_reports_range_exhaustion(self, monkeypatch):
         """get_data_queue should raise a clear error when the server exhausts the configured range."""
         from umrs.core.MessageQueue import MessageQueue
+
+        # Without this the busy-retry loop waits its 600 s default on every
+        # run (2026-10-18; same knob as test_data_queue_busy_retry.py).
+        monkeypatch.setenv("UMRS_DATA_QUEUE_BUSY_TIMEOUT_S", "0")
 
         with patch("zmq.Context") as mock_context:
             mock_socket = MagicMock()
