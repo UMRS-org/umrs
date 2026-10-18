@@ -2,10 +2,37 @@
 Pytest configuration and fixtures for UMRS tests.
 """
 
+import atexit
 import os
+import shutil
+import tempfile
 from collections.abc import Generator
 
 import pytest
+
+# Hermetic HOME (hardening plan H-3.6, 2026-10-18). Several umrs defaults are
+# home-relative and some resolve at import time: the SLURM job-info/output dir
+# (~/.config/umrs/tmp), the model catalog (~/.config/umrs/model_catalog.json),
+# AuthConfig's data_dir (~/.local/share/umrs). Every local run used to write
+# the developer's real ~/.config/umrs (and failed under a read-only HOME). The
+# session gets a scratch HOME and XDG base dirs before any umrs module is
+# imported; tests that need a specific home still monkeypatch HOME themselves.
+# XDG_RUNTIME_DIR is left alone (rootless podman sockets live there). The
+# opt-in live podman lane (UMRS_STEP_PODMAN_TESTS=1) therefore sees an empty
+# podman store: point CONTAINERS_STORAGE_CONF at your own storage.conf there.
+TEST_HOME = tempfile.mkdtemp(prefix="umrs-tests-home-")
+os.environ["HOME"] = TEST_HOME
+for _xdg_var, _xdg_sub in (
+    ("XDG_CONFIG_HOME", ".config"),
+    ("XDG_DATA_HOME", ".local/share"),
+    ("XDG_CACHE_HOME", ".cache"),
+    ("XDG_STATE_HOME", ".local/state"),
+):
+    os.environ[_xdg_var] = os.path.join(TEST_HOME, _xdg_sub)
+# Inherited overrides would route the same writes outside the scratch home.
+for _path_var in ("UMRS_CONFIG", "RIVAULT_OUTPUT_DIR", "SLURM_JOB_INFO_DIR"):
+    os.environ.pop(_path_var, None)
+atexit.register(shutil.rmtree, TEST_HOME, True)
 
 # Belt-and-braces: the ADR-026 sat_kg import hook already detects pytest via
 # sys.modules; keep the env flag for embedded/interpreter runners.
