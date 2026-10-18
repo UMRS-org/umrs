@@ -1,21 +1,25 @@
 """
-RAG Profile REST API (X-002): retired; component registry (X-003..X-005).
+RAG component registry REST API (X-003..X-005).
 
-Retired (410 Gone; the caller is resolved first, strict mode 401 without the
-signed tuple):
+Retired and deleted:
 
-- ``/umrs/rag-profiles`` CRUD (X-002), owner decision 2026-08-22.
-
-Deleted 2026-10-18 (hardening plan H-10.1 follow-up): the ``/umrs/pipelines``
-CRUD (X-001). Definitions lived in a module-global in-memory store that held
-every project's rows and lost them at restart, and nothing at ingest or
-search time read them: the RAG service chunks with
-``UMRS_RAG_CHUNK_MAX_TOKENS`` and embeds with ``UMRS_RAG_EMBEDDING_MODEL``
-(``api/rag_service.py``). The routes answered 410 (umrs d4a8ad85) until their
-clients (``r4 rag ingest``, TUI ``/pipeline``) were retired; then the routes,
-the ``pipelines`` lane family and the ``/gw/pipelines`` edge locations went.
-Decision and evidence: ``docs/development/dormant-modules.md``,
-"Module-global per-project state".
+- ``/umrs/rag-profiles`` CRUD (X-002): owner decision 2026-08-22 (410 from
+  then), deleted 2026-10-18 (hardening plan H-10.1 rag-profiles wave) once
+  its last client (``r4 rag retriever`` CRUD; the TUI ``/pipeline
+  rag-profiles`` already printed a notice) stopped calling. Profiles were
+  ephemeral (in-memory) and never read at ingest/search time; retrieval
+  tuning lives in site config. The ``rag-profiles`` lane family and the
+  ``/gw/rag-profiles`` edge locations went with the routes.
+- ``/umrs/pipelines`` CRUD (X-001), 2026-10-18: definitions lived in a
+  module-global in-memory store that held every project's rows and lost
+  them at restart, and nothing at ingest or search time read them: the
+  RAG service chunks with ``UMRS_RAG_CHUNK_MAX_TOKENS`` and embeds with
+  ``UMRS_RAG_EMBEDDING_MODEL`` (``api/rag_service.py``). The routes
+  answered 410 (umrs d4a8ad85) until their clients (``r4 rag ingest``,
+  TUI ``/pipeline``) were retired; then the routes, the ``pipelines``
+  lane family and the ``/gw/pipelines`` edge locations went (umrs
+  197cf29c). Decision and evidence: ``docs/development/dormant-modules.md``,
+  "Module-global per-project state".
 
 Served:
 
@@ -28,7 +32,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Query
 
 from ..rag.registry import (
     get_chunker_registry,
@@ -37,91 +41,6 @@ from ..rag.registry import (
 )
 
 router = APIRouter(prefix="/umrs", tags=["pipelines"])
-
-
-def verified_user_project(request: Request) -> tuple[str, str]:
-    """(user, project) of the HMAC-verified caller.
-
-    The routes read the raw ``X-User-ID`` / ``X-Project-ID`` headers, so the
-    project was whatever the client sent (H-1, 2026-10-17). Strict mode now
-    needs the verified identity (401 otherwise); dev (mvp) mode keeps the old
-    ``anonymous`` / ``default`` fallback.
-    """
-    from ._scope_identity import _strict_mode, request_caller_scope
-
-    caller = request_caller_scope(request)
-    # mvp's legacy tier keeps the raw project but not the user; dev clients
-    # still name themselves with the raw header (never in strict mode).
-    raw_user = "" if _strict_mode() else request.headers.get("x-user-id", "").strip()
-    return caller.user_id or raw_user or "anonymous", caller.project_id or "default"
-
-
-# =============================================================================
-# RAG Profile Endpoints (X-002) — RETIRED (R3, 2026-08-22)
-# =============================================================================
-
-_RAG_PROFILES_GONE = (
-    "rag-profiles CRUD is retired: profiles were ephemeral "
-    "(in-memory), never consulted at ingest/search time, and are not "
-    "part of the runtime path. Use site config for retrieval tuning; "
-    "this router family is removed in the next release."
-)
-
-
-def _rag_profiles_gone() -> None:
-    """rag-profiles CRUD retired (owner decision 2026-08-22).
-
-    Profiles persisted to an ephemeral in-memory store, were never read at
-    runtime, and raged nothing — retirement returns 410 Gone instead of a
-    deceptive 2xx on a dead store.
-    """
-    raise HTTPException(status_code=status.HTTP_410_GONE, detail=_RAG_PROFILES_GONE)
-
-
-@router.post("/rag-profiles", status_code=status.HTTP_410_GONE)
-async def create_rag_profile(
-    _caller: tuple[str, str] = Depends(verified_user_project),
-) -> None:
-    """Retired: RAG profiles were never consulted."""
-    _rag_profiles_gone()
-
-
-@router.get("/rag-profiles", status_code=status.HTTP_410_GONE)
-async def list_rag_profiles(
-    _caller: tuple[str, str] = Depends(verified_user_project),
-) -> None:
-    """Retired: RAG profiles were never consulted."""
-    _rag_profiles_gone()
-
-
-@router.get("/rag-profiles/{profile_id}", status_code=status.HTTP_410_GONE)
-async def get_rag_profile(
-    profile_id: str,
-    _caller: tuple[str, str] = Depends(verified_user_project),
-) -> None:
-    """Retired: RAG profiles were never consulted."""
-    del profile_id
-    _rag_profiles_gone()
-
-
-@router.patch("/rag-profiles/{profile_id}", status_code=status.HTTP_410_GONE)
-async def update_rag_profile(
-    profile_id: str,
-    _caller: tuple[str, str] = Depends(verified_user_project),
-) -> None:
-    """Retired: RAG profiles were never consulted."""
-    del profile_id
-    _rag_profiles_gone()
-
-
-@router.delete("/rag-profiles/{profile_id}", status_code=status.HTTP_410_GONE)
-async def delete_rag_profile(
-    profile_id: str,
-    _caller: tuple[str, str] = Depends(verified_user_project),
-) -> None:
-    """Retired: RAG profiles were never consulted."""
-    del profile_id
-    _rag_profiles_gone()
 
 
 # =============================================================================

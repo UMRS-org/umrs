@@ -124,15 +124,16 @@ def test_companion_worker_for_another_project_is_refused():
     assert resp.status_code == 403
 
 
-# ── rag-profiles (retired, 410) ──────────────────────────────────────────────
-# The /umrs/pipelines CRUD that this block covered is deleted (H-10.1
-# follow-up, 2026-10-18); the rag-profiles stubs in the same module keep the
-# same verified-caller dependency.
+# ── rag-profiles (deleted) ───────────────────────────────────────────────────
+# The /umrs/pipelines CRUD was deleted in the H-10.1 follow-up; the
+# rag-profiles stubs followed in the same day's rag-profiles wave, once the
+# last client (`r4 rag retriever` CRUD) stopped calling. 404 for everyone:
+# a deleted route resolves no identity at all.
 
 
 @pytest.fixture
 def pipelines():
-    """``api/pipelines.py``: rag-profiles answer 410 but resolve the caller first."""
+    """``api/pipelines.py``: only the component catalogs remain mounted."""
     from umrs.api import pipelines as mod
 
     app = FastAPI()
@@ -140,13 +141,15 @@ def pipelines():
     return TestClient(app)
 
 
-def test_rag_profiles_answer_gone_to_a_verified_caller(pipelines):
+def test_rag_profiles_deleted_for_a_verified_caller(pipelines):
+    """404 (on the 410-stub sources this answered 410)."""
     headers = {**_headers("alice", "proj-a"), "X-Project-ID": "proj-b"}
-    assert pipelines.get("/umrs/rag-profiles", headers=headers).status_code == 410
+    assert pipelines.get("/umrs/rag-profiles", headers=headers).status_code == 404
 
 
-def test_rag_profiles_need_identity_in_strict_mode(pipelines):
-    assert pipelines.get("/umrs/rag-profiles", headers={"X-Project-ID": "proj-b"}).status_code == 401
+def test_rag_profiles_deleted_regardless_of_identity(pipelines):
+    """No route, so no identity resolution (on the stubs: 401 in strict)."""
+    assert pipelines.get("/umrs/rag-profiles", headers={"X-Project-ID": "proj-b"}).status_code == 404
 
 
 # ── chat completions ─────────────────────────────────────────────────────────

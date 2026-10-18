@@ -98,7 +98,11 @@ FAMILY_LANES: dict[str, SurfaceLane] = {
     # ADR-036 companion, K1 satellites, MEM-* memory routes, vision proxy).
     "mcp": SurfaceLane.BETA,
     "rag": SurfaceLane.BETA,
-    "rag-profiles": SurfaceLane.BETA,
+    # 2026-10-18 (hardening H-10.1 rag-profiles wave, wave ledger):
+    # "rag-profiles" removed from BETA and from the registry — the CRUD
+    # stored nothing durable (ephemeral, never read at runtime), answered
+    # 410 since 2026-08-22 (owner decision), and its last client
+    # (`r4 rag retriever` CRUD) stopped calling the same day.
     "uploads": SurfaceLane.BETA,
     "companion": SurfaceLane.BETA,
     "chat": SurfaceLane.BETA,

@@ -5,7 +5,9 @@ Pipeline definitions were retired 2026-10-18 (hardening plan H-10.1
 follow-up): an in-memory module-global store that nothing at ingest or
 search time read. They answered 410, then the routes were deleted the same
 day with their clients; ``tests/test_h10b_followups.py`` pins that. The
-rag-profiles routes still answer 410. The component registry stays.
+rag-profiles CRUD (retired 2026-08-22, 410 from then) was deleted the same
+day once its last client (``r4 rag retriever`` CRUD) stopped calling — the
+H-10.1 rag-profiles wave. The component registry stays.
 """
 
 import pytest
@@ -49,56 +51,27 @@ class TestPipelineAPIDeleted:
         assert response.status_code == 404
 
 
-class TestRAGProfileAPI:
-    """RAG profile routes are retired (R3, drift remediation 2026-08-22):
-    every /umrs/rag-profiles verb now returns 410 with descriptive detail.
-    """
+class TestRAGProfileAPIDeleted:
+    """The /umrs/rag-profiles CRUD is deleted (X-002). It answered 410 from
+    the owner decision 2026-08-22 until the last client (``r4 rag
+    retriever`` CRUD) was retired; the routes, the lane family and the
+    ``/gw/rag-profiles`` edge locations went together on 2026-10-18
+    (H-10.1 rag-profiles wave). On the old sources each of these answered
+    410 instead of 404."""
 
-    def test_create_rag_profile_retired(self, client):
-        response = client.post(
-            "/umrs/rag-profiles",
-            json={"name": "test-profile"},
-            headers=_DEV_HEADERS,
-        )
-        assert response.status_code == 410
-        assert "retired" in response.json()["detail"].lower()
-
-    def test_create_rag_profile_full_also_retired(self, client):
-        response = client.post(
-            "/umrs/rag-profiles",
-            json={"name": "full-profile", "search_type": "hybrid"},
-            headers=_DEV_HEADERS,
-        )
-        assert response.status_code == 410
-
-    def test_list_rag_profiles_retired(self, client):
-        response = client.get(
-            "/umrs/rag-profiles",
-            headers=_DEV_HEADERS,
-        )
-        assert response.status_code == 410
-
-    def test_get_rag_profile_retired(self, client):
-        response = client.get(
-            "/umrs/rag-profiles/rag-1",
-            headers=_DEV_HEADERS,
-        )
-        assert response.status_code == 410
-
-    def test_update_rag_profile_retired(self, client):
-        response = client.patch(
-            "/umrs/rag-profiles/rag-1",
-            json={"temperature": 0.8},
-            headers=_DEV_HEADERS,
-        )
-        assert response.status_code == 410
-
-    def test_delete_rag_profile_retired(self, client):
-        response = client.delete(
-            "/umrs/rag-profiles/rag-1",
-            headers=_DEV_HEADERS,
-        )
-        assert response.status_code == 410
+    @pytest.mark.parametrize(
+        ("method", "path", "body"),
+        [
+            ("POST", "/umrs/rag-profiles", {"name": "test-profile"}),
+            ("GET", "/umrs/rag-profiles", None),
+            ("GET", "/umrs/rag-profiles/rag-1", None),
+            ("PATCH", "/umrs/rag-profiles/rag-1", {"temperature": 0.8}),
+            ("DELETE", "/umrs/rag-profiles/rag-1", None),
+        ],
+    )
+    def test_rag_profile_verbs_are_not_mounted(self, client, method, path, body):
+        response = client.request(method, path, json=body, headers=_DEV_HEADERS)
+        assert response.status_code == 404
 
 
 class TestComponentRegistryAPI:

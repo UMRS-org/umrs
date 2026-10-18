@@ -325,6 +325,10 @@ ALLOWLIST: dict[str, str] = {
 # Whole modules: every route lacks a resolver (stale once one route has one).
 MODULE_ALLOWLIST: dict[str, str] = {
     "umrs.server.http_sidecar": "INFRA: /health, /metrics and /readiness probes, open by design",
+    # 2026-10-18 (H-10.1 rag-profiles wave): only the three PUBLIC static
+    # component catalogs remain (ROUTE_IDENTITY_ALLOWLIST); the CRUD routes
+    # that resolved the caller were deleted with their clients.
+    "umrs.api.pipelines": "PUBLIC: static component catalogs only (X-003..X-005)",
 }
 
 # Single routes in modules that otherwise resolve the caller.
@@ -335,9 +339,9 @@ ROUTE_IDENTITY_ALLOWLIST: dict[str, str] = {
     "GET /umrs/web/dashboard/health": "PROBE: dashboard liveness, open by design",
     "GET /umrs/web/dashboard/metrics": "PROBE: Prometheus text, open by design",
     "GET /umrs/zmq/server-key": "PUBLIC: the CURVE server public key is not secret",
-    "GET /umrs/components/chunkers": "PUBLIC: static registry of chunking methods",
-    "GET /umrs/components/embedders": "PUBLIC: static registry of embedders",
-    "GET /umrs/components/rerankers": "PUBLIC: static registry of rerankers",
+    # GET /umrs/components/* are covered by the MODULE_ALLOWLIST entry for
+    # umrs.api.pipelines since 2026-10-18 (the H-10.1 rag-profiles wave left
+    # them the module's only routes).
     "GET /umrs/models/system": "PUBLIC: system-scope models are readable by every user (U-817)",
     "DELETE /umrs/ops/audit/retention": _ADMIN_TOKEN,
     "GET /umrs/ops/governance/analytics": _ADMIN_TOKEN,

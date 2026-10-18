@@ -186,9 +186,9 @@ def test_lane_assignments_match_record(app):
         "workflows": "v1-stable",
         "files": "v1-stable",
         # 2026-10-18 (H-10.1 follow-up): pipelines + verification deleted.
+        # 2026-10-18 (H-10.1 rag-profiles wave): rag-profiles deleted too.
         "mcp": "v1beta",
         "rag": "v1beta",
-        "rag-profiles": "v1beta",
         "uploads": "v1beta",
         "companion": "v1beta",
         "chat": "v1beta",
