@@ -49,10 +49,11 @@ CLASSIFIED_FIXED: dict[str, SurfaceLane] = {
     "files": SurfaceLane.STABLE,
     # 2026-10-18 (H-10.1 follow-up, wave ledger): "pipelines" (v1-stable) and
     # "verification" (v1beta) removed — their routes were deleted with their
-    # retired clients (umrs/shared/lanes.py comments).
+    # retired clients (umrs/shared/lanes.py comments). The same day's
+    # rag-profiles wave removed "rag-profiles" (v1beta): ephemeral store,
+    # 410 since 2026-08-22, last client retired with the deletion.
     "mcp": SurfaceLane.BETA,
     "rag": SurfaceLane.BETA,
-    "rag-profiles": SurfaceLane.BETA,
     "uploads": SurfaceLane.BETA,
     "companion": SurfaceLane.BETA,
     "chat": SurfaceLane.BETA,

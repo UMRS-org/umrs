@@ -1,4 +1,7 @@
-"""R3 (2026-08-22): rag-profiles CRUD is retired → 410 Gone everywhere."""
+"""R3 (2026-08-22): rag-profiles CRUD retired; 2026-10-18 (H-10.1
+rag-profiles wave): the stubs are deleted with their last client, so every
+verb answers 404 — the route resolves no identity and carries no message.
+On the retired-stub sources each of these answered 410."""
 
 from __future__ import annotations
 
@@ -15,41 +18,41 @@ def client() -> TestClient:
     return TestClient(app)
 
 
-def test_list_retired(client):
+def test_list_deleted(client):
     resp = client.get("/umrs/rag-profiles", headers={"x-user-id": "u", "x-project-id": "p"})
-    assert resp.status_code == 410
+    assert resp.status_code == 404
 
 
-def test_get_retired(client):
+def test_get_deleted(client):
     resp = client.get("/umrs/rag-profiles/abc", headers={"x-user-id": "u", "x-project-id": "p"})
-    assert resp.status_code == 410
+    assert resp.status_code == 404
 
 
-def test_create_retired(client):
+def test_create_deleted(client):
     resp = client.post(
         "/umrs/rag-profiles",
         json={"name": "x"},
         headers={"x-user-id": "u", "x-project-id": "p"},
     )
-    assert resp.status_code == 410
+    assert resp.status_code == 404
 
 
-def test_update_retired(client):
+def test_update_deleted(client):
     resp = client.patch(
         "/umrs/rag-profiles/abc",
         json={"name": "x"},
         headers={"x-user-id": "u", "x-project-id": "p"},
     )
-    assert resp.status_code == 410
+    assert resp.status_code == 404
 
 
-def test_delete_retired(client):
+def test_delete_deleted(client):
     resp = client.delete("/umrs/rag-profiles/abc", headers={"x-user-id": "u", "x-project-id": "p"})
-    assert resp.status_code == 410
+    assert resp.status_code == 404
 
 
-def test_retirement_message_is_actionable(client):
+def test_deletion_has_no_bespoke_message(client):
+    """The old 410 detail ('ephemeral', 'retired') pointed at site config;
+    a deleted route has no handler, so FastAPI's stock 404 answers."""
     resp = client.get("/umrs/rag-profiles", headers={"x-user-id": "u", "x-project-id": "p"})
-    detail = resp.json()["detail"]
-    assert "ephemeral" in detail
-    assert "retired" in detail
+    assert resp.json() == {"detail": "Not Found"}
