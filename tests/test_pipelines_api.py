@@ -1,11 +1,11 @@
 """
-Pipeline and RAG Profile API endpoints (X-001, X-002): both retired (410).
+Pipeline and RAG Profile API endpoints (X-001, X-002).
 
 Pipeline definitions were retired 2026-10-18 (hardening plan H-10.1
 follow-up): an in-memory module-global store that nothing at ingest or
-search time read. The CRUD and validation tests of the old store are gone
-with it; the retirement and its identity rule are pinned in
-``tests/test_h10b_followups.py``. The component registry stays.
+search time read. They answered 410, then the routes were deleted the same
+day with their clients; ``tests/test_h10b_followups.py`` pins that. The
+rag-profiles routes still answer 410. The component registry stays.
 """
 
 import pytest
@@ -30,8 +30,9 @@ def client(app):
     return TestClient(app)
 
 
-class TestPipelineAPIRetired:
-    """Every /umrs/pipelines verb answers 410 with a pointer (X-001 retired)."""
+class TestPipelineAPIDeleted:
+    """The /umrs/pipelines CRUD is deleted (X-001; 410 from umrs d4a8ad85,
+    removed with its clients on 2026-10-18, H-10.1 follow-up)."""
 
     @pytest.mark.parametrize(
         ("method", "path", "body"),
@@ -43,19 +44,9 @@ class TestPipelineAPIRetired:
             ("DELETE", "/umrs/pipelines/pipe-1", None),
         ],
     )
-    def test_pipeline_verbs_are_gone(self, client, method, path, body):
+    def test_pipeline_verbs_are_not_mounted(self, client, method, path, body):
         response = client.request(method, path, json=body, headers=_DEV_HEADERS)
-        assert response.status_code == 410
-        assert "retired" in response.json()["detail"]
-
-    def test_invalid_bodies_are_gone_too(self, client):
-        """No body validation runs before the 410 (was 422 / 400)."""
-        response = client.post(
-            "/umrs/pipelines",
-            json={"name": "", "chunker": {"chunker_type": "invalid_type"}},
-            headers=_DEV_HEADERS,
-        )
-        assert response.status_code == 410
+        assert response.status_code == 404
 
 
 class TestRAGProfileAPI:

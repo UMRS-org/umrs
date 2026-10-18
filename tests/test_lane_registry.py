@@ -47,7 +47,9 @@ CLASSIFIED_FIXED: dict[str, SurfaceLane] = {
     "jobs": SurfaceLane.STABLE,
     "workflows": SurfaceLane.STABLE,
     "files": SurfaceLane.STABLE,
-    "pipelines": SurfaceLane.STABLE,
+    # 2026-10-18 (H-10.1 follow-up, wave ledger): "pipelines" (v1-stable) and
+    # "verification" (v1beta) removed — their routes were deleted with their
+    # retired clients (umrs/shared/lanes.py comments).
     "mcp": SurfaceLane.BETA,
     "rag": SurfaceLane.BETA,
     "rag-profiles": SurfaceLane.BETA,
@@ -59,7 +61,6 @@ CLASSIFIED_FIXED: dict[str, SurfaceLane] = {
     "assets": SurfaceLane.BETA,
     "provenance": SurfaceLane.BETA,
     "traces": SurfaceLane.BETA,
-    "verification": SurfaceLane.BETA,
     "evidence": SurfaceLane.BETA,
     "experiment-registry": SurfaceLane.BETA,
     "scientific-memory": SurfaceLane.BETA,

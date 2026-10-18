@@ -1,5 +1,13 @@
 # Demo 27: Pipeline CRUD & RAG Profiles
 
+> **Retired 2026-10-18** (ai4s-platform hardening H-10.1 follow-up): the
+> `/umrs/pipelines` CRUD is deleted (definitions lived in process memory and
+> no ingest or search read them) and `/umrs/rag-profiles` answers 410 since
+> 2026-08-22. Only the component registry remains:
+> `GET /umrs/components/{chunkers,embedders,rerankers}`. Chunking and
+> embedding are site settings (`UMRS_RAG_CHUNK_MAX_TOKENS`,
+> `UMRS_RAG_EMBEDDING_MODEL`). The steps below are kept for history only.
+
 ## Purpose
 
 Demonstrates the UMRS pipeline management API — creating, listing,

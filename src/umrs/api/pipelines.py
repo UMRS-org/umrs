@@ -1,18 +1,21 @@
 """
-Pipeline and RAG Profile REST API (X-001, X-002): retired; component registry.
+RAG Profile REST API (X-002): retired; component registry (X-003..X-005).
 
 Retired (410 Gone; the caller is resolved first, strict mode 401 without the
 signed tuple):
 
 - ``/umrs/rag-profiles`` CRUD (X-002), owner decision 2026-08-22.
-- ``/umrs/pipelines`` CRUD (X-001), 2026-10-18 (hardening plan H-10.1
-  follow-up). Definitions lived in a module-global in-memory store
-  (``_pipeline_store``) that held every project's rows and lost them at
-  restart, and nothing at ingest or search time read them: the RAG service
-  chunks with ``UMRS_RAG_CHUNK_MAX_TOKENS`` and embeds with
-  ``UMRS_RAG_EMBEDDING_MODEL`` (``api/rag_service.py``). A table would have
-  stored definitions that still change nothing. Decision and evidence:
-  ``docs/development/dormant-modules.md``, "Module-global per-project state".
+
+Deleted 2026-10-18 (hardening plan H-10.1 follow-up): the ``/umrs/pipelines``
+CRUD (X-001). Definitions lived in a module-global in-memory store that held
+every project's rows and lost them at restart, and nothing at ingest or
+search time read them: the RAG service chunks with
+``UMRS_RAG_CHUNK_MAX_TOKENS`` and embeds with ``UMRS_RAG_EMBEDDING_MODEL``
+(``api/rag_service.py``). The routes answered 410 (umrs d4a8ad85) until their
+clients (``r4 rag ingest``, TUI ``/pipeline``) were retired; then the routes,
+the ``pipelines`` lane family and the ``/gw/pipelines`` edge locations went.
+Decision and evidence: ``docs/development/dormant-modules.md``,
+"Module-global per-project state".
 
 Served:
 
@@ -51,69 +54,6 @@ def verified_user_project(request: Request) -> tuple[str, str]:
     # still name themselves with the raw header (never in strict mode).
     raw_user = "" if _strict_mode() else request.headers.get("x-user-id", "").strip()
     return caller.user_id or raw_user or "anonymous", caller.project_id or "default"
-
-
-# =============================================================================
-# Pipeline Endpoints (X-001) — RETIRED (H-10.1 follow-up, 2026-10-18)
-# =============================================================================
-
-_PIPELINES_GONE = (
-    "Pipeline definitions are retired: they were kept in process memory "
-    "(lost at restart) and no ingest or search ever read them. Ingestion "
-    "chunks with the site setting UMRS_RAG_CHUNK_MAX_TOKENS and embeds with "
-    "UMRS_RAG_EMBEDDING_MODEL; the available components are listed at "
-    "GET /umrs/components/{chunkers,embedders,rerankers}."
-)
-
-
-def _pipelines_gone() -> None:
-    raise HTTPException(status_code=status.HTTP_410_GONE, detail=_PIPELINES_GONE)
-
-
-@router.post("/pipelines", status_code=status.HTTP_410_GONE)
-async def create_pipeline(
-    _caller: tuple[str, str] = Depends(verified_user_project),
-) -> None:
-    """Retired: pipeline definitions were never consulted."""
-    _pipelines_gone()
-
-
-@router.get("/pipelines", status_code=status.HTTP_410_GONE)
-async def list_pipelines(
-    _caller: tuple[str, str] = Depends(verified_user_project),
-) -> None:
-    """Retired: pipeline definitions were never consulted."""
-    _pipelines_gone()
-
-
-@router.get("/pipelines/{pipeline_id}", status_code=status.HTTP_410_GONE)
-async def get_pipeline(
-    pipeline_id: str,
-    _caller: tuple[str, str] = Depends(verified_user_project),
-) -> None:
-    """Retired: pipeline definitions were never consulted."""
-    del pipeline_id
-    _pipelines_gone()
-
-
-@router.patch("/pipelines/{pipeline_id}", status_code=status.HTTP_410_GONE)
-async def update_pipeline(
-    pipeline_id: str,
-    _caller: tuple[str, str] = Depends(verified_user_project),
-) -> None:
-    """Retired: pipeline definitions were never consulted."""
-    del pipeline_id
-    _pipelines_gone()
-
-
-@router.delete("/pipelines/{pipeline_id}", status_code=status.HTTP_410_GONE)
-async def delete_pipeline(
-    pipeline_id: str,
-    _caller: tuple[str, str] = Depends(verified_user_project),
-) -> None:
-    """Retired: pipeline definitions were never consulted."""
-    del pipeline_id
-    _pipelines_gone()
 
 
 # =============================================================================

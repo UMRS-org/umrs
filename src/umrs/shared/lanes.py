@@ -80,16 +80,19 @@ FAMILY_LANES: dict[str, SurfaceLane] = {
     # R-13). Decision rule: the router module's docstring/routes decide;
     # deviations from the maintainer's proposed list are justified inline.
     #
-    # v1-stable — job/workflow/file/pipeline surfaces the r4 CLI and TUI
-    # drive daily (durable jobs U-731+, workflow registry, presign U-402+,
-    # pipeline definitions X-001).
+    # v1-stable — job/workflow/file surfaces the r4 CLI and TUI drive daily
+    # (durable jobs U-731+, workflow registry, presign U-402+).
+    # 2026-10-18 (hardening H-10.1 follow-up, wave ledger): "pipelines"
+    # (X-001 pipeline definitions) removed from v1-stable and from the
+    # registry. Its store was process memory that nothing at ingest or search
+    # read; the CRUD answered 410 (umrs d4a8ad85) until its two clients
+    # (`r4 rag ingest`, TUI /pipeline) were retired, then the routes went.
     "jobs": SurfaceLane.STABLE,
     "workflows": SurfaceLane.STABLE,
     "files": SurfaceLane.STABLE,
     # 2026-10-02 (ADR-079): personal buckets — new surface, beta until the
     # colleague rollout settles its shape.
     "buckets": SurfaceLane.BETA,
-    "pipelines": SurfaceLane.STABLE,
     # v1beta — user-facing knowledge / agent / memory / evidence surfaces
     # that are served but still evolving (ADR-012 chat, ADR-034 a2l ledger,
     # ADR-036 companion, K1 satellites, MEM-* memory routes, vision proxy).
@@ -104,7 +107,8 @@ FAMILY_LANES: dict[str, SurfaceLane] = {
     "assets": SurfaceLane.BETA,
     "provenance": SurfaceLane.BETA,
     "traces": SurfaceLane.BETA,
-    "verification": SurfaceLane.BETA,
+    # 2026-10-18 (H-10.1 follow-up): "verification" removed — its last
+    # routes (findings stubs, 410) were deleted with the TUI resolve key.
     "evidence": SurfaceLane.BETA,
     "experiment-registry": SurfaceLane.BETA,
     "scientific-memory": SurfaceLane.BETA,

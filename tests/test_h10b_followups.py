@@ -10,12 +10,18 @@ defect it removes:
    helped: the TUI's resolve names report ``"manual"``, which no
    ``verification_reports`` row has (foreign-key violation, a 500), and the
    two findings routes were admin-only, projectless copies of
-   ``/umrs/knowledge/findings``. They answer 410 with that pointer.
+   ``/umrs/knowledge/findings``. They answered 410 with that pointer (umrs
+   d4a8ad85); once the TUI's resolve key was retired (same day, second
+   follow-up) nothing called them, so the module, its mount and the
+   ``verification`` lane family are deleted.
 2. **Pipeline definitions, retired.** ``_pipeline_store`` held every
    project's definitions in process memory, lost at restart, and nothing at
    ingest or search time read them (chunking and embedding come from
    ``UMRS_RAG_CHUNK_MAX_TOKENS`` / ``UMRS_RAG_EMBEDDING_MODEL``). The CRUD
-   answers 410 like rag-profiles; the component registry stays.
+   answered 410 like rag-profiles; once ``r4 rag ingest`` and the TUI
+   ``/pipeline`` CRUD were retired, the routes, the ``pipelines`` lane family
+   and the ``/gw/pipelines`` edge locations went. The component registry
+   stays.
 3. **Skills key.** ``UNIQUE(scope, owner_id, name)`` had no project, so a
    user's project skill registered under the same name in a second project
    overwrote the first, the loop's proposals for a second project were
@@ -25,6 +31,7 @@ defect it removes:
 
 from __future__ import annotations
 
+import importlib.util
 from typing import Any
 
 import pytest
@@ -46,7 +53,6 @@ def _headers(user: str, project: str, admin: bool = False) -> dict[str, str]:
 
 
 ALICE = _headers("alice", "proj-a")
-ADMIN = _headers("root", "ops", admin=True)
 
 
 @pytest.fixture
@@ -61,49 +67,40 @@ def _client(router: Any) -> TestClient:
     return TestClient(app)
 
 
-# ── 1. verification findings routes ───────────────────────────────────────
+# ── 1. verification findings routes: deleted ──────────────────────────────
 
-_VERIFICATION_CALLS = (
-    (
-        "POST",
-        "/umrs/verification/chat/resolve",
-        {"finding_key": "ver-1", "report_id": "manual"},
-    ),
-    ("GET", "/umrs/verification/findings", None),
-    (
-        "PATCH",
-        "/umrs/verification/findings/ver-1",
-        {"from_status": "open", "to_status": "resolved"},
-    ),
+_VERIFICATION_ROUTES = (
+    ("POST", "/umrs/verification/chat/resolve"),
+    ("GET", "/umrs/verification/findings"),
+    ("PATCH", "/umrs/verification/findings/{finding_key}"),
 )
 
 
-@pytest.mark.parametrize(("method", "path", "body"), _VERIFICATION_CALLS)
-@pytest.mark.parametrize("headers", [ADMIN, ALICE], ids=["admin", "member"])
-def test_verification_findings_routes_are_gone_with_a_pointer(strict, method, path, body, headers):
-    from umrs.api import verification
-
-    resp = _client(verification.router).request(method, path, json=body, headers=headers)
-    assert resp.status_code == 410, resp.text
-    assert "/umrs/knowledge/findings" in resp.json()["detail"]
+def _mounted(router: Any) -> set[tuple[str, str]]:
+    return {(method, route.path) for route in router.routes for method in route.methods}
 
 
-@pytest.mark.parametrize(("method", "path", "body"), _VERIFICATION_CALLS)
-def test_retired_verification_routes_still_need_identity_in_strict(strict, method, path, body):
-    from umrs.api import verification
-
-    resp = _client(verification.router).request(method, path, json=body)
-    assert resp.status_code == 401, resp.text
+def test_verification_router_module_is_deleted():
+    assert importlib.util.find_spec("umrs.api.verification") is None
 
 
-def test_no_module_global_verification_store_remains():
-    from umrs.api import verification
+def test_verification_family_has_no_lane():
+    from umrs.shared.lanes import FAMILY_LANES
 
-    assert not hasattr(verification, "_store")
-    assert not hasattr(verification, "set_store")
+    assert "verification" not in FAMILY_LANES
 
 
-# ── 2. pipeline definitions ───────────────────────────────────────────────
+def test_per_project_findings_lane_stays():
+    """The replacement the 410 pointed to: GET/PATCH /umrs/knowledge/findings."""
+    from umrs.api import knowledge
+
+    mounted = _mounted(knowledge.router)
+    assert ("GET", "/umrs/knowledge/findings") in mounted
+    assert ("PATCH", "/umrs/knowledge/findings/{finding_key}") in mounted
+    assert not {path for _m, path in mounted if path.startswith("/umrs/verification")}
+
+
+# ── 2. pipeline definitions: deleted ──────────────────────────────────────
 
 _PIPELINE_CALLS = (
     ("POST", "/umrs/pipelines", {"name": "h10b-pipe"}),
@@ -115,22 +112,19 @@ _PIPELINE_CALLS = (
 
 
 @pytest.mark.parametrize(("method", "path", "body"), _PIPELINE_CALLS)
-def test_pipeline_crud_is_gone_with_a_pointer(strict, method, path, body):
+def test_pipeline_crud_routes_are_deleted(strict, method, path, body):
     from umrs.api import pipelines
 
     resp = _client(pipelines.router).request(method, path, json=body, headers=ALICE)
-    assert resp.status_code == 410, resp.text
-    detail = resp.json()["detail"]
-    assert "UMRS_RAG_CHUNK_MAX_TOKENS" in detail
-    assert "/umrs/components/" in detail
+    assert resp.status_code == 404, resp.text
 
 
-@pytest.mark.parametrize(("method", "path", "body"), _PIPELINE_CALLS)
-def test_retired_pipeline_routes_still_need_identity_in_strict(strict, method, path, body):
+def test_pipelines_family_has_no_lane():
     from umrs.api import pipelines
+    from umrs.shared.lanes import FAMILY_LANES
 
-    resp = _client(pipelines.router).request(method, path, json=body)
-    assert resp.status_code == 401, resp.text
+    assert "pipelines" not in FAMILY_LANES
+    assert not {path for _m, path in _mounted(pipelines.router) if path.startswith("/umrs/pipelines")}
 
 
 def test_no_module_global_pipeline_store_remains():
@@ -141,6 +135,7 @@ def test_no_module_global_pipeline_store_remains():
         "_pipeline_store",
         "get_pipeline_store",
         "set_pipeline_store",
+        "_PIPELINES_GONE",
     } & set(vars(pipelines))
     assert leftovers == set()
 

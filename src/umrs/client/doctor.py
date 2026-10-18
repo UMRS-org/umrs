@@ -189,17 +189,20 @@ class Doctor:
         ]
 
     def _check_rag(self) -> list[CheckResult]:
-        r = self._run("r4", "rag", "ingest", "list", "--project", "default")
-        if "No ingestion pipelines" in r.stdout:
+        # `r4 rag ingest` is retired (2026-10-18, H-10.1 follow-up): pipeline
+        # definitions were never read, so the check reads the live component
+        # registry (GET /gw/components/chunkers) instead.
+        r = self._run("r4", "rag", "retriever", "components", "chunkers", "--json")
+        if r.returncode != 0:
             return [
                 CheckResult(
                     name="RAG",
                     status="warning",
-                    message="No pipelines",
-                    suggestion="Run: r4 rag ingest create --project default",
+                    message="RAG component registry not reachable",
+                    suggestion="Run: r4 rag retriever components chunkers",
                 )
             ]
-        return [CheckResult(name="RAG", status="ok", message="RAG service available")]
+        return [CheckResult(name="RAG", status="ok", message="RAG component registry reachable")]
 
     def _check_workflows(self) -> list[CheckResult]:
         r = self._run(

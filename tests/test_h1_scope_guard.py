@@ -364,8 +364,10 @@ UNSIGNED_READER_ALLOWLIST: dict[str, str] = {}
 # listed here by hand.
 # Checked and closed, so not listed: PATCH /umrs/verification/findings/{key}
 # (knowledge-objects lane question): get_verified_caller + is_admin, so only a
-# verified admin transitions there, in every mode (2026-10-18; mvp anonymous
-# refused). Closed 2026-10-18 (h1-leftovers lane, tests/test_h1x_*.py): the
+# verified admin transitioned there, in every mode (2026-10-18; mvp anonymous
+# refused); later that day it answered 410 and was then deleted with its
+# module (H-10.1 follow-up). Transitions go through PATCH
+# /umrs/knowledge/findings/{key} (a project the caller may write). Closed 2026-10-18 (h1-leftovers lane, tests/test_h1x_*.py): the
 # upgrade model_path and POST /umrs/jobs endpoint_provision host paths take
 # the per-caller root rule (orchestrator/caller_roots.py), and the jobs spec
 # also the provision recipe policy (env_vars, container_image, tier=system
