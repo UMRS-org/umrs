@@ -1,12 +1,16 @@
+# Security floors (plan H-0.5, 2026-10-18): the >= floors on sentence-transformers,
+# transformers, pillow, python-multipart, bentoml and pypdf are the smallest
+# versions fixing the CRITICAL/HIGH CVEs Trivy reported in the uv locks; a
+# floor makes `pip install -r` upgrade a host that already has an older one.
 torch
 torchvision
-sentence-transformers
-transformers
+sentence-transformers>=5.6.0
+transformers>=5.10.1
 numpy
 scikit-learn
 psycopg2-binary
 boto3
-pillow
+pillow>=12.3.0
 posix_ipc
 sysv_ipc
 pyzmq
@@ -19,11 +23,11 @@ jsonschema
 fastapi
 uvicorn[standard]
 requests
-python-multipart
+python-multipart>=0.0.30
 langchain
 langchain-community
 langchain-openai
-bentoml>=1.3.0
+bentoml>=1.4.39
 opencv-python-headless
 pyyaml
 rich>=13.0
@@ -32,5 +36,5 @@ timm
 # Document text extraction (umrs.data_catalog.extract). The server extra
 # has them; without them here CI and setup_server.sh hosts extract nothing
 # from PDF/PPTX ("extract_dependency_missing"), 2026-10-18.
-pypdf>=4.0
+pypdf>=6.19.0
 python-pptx>=1.0
