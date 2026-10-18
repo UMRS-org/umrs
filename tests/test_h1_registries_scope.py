@@ -214,7 +214,9 @@ def _audit_row(user: str, project: str, request_id: str) -> dict:
 def egress(monkeypatch):
     from umrs.api import egress_audit as api
 
-    monkeypatch.delenv("UMRS_DB_URL", raising=False)
+    # The memory store: since H-10.1 the DSN chain also reads DATABASE_URL and
+    # the DB_*/POSTGRES_* component vars (_asyncpg_pool.sync_store_dsn).
+    monkeypatch.setattr("umrs.api._asyncpg_pool.sync_store_dsn", lambda: None)
     monkeypatch.setattr(api, "_store", None)
     store = api.get_store()
     for user, project, rid in (

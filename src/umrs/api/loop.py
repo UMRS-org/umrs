@@ -104,17 +104,18 @@ def _checkpoint_store():
     """Singleton CheckpointStore accessor (ADR-036).
 
     Rehomed here by ADR-053: the unmounted ``api/checkpoints`` router was
-    the previous holder; the jobs store is the authority now. Semantics
-    byte-identical (same env-var resolution, same process singleton).
+    the previous holder; the jobs store is the authority now. Same process
+    singleton; the DSN resolves like the loop store's since H-10.1.
     """
     global _checkpoint_store_singleton
     if _checkpoint_store_singleton is None:
-        import os
-
         from umrs.jobs.checkpoint_store import CheckpointStore
 
-        db_url = os.environ.get("DATABASE_URL") or os.environ.get("UMRS_DB_URL")
-        _checkpoint_store_singleton = CheckpointStore(db_url=db_url)
+        from ._asyncpg_pool import sync_store_dsn
+
+        # H-10.1: the same DSN chain as the loop store (umrs-front sets only
+        # the component vars, so DATABASE_URL/UMRS_DB_URL alone meant memory).
+        _checkpoint_store_singleton = CheckpointStore(db_url=sync_store_dsn())
     return _checkpoint_store_singleton
 
 

@@ -1,15 +1,22 @@
-"""UMRS API routes for M3.5 verification chat.
+"""UMRS API routes for M3.5 verification findings.
 
 TASK-046: Persistence endpoints added so that chat-resolved findings
-and session history survive UMRS restarts.
+survive UMRS restarts.
 
 Endpoints:
-  POST /umrs/verification/chat         — Ask a verification question
   POST /umrs/verification/chat/resolve  — Persist a resolved finding
   GET  /umrs/verification/findings      — List findings with filters
   PATCH /umrs/verification/findings/<key> — Transition finding status
-  GET  /umrs/verification/sessions      — List verification sessions
-  GET  /umrs/verification/sessions/<id> — Get a single session
+
+Retired 2026-10-18 (hardening plan H-10.1): ``POST /umrs/verification/chat``
+and ``GET /umrs/verification/sessions[/<id>]``. The chat reasoned over the
+module-global M3.5 graph (project "default", shared with the retired
+knowledge explorer) whatever project the caller had, so a project B caller
+read project "default"'s nodes and graph paths. Its controller had no
+session store, so the sessions routes always answered ``[]`` / ``null``.
+No client calls them (the TUI computes its verification answers locally and
+only posts ``/chat/resolve``) and the edge has no ``/gw/verification``
+location. Per-project findings: ``GET /umrs/knowledge/findings``.
 """
 
 from __future__ import annotations
@@ -20,32 +27,17 @@ from typing import Any
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
 
-from umrs.graph_reasoning import GraphNavigator
-from umrs.knowledge.verification_chat_controller import (
-    VerificationChatController,
-)
 from umrs.knowledge.verification_store import (
     TransitionError,
     VerificationStore,
 )
-from umrs.scientific_reasoning_engine import ScientificReasoningEngine
 
 from ._verified_headers import CallerIdentity, get_caller, get_verified_caller
-
-# Reuse the shared M3.5 knowledge graph so verification chat can reason
-# over the same state that populates the dashboard/explorer/readiness views.
-from .knowledge import _m35_knowledge_graph
 from .typed_errors import PlatformError, raise_typed
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/umrs/verification", tags=["verification"])
-
-_m35_navigator = GraphNavigator(graph=_m35_knowledge_graph)
-_m35_reasoning_engine = ScientificReasoningEngine(navigator=_m35_navigator)
-_verification_controller = VerificationChatController(
-    reasoning_engine=_m35_reasoning_engine,
-)
 
 # Verification store — injected at startup if available (TASK-046)
 _store: VerificationStore | None = None
@@ -55,12 +47,6 @@ def set_store(store: VerificationStore) -> None:
     """Inject the Postgres-backed verification store."""
     global _store
     _store = store
-
-
-class VerificationChatRequest(BaseModel):
-    question: str = Field(..., description="Verification question")
-    anchor_object_id: str | None = Field(None, description="Anchor object ID")
-    project_id: str = Field("default", description="Project ID")
 
 
 class ResolveFindingRequest(BaseModel):
@@ -74,28 +60,6 @@ class ResolveFindingRequest(BaseModel):
 class TransitionFindingRequest(BaseModel):
     from_status: str = Field(..., description="Current status")
     to_status: str = Field(..., description="Target status")
-
-
-@router.post("/chat")
-async def ask_verification_chat(
-    req: VerificationChatRequest,
-    caller: CallerIdentity | None = Depends(get_caller),
-) -> dict[str, Any]:
-    """Ask a verification question backed by the scientific reasoning engine.
-
-    The session (evidence IDs + graph traversal) is automatically
-    persisted so it survives UMRS restarts. Wave-6 F3: the target project
-    is bound to the verified caller identity, never caller-chosen freely.
-    """
-    project_id = req.project_id
-    if caller is not None:
-        project_id = caller.bind_for_write(req.project_id)
-    answer = await _verification_controller.ask(
-        question=req.question,
-        anchor_object_id=req.anchor_object_id,
-        project_id=project_id,
-    )
-    return answer.to_dict()
 
 
 # ── TASK-046: Persistence endpoints ──────────────────────────────────────
@@ -228,32 +192,3 @@ async def transition_finding(
         }
     except TransitionError as exc:
         raise_typed(PlatformError.verification("bad_request", str(exc)))
-
-
-@router.get("/sessions")
-async def list_sessions(
-    project_id: str | None = Query(None),
-    limit: int = Query(100, ge=1, le=500),
-    caller: CallerIdentity | None = Depends(get_caller),
-) -> list[dict[str, Any]]:
-    """List verification sessions (persisted evidence + traversal).
-
-    Wave-6 F3: non-admin callers can only see their own project.
-    """
-    if caller is not None:
-        project_id = caller.scope_filter(project_id)
-    return await _verification_controller.list_sessions(
-        project_id=project_id, limit=limit
-    )
-
-
-@router.get("/sessions/{session_id}")
-async def get_session(
-    session_id: str,
-    caller: CallerIdentity | None = Depends(get_caller),
-) -> dict[str, Any] | None:
-    """Get a single verification session by ID."""
-    session = await _verification_controller.get_session(session_id)
-    if caller is not None and session is not None and isinstance(session, dict):
-        caller.assert_can_access(session.get("project_id"))
-    return session

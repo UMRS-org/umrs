@@ -142,6 +142,7 @@ def query_audit_events(
     request_id: str = "",
     event: str = "",
     actor: str = "",
+    project_id: str = "",
     since: float = 0.0,
     until: float = 0.0,
     limit: int = 50,
@@ -150,35 +151,50 @@ def query_audit_events(
 
     Returns matching audit events, most recent first.
     Falls back to in-memory ring buffer when no persistent store is configured.
+
+    ``project_id`` filters before the limit (H-10.1, 2026-10-18): callers
+    filtered the newest ``limit`` events of every project after the query,
+    so a project's own events vanished behind newer events of others.
     """
-    # Try persistent store first
+    filters = {
+        "request_id": request_id,
+        "event": event,
+        "actor": actor,
+        "project_id": project_id,
+        "since": since,
+        "until": until,
+    }
     if _audit_store is not None:
         try:
-            return _audit_store.query(
-                request_id=request_id,
-                event=event,
-                actor=actor,
-                since=since,
-                until=until,
-                limit=limit,
-            )
-        except Exception:
+            return _audit_store.query(limit=limit, **filters)
+        except Exception:  # noqa: BLE001 — a store failure falls back to the buffer
             logger.debug("Persistent audit query failed, falling back to buffer")
 
-    # Fall back to in-memory buffer
     with _audit_buffer_lock:
-        results = list(_audit_buffer)
-
-    if request_id:
-        results = [r for r in results if r.get("request_id") == request_id]
-    if event:
-        results = [r for r in results if event in r.get("event", "")]
-    if actor:
-        results = [r for r in results if r.get("actor") == actor]
-    if since > 0:
-        results = [r for r in results if r.get("ts", 0) >= since]
-    if until > 0:
-        results = [r for r in results if r.get("ts", 0) <= until]
-
+        results = [r for r in _audit_buffer if _buffer_match(r, **filters)]
     results.reverse()
     return results[:limit]
+
+
+def _buffer_match(
+    record: dict[str, Any],
+    *,
+    request_id: str,
+    event: str,
+    actor: str,
+    project_id: str,
+    since: float,
+    until: float,
+) -> bool:
+    """One ring-buffer record against the query filters (empty = no filter)."""
+    exact = (
+        ("request_id", request_id),
+        ("actor", actor),
+        ("project_id", project_id),
+    )
+    if any(want and record.get(key) != want for key, want in exact):
+        return False
+    if event and event not in record.get("event", ""):
+        return False
+    ts = record.get("ts", 0)
+    return not ((since > 0 and ts < since) or (until > 0 and ts > until))

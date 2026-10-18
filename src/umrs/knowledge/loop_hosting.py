@@ -133,35 +133,48 @@ def _pin_real_findings(loop: ResearchLoop, iteration: LoopIteration) -> None:
 def _checkpoint_iteration(
     loop: ResearchLoop, iteration: LoopIteration, *, job_id: str, attempt_id: str
 ) -> None:
+    """Record the iteration checkpoint (ADR-036); best-effort, never a gate.
+
+    Since H-10.1 (2026-10-18) the store writes Postgres on umrs-front (it ran
+    in memory there before), so a database error must not fail the iteration.
+    """
     ckpt = _safe(_wiring().checkpoint_store, "checkpoint store")
     if ckpt is None or not job_id:
         return
     progress = (
         iteration.iteration_number / loop.max_iterations if loop.max_iterations else 0.0
     )
-    ckpt.save_checkpoint(
-        job_id,
-        attempt_id,
-        "iteration",
-        iteration=iteration.iteration_number,
-        progress=min(1.0, max(0.0, progress)),
-        state_inline={
-            "loop_id": loop.loop_id,
-            "iteration_id": iteration.iteration_id,
-            "status": iteration.status,
-            "phase": iteration.phase.value,
-            "artifact_ids": list(iteration.artifact_ids),
-            "finding_ids": [
-                str(
-                    f.get("finding_id")
-                    if isinstance(f, dict)
-                    else getattr(f, "finding_id", "")
-                )
-                for f in iteration.findings
-            ],
-        },
-        metadata={"kind": "research_loop_iteration"},
-    )
+    try:
+        ckpt.save_checkpoint(
+            job_id,
+            attempt_id,
+            "iteration",
+            iteration=iteration.iteration_number,
+            progress=min(1.0, max(0.0, progress)),
+            state_inline=_checkpoint_state(loop, iteration),
+            metadata={"kind": "research_loop_iteration"},
+        )
+    except Exception as exc:  # noqa: BLE001 — a checkpoint is advisory
+        logger.warning("checkpoint skipped for loop %s: %s", loop.loop_id, exc)
+
+
+def _checkpoint_state(loop: ResearchLoop, iteration: LoopIteration) -> dict[str, Any]:
+    """The inline checkpoint payload of one iteration."""
+    return {
+        "loop_id": loop.loop_id,
+        "iteration_id": iteration.iteration_id,
+        "status": iteration.status,
+        "phase": iteration.phase.value,
+        "artifact_ids": list(iteration.artifact_ids),
+        "finding_ids": [
+            str(
+                f.get("finding_id")
+                if isinstance(f, dict)
+                else getattr(f, "finding_id", "")
+            )
+            for f in iteration.findings
+        ],
+    }
 
 
 def _step_measured_gpu_seconds(step: Any) -> float:

@@ -13,25 +13,10 @@ from pydantic import BaseModel, Field
 
 from umrs.api._asyncpg_pool import knowledge_asyncpg_pool
 from umrs.api.files import get_project_id
-from umrs.graph_reasoning import GraphNavigator
 from umrs.jobs.models import JobType
-from umrs.knowledge.canonical_graph_view import (
-    default_view as _canonical_default_view,
-)
-from umrs.knowledge.graph_types import KnowledgeEdge
-from umrs.knowledge.knowledge_correction_controller import (
-    KnowledgeCorrectionController,
-)
-from umrs.knowledge.knowledge_dashboard_controller import (
-    KnowledgeDashboardController,
-    ObjectDetail,
-)
 from umrs.knowledge.project import ProjectPhase, ResearchProject
 from umrs.knowledge.readiness_approvals import ReadinessApprovalStore
 from umrs.knowledge.verification_store import VerificationStore
-from umrs.knowledge_model import InMemoryKnowledgeModelStore
-from umrs.scientific_memory import InMemoryScientificMemoryStore
-from umrs.scientific_reasoning_engine import ScientificReasoningEngine
 from umrs.shared.storage.s3_config import S3Config, get_s3_config
 
 from .jobs import CallerIdentity, get_caller_identity
@@ -239,77 +224,18 @@ async def post_external_search(
     }
 
 
-# ── M3.5 — Interactive Scientific Knowledge Verification ──────────────────
-
-# Shared in-memory stores for the M3.5 controllers.  A real deployment would
-# inject Postgres-backed stores via set_* hooks; this wiring exposes the
-# controllers through the HTTP sidecar so the TUI can reach them.
-_m35_knowledge_model = InMemoryKnowledgeModelStore()
-
-# ADR-026 migration: the shared m35 graph is a canonical-backed view with
-# project '' root (memory-only until a request attaches the shared pool).
-_m35_knowledge_graph = _canonical_default_view(project_id="default")
-_m35_scientific_memory = InMemoryScientificMemoryStore()
-_m35_navigator = GraphNavigator(graph=_m35_knowledge_graph)
-_m35_reasoning_engine = ScientificReasoningEngine(navigator=_m35_navigator)
-
-
-async def _m35_maybe_refresh(request) -> None:
-    """Attach the shared pool on first request and reload canonical rows."""
-    pool = getattr(getattr(request, "app", None), "state", None)
-    pool = getattr(pool, "umrs_knowledge_asyncpg_pool", None)
-    if pool is None:
-        return
-    from ..knowledge.store import KnowledgeStore as _KS
-
-    if _m35_knowledge_graph._store is None:
-        _m35_knowledge_graph._store = _KS(pool)
-    await _m35_knowledge_graph.refresh()
-
-
-_dashboard_controller = KnowledgeDashboardController(
-    knowledge_model=_m35_knowledge_model,
-    knowledge_graph=_m35_knowledge_graph,
-    scientific_memory=_m35_scientific_memory,
-)
-_correction_controller = KnowledgeCorrectionController(
-    knowledge_graph=_m35_knowledge_graph,
-)
-
-
-class RelatedObjectRef(BaseModel):
-    object_id: str
-    object_type: str
-    title: str
-    relation: str
-    confidence: float
-
-
-class ObjectProvenance(BaseModel):
-    source: str
-    extractor: str
-    timestamp: str
-    confidence: float
-
-
-class ObjectDetailResponse(BaseModel):
-    object_id: str
-    object_type: str
-    title: str
-    status: str
-    metadata: dict[str, Any]
-    provenance: ObjectProvenance
-    related_objects: list[RelatedObjectRef]
-    graph_neighbors: list[RelatedObjectRef]
-    created_at: str
-
-
-class CorrectionRequest(BaseModel):
-    correction_type: str = Field(..., description="Type of correction")
-    corrected_by: str = Field(..., description="User making the correction")
-    reason: str = Field(..., description="Why the correction is needed")
-    affected_object_ids: list[str] = Field(default_factory=list)
-    details: dict[str, Any] = Field(default_factory=dict)
+# ── M3.5 explorer: retired 2026-10-18 (hardening plan H-10.1) ────────────
+# The explorer routes (GET /dashboard, /objects, /objects/{id},
+# /graph/{id}/neighbors, POST /correction) served module-global controllers
+# over ONE graph, project "default", to every caller: a project B caller read
+# the default project's nodes and neighbours, and POST /correction wrote edges
+# into that graph with a client-asserted ``corrected_by``. The object model and
+# scientific memory behind /objects were in-memory stores nothing filled (the
+# list was always empty, the detail always 404). No client calls them
+# (r4/src, packages/, mcp-servers: none). The per-project durable surfaces are
+# GET /umrs/knowledge/graph, /graph-pg, /status, /readiness, /query and the
+# knowledge-graphs proposal/establish lane for edits. Record:
+# docs/development/dormant-modules.md, "Module-global per-project state".
 
 
 class ReadinessApproveRequest(BaseModel):
@@ -319,146 +245,6 @@ class ReadinessApproveRequest(BaseModel):
         None, description="Project to approve (default: the caller's)"
     )
     reason: str = Field("", max_length=2000, description="Why (audited)")
-
-
-def _object_title(obj: ObjectDetail | None) -> str:
-    if obj is None:
-        return ""
-    return obj.title or obj.object_id
-
-
-def _build_related_ref(edge: KnowledgeEdge, center_id: str) -> RelatedObjectRef:
-    """Build a RelatedObjectRef from a graph edge centered on center_id."""
-    neighbor_id = edge.target_id if edge.source_id == center_id else edge.source_id
-    relation = edge.relation_type.value
-    node = _m35_knowledge_graph.get_node(neighbor_id)
-    if node is None:
-        obj = _m35_knowledge_model.get_object(neighbor_id)
-        title = obj.content.get("title", neighbor_id) if obj else neighbor_id
-        node_type = obj.object_type.value if obj else "unknown"
-    else:
-        title = node.title or neighbor_id
-        node_type = node.node_type
-    return RelatedObjectRef(
-        object_id=neighbor_id,
-        object_type=node_type,
-        title=title,
-        relation=relation,
-        confidence=edge.confidence,
-    )
-
-
-def _build_object_detail_response(detail: ObjectDetail) -> dict[str, Any]:
-    """Convert controller ObjectDetail into the TUI-facing shape."""
-    edges = list(_m35_knowledge_graph.get_outgoing(detail.object_id)) + list(
-        _m35_knowledge_graph.get_incoming(detail.object_id)
-    )
-    related = [_build_related_ref(edge, detail.object_id) for edge in edges]
-
-    avg_confidence = 0.0
-    if edges:
-        avg_confidence = sum(edge.confidence for edge in edges) / len(edges)
-
-    return ObjectDetailResponse(
-        object_id=detail.object_id,
-        object_type=detail.object_type,
-        title=detail.title,
-        status=detail.status,
-        metadata=detail.metadata,
-        provenance=ObjectProvenance(
-            source=detail.object_id,
-            extractor="knowledge_graph",
-            timestamp=detail.updated_at or detail.created_at,
-            confidence=round(avg_confidence, 4),
-        ),
-        related_objects=related,
-        graph_neighbors=related,
-        created_at=detail.created_at,
-    ).model_dump()
-
-
-async def _explorer_caller(request: Request) -> Any:
-    """Fail-closed scope entry gate for M3.5 Explorer routes (R2, 2026-08-22).
-
-    Explorer controllers are module-global (no per-project namespace), so the
-    three-tier predicates cannot be applied per-object; the convergent gate is
-    strict-mode authentication (401 when unauthenticated) with mvp parity
-    (anonymous callers allowed). Returns the resolved scope for logging.
-    """
-    from umrs.api._scope_identity import request_caller_scope
-
-    scope = request_caller_scope(request)
-    if scope.anonymous:
-        logger.debug("explorer route used by anonymous caller (mvp mode)")
-    try:
-        await _m35_maybe_refresh(request)
-    except Exception:
-        logger.debug("m35 refresh skipped", exc_info=True)
-    return scope
-
-
-@router.get("/dashboard")
-async def get_knowledge_dashboard(request: Request) -> dict[str, Any]:
-    """Get project knowledge summary for the M3.5 dashboard."""
-    await _explorer_caller(request)
-    return _dashboard_controller.get_knowledge_summary().to_dict()
-
-
-@router.get("/objects")
-async def list_knowledge_objects(
-    request: Request,
-    object_type: str | None = Query(None, description="Filter by object type"),
-    limit: int = Query(100, ge=1, le=1000),
-) -> list[dict[str, Any]]:
-    """List scientific objects for the M3.5 Knowledge Explorer."""
-    await _explorer_caller(request)
-    return [
-        obj.to_dict()
-        for obj in _dashboard_controller.list_objects(
-            object_type=object_type,
-            limit=limit,
-        )
-    ]
-
-
-@router.get("/objects/{object_id}", response_model=ObjectDetailResponse)
-async def get_knowledge_object(
-    object_id: str, request: Request
-) -> ObjectDetailResponse:
-    """Get detailed view of a scientific object."""
-    await _explorer_caller(request)
-    detail = _dashboard_controller.get_object_detail(object_id)
-    if detail is None:
-        raise_typed(
-            PlatformError.knowledge("not_found", f"Object {object_id} not found")
-        )
-    return _build_object_detail_response(detail)
-
-
-@router.get("/graph/{object_id}/neighbors")
-async def get_graph_neighbors(object_id: str, request: Request) -> list[dict[str, Any]]:
-    """Get graph neighbors for a scientific object."""
-    await _explorer_caller(request)
-    edges = list(_m35_knowledge_graph.get_outgoing(object_id)) + list(
-        _m35_knowledge_graph.get_incoming(object_id)
-    )
-    return [_build_related_ref(edge, object_id).model_dump() for edge in edges]
-
-
-@router.post("/correction")
-async def submit_knowledge_correction(
-    req: CorrectionRequest, request: Request
-) -> dict[str, Any]:
-    """Record a human knowledge correction (write-gated: R2 scope)."""
-    await _explorer_caller(request)
-    record = _correction_controller.correct(
-        correction_type=req.correction_type,
-        corrected_by=req.corrected_by,
-        reason=req.reason,
-        affected_object_ids=req.affected_object_ids,
-        details=req.details,
-    )
-    return record.to_dict()
 
 
 def _durable_node_payload(node: Any) -> dict[str, Any]:
@@ -702,8 +488,8 @@ async def get_research_readiness(
     It returned the module-global explorer report (project "default", counted
     from an in-memory model nothing fills) whatever project was asked for, so
     every client saw "not_ready" (TUI audit 2026-10-17).
+    ``_readable_project`` resolves the caller (401 in strict mode).
     """
-    await _explorer_caller(request)
     effective = _readable_project(request, project_id, "knowledge/readiness")
     from umrs.knowledge.store import KnowledgeStore
 
@@ -1092,8 +878,8 @@ async def knowledge_reconcile(
     Read-only scan over the catalogue/canonical/vector planes for the
     project. Output is the checker's authoritative consistency state: UI
     surfaces are read-side projections consuming this payload only.
+    The caller is resolved by ``get_project_id`` (JWT or signed tuple).
     """
-    await _explorer_caller(request)
     pool = getattr(request.app.state, "umrs_db_pool", None)
     if pool is None:
         raise_typed(
