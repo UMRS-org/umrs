@@ -1,8 +1,11 @@
-"""R2 (2026-08-22): M3.5 Explorer routes require identity in strict mode.
+"""R2 (2026-08-22): knowledge read routes require identity in strict mode.
 
-Module-global explorer controllers can't be tier-scoped per project — the
-conver gate is strict-mode authentication (401 unauthenticated) with mvp
-parity (anonymous callers allowed, matching knowledge graph routes).
+2026-10-18 (hardening plan H-10.1): the M3.5 explorer routes this file
+pinned (``/dashboard``, ``/objects``, ``/objects/{id}``,
+``/graph/{id}/neighbors``, ``/correction``) are retired: they served one
+module-global graph to every project. Their retirement and the leak they had
+are pinned in ``test_h10_module_state.py``; the strict-mode gate stays pinned
+here on the per-project routes that replaced them.
 """
 
 from __future__ import annotations
@@ -30,51 +33,27 @@ def _clear_auth_mode(monkeypatch):
 
 
 class TestReadRoutes:
-    def test_mvp_anonymous_allowed(self, client, monkeypatch):
+    def test_mvp_anonymous_reaches_the_scope_check(self, client, monkeypatch):
         monkeypatch.setenv("UMRS_AUTH_MODE", "mvp")
-        resp = client.get("/umrs/knowledge/objects")
-        assert resp.status_code in (200, 404, 500)
-
-    def test_mvp_verified_allowed(self, client, monkeypatch):
-        monkeypatch.setenv("UMRS_AUTH_MODE", "mvp")
-        resp = client.get(
-            "/umrs/knowledge/dashboard",
-            headers={"x-user-id": "u1", "x-verified-project-id": "lab1"},
-        )
-        assert resp.status_code in (200, 404, 500)
+        resp = client.get("/umrs/knowledge/readiness")
+        assert resp.status_code == 403  # no project: scope_required
 
     def test_strict_anonymous_rejected(self, client, monkeypatch):
         monkeypatch.setenv("UMRS_AUTH_MODE", "strict")
-        assert client.get("/umrs/knowledge/dashboard").status_code == 401
-        assert client.get("/umrs/knowledge/objects").status_code == 401
-        assert client.get("/umrs/knowledge/graph/abc/neighbors").status_code == 401
         assert client.get("/umrs/knowledge/readiness").status_code == 401
+        assert client.get("/umrs/knowledge/findings").status_code == 401
 
     def test_strict_verified_without_signature_rejected(self, client, monkeypatch):
         """Verified headers WITHOUT the gateway HMAC are rejected (jobs parity)."""
         monkeypatch.setenv("UMRS_AUTH_MODE", "strict")
         resp = client.get(
-            "/umrs/knowledge/objects",
+            "/umrs/knowledge/readiness",
             headers={"x-user-id": "u1", "x-verified-project-id": "lab1"},
         )
         assert resp.status_code == 401
 
 
 class TestWriteRoutes:
-    def test_strict_correction_rejected(self, client, monkeypatch):
-        monkeypatch.setenv("UMRS_AUTH_MODE", "strict")
-        resp = client.post(
-            "/umrs/knowledge/correction",
-            json={
-                "correction_type": "fact",
-                "corrected_by": "stalker",
-                "reason": "test",
-                "affected_object_ids": [],
-                "details": {},
-            },
-        )
-        assert resp.status_code == 401
-
     def test_strict_approval_rejected(self, client, monkeypatch):
         monkeypatch.setenv("UMRS_AUTH_MODE", "strict")
         resp = client.post(

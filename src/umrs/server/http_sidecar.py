@@ -264,6 +264,24 @@ def _init_deep_stores(app, db_pool):
     _init_companion_trust_store(app, db_pool)
     _init_usage_pool(db_pool)
     _init_loop_plan_host(db_pool)
+    _init_skill_store(db_pool)
+
+
+def _init_skill_store(db_pool) -> None:
+    """Skill registry on the ``skills`` table (H-10.1, 2026-10-18).
+
+    The REST layer served an in-memory registry: registrations died with the
+    process and the D-27 proposals the knowledge jobs write into ``skills``
+    never reached ``/umrs/skills/pending``. Borrows per call (see
+    ``_init_mcp_store``); the table comes from migrations 0052/0112.
+    """
+    try:
+        from umrs.api.skills import set_skill_store
+
+        set_skill_store(db_pool)
+        logger.info("Skill registry backed by Postgres in HTTP sidecar")
+    except Exception:  # noqa: BLE001 — boot must survive per-component failures
+        logger.warning("Skill store unavailable — in-memory skill registry")
 
 
 def _init_loop_plan_host(db_pool) -> None:

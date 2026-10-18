@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query, Request, status
@@ -31,35 +32,49 @@ def set_skill_registry(registry: SkillRegistry | None) -> None:
     _registry = registry
 
 
-def set_skill_store(conn: Any) -> None:
-    """Wire a Postgres-backed SkillStore into the REST layer.
+def set_skill_store(pool: Any) -> None:
+    """Wire the Postgres-backed ``skills`` table into the REST layer.
 
-    Call once at server startup when a database connection is available.
-    Passing *None* clears the store and falls back to the in-memory registry.
+    Called at sidecar boot with the shared psycopg2 pool (H-10.1,
+    2026-10-18). Until then nothing called it, so the REST layer served the
+    in-memory registry: registrations died with the process, and the D-27
+    skill proposals the knowledge jobs write into ``skills``
+    (``jobs/knowledge_adapters._compile_skill_proposals``) never reached
+    ``/pending`` or the review route. Passing *None* clears the store and
+    falls back to the in-memory registry (tests, stand-alone dev).
     """
     global _skill_store
-    if conn is None:
-        _skill_store = None
-        return
-    from umrs.skills.store import SkillStore
-
-    _skill_store = _SkillStoreAdapter(SkillStore(conn))
+    _skill_store = None if pool is None else _SkillStoreAdapter(pool)
 
 
 class _SkillStoreAdapter(SkillRegistry):
     """Adapts :class:`~umrs.skills.store.SkillStore` to the
     :class:`~umrs.skills.SkillRegistry` interface so the REST layer can
     use either backend interchangeably.
+
+    Each call borrows a pool connection and commits before handing it back
+    (``SkillStore.register_skill`` leaves the commit to its caller; never a
+    boot lease, see ``http_sidecar._init_mcp_store``).
     """
 
-    def __init__(self, store) -> None:  # type: ignore[no-untyped-def]
-        self._store = store
+    def __init__(self, pool: Any) -> None:
+        self._pool = pool
 
-    def validate_manifest(self, manifest: SkillManifest) -> list[str]:  # type: ignore[override]
-        # Delegate to base implementation
-        return super().validate_manifest(manifest)
+    def _run(self, op: Callable[[Any], Any]) -> Any:
+        from umrs.skills.store import SkillStore
 
-    def register(
+        conn = self._pool.getconn()
+        try:
+            result = op(SkillStore(conn))
+            conn.commit()
+            return result
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            self._pool.putconn(conn)
+
+    def register(  # type: ignore[override]
         self,
         manifest: SkillManifest,
         skill_md: str,
@@ -67,21 +82,28 @@ class _SkillStoreAdapter(SkillRegistry):
         owner_id: str = "",
         project_id: str | None = None,
     ) -> RegisteredSkill:
-        return self._store.register_skill(
-            name=manifest.name,
-            version=manifest.version,
-            scope=scope,
-            owner_id=owner_id,
-            project_id=project_id,
-            skill_md=skill_md,
-            manifest=manifest.to_dict(),
-            enabled=True,
+        errors = self.validate_manifest(manifest)
+        if errors:  # same contract as the in-memory registry
+            raise SkillValidationError("; ".join(errors))
+        return self._run(
+            lambda store: store.register_skill(
+                name=manifest.name,
+                version=manifest.version,
+                scope=scope,
+                owner_id=owner_id,
+                project_id=project_id,
+                skill_md=skill_md,
+                manifest=manifest.to_dict(),
+                enabled=True,
+            )
         )
 
     def get(self, skill_id: str) -> RegisteredSkill | None:  # type: ignore[override]
+        from umrs.skills.store import SkillNotFoundError
+
         try:
-            return self._store.get_skill(skill_id)
-        except Exception:
+            return self._run(lambda store: store.get_skill(skill_id))
+        except SkillNotFoundError:
             return None
 
     def list_skills(
@@ -90,19 +112,17 @@ class _SkillStoreAdapter(SkillRegistry):
         owner_id: str | None = None,
         tag: str | None = None,
     ) -> list[RegisteredSkill]:
-        skills = self._store.list_skills(
-            scope=scope,
-            owner_id=owner_id,
+        rows = self._run(
+            lambda store: store.list_skills(scope=scope, owner_id=owner_id)
         )
-        if tag:
-            skills = [s for s in skills if tag in s.manifest.tags]
-        return skills
+        # In-memory parity: disabled rows (pending proposals) are not listed.
+        return [s for s in rows if s.enabled and (not tag or tag in s.manifest.tags)]
 
     def unregister(self, skill_id: str) -> bool:  # type: ignore[override]
-        return self._store.unregister_skill(skill_id)
+        return self._run(lambda store: store.unregister_skill(skill_id))
 
     def list_pending(self) -> list[RegisteredSkill]:  # type: ignore[override]
-        return self._store.list_pending_reviews()
+        return self._run(lambda store: store.list_pending_reviews())
 
     def decide_review(  # type: ignore[override]
         self,
@@ -113,16 +133,18 @@ class _SkillStoreAdapter(SkillRegistry):
         note: str = "",
         test_receipt: dict[str, Any] | None = None,
     ) -> RegisteredSkill | None:
-        return self._store.decide_review(
-            skill_id,
-            decision,
-            reviewer=reviewer,
-            note=note,
-            test_receipt=test_receipt,
+        return self._run(
+            lambda store: store.decide_review(
+                skill_id,
+                decision,
+                reviewer=reviewer,
+                note=note,
+                test_receipt=test_receipt,
+            )
         )
 
     def search(self, query: str, limit: int = 20) -> list[RegisteredSkill]:  # type: ignore[override]
-        return self._store.search(query, limit=limit)
+        return self._run(lambda store: store.search(query, limit=limit))
 
 
 def _get_registry() -> SkillRegistry:

@@ -281,13 +281,17 @@ class SkillStore:
             return row is not None
 
     def search(self, query: str, limit: int = 20) -> list[RegisteredSkill]:
-        """Search skills by name/description/tags."""
+        """Search skills by name/description/tags.
+
+        Selects ``_SKILL_COLUMNS`` like every other read: the list here
+        omitted ``review_state``, so ``_row_to_skill`` failed to unpack every
+        hit (H-10.1, 2026-10-18; unseen while the REST layer ran in memory).
+        """
         q = f"%{query}%"
         with self.conn.cursor() as cur:
             cur.execute(
-                """
-                SELECT skill_id, name, version, scope, owner_id, project_id,
-                       skill_md, manifest, enabled, registered_at, updated_at
+                f"""
+                SELECT {_SKILL_COLUMNS}
                 FROM skills
                 WHERE enabled = TRUE AND (
                     name ILIKE %s OR

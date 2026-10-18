@@ -1066,21 +1066,22 @@ async def audit_trace(
     """
     from .audit_events import query_audit_events
 
+    # Wave-6 F6: non-admin verified callers are forced to their own project
+    # regardless of the requested filter (loud 403 on a foreign request).
+    # H-10.1 (2026-10-18): the project filters inside the query, before the
+    # limit; filtering the newest ``limit`` events of every project after it
+    # hid a project's own events behind newer events of other projects.
+    if caller is not None and not caller.is_admin:
+        project_id = caller.scope_filter(project_id or None) or caller.project_id
     events = query_audit_events(
         request_id=request_id,
         event=event,
         actor=actor,
+        project_id=project_id,
         since=since,
         until=until,
         limit=limit,
     )
-    # Apply project_id filter post-query (ring buffer doesn't support it natively).
-    # Wave-6 F6: non-admin verified callers are forced to their own project
-    # regardless of the requested filter (loud 403 on a foreign request).
-    if caller is not None and not caller.is_admin:
-        project_id = caller.scope_filter(project_id or None) or caller.project_id
-    if project_id:
-        events = [e for e in events if e.get("project_id") == project_id]
     return {
         "events": events,
         "count": len(events),
@@ -1696,11 +1697,10 @@ def _analytics_events(
     """Governance event distribution plus recent denials/warnings."""
     gov_events = query_audit_events(
         event="governance.",
+        project_id=project_id,
         since=since,
         limit=500,
     )
-    if project_id:
-        gov_events = [e for e in gov_events if e.get("project_id") == project_id]
 
     event_counts: dict[str, int] = {}
     for ev in gov_events:

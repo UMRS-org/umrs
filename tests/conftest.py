@@ -5,6 +5,7 @@ Pytest configuration and fixtures for UMRS tests.
 import atexit
 import os
 import shutil
+import sys
 import tempfile
 from collections.abc import Generator
 
@@ -158,6 +159,20 @@ def truncate_knowledge_premise_tables() -> None:
             conn.close()
     except Exception:
         pass
+
+
+@pytest.fixture(autouse=True)
+def _reset_skill_store_between_tests() -> Generator:
+    """Since H-10.1 (2026-10-18) the sidecar boot wires the skill registry to
+    the shared pool (``http_sidecar._init_skill_store``). A test that builds
+    the real app with a database configured (the CI Postgres leg) left that
+    adapter module-global, and later tests that install an in-memory
+    registry with ``set_skill_registry`` read the database instead. Clear it
+    after every test; no-op when the module was never imported."""
+    yield
+    module = sys.modules.get("umrs.api.skills")
+    if module is not None:
+        module._skill_store = None
 
 
 @pytest.fixture(autouse=True)

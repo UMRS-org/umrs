@@ -43,9 +43,29 @@ def _make_app() -> FastAPI:
     return app
 
 
+# Every variable the store's DSN chain reads (``_asyncpg_pool.sync_store_dsn``,
+# H-10.1): clearing only UMRS_DB_URL no longer pins the memory store on a host
+# (or CI leg) whose environment points at Postgres.
+_DSN_VARS = (
+    "UMRS_DB_URL",
+    "UMRS_DATA_CATALOG_DB",
+    "DATABASE_URL",
+    "DB_HOST",
+    "DB_PORT",
+    "UMRS_JOBS_DB",
+    "POSTGRES_PORT",
+    "POSTGRES_DB",
+    "DB_SUPERUSER",
+    "DB_SUPERUSER_PASSWORD",
+    "POSTGRES_USER",
+    "POSTGRES_PASSWORD",
+)
+
+
 def test_egress_audit_post_then_list_memory_store(monkeypatch) -> None:
-    monkeypatch.delenv("UMRS_DB_URL", raising=False)
-    egress_audit._store = None
+    for var in _DSN_VARS:
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setattr(egress_audit, "_store", None)
     client = TestClient(_make_app())
 
     created = client.post("/umrs/egress/audit", json=_audit_payload())

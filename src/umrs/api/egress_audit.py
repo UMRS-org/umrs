@@ -12,9 +12,10 @@ Endpoints
 
 Storage
 -------
-If ``UMRS_DB_URL`` is set and ``psycopg2`` is importable, rows are
-persisted to the ``egress_requests`` table created by migration
-``0005_egress_audit.sql``. Otherwise the router falls back to an
+If a DSN resolves (``_asyncpg_pool.sync_store_dsn``: ``UMRS_DB_URL``, then
+the knowledge/jobs DSN chain; 2026-10-18, H-10.1) and ``psycopg2`` is
+importable, rows are persisted to the ``egress_requests`` table created by
+migration ``0005_egress_audit.sql``. Otherwise the router falls back to an
 in-memory ring buffer (development / unit-test mode).
 
 Writes are best-effort — a database failure must not propagate to the
@@ -127,7 +128,10 @@ class _EgressAuditStore:
     def __init__(self) -> None:
         self._lock = RLock()
         self._buffer: deque[EgressAuditRecord] = deque(maxlen=_INMEMORY_LIMIT)
-        self._db_url = os.getenv("UMRS_DB_URL", "").strip() or None
+        from ._asyncpg_pool import sync_store_dsn
+
+        # H-10.1: UMRS_DB_URL alone left umrs-front audit rows in memory.
+        self._db_url = sync_store_dsn()
         self._psycopg2 = None
         if self._db_url:
             try:
@@ -136,7 +140,7 @@ class _EgressAuditStore:
                 self._psycopg2 = psycopg2
             except ImportError:
                 logger.warning(
-                    "UMRS_DB_URL set but psycopg2 unavailable; "
+                    "egress audit DSN set but psycopg2 unavailable; "
                     "egress audit will use in-memory store only"
                 )
 

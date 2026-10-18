@@ -26,7 +26,6 @@ client-hosted run.
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query, Request, status
@@ -53,8 +52,10 @@ _trace_store: ExecutionTraceStore | None = None
 def get_trace_store() -> ExecutionTraceStore:
     global _trace_store
     if _trace_store is None:
-        db_url = os.getenv("UMRS_DB_URL", "").strip() or None
-        _trace_store = ExecutionTraceStore(db_url=db_url)
+        from ._asyncpg_pool import sync_store_dsn
+
+        # H-10.1: UMRS_DB_URL alone left umrs-front traces in memory.
+        _trace_store = ExecutionTraceStore(db_url=sync_store_dsn())
     return _trace_store
 
 

@@ -76,6 +76,25 @@ def _resolve_knowledge_dsn() -> tuple[str, bool]:
     return dsn, host in ("127.0.0.1", "localhost", "::1")
 
 
+def sync_store_dsn() -> str | None:
+    """psycopg2 DSN for the module-global satellite stores (H-10.1).
+
+    ``UMRS_DB_URL`` first (the stores' historic knob), then the chain above
+    (``UMRS_DATA_CATALOG_DB`` / ``DATABASE_URL`` / the jobs-pool component
+    vars) that the loop store already uses. The umrs-front containers set
+    only the component vars (``DB_HOST``, ``UMRS_JOBS_DB``, ...), so the
+    checkpoint, trace and egress-audit stores, which read ``UMRS_DB_URL`` or
+    ``DATABASE_URL`` alone, ran in memory there and lost their rows at every
+    restart (2026-10-18). ``None`` when nothing is configured: the stores
+    keep their in-memory fallback for tests and stand-alone dev.
+    """
+    explicit = os.environ.get("UMRS_DB_URL", "").strip()
+    if explicit:
+        return explicit
+    dsn, _is_local = _resolve_knowledge_dsn()
+    return dsn or None
+
+
 async def knowledge_asyncpg_pool(request: Request):
     """Return the app-cached asyncpg pool, creating it on first use.
 
