@@ -185,7 +185,7 @@ def test_lane_assignments_match_record(app):
         "jobs": "v1-stable",
         "workflows": "v1-stable",
         "files": "v1-stable",
-        "pipelines": "v1-stable",
+        # 2026-10-18 (H-10.1 follow-up): pipelines + verification deleted.
         "mcp": "v1beta",
         "rag": "v1beta",
         "rag-profiles": "v1beta",
@@ -197,7 +197,6 @@ def test_lane_assignments_match_record(app):
         "assets": "v1beta",
         "provenance": "v1beta",
         "traces": "v1beta",
-        "verification": "v1beta",
         "evidence": "v1beta",
         "experiment-registry": "v1beta",
         "scientific-memory": "v1beta",

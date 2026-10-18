@@ -144,20 +144,12 @@ def test_project_b_cannot_write_the_shared_explorer_graph(strict, default_projec
     assert "alice" not in resp.text
 
 
-def test_verification_chat_does_not_reason_over_the_shared_graph(strict, default_project_graph):
-    from umrs.api import verification
+def test_verification_chat_does_not_reason_over_the_shared_graph():
+    """The chat route went first (H-10.1); its module went with the last
+    findings stub (follow-up, 2026-10-18)."""
+    import importlib.util
 
-    resp = _client(verification.router).post(
-        "/umrs/verification/chat",
-        headers=BOB,
-        json={
-            "question": "explain h10-secret-a",
-            "anchor_object_id": "h10-secret-a",
-            "project_id": "proj-b",
-        },
-    )
-    assert resp.status_code in (404, 405), resp.text
-    assert "h10-secret-b" not in resp.text
+    assert importlib.util.find_spec("umrs.api.verification") is None
 
 
 def _mounted(router: Any) -> set[tuple[str, str]]:
@@ -177,26 +169,23 @@ _RETIRED = {
 _KEPT = {
     ("GET", "/umrs/knowledge/readiness"),
     ("GET", "/umrs/knowledge/graph"),
-    ("POST", "/umrs/verification/chat/resolve"),
-    ("GET", "/umrs/verification/findings"),
-    ("PATCH", "/umrs/verification/findings/{finding_key}"),
 }
 
 
 def test_explorer_and_chat_routes_are_retired_and_the_rest_stay():
-    from umrs.api import knowledge, verification
+    from umrs.api import knowledge
 
-    mounted = _mounted(knowledge.router) | _mounted(verification.router)
+    mounted = _mounted(knowledge.router)
     assert not _RETIRED & mounted
     assert _KEPT.issubset(mounted)
 
 
 def test_no_module_global_explorer_state_remains():
-    from umrs.api import knowledge, verification
+    from umrs.api import knowledge
 
     leftovers = [
         name
-        for module in (knowledge, verification)
+        for module in (knowledge,)
         for name in vars(module)
         if name.startswith("_m35_")
         or name in {"_dashboard_controller", "_correction_controller"}

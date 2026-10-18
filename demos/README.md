@@ -222,7 +222,7 @@ Low-level REST APIs that power the platform internals.
 |---|------|-------------------|
 | 25 | [Endpoint Provisioning](25_endpoint_provisioning/) | REST API for endpoint lifecycle, warm pool reuse, MCP/RAG mounts, EgressGuard intent |
 | 26 | [MCP Servers](26_mcp_servers/) | Register/unregister MCP servers, list tools, validate mounted custom MCP manifests |
-| 27 | [Pipeline CRUD](27_pipeline_crud/) | Pipeline definitions, RAG profiles, component registry |
+| 27 | [Pipeline CRUD](27_pipeline_crud/) | Retired 2026-10-18 (pipeline CRUD deleted, RAG profiles 410); component registry only |
 | 28 | [Egress Audit](28_egress_audit/) | Query/log outbound network events and inspect endpoint egress allowlist intent |
 | 29 | [LLM Completions](29_llm_completions/) | OpenAI-compatible chat/text completions and embeddings |
 | 30 | [File Management](30_file_management/) | Upload, download (presigned URLs), bulk upload, delete |

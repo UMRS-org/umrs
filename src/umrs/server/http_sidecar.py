@@ -806,7 +806,6 @@ def _create_app():
     from umrs.api.traces import router as traces_router
     from umrs.api.usage import router as usage_router
     from umrs.api.user_sources import router as user_sources_router
-    from umrs.api.verification import router as verification_router
     from umrs.api.vision import router as vision_router
     from umrs.api.workflows import router as workflows_router
     from umrs.api.zmq_sessions import router as zmq_sessions_router
@@ -922,7 +921,6 @@ def _create_app():
     app.include_router(pipelines_router)
     app.include_router(rag_router)
     app.include_router(skills_router)
-    app.include_router(verification_router)
     app.include_router(vision_router)
     app.include_router(provenance_router)
     app.include_router(research_sessions_router)

@@ -124,13 +124,15 @@ def test_companion_worker_for_another_project_is_refused():
     assert resp.status_code == 403
 
 
-# ── pipelines ────────────────────────────────────────────────────────────────
+# ── rag-profiles (retired, 410) ──────────────────────────────────────────────
+# The /umrs/pipelines CRUD that this block covered is deleted (H-10.1
+# follow-up, 2026-10-18); the rag-profiles stubs in the same module keep the
+# same verified-caller dependency.
 
 
 @pytest.fixture
 def pipelines():
-    """The pipelines CRUD is retired (H-10.1 follow-up, 2026-10-18; 410), but
-    it still resolves the verified caller first."""
+    """``api/pipelines.py``: rag-profiles answer 410 but resolve the caller first."""
     from umrs.api import pipelines as mod
 
     app = FastAPI()
@@ -138,13 +140,13 @@ def pipelines():
     return TestClient(app)
 
 
-def test_pipelines_answer_gone_to_a_verified_caller(pipelines):
+def test_rag_profiles_answer_gone_to_a_verified_caller(pipelines):
     headers = {**_headers("alice", "proj-a"), "X-Project-ID": "proj-b"}
-    assert pipelines.get("/umrs/pipelines", headers=headers).status_code == 410
+    assert pipelines.get("/umrs/rag-profiles", headers=headers).status_code == 410
 
 
-def test_pipelines_need_identity_in_strict_mode(pipelines):
-    assert pipelines.get("/umrs/pipelines", headers={"X-Project-ID": "proj-b"}).status_code == 401
+def test_rag_profiles_need_identity_in_strict_mode(pipelines):
+    assert pipelines.get("/umrs/rag-profiles", headers={"X-Project-ID": "proj-b"}).status_code == 401
 
 
 # ── chat completions ─────────────────────────────────────────────────────────

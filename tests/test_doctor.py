@@ -99,16 +99,31 @@ class TestDoctorModule:
             results = doctor._check_models()
             assert results[0].status == "ok"
 
-    def test_check_rag_no_pipelines(self, ctx):
+    def test_check_rag_reads_the_component_registry(self, ctx):
+        """`r4 rag ingest` is retired (2026-10-18, H-10.1 follow-up): the
+        check reads the live component registry instead of pipelines."""
         from umrs.client.doctor import Doctor
 
         doctor = Doctor(ctx)
         with patch.object(doctor, "_run") as mock_run:
             mock_run.return_value.returncode = 0
-            mock_run.return_value.stdout = "No ingestion pipelines found."
+            mock_run.return_value.stdout = "[]"
             results = doctor._check_rag()
-            assert results[0].status == "warning"
-            assert "No pipelines" in results[0].message
+        argv = mock_run.call_args.args
+        assert "ingest" not in argv
+        assert argv[:4] == ("r4", "rag", "retriever", "components")
+        assert results[0].status == "ok"
+
+    def test_check_rag_failure_suggests_no_retired_command(self, ctx):
+        from umrs.client.doctor import Doctor
+
+        doctor = Doctor(ctx)
+        with patch.object(doctor, "_run") as mock_run:
+            mock_run.return_value.returncode = 1
+            mock_run.return_value.stdout = ""
+            results = doctor._check_rag()
+        assert results[0].status == "warning"
+        assert "ingest" not in (results[0].suggestion or "")
 
     def test_check_workflows(self, ctx):
         from umrs.client.doctor import Doctor

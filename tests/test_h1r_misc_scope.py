@@ -20,8 +20,11 @@ Each block names the defect it pins:
    raises 401 on a missing or forged tuple); the anonymous dev (mvp) caller
    could still transition projectless findings, so the route now needs a
    verified admin in every mode.
-   Since 2026-10-18 (H-10.1 follow-up) the route is retired (410); it still
-   needs a verified caller in every mode.
+   Since 2026-10-18 (H-10.1 follow-up) the route was retired (410), still
+   needing a verified caller in every mode; later that day its last client
+   (the TUI resolve key) was retired and the route deleted with its module.
+   Transitions go through ``PATCH /umrs/knowledge/findings/{key}``, which
+   needs a project the caller may write.
 6. The experiment registry's status filter answered a plain 400 with no
    typed code; it is now ``experiments.bad_request``.
 7. ``knowledge/a2l_bridge.py`` called ``/gw/a2l/{resolve,artifacts}`` with no
@@ -56,7 +59,6 @@ def _headers(user: str, project: str, admin: bool = False) -> dict[str, str]:
 
 
 ALICE = _headers("alice", "proj-a")
-ADMIN = _headers("root", "ops", admin=True)
 # A forged tuple: admin flag set, a foreign project, a bogus signature.
 FORGED = {
     "X-User-ID": "mallory",
@@ -350,43 +352,20 @@ def test_owner_still_decides_own_approval(strict, inbox):
     assert inbox.get("ap-alice")["status"] == "approved"
 
 
-# ── 5. PATCH /umrs/verification/findings/{key} ─────────────────────────────
+# ── 5. PATCH /umrs/verification/findings/{key} (deleted 2026-10-18) ──────
 
 
-@pytest.fixture
-def findings():
-    """The route is retired since 2026-10-18 (H-10.1 follow-up: 410, pointer
-    to ``PATCH /umrs/knowledge/findings``); the identity rule stays."""
-    from umrs.api import verification
-
-    return _client(verification.router)
+def test_projectless_finding_transition_route_is_deleted():
+    """The verified-admin rule ended with the route: it is not mounted, and
+    the module that served it is gone (H-10.1 follow-up, 2026-10-18)."""
+    assert importlib.util.find_spec("umrs.api.verification") is None
 
 
-def _transition(client: TestClient, headers: dict[str, str]):
-    return client.patch(
-        "/umrs/verification/findings/f-1",
-        json={"from_status": "open", "to_status": "resolved"},
-        headers=headers,
-    )
+def test_finding_transition_lives_on_the_per_project_lane():
+    from umrs.api import knowledge
 
-
-def test_finding_transition_without_identity_is_refused_in_strict(strict, findings):
-    assert _transition(findings, {}).status_code == 401
-
-
-def test_finding_transition_with_a_forged_admin_is_refused(strict, findings):
-    assert _transition(findings, FORGED).status_code == 401
-
-
-@pytest.mark.parametrize("who", ["member", "admin"])
-def test_finding_transition_by_a_signed_caller_is_gone(strict, findings, who):
-    resp = _transition(findings, ALICE if who == "member" else ADMIN)
-    assert resp.status_code == 410
-    assert "/umrs/knowledge/findings" in resp.json()["detail"]
-
-
-def test_finding_transition_needs_identity_in_dev_mode_too(mvp, findings):
-    assert _transition(findings, {}).status_code == 401
+    paths = {(m, r.path) for r in knowledge.router.routes for m in r.methods}
+    assert ("PATCH", "/umrs/knowledge/findings/{finding_key}") in paths
 
 
 # ── 6. experiments status filter ───────────────────────────────────────────
