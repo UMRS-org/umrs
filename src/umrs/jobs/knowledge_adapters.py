@@ -1496,7 +1496,10 @@ async def _compile_skill_proposals(store: Any, project_id: str) -> int:
     `status: pending_review` and stay disabled — a human review promotes
     them; the platform never auto-approves learned knowledge. Registrations
     are idempotent (skill id hashes the source IR lineage; ON CONFLICT of
-    the registry row is a no-op).
+    the registry row is a no-op). The conflict key carries the project
+    (``project_key``, migration 0123): keyed on (scope, owner_id, name), a
+    proposal was dropped whenever another project already held one of the
+    same title (H-10.1 follow-up, 2026-10-18).
     """
     from umrs.knowledge.compiled_skill import compile_skills_from_irs
     from umrs.knowledge.ir import KnowledgeIR
@@ -1531,7 +1534,7 @@ async def _compile_skill_proposals(store: Any, project_id: str) -> int:
             " registered_at, updated_at)"
             " VALUES ($1, $2, $3, 'project', 'compile-knowledge-skills', $4,"
             " $5, $6::jsonb, $7::jsonb, false, NOW(), NOW())"
-            " ON CONFLICT (scope, owner_id, name) DO NOTHING"
+            " ON CONFLICT (scope, owner_id, project_key, name) DO NOTHING"
             " RETURNING skill_id",
             skill.skill_id,
             skill.title[:200],

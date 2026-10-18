@@ -1,12 +1,4 @@
-"""UMRS API routes for M3.5 verification findings.
-
-TASK-046: Persistence endpoints added so that chat-resolved findings
-survive UMRS restarts.
-
-Endpoints:
-  POST /umrs/verification/chat/resolve  — Persist a resolved finding
-  GET  /umrs/verification/findings      — List findings with filters
-  PATCH /umrs/verification/findings/<key> — Transition finding status
+"""UMRS API routes for M3.5 verification findings: retired (410 Gone).
 
 Retired 2026-10-18 (hardening plan H-10.1): ``POST /umrs/verification/chat``
 and ``GET /umrs/verification/sessions[/<id>]``. The chat reasoned over the
@@ -14,181 +6,69 @@ module-global M3.5 graph (project "default", shared with the retired
 knowledge explorer) whatever project the caller had, so a project B caller
 read project "default"'s nodes and graph paths. Its controller had no
 session store, so the sessions routes always answered ``[]`` / ``null``.
-No client calls them (the TUI computes its verification answers locally and
-only posts ``/chat/resolve``) and the edge has no ``/gw/verification``
-location. Per-project findings: ``GET /umrs/knowledge/findings``.
+No client calls them and the edge has no ``/gw/verification`` location.
+
+Retired 2026-10-18 (H-10.1 follow-up): ``POST /umrs/verification/chat/resolve``,
+``GET /umrs/verification/findings`` and ``PATCH /umrs/verification/findings/<key>``
+(TASK-046). Their store was injected by ``set_store``, which nothing called,
+so all three answered 503. Wiring it would not have made them work:
+
+- the TUI's resolve (``packages/r4-tui-v3/src/stores/agent-runtime.ts``)
+  names report ``"manual"``, and ``verification_findings.report_id`` is a
+  foreign key to ``verification_reports``, which has no such row (the insert
+  fails, a 500); its key hashes a question the TUI answered locally, so it
+  names no finding a verification run produced;
+- the two findings routes were admin-only and projectless copies of the
+  per-project lane, ``GET`` / ``PATCH /umrs/knowledge/findings``, which reads
+  the caller's readable project and writes only a writable one.
+
+The routes still resolve the caller first (strict mode: 401 without the
+signed tuple), then answer 410 with that pointer. Decision and evidence:
+``docs/development/dormant-modules.md``, "Module-global per-project state".
 """
 
 from __future__ import annotations
 
-import logging
-from typing import Any
-
-from fastapi import APIRouter, Depends, Query
-from pydantic import BaseModel, Field
-
-from umrs.knowledge.verification_store import (
-    TransitionError,
-    VerificationStore,
-)
+from fastapi import APIRouter, Depends, HTTPException, status
 
 from ._verified_headers import CallerIdentity, get_caller, get_verified_caller
-from .typed_errors import PlatformError, raise_typed
-
-logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/umrs/verification", tags=["verification"])
 
-# Verification store — injected at startup if available (TASK-046)
-_store: VerificationStore | None = None
+_FINDINGS_GONE = (
+    "The /umrs/verification findings routes are retired: findings belong to a "
+    "project's verification reports. List them with GET "
+    "/umrs/knowledge/findings?project_id=<project> and move one with PATCH "
+    "/umrs/knowledge/findings/<finding_key> "
+    '{"from_status", "new_status", "evidence"}.'
+)
 
 
-def set_store(store: VerificationStore) -> None:
-    """Inject the Postgres-backed verification store."""
-    global _store
-    _store = store
+def _findings_gone() -> None:
+    raise HTTPException(status_code=status.HTTP_410_GONE, detail=_FINDINGS_GONE)
 
 
-class ResolveFindingRequest(BaseModel):
-    finding_key: str = Field(..., description="Unique key for the finding")
-    report_id: str = Field("manual", description="Report ID")
-    category: str = Field("verification_chat", description="Finding category")
-    severity: str = Field("warning", description="Severity level")
-    status: str = Field("resolved", description="Target status")
-
-
-class TransitionFindingRequest(BaseModel):
-    from_status: str = Field(..., description="Current status")
-    to_status: str = Field(..., description="Target status")
-
-
-# ── TASK-046: Persistence endpoints ──────────────────────────────────────
-
-
-@router.post("/chat/resolve")
+@router.post("/chat/resolve", status_code=status.HTTP_410_GONE)
 async def resolve_finding(
-    req: ResolveFindingRequest,
-    caller: CallerIdentity | None = Depends(get_caller),
-) -> dict[str, str]:
-    """Persist a chat-resolved finding to the knowledge store.
-
-    The finding is upserted so subsequent transitions (open →
-    acknowledged → resolved) can be applied via the findings API.
-    Wave-6 F3: findings carry no project linkage, so when a verified
-    caller context exists the write is admin-only.
-    """
-    if caller is not None and not caller.is_admin:
-        raise_typed(
-            PlatformError.verification(
-                "forbidden", "verification finding writes are admin-scoped"
-            ),
-        )
-    if _store is None:
-        raise_typed(
-            PlatformError.verification(
-                "unavailable",
-                "Verification store not initialized — cannot persist findings",
-            ),
-        )
-
-    await _store.upsert_finding(
-        finding_key=req.finding_key,
-        report_id=req.report_id,
-        category=req.category,
-        severity=req.severity,
-        title=f"Chat-resolved: {req.finding_key}",
-        description=f"Status: {req.status}",
-        evidence=req.finding_key,
-        status=req.status,
-    )
-
-    return {"status": "persisted", "finding_key": req.finding_key}
+    _caller: CallerIdentity | None = Depends(get_caller),
+) -> None:
+    """Retired: a chat-resolved finding had no report and no project."""
+    _findings_gone()
 
 
-@router.get("/findings")
+@router.get("/findings", status_code=status.HTTP_410_GONE)
 async def list_findings(
-    report_id: str | None = Query(None),
-    status: str | None = Query(None, description="Filter by status"),
-    severity: str | None = Query(None, description="Filter by severity"),
-    limit: int = Query(200, ge=1, le=1000),
-    caller: CallerIdentity | None = Depends(get_caller),
-) -> list[dict[str, Any]]:
-    """List verification findings with optional filters.
-
-    Wave-6 F3: the findings store has no project dimension, so the
-    dump is admin-scoped whenever a verified caller is present.
-    """
-    if caller is not None and not caller.is_admin:
-        raise_typed(
-            PlatformError.verification(
-                "forbidden", "verification findings listing is admin-scoped"
-            ),
-        )
-    if _store is None:
-        raise_typed(
-            PlatformError.verification(
-                "unavailable",
-                "Verification store not initialized — cannot list findings",
-            ),
-        )
-    findings = await _store.list_findings(
-        report_id=report_id,
-        status=status,
-        severity=severity,
-        limit=limit,
-    )
-    return [
-        {
-            "finding_key": f.finding_key,
-            "category": f.category,
-            "severity": f.severity,
-            "status": f.status,
-            "title": f.title,
-            "description": f.description,
-            "evidence": f.evidence,
-            "artifact_id": f.artifact_id,
-        }
-        for f in findings
-    ]
+    _caller: CallerIdentity | None = Depends(get_caller),
+) -> None:
+    """Retired: use the per-project ``GET /umrs/knowledge/findings``."""
+    _findings_gone()
 
 
-@router.patch("/findings/{finding_key}")
+@router.patch("/findings/{finding_key}", status_code=status.HTTP_410_GONE)
 async def transition_finding(
     finding_key: str,
-    req: TransitionFindingRequest,
-    caller: CallerIdentity = Depends(get_verified_caller),
-) -> dict[str, Any]:
-    """Transition a finding between states (open → acknowledged → resolved).
-
-    Wave-6 F3: same admin scoping as the other findings endpoints.
-
-    H-1 (2026-10-18): the transition ran whenever ``get_caller`` returned
-    ``None``. Strict mode never does (a missing or forged tuple is 401), but
-    an anonymous dev (mvp) caller could transition any finding (the store
-    has no project dimension). A mutation now needs a verified admin in every
-    mode; the admin flag is covered by the gateway HMAC.
-    """
-    if not caller.is_admin:
-        raise_typed(
-            PlatformError.verification(
-                "forbidden", "verification finding transitions are admin-scoped"
-            ),
-        )
-    if _store is None:
-        raise_typed(
-            PlatformError.verification(
-                "unavailable",
-                "Verification store not initialized — cannot transition findings",
-            ),
-        )
-    try:
-        finding = await _store.transition_finding(
-            finding_key, req.from_status, req.to_status
-        )
-        return {
-            "finding_key": finding.finding_key,
-            "status": finding.status,
-            "title": finding.title,
-        }
-    except TransitionError as exc:
-        raise_typed(PlatformError.verification("bad_request", str(exc)))
+    _caller: CallerIdentity = Depends(get_verified_caller),
+) -> None:
+    """Retired: use ``PATCH /umrs/knowledge/findings/{finding_key}``."""
+    del finding_key
+    _findings_gone()

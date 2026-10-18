@@ -607,8 +607,8 @@ class _FakeSkillStore:
         self.rows = have if have is not None else set()
         self.registered = []
 
-    def get_skill_by_name(self, name, scope, owner_id):
-        del owner_id
+    def get_skill_by_name(self, name, scope, owner_id, project_id=None):
+        del owner_id, project_id  # cross-project lookup: test_h10b_followups.py
         return object() if (scope.value, name) in self.rows else None
 
     def register_skill(
