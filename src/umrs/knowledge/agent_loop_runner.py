@@ -29,6 +29,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from .agent_executor import UmrsAgentIterationExecutor
+from .engine_loop_runner import save_keeping_control
 from .loop import LoopIteration, LoopPhase, LoopStatus, ResearchLoop
 
 logger = logging.getLogger(__name__)
@@ -66,7 +67,7 @@ class AgentLoopRunner(threading.Thread):
     def run(self) -> None:  # Thread.run
         try:
             loop_out = self.run_agentic(self._loop)
-            self._store.save(loop_out)
+            save_keeping_control(self._store, loop_out)
             logger.info(
                 "agent loop %s finished status=%s (%d iterations)",
                 loop_out.loop_id,
@@ -77,7 +78,7 @@ class AgentLoopRunner(threading.Thread):
             logger.error("agent loop %s failed: %s", self._loop.loop_id, exc)
             self._loop.status = LoopStatus.ERROR
             self._loop.metadata["error"] = str(exc)
-            self._store.save(self._loop)
+            save_keeping_control(self._store, self._loop)
 
     def kick(self, loop: ResearchLoop) -> ResearchLoop:
         """In-thread driver for tests (no threads, deterministic)."""
@@ -90,7 +91,7 @@ class AgentLoopRunner(threading.Thread):
             and not self._control.is_set()
         ):
             loop = self._advance_one(loop)
-            self._store.save(loop)
+            save_keeping_control(self._store, loop)
             advance, loop = self._service_control(loop)
             if not advance:
                 break

@@ -198,6 +198,22 @@ async def get_bucket_access(
     return {"bucket": entry.bucket, "owner": entry.owner_id, "access": list(entry.access)}
 
 
+async def _refuse_access_change(
+    store: Any, bucket: str, caller: CallerIdentity
+) -> None:
+    """Refuse a non-owner, non-admin access change. A caller the list does not
+    admit gets files.not_found, as for an unknown bucket (GET .../access
+    hides both too); a 403 told it the guessable name exists (H-1,
+    2026-10-18). A caller the list admits already sees the bucket: 403."""
+    if not await asyncio.to_thread(store.can_access, bucket, caller.user_id):
+        raise_typed(PlatformError.files("not_found", f"Bucket {bucket!r} not found"))
+    raise_typed(
+        PlatformError.files(
+            "bucket_denied", f"Only the owner of {bucket!r} may change its access"
+        )
+    )
+
+
 @router.put("/{bucket}/access", response_model=BucketInfo)
 async def set_bucket_access(
     bucket: str,
@@ -215,11 +231,7 @@ async def set_bucket_access(
     if entry is None:
         raise_typed(PlatformError.files("not_found", f"Bucket {bucket!r} not found"))
     if entry.owner_id != caller.user_id and not caller.is_admin:
-        raise_typed(
-            PlatformError.files(
-                "bucket_denied", f"Only the owner of {bucket!r} may change its access"
-            )
-        )
+        await _refuse_access_change(store, bucket, caller)
     guard = resource_caller(
         request,
         user_id=caller.user_id,

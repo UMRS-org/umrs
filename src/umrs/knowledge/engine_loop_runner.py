@@ -29,6 +29,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from .loop import AutonomousResearchLoop, LoopIteration, LoopStatus, ResearchLoop
+from .loop_store import LoopStore, control_kept
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +91,48 @@ def _pause_profile(loop: ResearchLoop) -> dict:
     return profile if isinstance(profile, dict) else {}
 
 
+def _stored_control(store: Any, loop_id: str) -> ResearchLoop | None:
+    try:
+        return store.get(loop_id)
+    except Exception as exc:  # noqa: BLE001 — an unreadable record cannot hold a pause
+        logger.warning("loop %s: status re-read before save failed: %s", loop_id, exc)
+        return None
+
+
+def save_keeping_control(store: Any, loop: ResearchLoop) -> None:
+    """Save a runner's copy of ``loop`` without undoing a concurrent pause/stop.
+
+    Lost update (ledger 2026-10-18 (8)): a runner saving its RUNNING copy
+    after an iteration overwrote a PAUSED or STOPPED status the REST routes
+    stored meanwhile, so the next poll saw RUNNING and the loop ran on. The
+    write keeps a stored PAUSED/STOPPED (loop_store.control_kept); the
+    runner's own object keeps RUNNING, so its poll, not this save, decides
+    when to wait or cancel. A terminal status the runner reached itself is
+    saved as is.
+
+    A LoopStore does it atomically (LoopStore.save_keeping_control: row lock
+    and upsert in one transaction). Any other store (HttpLoopStore on
+    cluster drivers, test fakes) gets a re-read and then a save: there a
+    resume stored between the two calls is written back to PAUSED and stays
+    paused until resumed again (residual, H-1 2026-10-18).
+    """
+    if isinstance(store, LoopStore):
+        store.save_keeping_control(loop)
+        return
+    stored = (
+        _stored_control(store, loop.loop_id)
+        if loop.status == LoopStatus.RUNNING
+        else None
+    )
+    store.save(
+        control_kept(
+            loop,
+            getattr(stored, "status", None),
+            getattr(stored, "completed_at", ""),
+        )
+    )
+
+
 class EngineLoopRunner(threading.Thread):
     """Drive one loop through the phased engine to completion.
 
@@ -126,7 +169,7 @@ class EngineLoopRunner(threading.Thread):
             # record is gone on purpose — do not resurrect it with this save
             # (test resets, explicit deletes in prod).
             if self._poll(loop_out.loop_id) is not None:
-                self._store.save(loop_out)
+                save_keeping_control(self._store, loop_out)
             logger.info(
                 "engine loop %s finished status=%s (%d iterations)",
                 loop_out.loop_id,
@@ -138,7 +181,7 @@ class EngineLoopRunner(threading.Thread):
             self._loop.status = LoopStatus.ERROR
             self._loop.metadata["error"] = str(exc)
             self._loop.completed_at = datetime.now(timezone.utc).isoformat()
-            self._store.save(self._loop)
+            save_keeping_control(self._store, self._loop)
 
     # -- control protocol (store is the source of truth) --------------------
 
@@ -172,7 +215,7 @@ class EngineLoopRunner(threading.Thread):
         """ADR-067: stop the loop at the iteration boundary, persist the
         honest state_reason, surface the durable admin notification."""
         self._loop.metadata["state_reason"] = f"budget_exhausted:{reason}"
-        self._store.save(self._loop)
+        save_keeping_control(self._store, self._loop)
         logger.info(
             "loop %s stopped: %s budget exhausted (ADR-067)",
             self._loop.loop_id,
@@ -252,7 +295,7 @@ class EngineLoopRunner(threading.Thread):
             track = str(action.get("track_id") or "")
             record = _request(action, _awaiting_get(loop, track))
             _awaiting_set(loop, track, record["id"])
-            self._store.save(loop)
+            save_keeping_control(self._store, loop)
             decided = self._peek_decision(record, loop, track)
             if decided is not None:
                 logger.info(
@@ -299,7 +342,7 @@ class EngineLoopRunner(threading.Thread):
             ledger = {"approval_id": record["id"], "count": 0}
         ledger["count"] = int(ledger.get("count") or 0) + 1
         _ledger_set(loop, track, ledger)
-        self._store.save(loop)
+        save_keeping_control(self._store, loop)
         return int(ledger["count"]) >= self._DEFER_PARK_AFTER
 
     def _peek_decision(
@@ -324,7 +367,7 @@ class EngineLoopRunner(threading.Thread):
         if status not in ("approved", "rejected"):
             return None
         _awaiting_set(loop, track, None)
-        self._store.save(loop)
+        save_keeping_control(self._store, loop)
         return status == "approved"
 
     def _await_approval(
@@ -353,7 +396,7 @@ class EngineLoopRunner(threading.Thread):
         is best-effort — it may enrich the iteration and re-save, but it
         never breaks the loop's own persistence.
         """
-        self._store.save(loop)
+        save_keeping_control(self._store, loop)
         if self._on_iteration is None:
             return
         try:

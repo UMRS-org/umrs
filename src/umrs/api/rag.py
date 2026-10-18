@@ -144,17 +144,6 @@ class UploadResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-def _get_caller_identity(request: Request) -> tuple[str, str]:
-    """Extract user_id and project_id from NGINX-set headers (canonical, R1).
-
-    H-1 (2026-10-18): the tuple must carry the gateway HMAC (401 in strict
-    mode otherwise); mvp keeps trusting it.
-    """
-    from ._identity import verified_identity
-
-    return verified_identity(request, require_project=True, verify_hmac=True)
-
-
 def _verified_caller(request: Request) -> CallerScope:
     """The HMAC-verified caller, admin flag included (H-1, 2026-10-18).
 

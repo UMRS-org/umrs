@@ -16,7 +16,6 @@ Authentication:
 
 import logging
 import os
-from pathlib import Path
 from typing import Any
 
 import httpx
@@ -33,6 +32,11 @@ from fastapi import (
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..model_registry.capabilities import endpoint_limit_metadata
+from ..orchestrator.caller_roots import (
+    caller_named_host_path,
+    foreign_sources,
+    model_path_in_scope,
+)
 from ..orchestrator.endpoint_access import usable_endpoints
 from ..orchestrator.endpoint_mounts import (
     egress_reasons,
@@ -518,50 +522,9 @@ def _enforce_provision_authorization(
 # H-1 (2026-10-18): mount sources were checked only against the site-wide
 # prefixes (UMRS_ENDPOINT_ALLOWED_MOUNT_PREFIXES: /home, /projects, ...), so a
 # caller could mount another user's home or another project's data. A
-# non-admin's sources must lie under the caller's own roots. The defaults
-# follow the model registry's per-scope roots (PathValidator
-# DEFAULT_ALLOWED_PATHS: /shared/projects/{project_id}, /shared/users/
-# {owner_id}, /home/{owner_id}) plus the /projects/{project_id} layout the
-# site prefixes carry; a site names its own with a comma-separated
-# UMRS_ENDPOINT_CALLER_MOUNT_ROOTS ({project_id}, {user_id} placeholders).
-DEFAULT_CALLER_MOUNT_ROOTS = (
-    "/home/{user_id}",
-    "/shared/users/{user_id}",
-    "/shared/projects/{project_id}",
-    "/projects/{project_id}",
-)
-
-
-def _safe_path_segment(value: str) -> bool:
-    """A placeholder value that names exactly one directory."""
-    return (
-        bool(value)
-        and value not in (".", "..")
-        and not any(ch in value for ch in ("/", "\\", "\x00"))
-    )
-
-
-def _expand_mount_root(template: str, values: dict[str, str]) -> Path | None:
-    """*template* with its placeholders filled, or None when one is unsafe."""
-    for key, value in values.items():
-        token = "{" + key + "}"
-        if token not in template:
-            continue
-        if not _safe_path_segment(value):
-            return None
-        template = template.replace(token, value)
-    if not template.startswith("/") or "{" in template:
-        return None
-    return Path(template).resolve(strict=False)
-
-
-def _caller_mount_roots(project_id: str, user_id: str) -> list[Path]:
-    """The caller's own mount roots on this site."""
-    raw = os.environ.get("UMRS_ENDPOINT_CALLER_MOUNT_ROOTS")
-    templates = raw.split(",") if raw is not None else DEFAULT_CALLER_MOUNT_ROOTS
-    values = {"project_id": project_id, "user_id": user_id}
-    roots = [_expand_mount_root(t.strip(), values) for t in templates]
-    return [root for root in roots if root is not None]
+# non-admin's sources must lie under the caller's own roots
+# (orchestrator/caller_roots.py, shared with POST /umrs/jobs endpoint_provision
+# and the upgrade route since 2026-10-18).
 
 
 def _mount_sources(mounts: "EndpointMounts | None") -> list[str]:
@@ -569,11 +532,6 @@ def _mount_sources(mounts: "EndpointMounts | None") -> list[str]:
         return []
     specs = [*mounts.mcp_servers, mounts.project_data, mounts.rag_index]
     return [spec.source for spec in specs if spec is not None]
-
-
-def _under_root(source: str, roots: list[Path]) -> bool:
-    path = Path(source).resolve(strict=False)
-    return any(path == root or root in path.parents for root in roots)
 
 
 def _enforce_mount_scope(
@@ -587,8 +545,7 @@ def _enforce_mount_scope(
     sources = _mount_sources(request.mounts)
     if is_admin or not sources:
         return
-    roots = _caller_mount_roots(project_id, user_id or "")
-    foreign = [source for source in sources if not _under_root(source, roots)]
+    foreign = foreign_sources(sources, project_id, user_id or "")
     if foreign:
         raise_typed(
             PlatformError.endpoints(
@@ -607,18 +564,8 @@ def _enforce_mount_scope(
 # prefixes, so a non-admin could serve another user's or project's weights.
 # A host path the caller names itself must lie under the caller's own roots;
 # the authorised catalog entry's storage_ref and remote URIs (hf://, s3://)
-# are not caller-named host paths. Residual: _under_root resolves links on
+# are not caller-named host paths. Residual: the check resolves links on
 # this host at request time only; the compute-node launcher must re-check.
-def _caller_named_host_path(resolved: str, model_entry: dict[str, Any] | None) -> bool:
-    if "://" in resolved:
-        return False
-    catalog_ref = str((model_entry or {}).get("storage_ref") or "")
-    if not catalog_ref or "://" in catalog_ref:
-        return True
-    catalog_path = Path(catalog_ref).resolve(strict=False)
-    return catalog_path != Path(resolved).resolve(strict=False)
-
-
 def _enforce_model_path_scope(
     resolved: str,
     model_entry: dict[str, Any] | None,
@@ -628,9 +575,9 @@ def _enforce_model_path_scope(
     user_id: str | None,
 ) -> None:
     """403 unless a caller-named host model path lies under the caller's roots."""
-    if is_admin or not _caller_named_host_path(resolved, model_entry):
-        return
-    if _under_root(resolved, _caller_mount_roots(project_id, user_id or "")):
+    if is_admin or model_path_in_scope(
+        resolved, model_entry, project_id=project_id, user_id=user_id or ""
+    ):
         return
     raise_typed(
         PlatformError.endpoints(
@@ -2187,12 +2134,13 @@ async def mark_endpoint_used(
 ) -> EndpointResponse:
     """Mark endpoint as used (update last_used_at)."""
 
+    # Identity before the lookup (no job_id existence oracle; H-1, 2026-10-18).
+    _require_identity_for_mutation(project_id, "Mark endpoint used")
     existing = registry.get_by_job_id(job_id)
     if not existing:
         raise_typed(
             PlatformError.endpoints("not_found", f"Endpoint not found: {job_id}"),
         )
-    _require_identity_for_mutation(project_id, "Mark endpoint used")
     _forbid_if_project_mismatch(existing, project_id)
 
     endpoint = registry.mark_used(job_id)
@@ -3500,12 +3448,14 @@ async def set_endpoint_access(
     """
     from ._endpoint_access import caller_for, checked_access
 
+    # Identity before the lookup: an anonymous strict caller gets 401 for
+    # every job_id, never a 404 that tells it which ids exist (H-1, 2026-10-18).
+    _require_identity_for_mutation(project_id, "Access change")
     endpoint = registry.get_by_job_id(job_id)
     if not endpoint:
         raise_typed(
             PlatformError.endpoints("not_found", f"Endpoint not found: {job_id}")
         )
-    _require_identity_for_mutation(project_id, "Access change")
     if not is_admin:
         _forbid_if_project_mismatch(endpoint, project_id)
     caller = caller_for(
@@ -3541,12 +3491,13 @@ async def deprovision_endpoint(
     """Deprovision (stop and cleanup) an endpoint."""
     from ..orchestrator.service import get_orchestration_service
 
+    # Identity before the lookup (no job_id existence oracle; H-1, 2026-10-18).
+    _require_identity_for_mutation(project_id, "Deprovision")
     endpoint = registry.get_by_job_id(job_id)
     if not endpoint:
         raise_typed(
             PlatformError.endpoints("not_found", f"Endpoint not found: {job_id}"),
         )
-    _require_identity_for_mutation(project_id, "Deprovision")
     _forbid_if_project_mismatch(endpoint, project_id)
 
     service = get_orchestration_service()
@@ -3575,6 +3526,63 @@ async def deprovision_endpoint(
 # ---------------------------------------------------------------------------
 # Rolling endpoint upgrade (Q-13 Phase 2)
 # ---------------------------------------------------------------------------
+
+
+def _registered_entry_for_path(model_path: str) -> dict[str, Any] | None:
+    """The catalog entry whose storage_ref is *model_path* (the upgrade route
+    names a path, not a model); a missing or failing store reads as none."""
+    from .models import get_optional_model_store
+
+    store = get_optional_model_store()
+    if store is None:
+        return None
+    from ..model_registry.store import AccessContext
+
+    try:
+        entries = store.list_models(AccessContext(user_id="", is_admin=True), limit=500)
+    except Exception as exc:  # noqa: BLE001 — fail closed: the path must then be the caller's
+        logger.warning("Model store lookup for %s failed: %s", model_path, exc)
+        return None
+    rows = [entry.to_dict() for entry in entries]
+    return _pick_first_by_scope(
+        [
+            row
+            for row in rows
+            if row.get("storage_ref") and not caller_named_host_path(model_path, row)
+        ]
+    )
+
+
+def _upgrade_model_path(
+    model_path: str,
+    *,
+    is_admin: bool,
+    project_id: str | None,
+    user_id: str | None,
+) -> str:
+    """The upgrade target, checked like a provision model_path override.
+
+    Site-wide prefixes for everyone; for a non-admin, a host path it names
+    must lie under its own roots unless it is the storage_ref of a catalog
+    entry it may provision (H-1, 2026-10-18; it reached
+    service.upgrade_endpoint unchecked). An mvp caller with no identity at
+    all keeps the site-wide check only, as _authorize_model_entry_for_caller
+    does.
+    """
+    resolved = _validated_model_path_override(model_path.strip())
+    if is_admin or (project_id is None and user_id is None):
+        return resolved
+    caller_project, caller_user = project_id or "", user_id or ""
+    if model_path_in_scope(
+        resolved, None, project_id=caller_project, user_id=caller_user
+    ):
+        return resolved
+    entry = _registered_entry_for_path(resolved)
+    _authorize_model_entry_for_caller(entry, user_id=user_id, project_id=project_id)
+    _enforce_model_path_scope(
+        resolved, entry, is_admin=False, project_id=caller_project, user_id=user_id
+    )
+    return resolved
 
 
 class EndpointUpgradeRequest(BaseModel):
@@ -3628,13 +3636,18 @@ async def upgrade_endpoint(
     job_id: str,
     request: EndpointUpgradeRequest,
     project_id: str | None = Depends(get_project_id_optional),
+    is_admin: bool = Depends(_caller_is_admin),
+    requesting_user: str | None = Depends(_get_requesting_user),
     registry: EndpointRegistry = Depends(get_registry),
 ) -> EndpointUpgradeResponse:
     """Rolling upgrade of a running endpoint.
 
     Security gates (preserved from existing lifecycle):
-      - Resolved project identity required for mutation in strict mode
+      - Resolved project identity required for mutation in strict mode,
+        checked before the lookup (no job_id existence oracle)
       - Project mismatch → 404 (never leak endpoint presence cross-project)
+      - model_path: site-wide prefixes, then the per-caller root rule of a
+        provision model_path override for non-admins (H-1, 2026-10-18)
       - Concurrent upgrade → 409 (one flip per endpoint at a time)
 
     Health-failure semantics:
@@ -3645,13 +3658,19 @@ async def upgrade_endpoint(
         is still live but not serving the flip; the call returns 500 and
         the janitor collects the zombie (no silent success)
     """
+    _require_identity_for_mutation(project_id, "Upgrade")
     endpoint = registry.get_by_job_id(job_id)
     if endpoint is None:
         raise_typed(
             PlatformError.endpoints("not_found", f"Endpoint not found: {job_id}"),
         )
-    _require_identity_for_mutation(project_id, "Upgrade")
     _forbid_if_project_mismatch(endpoint, project_id)
+    new_model_path = _upgrade_model_path(
+        request.model_path,
+        is_admin=is_admin,
+        project_id=project_id,
+        user_id=requesting_user,
+    )
 
     # Concurrency gate (Q-13 #3): one in-flight upgrade per endpoint.
     if endpoint.metadata.get("upgrade_in_flight"):
@@ -3670,7 +3689,7 @@ async def upgrade_endpoint(
 
     success, new_job_id, error = await service.upgrade_endpoint(
         job_id=job_id,
-        new_model_path=request.model_path,
+        new_model_path=new_model_path,
         timeout_sec=request.timeout_sec,
     )
 
@@ -3690,7 +3709,7 @@ async def upgrade_endpoint(
         return EndpointUpgradeResponse(
             job_id=job_id,
             old_model_path=str(old_model_path),
-            new_model_path=request.model_path,
+            new_model_path=new_model_path,
             status="failed",
             new_job_id=None,
             error=error,
@@ -3699,7 +3718,7 @@ async def upgrade_endpoint(
     return EndpointUpgradeResponse(
         job_id=job_id,
         old_model_path=str(old_model_path),
-        new_model_path=request.model_path,
+        new_model_path=new_model_path,
         status=final_status if final_status in ("ready", "degraded") else "ready",
         new_job_id=new_job_id,
         error=None,

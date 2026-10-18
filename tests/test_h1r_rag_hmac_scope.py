@@ -1,7 +1,8 @@
 """H-1 (hardening plan, 2026-10-18), rag lane: every /umrs/rag route reads
 the caller only through the gateway HMAC.
 
-``rag._get_caller_identity`` resolved the tuple without ``verify_hmac`` and
+``rag._get_caller_identity`` (deleted 2026-10-18; ``_verified_caller`` is the
+one reader) resolved the tuple without ``verify_hmac`` and
 ``_require_rag_scope``, ``_query_via_spine``, ``put_corpus_access`` and
 ``rag_retrieve.is_admin`` read ``X-Verified-Is-Admin`` raw. In strict mode a
 forged tuple (mallory, victim project, admin true, bogus HMAC) passed the
@@ -124,10 +125,22 @@ def test_scope_refuses_a_forged_tuple(headers):
     assert exc.value.status_code == 401
 
 
-def test_get_caller_identity_verifies_the_hmac():
+@pytest.mark.parametrize("headers", [FORGED, _admin_flag_flipped()])
+def test_verified_caller_verifies_the_hmac(headers):
+    """The one identity reader of the rag routes (the dead
+    ``_get_caller_identity`` was deleted, 2026-10-18)."""
     with pytest.raises(HTTPException) as exc:
-        rag_api._get_caller_identity(_request(FORGED))
+        rag_api._verified_caller(_request(headers))
     assert exc.value.status_code == 401
+
+
+def test_verified_caller_takes_the_signed_tuple():
+    caller = rag_api._verified_caller(_request(_headers("root", "ops", admin=True)))
+    assert (caller.user_id, caller.project_id, caller.is_admin) == ("root", "ops", True)
+
+
+def test_get_caller_identity_is_gone():
+    assert not hasattr(rag_api, "_get_caller_identity")
 
 
 @pytest.mark.parametrize("headers", [FORGED, _admin_flag_flipped()])
