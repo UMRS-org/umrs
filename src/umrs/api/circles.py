@@ -9,7 +9,8 @@ contexts of works apart and the smallest addressable sharing audience
   DELETEs); a retired circle stops resolving for access lookups immediately.
 - ``circle_members`` rows are presence-only: membership is the current
   fact, not history. ``role`` is 'member' or 'admin' — circle admins manage
-  the roster beside the owner.
+  the roster beside the owner and the containing project's owner
+  (four-rung ladder, ADR-086 amendment 2026-10-19).
 - Personal circle: ``circle_id == owner_id`` is the caller's private cell
   in that project; it never gains other members and is the way a user
   "enters" a project (creation is casual, ADR-051 parity).
@@ -304,17 +305,22 @@ def _is_personal(row: dict[str, Any]) -> bool:
 def _manager_or_admin(
     identity: CallerIdentity, row: dict[str, Any], store: CirclesStore
 ) -> None:
-    """Roster mutation gate: platform admin, circle owner, or circle admin."""
+    """Roster mutation gate: platform admin, circle owner, circle admin, or
+    the containing project's owner (ADR-086 amendment 2026-10-19 — the
+    project-owner rung covers the roster only, never lifecycle)."""
     actor = (identity.user_id or "").strip()
     if identity.is_admin or actor == row["owner_id"]:
         return
     if store.member_role(row["project_id"], row["circle_id"], actor) == "admin":
         return
+    project = store.project_row(row["project_id"]) or {}
+    if actor and actor == project.get("owner_id"):
+        return
     raise_typed(
         PlatformError.circles(
             "forbidden",
-            "only the circle owner, a circle admin, or a platform admin"
-            " may manage this roster",
+            "only the circle owner, a circle admin, the project owner, or a"
+            " platform admin may manage this roster",
         )
     )
 
@@ -604,8 +610,8 @@ def add_member(
     store: CirclesStore = Depends(_store_dep),
     identity: CallerIdentity = Depends(get_caller_identity),
 ) -> dict[str, Any]:
-    """Owner / circle-admin / platform-admin adds a member (idempotent,
-    presence-only). Personal circles never gain other members.
+    """Owner / circle-admin / project-owner / platform-admin adds a member
+    (idempotent, presence-only). Personal circles never gain other members.
     # auth: verified
     """
     try:
@@ -656,8 +662,9 @@ def remove_member(
     store: CirclesStore = Depends(_store_dep),
     identity: CallerIdentity = Depends(get_caller_identity),
 ) -> dict[str, Any]:
-    """Owner / circle-admin / platform-admin removes a member (presence
-    removal; no tombstone). The circle owner is never removed.
+    """Owner / circle-admin / project-owner / platform-admin removes a
+    member (presence removal; no tombstone). The circle owner is never
+    removed.
     # auth: verified
     """
     try:
