@@ -2,10 +2,12 @@
 
 Store + route invariants: ensure-shape creation with creator-as-first-member
 (role admin), project-scoped keys, personal-circle casual entry, named-circle
-affiliation gate, roster ops owner/circle-admin/platform-admin only, personal
-cells never gaining members, owners never removed, retired circles refusing
-growth and vanishing from resolution, mine listing deriving projects, unknown
-ids 404, and the pool conn always returned (generator dependency).
+affiliation gate, roster ops owner/circle-admin/project-owner/platform-admin
+only (four-rung ladder, ADR-086 amendment 2026-10-19 — the project-owner rung
+covers the roster, never lifecycle), personal cells never gaining members,
+owners never removed, retired circles refusing growth and vanishing from
+resolution, mine listing deriving projects, unknown ids 404, and the pool conn
+always returned (generator dependency).
 """
 
 from __future__ import annotations
@@ -439,6 +441,71 @@ class TestMembership:
                 headers=_HDR,
             ).status_code
             == 409
+        )
+
+    def test_project_owner_run_governs_roster(self):
+        """ADR-086 amendment 2026-10-19: the containing project's owner holds a
+        roster rung without owning or joining the circle."""
+        client = _client()
+        self._mk_team(client)
+        hdr_owner = {**_HDR, "X-User-ID": "owner-a"}  # fixture proj-a owner
+        # in: the project owner adds a member to alice's circle
+        added = client.post(
+            "/umrs/circles/proj-a/team-x/members",
+            json={"user_id": "zoe"},
+            headers=hdr_owner,
+        )
+        assert added.status_code == 201, added.text
+        assert any(m["user_id"] == "zoe" for m in added.json()["members"])
+        # out: the project owner removes that member again
+        removed = client.delete(
+            "/umrs/circles/proj-a/team-x/members/zoe", headers=hdr_owner
+        )
+        assert removed.status_code == 200, removed.text
+        assert all(m["user_id"] != "zoe" for m in removed.json()["members"])
+
+    def test_project_owner_rung_never_covers_lifecycle(self):
+        """The amendment is roster-only: retire stays circle-owner/platform-admin."""
+        client = _client()
+        self._mk_team(client)
+        hdr_owner = {**_HDR, "X-User-ID": "owner-a"}
+        assert (
+            client.patch(
+                "/umrs/circles/proj-a/team-x",
+                json={"action": "retire"},
+                headers=hdr_owner,
+            ).status_code
+            == 403
+        )
+        # and the personal-circle guard still fires before the ladder
+        assert (
+            client.post(
+                "/umrs/circles/proj-a/alice/members",
+                json={"user_id": "zoe"},
+                headers=hdr_owner,
+            ).status_code
+            == 409
+        )
+
+    def test_foreign_project_owner_has_no_rung(self):
+        """Owning ANOTHER project grants nothing here (rungs are per-project)."""
+        pool = _Pool()
+        pool._conn.projects["proj-a"] = ("proj-a", "owner-a", "active")
+        pool._conn.projects["proj-b"] = ("proj-b", "owner-b", "active")
+        client = _client(pool=pool, projects=())
+        self._mk_team(client)
+        # owner-b owns proj-b, holds no standing in proj-a
+        hdr_b = {
+            "X-User-ID": "owner-b",
+            "X-Verified-Project-ID": "proj-b",
+        }
+        assert (
+            client.post(
+                "/umrs/circles/proj-a/team-x/members",
+                json={"user_id": "zoe"},
+                headers=hdr_b,
+            ).status_code
+            == 403
         )
 
     def test_personal_circle_never_grows_and_owner_stays(self):
