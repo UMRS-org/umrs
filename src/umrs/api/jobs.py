@@ -19,6 +19,11 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from ..jobs.cancel_gateway import register_store_getter as _register_store_getter
+from ..jobs.endpoint_policy import (
+    _check_endpoint_spec,
+    _deny_unless,
+    _spec_targets,
+)
 from ..jobs.models import (
     Job,
     JobAttempt,
@@ -236,101 +241,16 @@ def _enforce_endpoint_host_paths(
 ) -> None:
     """An endpoint_provision spec (parent or fan-out child) follows the rule of
     POST /umrs/endpoints/provision: a non-admin may name only a catalog model
-    it may provision (one must resolve: the executor needs it anyway), may not
-    set env_vars, container_image or tier=system (admin-only recipe fields),
+    it may provision, may not set env_vars, container_image or tier=system,
     and its mount sources and a host model_path it names must lie under its
-    own roots (orchestrator/caller_roots.py). They got only the site-wide
-    prefixes before (H-1, 2026-10-18). ``caller`` is
+    own roots (``jobs/endpoint_policy.py`` shared home, 2026-10-19). Both
+    seams honor it (ZMQ submit enforces identically); ``caller`` is
     (user_id, project_id, is_admin)."""
-    user_id, project_id, is_admin = caller
-    if is_admin:
+    if caller[2]:  # is_admin
         return
     for target_type, target_spec in _spec_targets(job_type, spec, fan_out_jobs):
         if target_type == JobType.ENDPOINT_PROVISION and isinstance(target_spec, dict):
-            _check_endpoint_spec(target_spec, user_id, project_id)
-
-
-def _check_endpoint_spec(spec: dict[str, Any], user_id: str, project_id: str) -> None:
-    from ..orchestrator.caller_roots import foreign_sources, raw_mount_sources
-
-    _check_endpoint_spec_recipe(spec)
-    foreign = foreign_sources(
-        raw_mount_sources(spec.get("mounts")), project_id, user_id
-    )
-    _deny_unless(
-        not foreign,
-        f"mount source {foreign[0] if foreign else ''} is outside your own project and "
-        "user data roots (UMRS_ENDPOINT_CALLER_MOUNT_ROOTS)",
-    )
-    _check_endpoint_spec_model(spec, user_id, project_id)
-
-
-def _check_endpoint_spec_model(
-    spec: dict[str, Any], user_id: str, project_id: str
-) -> None:
-    from ..orchestrator.caller_roots import model_path_in_scope
-    from .endpoints import (
-        _authorize_model_entry_for_caller,
-        _resolve_registered_model_entry,
-        _validated_model_path_override,
-    )
-
-    # The executor resolves spec.get("model", "default") itself (adapters.py,
-    # with a JSON-catalog fallback when Postgres fails): check that same name
-    # and refuse when no entry resolves here, or an unchecked entry runs.
-    model = str(spec.get("model", "default") or "").strip()
-    entry = _resolve_registered_model_entry(model) if model else None
-    if entry is None:
-        raise_typed(
-            PlatformError.jobs(
-                "bad_request",
-                f"model '{model}' is not in the model catalog; register it first",
-            )
-        )
-    _authorize_model_entry_for_caller(entry, user_id=user_id, project_id=project_id)
-    raw_path = str(spec.get("model_path") or "").strip()
-    if not raw_path:
-        return
-    resolved = _validated_model_path_override(raw_path)
-    _deny_unless(
-        model_path_in_scope(resolved, entry, project_id=project_id, user_id=user_id),
-        f"model path {resolved} is outside your own project and user data roots "
-        "(UMRS_ENDPOINT_CALLER_MOUNT_ROOTS); register the model in the catalog or "
-        "use a path under your own roots",
-    )
-
-
-def _check_endpoint_spec_recipe(spec: dict[str, Any]) -> None:
-    """env_vars, container_image and tier=system are admin-only, as on
-    POST /umrs/endpoints/provision. The executor merges spec.env_vars over the
-    mount env (PROJECT_DATA_PATH, RAG_INDEX_PATH, MCP_SERVERS_PATH are host
-    bind sources in serve-model.slurm), so env_vars would skip the mount rule.
-    The partition is left to the executor's site check, as before."""
-    from types import SimpleNamespace
-
-    from .endpoints import _enforce_provision_authorization, _enforce_recipe_policy
-
-    view = SimpleNamespace(
-        partition=None,
-        env_vars=spec.get("env_vars"),
-        container_image=spec.get("container_image"),
-        tier=spec.get("tier"),
-    )
-    _enforce_recipe_policy(False, view)
-    _enforce_provision_authorization(view, is_admin=False)
-
-
-def _spec_targets(job_type, spec, fan_out_jobs):
-    """(job_type, spec) of the parent and of every fan-out child with a known
-    type (the fan-out builder rejects an unknown one itself)."""
-    targets = [(job_type, spec)]
-    for child in fan_out_jobs or []:
-        try:
-            child_type = JobType(str((child or {}).get("job_type") or ""))
-        except ValueError:
-            continue
-        targets.append((child_type, (child or {}).get("spec") or {}))
-    return targets
+            _check_endpoint_spec(target_spec, caller[0], caller[1])
 
 
 def _check_scope_target(
@@ -352,12 +272,6 @@ def _check_scope_target(
         not metadata.get("owner_id") or metadata["owner_id"] == user_id or is_admin,
         "cannot register a user-scope model under another user",
     )
-
-
-def _deny_unless(condition: bool, detail: str) -> None:
-    """Raise 403 for a violated scope rule (keeps call-sites above budget)."""
-    if not condition:
-        raise_typed(PlatformError.jobs("forbidden", detail))
 
 
 def _resolve_job_create_identity_primitive(
