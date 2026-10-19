@@ -20,7 +20,7 @@ the design, the row is in
 | Responsibility (design) | Today | Gap |
 |---|---|---|
 | **Account management** — identity, authorisation, quotas, mapping to cluster accounts | user records as JSON files (`umrs-server admin enroll / token / slurm-account`), roles user/admin/service, durable projects (ADR-051), per-user agent-process and disk caps, per-user Slurm accounting (`--account=`), optional per-user SSH delegation | D-06 (accounts not in Postgres; no per-project GPU-hour budgets) |
-| **Data transfer security** — ZeroMQ + CurveZMQ + ZAP only | ZeroMQ control + per-user data sockets with CURVE/ZAP (`session` mode on umrs-front) **and** a FastAPI HTTP sidecar behind the NGINX + auth-sidecar edge (JWT) | D-01…D-05 (dual transport; decision pending) |
+| **Data transfer security** — ZeroMQ + CurveZMQ + ZAP only | ZeroMQ control + per-user data sockets with CURVE/ZAP (`session` mode on umrs-front) **and** a FastAPI HTTP sidecar behind the NGINX + auth-sidecar edge (JWT) | D-01/D-02 (Implemented by design amendment, ADR-059: dual transport accepted, gateway = UMRS's edge process); D-03/D-04/D-05 (closed by the 2026-09-24 wave) *(corrected 2026-10-19, C-4: the row read "decision pending")* |
 | **Workflow job scheduling** on Slurm / Kubernetes / Podman | durable Job/Attempt engine; one `execution_authority` per job; Slurm + podman-compose (preferred), Kubernetes, Compose; workflow schema 2.0.0 with seven step kinds | D-08 (no Snakemake/Nextflow/CWL import) |
 | **Remote agent session scheduling** | `frontend_session` job kind: rootless-Podman worker sandbox on the front-end with a lease-token rail and credential-injecting inference proxy (ADR-046) | D-09, D-48 (no CPU-only venue, no pause/resume) |
 | **Self-deployment of models** in sandboxes on GPU nodes | `ENDPOINT_PROVISION` jobs launch vLLM + LiteLLM (text) and BentoML (vision: SAM3, MAE, HMAE) per Slurm job; model registry with scopes, versions, certification; models pre-staged, offline at boot | D-10 (VLM path undocumented), D-11 (no single inference contract) |
@@ -140,7 +140,7 @@ import `umrs.api` / `umrs.server`; every router mounted or deleted; complexity
 - [doc/admin_guide.md](doc/admin_guide.md), [doc/user_guide.md](doc/user_guide.md), [doc/onboarding.md](doc/onboarding.md), [doc/access_control.md](doc/access_control.md), [doc/multi_users.md](doc/multi_users.md), [deploy/](deploy/) site roots
 - [doc/rag_implementation.md](doc/rag_implementation.md), [doc/set-up_pgvector.md](doc/set-up_pgvector.md), [doc/design_user_defined_models.md](doc/design_user_defined_models.md), [doc/s3_requirements_for_admin.md](doc/s3_requirements_for_admin.md)
 - [src/umrs/mini-rivault-llm/README.md](src/umrs/mini-rivault-llm/README.md) — GPU runtime stack
-- [demos/README.md](demos/README.md) — canonical demos (`01_health_check` … `22_monitor`)
+- [demos/README.md](demos/README.md) — canonical demos (`00_onboarding` … `32_backbone_durability`, plus `99_cleanup`) *(corrected 2026-10-19, C-4: it used to read `01_health_check` … `22_monitor`)*
 - Parent-side: [../docs/R4-UMRS-PLATFORM-OVERVIEW.md](../docs/R4-UMRS-PLATFORM-OVERVIEW.md) §3.3–3.8, ADRs under [../docs/adr/](../docs/adr/README.md)
 
 Documents in `doc/` dated before 2026-09-22 describe the implementation as of
