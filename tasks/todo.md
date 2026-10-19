@@ -403,14 +403,14 @@ so the source tree clearly communicates what code serves which purpose.
 Each moved file gets a **compatibility wrapper** at the old path.
 
 #### Phase 1 — Low-risk infrastructure moves
-- [x] 1a  `shared/`: auth, isolation, modality, cache_paths, resource_tracker, scheduler, webhooks, utils
+- [x] 1a  `shared/`: auth, isolation, modality, cache_paths, resource_tracker, scheduler, webhooks (retired 2026-10-19, C-3b(ii)), utils
 - [x] 1b  `server/`: job_tracking_handler, model_registry_handler, workflow_registry_handler, sql, rivault_launcher
 - [x] 1c  `core/`: mq_posix_ipc, mq_sysv_ipc, mq_zeroMQ
 - [x] 1d  `shared/storage/`: s3, s3_presign, minio
 
 #### Phase 2 — Domain-specific consolidation
 - [x] 2a  `models/`: embeddings, embedding_backend, models_loading (→loading.py), rag_pipeline
-- [x] 2b  `shared/`: data_versioning, experiment_io, result_diff
+- [x] 2b  `shared/`: data_versioning (retired 2026-10-19, C-3b(ii); the file store contradicts D-18), experiment_io, result_diff
 - [x] 2c  `pipeline_sdk/`: pipeline_builder (→builder.py), pipeline_templates (→templates.py)
 - [x] 2d  `client/`: metadata, batch_upload; `shared/`: pretty_print, progress
 
@@ -445,7 +445,7 @@ Each moved file gets a **compatibility wrapper** at the old path.
 <details>
 <summary>Library Features B1–B10 (2026-04-05)</summary>
 
-- [x] B1–B10 all implemented (progress, batch_upload, result_diff, webhooks, resource_tracker, data_versioning, pipeline_templates, pipeline_builder, experiment_io, scheduler)
+- [x] B1–B10 all implemented (progress, batch_upload, result_diff, webhooks (retired 2026-10-19), resource_tracker, data_versioning (retired 2026-10-19), pipeline_templates, pipeline_builder, experiment_io, scheduler)
 </details>
 
 <details>
