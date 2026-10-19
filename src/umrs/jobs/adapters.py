@@ -512,6 +512,18 @@ class EndpointProvisionBackend(OrchestratorBackend):
             if isinstance(spec.get("egress_domains"), list)
             else None,
         )
+        # H-1 launcher leg (2026-10-19, same as the HTTP provision seam): a
+        # non-admin durable endpoint_provision carries its caller roots into
+        # the launch env; the launcher re-resolves every bind source and
+        # fails closed on any escape. tier=system (admin-only) skips the gate.
+        from umrs.jobs.endpoint_policy import apply_caller_roots_env
+
+        requested_env = apply_caller_roots_env(
+            requested_env,
+            tier=str(tier),
+            project_id=str(project_id),
+            user_id=job.user_id,
+        )
 
         # ── Resolve model from authoritative registry ────────────────────────
         model_entry = _resolve_model_entry(model_name)

@@ -63,6 +63,7 @@ def _check_endpoint_spec_model(
         _resolve_registered_model_entry,
         _validated_model_path_override,
     )
+
     from ..orchestrator.caller_roots import model_path_in_scope
 
     # The executor resolves spec.get("model", "default") itself (adapters.py,
@@ -98,7 +99,10 @@ def _check_endpoint_spec_recipe(spec: dict[str, Any]) -> None:
     The partition is left to the executor's site check, as before."""
     from types import SimpleNamespace
 
-    from umrs.api.endpoints import _enforce_provision_authorization, _enforce_recipe_policy
+    from umrs.api.endpoints import (
+        _enforce_provision_authorization,
+        _enforce_recipe_policy,
+    )
 
     view = SimpleNamespace(
         partition=None,
@@ -108,6 +112,31 @@ def _check_endpoint_spec_recipe(spec: dict[str, Any]) -> None:
     )
     _enforce_recipe_policy(False, view)
     _enforce_provision_authorization(view, is_admin=False)
+
+
+def apply_caller_roots_env(
+    env_vars: dict[str, str],
+    *,
+    tier: str | None = None,
+    is_admin: bool | None = None,
+    project_id: str,
+    user_id: str | None,
+) -> dict[str, str]:
+    """Stamp ``RIVAULT_CALLER_ROOTS_JSON`` into a launch env for non-admin
+    seams (HTTP provision and the durable adapter both call here with a bare
+    keyword instead of an inline branch — the fat callers stay at baseline).
+
+    Admins (``is_admin``) and system tiers (``tier == "system"``) skip the
+    gate — their launch carries no caller root list and the worker's realpath
+    gate then stays off (legacy path)."""
+    if is_admin is True or tier == "system":
+        return env_vars
+    from ..orchestrator.caller_roots import caller_roots_json
+
+    env_vars.setdefault(
+        "RIVAULT_CALLER_ROOTS_JSON", caller_roots_json(project_id, user_id or "")
+    )
+    return env_vars
 
 
 def enforce_endpoint_policy(
@@ -138,11 +167,12 @@ def enforce_job_endpoint_policy(
 
 
 __all__ = [
-    "enforce_endpoint_policy",
-    "enforce_job_endpoint_policy",
     "_check_endpoint_spec",
     "_check_endpoint_spec_model",
     "_check_endpoint_spec_recipe",
     "_deny_unless",
     "_spec_targets",
+    "apply_caller_roots_env",
+    "enforce_endpoint_policy",
+    "enforce_job_endpoint_policy",
 ]
