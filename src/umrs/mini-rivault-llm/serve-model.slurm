@@ -422,6 +422,67 @@ export VLLM_EXTRA_ARGS="${_vllm_extra_args}"
 NGINX_LITELLM_DOCKER_PORT="${LITELLM_PORT:-${NGINX_LITELLM_DOCKER_PORT:-$(shuf -i 1025-65535 -n 1)}}"
 export NGINX_LITELLM_DOCKER_PORT
 
+# H-1 launcher realpath re-check (2026-10-19): the host-side provision rules
+# (orchestrator/caller_roots.py) resolve bind sources lexically at request
+# time on the UMRS host. That misses two holes: a symlink or bind point the
+# caller re-points AFTER approval (TOCTOU), and path layouts that exist only
+# on this node. When the provision wrote RIVAULT_CALLER_ROOTS_JSON into the
+# launch env (non-admin seams), resolve every bind source with realpath and
+# fail closed on any escape — before the env file or any bind argument is
+# emitted. Empty value ⇒ legacy/admin path (no gate). Keep the bucket and
+# the logic verbatim in sync with caller_mount_escapes.
+_caller_roots_gate() {
+    [[ -n "${RIVAULT_CALLER_ROOTS_JSON:-}" ]] || return 0
+
+    RIVAULT_CALLER_ROOTS_JSON="${RIVAULT_CALLER_ROOTS_JSON}" \
+    GATE_VLLM_MODEL_PATH="$_vllm_host_model_path" \
+    GATE_TOKENIZER_PATH="${_vllm_tokenizer_host_path:-}" \
+    GATE_PATCH_SRC="${VLLM_PATCH_SRC_VOLS:-}" \
+    GATE_PROJECT_DATA="${PROJECT_DATA_PATH:-}" \
+    GATE_RAG_INDEX="${RAG_INDEX_PATH:-}" \
+    GATE_SAM3="${SAM3_MODEL_PATH:-}" \
+    GATE_HMAE="${HMAE_MODEL_PATH:-}" \
+    GATE_VISION="${VISION_MODEL_PATH:-}" \
+    GATE_USER_MODEL="${USER_MODEL_PATH:-}" \
+    python3 - <<'PY'
+import json
+import os
+import sys
+from pathlib import Path
+
+roots = [Path(p).expanduser().resolve() for p in json.loads(os.environ["RIVAULT_CALLER_ROOTS_JSON"])]
+named = {
+    "VLLM_HOST_MODEL_PATH": os.environ.get("GATE_VLLM_MODEL_PATH", ""),
+    "VLLM_TOKENIZER_HOST_PATH": os.environ.get("GATE_TOKENIZER_PATH", ""),
+    "VLLM_PATCH_SRC_VOLS": os.environ.get("GATE_PATCH_SRC", ""),
+    "PROJECT_DATA_PATH": os.environ.get("GATE_PROJECT_DATA", ""),
+    "RAG_INDEX_PATH": os.environ.get("GATE_RAG_INDEX", ""),
+    "SAM3_MODEL_PATH": os.environ.get("GATE_SAM3", ""),
+    "HMAE_MODEL_PATH": os.environ.get("GATE_HMAE", ""),
+    "VISION_MODEL_PATH": os.environ.get("GATE_VISION", ""),
+    "USER_MODEL_PATH": os.environ.get("GATE_USER_MODEL", ""),
+}
+violations = []
+for name, source in named.items():
+    if not source:
+        continue
+    resolved = Path(source).expanduser().resolve()
+    if not any(root == resolved or root in resolved.parents for root in roots):
+        violations.append(f"{name}={resolved}")
+if violations:
+    listed = "; ".join(violations)
+    sys.stderr.write(
+        f"[rivault] FAIL: bind source escapes caller mount roots ({listed}) — "
+        "re-pointed after approval (TOCTOU) or a node-local alias. Roots: "
+        + ", ".join(str(r) for r in roots)
+        + "\n"
+    )
+    raise SystemExit(1)
+PY
+}
+
+_caller_roots_gate
+
 # Profiles must be resolved before writing env.${uuid}; several generated
 # values, especially LiteLLM database settings, depend on active profiles.
 RIVAULT_PROFILES=${RIVAULT_PROFILES:-"harness vllm"}

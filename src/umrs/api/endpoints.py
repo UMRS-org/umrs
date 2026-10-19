@@ -31,6 +31,7 @@ from fastapi import (
 )
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from ..jobs.endpoint_policy import apply_caller_roots_env
 from ..model_registry.capabilities import endpoint_limit_metadata
 from ..orchestrator.caller_roots import (
     caller_named_host_path,
@@ -2741,7 +2742,7 @@ def _record_endpoint_created(requesting_user, project_id, request, job_id) -> No
 
     emit_audit(
         "endpoint.created",
-        user_id=requesting_user or "",
+        user_id=requesting_user,
         project_id=project_id,
         details={"model": request.model, "tier": request.tier, "job_id": job_id},
     )
@@ -2768,7 +2769,7 @@ def _accepted_provisioning_response(
 
     emit_audit(
         "endpoint.provisioning",
-        user_id=requesting_user or "",
+        user_id=requesting_user,
         project_id=project_id,
         details={
             "model": request.model,
@@ -2834,7 +2835,7 @@ async def _finalize_provision(
         else:
             emit_audit(
                 "endpoint.provision_failed",
-                user_id=requesting_user or "",
+                user_id=requesting_user,
                 project_id=effective_project_id,
                 outcome="error",
                 details={"model": request.model, "error": result.error},
@@ -2853,7 +2854,7 @@ async def _finalize_provision(
         )
         emit_audit(
             "endpoint.provision_failed",
-            user_id=requesting_user or "",
+            user_id=requesting_user,
             project_id=effective_project_id,
             outcome="error",
             details={
@@ -3296,6 +3297,18 @@ async def provision_endpoint(
     request_metadata.update(endpoint_limit_metadata(model_entry))
 
     _require_egress_proxy_for_request(request)
+
+    # H-1 launcher leg (2026-10-19): a non-admin's launch carries its own
+    # mount roots verbatim to the compute node; the canonical launcher
+    # (mini-rivault-llm/serve-model.slurm) re-resolves every bind source with
+    # realpath at start and fails closed on any escape (TOCTOU + node-local
+    # paths the request-time lexical check cannot see). Admin: no gate.
+    env_vars = apply_caller_roots_env(
+        env_vars,
+        is_admin=is_admin,
+        project_id=effective_project_id,
+        user_id=requesting_user,
+    )
 
     # Create provision request
     service_request = ServiceProvisionRequest(

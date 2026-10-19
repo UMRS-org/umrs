@@ -116,10 +116,45 @@ def model_path_in_scope(
     return under_root(resolved, caller_mount_roots(project_id, user_id))
 
 
+# ── launcher leg (H-1, 2026-10-19) ────────────────────────────────────────────
+
+
+def caller_roots_json(project_id: str, user_id: str) -> str:
+    """The caller's mount roots as a JSON array for ``RIVAULT_CALLER_ROOTS_JSON``.
+
+    Blank project/user ids yield a *smaller* root list (the placeholder
+    expansion rejects unsafe values), never a wider one — the compute-node
+    gate then enforces only what survives."""
+    import json as _json
+
+    return _json.dumps([str(root) for root in caller_mount_roots(project_id, user_id)])
+
+
+def caller_mount_escapes(named_sources: dict[str, str], roots: list[Path]) -> list[str]:
+    """Names of resolved sources escaping every root (cross-check of the
+    compute-node launcher gate in ``mini-rivault-llm/serve-model.slurm`` —
+    keep the bucket there in literal sync).
+
+    Empty sources are skipped (legacy fallbacks); each remaining path is
+    fully resolved (symlinks + ``..``) before its prefix test, so a symlink
+    that points elsewhere after the request-time approval (TOCTOU) is
+    caught here."""
+    violations: list[str] = []
+    for name, source in named_sources.items():
+        if not source:
+            continue
+        resolved = Path(source).expanduser().resolve()
+        if not any(root == resolved or root in resolved.parents for root in roots):
+            violations.append(f"{name}={resolved}")
+    return violations
+
+
 __all__ = [
     "DEFAULT_CALLER_MOUNT_ROOTS",
+    "caller_mount_escapes",
     "caller_mount_roots",
     "caller_named_host_path",
+    "caller_roots_json",
     "foreign_sources",
     "model_path_in_scope",
     "raw_mount_sources",
