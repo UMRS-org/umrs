@@ -69,6 +69,25 @@ def _row_to_loop(row: Any) -> ResearchLoop:
 _CONTROL_STATUSES = (LoopStatus.PAUSED, LoopStatus.STOPPED)
 
 
+def progress_kept(loop: ResearchLoop, stored: ResearchLoop | None) -> ResearchLoop:
+    """The record a control-route save writes, given the stored loop (H-1).
+
+    Route writes (stop/pause/resume) change only ``status`` and
+    ``completed_at``; everything else — the phase, the iteration counter,
+    the plan, the counters, the metadata a live runner refreshes — comes
+    from the stored row, so a concurrent runner's progress is never
+    clobbered by the route's stale read (the mirror of ``control_kept``,
+    which the runner's lane uses).
+    """
+    if stored is None:
+        return loop
+    merged = copy.copy(stored)  # shallow: same iterations and metadata
+    merged.status = loop.status
+    if loop.completed_at:
+        merged.completed_at = loop.completed_at
+    return merged
+
+
 def control_kept(
     loop: ResearchLoop, stored_status: Any, stored_completed_at: Any
 ) -> ResearchLoop:
@@ -343,12 +362,31 @@ class LoopStore:
         row = cur.fetchone()
         return control_kept(loop, row[0], row[1]) if row else loop
 
-    def _save_sync(self, loop: ResearchLoop, keep_control: bool = False) -> None:
+    def _locked_progress(self, cur: Any, loop: ResearchLoop) -> ResearchLoop:
+        """Lock the loop row for the merge and merge against the stored record
+        (full row mapping via the store's own getter, like control side does:
+        a route saves only status/completed_at; progress fields stay stored)."""
+        cur.execute(
+            "SELECT loop_id FROM research_loops WHERE loop_id = %s FOR UPDATE",
+            (loop.loop_id,),
+        )
+        if not cur.fetchone():
+            return loop
+        return progress_kept(loop, self._get_sync(loop.loop_id))
+
+    def _save_sync(
+        self,
+        loop: ResearchLoop,
+        keep_control: bool = False,
+        keep_progress: bool = False,
+    ) -> None:
         from psycopg2.extras import Json
 
         with self._sync_pool.cursor() as cur:
             if keep_control:
                 loop = self._locked_control(cur, loop)
+            if keep_progress:
+                loop = self._locked_progress(cur, loop)
             cur.execute(
                 """INSERT INTO research_loops
                    (loop_id, project_id, research_goal, status, phase,
@@ -487,6 +525,22 @@ class LoopStore:
             self._memory[loop.loop_id] = loop
         else:
             self._run(self._save_pg(loop))
+
+    def save_preserving_progress(self, loop: ResearchLoop) -> None:
+        """A control route's save: never clobbers a concurrent runner's progress.
+
+        Mirror of ``save_keeping_control`` (the runner's lane). The route's
+        status (and ``completed_at`` when set) lands; the phase, iteration,
+        plan, counters and metadata come from the stored record — stop, pause
+        and resume land their transition without erasing mid-turn progress on
+        the psycopg2 store (merge under SELECT ... FOR UPDATE) or in memory
+        (merge under the store lock).
+        """
+        if self._sync_pool is not None:
+            self._sync_call(self._save_sync, loop, False, True)
+            return
+        with self._sync_lock:
+            self.save(progress_kept(loop, self.get(loop.loop_id)))
 
     def save_keeping_control(self, loop: ResearchLoop) -> None:
         """A runner's save: never undoes a concurrent pause or stop.

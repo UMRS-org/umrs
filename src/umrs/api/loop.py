@@ -1605,7 +1605,8 @@ async def stop_loop(
     loop = _owned_loop(loop_id, caller)
     loop.status = LoopStatus.STOPPED
     loop.completed_at = datetime.now(timezone.utc).isoformat()
-    _loop_store.save(loop)  # PG-backed stores only persist via save()
+    _loop_store.save_preserving_progress(loop)  # never clobbers runner progress (H-1)
+
     # Stop any live drivers promptly (store poll would catch up anyway).
     from umrs.knowledge.agent_loop_runner import gracefully_stop as _stop_agent
     from umrs.knowledge.engine_loop_runner import gracefully_stop as _stop_engine
@@ -1629,7 +1630,8 @@ async def pause_loop(
 ) -> StopLoopResponse:
     loop = _owned_loop(loop_id, caller)
     loop.status = LoopStatus.PAUSED
-    _loop_store.save(loop)  # PG-backed stores only persist via save()
+    _loop_store.save_preserving_progress(loop)  # never clobbers runner progress (H-1)
+
     return StopLoopResponse(
         loop_id=loop_id,
         status=loop.status.value,
@@ -1655,7 +1657,8 @@ async def resume_loop(
             ),
         )
     loop.status = LoopStatus.RUNNING
-    _loop_store.save(loop)  # PG-backed stores only persist via save()
+    _loop_store.save_preserving_progress(loop)  # never clobbers runner progress (H-1)
+
     return StartLoopResponse(
         loop_id=loop_id,
         project_id=loop.project_id,
