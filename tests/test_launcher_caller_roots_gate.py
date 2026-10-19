@@ -19,12 +19,10 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-import sys
 import tempfile
 from pathlib import Path
 
 import pytest
-
 from umrs.orchestrator.caller_roots import (
     caller_mount_escapes,
     caller_mount_roots,
@@ -114,7 +112,7 @@ class TestModuleGate:
         assert not any("{" in str(root) for root in blanks)
         assert len(blanks) < len(caller_mount_roots("proj-a", "alice"))
 
-    def test_roots_json_roundtrip(self, sandbox):
+    def test_roots_json_roundtrip(self):
         # The env transport never broadens a root set; blank inputs narrow it.
         assert json.loads(caller_roots_json("proj-a", "alice")) == [
             str(p) for p in caller_mount_roots("proj-a", "alice")
