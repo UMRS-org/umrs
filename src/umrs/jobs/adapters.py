@@ -542,17 +542,22 @@ class EndpointProvisionBackend(OrchestratorBackend):
         )
         if certification is None:
             if _CERTIFICATION_MODE == "hard":
+                # Message text truth-fixed 2026-10-19 (cleanup C-3b(iv)):
+                # it named `umrs-server model certify`, a verb that does not
+                # exist; nothing writes model_certifications yet (D-11).
                 raise RuntimeError(
-                    f"Model '{model_name}' has no active certification. "
-                    "Certify it first: umrs-server model certify {model_name}"
+                    f"Model '{model_name}' has no active certification, and no "
+                    "certify verb exists yet (the writer is a separate feature "
+                    "wave, D-11). Ask an administrator to record the row in "
+                    "model_certifications directly, or run with "
+                    "UMRS_CERTIFICATION_MODE=warn"
                 )
             else:
                 logger.warning(
-                    "Model '%s' has no active certification (mode=%s) — proceeding anyway. "
-                    "Certify via: umrs-server model certify %s",
+                    "Model '%s' has no active certification (mode=%s) — proceeding "
+                    "anyway; no certify verb exists yet (writer pending, D-11)",
                     model_name,
                     _CERTIFICATION_MODE,
-                    model_name,
                 )
         else:
             logger.info(

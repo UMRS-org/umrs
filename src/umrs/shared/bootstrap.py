@@ -45,10 +45,13 @@ def build_bootstrap_context(
 ) -> dict[str, Any]:
     """Build a versioned bootstrap context for the authenticated user.
 
-    The returned dict is serialisable to JSON and delivered to clients
-    via ``GET /umrs/bootstrap`` (HTTP). The ZMQ ``GET_BOOTSTRAP_CONTEXT``
-    command was retired 2026-10-04: it called an undefined method, had no
-    registered handler, and no client sent it.
+    The returned dict is serialisable to JSON. Corrected 2026-10-19
+    (cleanup C-3b(iv)): this docstring claimed delivery via
+    ``GET /umrs/bootstrap`` (HTTP), but no such route exists in umrs, the
+    gateway or r4 — and this builder has no caller today (see
+    STATE.md SEC-20261004-001's C-0 correction). The ZMQ
+    ``GET_BOOTSTRAP_CONTEXT`` command was retired 2026-10-04: it called an
+    undefined method, had no registered handler, and no client sent it.
 
     Args:
         auth_ctx: Authenticated user context (from ``authenticate_request``).
