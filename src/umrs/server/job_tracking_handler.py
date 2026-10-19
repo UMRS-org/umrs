@@ -373,7 +373,7 @@ class DurableJobCommandBackend:
             return None
         from fastapi import HTTPException
 
-        from ..jobs.endpoint_policy import enforce_job_endpoint_policy
+        from ..api.endpoint_policy import enforce_job_endpoint_policy
 
         try:
             enforce_job_endpoint_policy(

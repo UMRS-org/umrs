@@ -130,6 +130,30 @@ def caller_roots_json(project_id: str, user_id: str) -> str:
     return _json.dumps([str(root) for root in caller_mount_roots(project_id, user_id)])
 
 
+def apply_caller_roots_env(
+    env_vars: dict[str, str],
+    *,
+    tier: str | None = None,
+    is_admin: bool | None = None,
+    project_id: str,
+    user_id: str | None,
+) -> dict[str, str]:
+    """Stamp ``RIVAULT_CALLER_ROOTS_JSON`` into a launch env for non-admin
+    seams (HTTP provision and the durable adapter both call here with a bare
+    keyword instead of an inline branch — the fat callers stay at baseline,
+    and this layer stays jobs/api-neutral for the import boundary).
+
+    Admins (``is_admin``) and system tiers (``tier == "system"``) skip the
+    gate — their launch carries no caller root list and the worker's
+    realpath gate then stays off (legacy path)."""
+    if is_admin is True or tier == "system":
+        return env_vars
+    env_vars.setdefault(
+        "RIVAULT_CALLER_ROOTS_JSON", caller_roots_json(project_id, user_id or "")
+    )
+    return env_vars
+
+
 def caller_mount_escapes(named_sources: dict[str, str], roots: list[Path]) -> list[str]:
     """Names of resolved sources escaping every root (cross-check of the
     compute-node launcher gate in ``mini-rivault-llm/serve-model.slurm`` —
@@ -151,6 +175,7 @@ def caller_mount_escapes(named_sources: dict[str, str], roots: list[Path]) -> li
 
 __all__ = [
     "DEFAULT_CALLER_MOUNT_ROOTS",
+    "apply_caller_roots_env",
     "caller_mount_escapes",
     "caller_mount_roots",
     "caller_named_host_path",

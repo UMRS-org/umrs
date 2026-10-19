@@ -516,7 +516,7 @@ class EndpointProvisionBackend(OrchestratorBackend):
         # non-admin durable endpoint_provision carries its caller roots into
         # the launch env; the launcher re-resolves every bind source and
         # fails closed on any escape. tier=system (admin-only) skips the gate.
-        from umrs.jobs.endpoint_policy import apply_caller_roots_env
+        from umrs.orchestrator.caller_roots import apply_caller_roots_env
 
         requested_env = apply_caller_roots_env(
             requested_env,
