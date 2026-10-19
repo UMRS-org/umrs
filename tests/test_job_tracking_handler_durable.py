@@ -2,6 +2,8 @@ import json
 from datetime import datetime
 from datetime import timezone as _tz
 
+import pytest
+from umrs.api import endpoints as _endpoints_api
 from umrs.jobs.models import AttemptStatus, Job, JobAttempt, JobStatus, JobType, RestartPolicy
 from umrs.jobs.store import InvalidTransitionError
 from umrs.server import job_tracking_handler
@@ -83,6 +85,18 @@ class FakeJobStore:
             raise InvalidTransitionError(f"Cannot cancel job {job_id} (already terminal)")
         self.cancelled.append((job_id, reason))
         self.jobs[job_id].status = JobStatus.CANCELLED
+
+
+def _system_entry(name: str) -> dict:
+    """Every name resolves to a system-scope entry (pre-H-1-2026-10-19: the
+    ZMQ endpoint_provision submit checks the catalog the same way the HTTP
+    lane does — the pre-policy fixtures never seeded one)."""
+    return {"name": name, "scope": "system", "storage_ref": f"/models/{name}"}
+
+
+@pytest.fixture(autouse=True)
+def _registered_models(monkeypatch):
+    monkeypatch.setattr(_endpoints_api, "_resolve_registered_model_entry", _system_entry)
 
 
 def test_durable_backend_submit_returns_serialized_job():
@@ -581,4 +595,3 @@ def test_submit_with_another_users_idempotency_key_never_returns_their_job():
     )
     result = json.loads(DurableJobCommandBackend(store).submit("alice", payload))
     assert result == {"status": "error", "message": "idempotency_key already in use"}
-

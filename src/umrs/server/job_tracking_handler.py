@@ -208,7 +208,9 @@ def spec_resource_refusal(
     ):
         return "data_ingestion spec.bucket is not a bucket you may use"
     if job_type == JobType.INDEX_BUILD and not database_table_owned_by(
-        str(spec.get("database") or "").strip(), str(spec.get("table") or "").strip(), user_id
+        str(spec.get("database") or "").strip(),
+        str(spec.get("table") or "").strip(),
+        user_id,
     ):
         return "index_build spec.database/table is not a table of one of your buckets"
     return None
@@ -342,7 +344,9 @@ class DurableJobCommandBackend:
             default=str,
         )
 
-    def submit(self, client_id: str, payload_str: str, *, is_admin: bool = False) -> str:
+    def submit(
+        self, client_id: str, payload_str: str, *, is_admin: bool = False
+    ) -> str:
         """JOB_SUBMIT from a client: any job type but ``workflow_run``."""
         return self._submit(client_id, payload_str, internal=False, is_admin=is_admin)
 
@@ -351,8 +355,46 @@ class DurableJobCommandBackend:
         built from an owner-scoped resolution (never a client payload)."""
         return self._submit(client_id, payload_str, internal=True)
 
+    def _endpoint_policy_refusal(
+        self,
+        job_type: JobType,
+        spec: dict,
+        user_id: str,
+        project_id: str,
+        is_admin: bool,
+        *,
+        fan_out_jobs: list | None,
+    ) -> str | None:
+        """The ZMQ lane's provision-policy message (H-1, 2026-10-19), or None.
+
+        Split out for the complexity budget: `_submit` stays at its baseline.
+        """
+        if job_type != JobType.ENDPOINT_PROVISION or is_admin:
+            return None
+        from fastapi import HTTPException
+
+        from ..jobs.endpoint_policy import enforce_job_endpoint_policy
+
+        try:
+            enforce_job_endpoint_policy(
+                job_type,
+                spec,
+                user_id=user_id,
+                project_id=project_id,
+                is_admin=is_admin,
+                fan_out_jobs=fan_out_jobs,
+            )
+        except HTTPException as exc:
+            return str(exc.detail)
+        return None
+
     def _submit(
-        self, client_id: str, payload_str: str, *, internal: bool, is_admin: bool = False
+        self,
+        client_id: str,
+        payload_str: str,
+        *,
+        internal: bool,
+        is_admin: bool = False,
     ) -> str:
         try:
             payload = _parse_payload(payload_str)
@@ -372,6 +414,20 @@ class DurableJobCommandBackend:
 
             project_id = payload.get("project_id", "default")
             spec = _validate_job_spec(job_type, payload.get("spec", {}))
+            # H-1 (2026-10-19): the ZMQ lane applies the HTTP submit policy
+            # (catalog-model ACL, admin-only recipe fields, mount sources +
+            # model_path under the caller's own roots) — one shared module,
+            # never two rules. Refuse before the spec lands.
+            policy_err = self._endpoint_policy_refusal(
+                job_type,
+                spec,
+                client_id,
+                project_id,
+                is_admin,
+                fan_out_jobs=payload.get("fan_out_jobs"),
+            )
+            if policy_err:
+                return json.dumps({"status": "error", "message": policy_err})
             _raise_for_spec_resources(job_type, spec, client_id, is_admin)
             priority = int(payload.get("priority", 0))
             max_attempts = int(payload.get("max_attempts", 3))
