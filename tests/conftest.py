@@ -60,10 +60,6 @@ os.environ.setdefault(
 # Demo/onboarding files that wrap argparse at module scope: collecting them
 # at test time makes pytest's argument parser abort with SystemExit — see the
 # `usage: __main__.py [-h] [-c CONFIG]` INTERNALERROR in full-suite runs.
-collect_ignore = [
-    "s3_test",
-    "S3_Postgres_PGVector_demo",
-]
 
 
 def pytest_addoption(parser):

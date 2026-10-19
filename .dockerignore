@@ -3,12 +3,10 @@
 src/umrs/mini-rivault-llm/images/
 src/umrs/mini-rivault-llm/models/
 data/
-XP/
 docker/ssl/
 demos/slurm-dev/test_data/
 demos/slurm-dev/munge-key/
 demos/slurm-dev/user_files/
-redsql/
 tests/
 **/*.tar
 **/*.tar.gz

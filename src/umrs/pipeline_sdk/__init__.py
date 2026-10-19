@@ -14,8 +14,8 @@ Quick start (workflow.json steps)::
 
     from umrs.pipeline_sdk import Step, StepContext, StepResult
 
-See ``templates/README.md`` for the full guide on creating a new pipeline,
-and ``demos/07_user_model/`` for a workflow.json example.
+See ``demos/12_pipeline_sdk/README.md`` for the full guide on creating a new pipeline,
+and ``demos/08_user_model/`` for a workflow.json example.
 """
 
 from .adapter import EmbeddingAdapter
