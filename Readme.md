@@ -60,7 +60,7 @@ src/
     skills/, mcp/                skill and MCP registries
     admin/, tenants/, companion_trust/, grants/, security/, shared/
                                  user records, (experimental) tenants, trust allowlist, asset grants, EgressGuard + scanners, config/storage/auth helpers
-    workflow/, workflow_events.py, pipeline_sdk/, plugins/, recipes/
+    workflow/, pipeline_sdk/, plugins/, recipes/
                                  workflow model, persistence, step execution, user pipelines
     migrations/                  0001–0100 SQL migrations (`umrs-server admin migrate`)
     tui/, tui_v2/, cli/          operator TUIs and CLI
