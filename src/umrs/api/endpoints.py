@@ -31,9 +31,9 @@ from fastapi import (
 )
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from ..jobs.endpoint_policy import apply_caller_roots_env
 from ..model_registry.capabilities import endpoint_limit_metadata
 from ..orchestrator.caller_roots import (
+    apply_caller_roots_env,
     caller_named_host_path,
     foreign_sources,
     model_path_in_scope,

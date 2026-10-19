@@ -1,5 +1,9 @@
 """Shareable endpoint_provision submit policy (H-1, 2026-10-19).
 
+API-side home since 2026-10-19 (import boundary ADR-053). The env-stamping
+helper ``apply_caller_roots_env`` lives in ``orchestrator/caller_roots.py``,
+a boundary-clean home.
+
 The HTTP POST /umrs/jobs submit (``_enforce_endpoint_host_paths``) and the
 ZMQ durable-job submit (``server/job_tracking_handler``) apply ONE policy to
 an ``endpoint_provision`` spec (parent or fan-out child): a non-admin may
@@ -15,8 +19,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..api.typed_errors import PlatformError, raise_typed
 from ..jobs.models import JobType
+from .typed_errors import PlatformError, raise_typed
 
 
 def _spec_targets(
@@ -58,13 +62,12 @@ def _check_endpoint_spec(spec: dict[str, Any], user_id: str, project_id: str) ->
 def _check_endpoint_spec_model(
     spec: dict[str, Any], user_id: str, project_id: str
 ) -> None:
-    from umrs.api.endpoints import (
+    from ..orchestrator.caller_roots import model_path_in_scope
+    from .endpoints import (
         _authorize_model_entry_for_caller,
         _resolve_registered_model_entry,
         _validated_model_path_override,
     )
-
-    from ..orchestrator.caller_roots import model_path_in_scope
 
     # The executor resolves spec.get("model", "default") itself (adapters.py,
     # with a JSON-catalog fallback when Postgres fails): check that same name
@@ -114,31 +117,6 @@ def _check_endpoint_spec_recipe(spec: dict[str, Any]) -> None:
     _enforce_provision_authorization(view, is_admin=False)
 
 
-def apply_caller_roots_env(
-    env_vars: dict[str, str],
-    *,
-    tier: str | None = None,
-    is_admin: bool | None = None,
-    project_id: str,
-    user_id: str | None,
-) -> dict[str, str]:
-    """Stamp ``RIVAULT_CALLER_ROOTS_JSON`` into a launch env for non-admin
-    seams (HTTP provision and the durable adapter both call here with a bare
-    keyword instead of an inline branch — the fat callers stay at baseline).
-
-    Admins (``is_admin``) and system tiers (``tier == "system"``) skip the
-    gate — their launch carries no caller root list and the worker's realpath
-    gate then stays off (legacy path)."""
-    if is_admin is True or tier == "system":
-        return env_vars
-    from ..orchestrator.caller_roots import caller_roots_json
-
-    env_vars.setdefault(
-        "RIVAULT_CALLER_ROOTS_JSON", caller_roots_json(project_id, user_id or "")
-    )
-    return env_vars
-
-
 def enforce_endpoint_policy(
     spec: dict[str, Any], user_id: str, project_id: str
 ) -> None:
@@ -172,7 +150,6 @@ __all__ = [
     "_check_endpoint_spec_recipe",
     "_deny_unless",
     "_spec_targets",
-    "apply_caller_roots_env",
     "enforce_endpoint_policy",
     "enforce_job_endpoint_policy",
 ]

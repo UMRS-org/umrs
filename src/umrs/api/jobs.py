@@ -18,12 +18,12 @@ from typing import Any
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from ..jobs.cancel_gateway import register_store_getter as _register_store_getter
-from ..jobs.endpoint_policy import (
+from ..api.endpoint_policy import (
     _check_endpoint_spec,
     _deny_unless,
     _spec_targets,
 )
+from ..jobs.cancel_gateway import register_store_getter as _register_store_getter
 from ..jobs.models import (
     Job,
     JobAttempt,
