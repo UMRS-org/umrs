@@ -36,7 +36,7 @@ Open a **new terminal** for the remaining steps.
 ### 2. Go to the demo directory
 
 ```bash
-cd umrs/demos_jens/11_sam3_direct
+cd umrs/demos_sp8/11_sam3_direct
 ```
 
 ### 3. Verify the server is reachable

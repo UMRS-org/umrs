@@ -46,7 +46,7 @@ enhanced-inference demo. Prefer those when working through the Gateway.
 
 
 The current private demo suite intentionally omits the Jens direct stack. The
-Jens-specific direct demos are isolated under `demos_jens/`, and the supported
+Jens-specific direct demos are isolated under `demos_sp8/`, and the supported
 private demos here all use the normal UMRS user path instead of calling a
 direct VisionFrontend service.
 

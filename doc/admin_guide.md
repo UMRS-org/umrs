@@ -709,5 +709,5 @@ print('VISION_STACK:', env.get('VISION_STACK', '(not set — using default umrs)
 
 # 2. Run isolated Jens SAM3 demo (from local Mac, with UMRS server using Jens stack)
 source .venv/bin/activate
-bash demos_jens/11_sam3_direct/run_demo.sh
+bash demos_sp8/11_sam3_direct/run_demo.sh
 ```

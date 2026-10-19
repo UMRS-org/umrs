@@ -12,7 +12,7 @@
 |-------------|--------|--------|---------|------|
 | Public (`demos/`)    | 11     | 8      | 12      | 1    |
 | Private (`demos_private/`) | 0      | 4      | 0       | 1    |
-| Jens (`demos_jens/`) | 0      | 2      | 0       | 1    |
+| Jens (`demos_sp8/`) | 0      | 2      | 0       | 1    |
 
 All failures share a common root cause: **the server cannot provision the
 S3 config for the demo user** because `umrs reload` returns
@@ -76,7 +76,7 @@ failing it.
 
 ---
 
-## Jens Demos (`demos_jens/`)
+## Jens Demos (`demos_sp8/`)
 
 | #  | Demo                          | Result  | Notes                                              |
 |----|-------------------------------|---------|----------------------------------------------------|
@@ -196,8 +196,8 @@ treating the server config as invalid but not crashing discovery.
    ```bash
    cd umrs/demos && # See step-by-step commands in each demo's README
    cd umrs/demos_private && # See step-by-step commands in each demo's README
-   cd umrs/demos_jens/11_sam3_direct && # See step-by-step commands in the demo README
-   cd umrs/demos_jens/12_hmae_direct && # See step-by-step commands in the demo README
+   cd umrs/demos_sp8/11_sam3_direct && # See step-by-step commands in the demo README
+   cd umrs/demos_sp8/12_hmae_direct && # See step-by-step commands in the demo README
    ```
 
 4. **The code bug fix in `loaded_config_profiles.py` should be

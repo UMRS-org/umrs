@@ -227,7 +227,7 @@ demos now assume the UMRS-mediated path only.
 
 ## Isolated Jens Demos
 
-Jens-specific direct VisionFrontend demos live in `demos_jens/` and are not
+Jens-specific direct VisionFrontend demos live in `demos_sp8/` and are not
 part of the active public or private demo suites.
 
 | Demo | Requires | Test data source |
