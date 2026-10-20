@@ -11,6 +11,13 @@ bench <- data.frame(
   batch_s          = c(5.37, 6.12, 7.53, 12.09, 20.28, 38.13, 118.05, 262.39)
 )
 
+# avec chnunking
+bench <- data.frame(
+  objects_per_user = 32,
+  n_users = c(1, 2, 4, 8, 16, 32, 64, 128),
+  batch_s = c(6.203, 7.190, 8.362, 13.742, 22.118, 41.103, 103.287, 328.055)
+)
+
 bench <- bench %>%
   mutate(
     n_objects      = n_users * objects_per_user,

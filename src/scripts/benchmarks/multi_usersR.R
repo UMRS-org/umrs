@@ -31,7 +31,7 @@ Time <- c(
 
 # launch dir h100
 N    <- c(  1,   2,   4,     8,       16,   32,      64,     128)
-Time <- c(  3,   4,   5,     ,20.229,  49,   70, 153.847, 289.965)
+Time <- c(  3,   4,   5, 20.229,      49,   70, 153.847, 289.965)
 
 
 throughput_1 <- 1 / Time[1]
@@ -174,7 +174,7 @@ ggplot(long, aes(x = n_label, y = s, fill = part)) +
     panel.grid.minor   = element_blank()
   )
 
-ggsave("~/tmp/batch_speedup.pdf", width = 9, height = 5.5)
-ggsave("batch_speedup.png", width = 9, height = 5.5, dpi = 150)
+ggsave("log/batch_speedup.pdf", width = 9, height = 5.5)
+ggsave("log/batch_speedup.png", width = 9, height = 5.5, dpi = 300)
 message("Saved: batch_speedup.pdf / batch_speedup.png")
 
