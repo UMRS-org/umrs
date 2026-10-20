@@ -197,8 +197,15 @@ def test_other_job_types_keep_their_spec_hash():
 
 
 class _StoreCur:
+    """A cursor whose insert path never conflicts (the pre-``ON CONFLICT`` era
+    faked the constraint only); its fetchone answers the ``RETURNING`` and the
+    SELECT of the duplicate branch, per the constraints in the docstring of
+    ``JobStore.create_job``. 2026-10-20: the store now reads
+    ``cur.fetchone()`` after INSERT — fake it."""
+
     def __init__(self, keys: list[str]) -> None:
         self.keys = keys
+        self._stmt = ""
 
     def __enter__(self) -> _StoreCur:
         return self
@@ -207,8 +214,14 @@ class _StoreCur:
         return False
 
     def execute(self, sql: str, params: Any = None) -> None:
+        self._stmt = sql
         if "INSERT INTO jobs" in sql:
             self.keys.append(params[5])
+
+    def fetchone(self):
+        if "SELECT job_id FROM jobs" in self._stmt:
+            return (self.keys[0],) if self.keys else None
+        return ("inserted",)
 
 
 class _StoreConn:
