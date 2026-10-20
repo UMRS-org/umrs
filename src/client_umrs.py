@@ -6162,6 +6162,7 @@ def _action_s3_transfer(ctx):
         nb_objects = 0
 
         # Collect all files first so tqdm can show a total
+        t_scan0 = time.perf_counter()
         norm_path = os.path.abspath(path)
         all_files = []
         for root, _dirs, files in os.walk(norm_path):
@@ -6176,6 +6177,7 @@ def _action_s3_transfer(ctx):
                     else:
                         fsubdir = rel_dir
                     all_files.append((fp, fsubdir))
+        scan_s = time.perf_counter() - t_scan0
 
         try:
             from tqdm import tqdm as _tqdm
@@ -6194,6 +6196,7 @@ def _action_s3_transfer(ctx):
         NOTIFY_BATCH_SIZE = 8000
         batch_pending = 0
 
+        t_upload0 = time.perf_counter()
         try:
             for file_path, file_subdir in iterable:
                 s3_key, nb_sent = process_file(
@@ -6224,9 +6227,11 @@ def _action_s3_transfer(ctx):
                     )
                     batch_pending = 0
         finally:
+            upload_s = time.perf_counter() - t_upload0
             # Always flush URIs already queued in the ZMQ data channel, even if
             # the loop aborted (e.g. data queue full): without this notify_server
             # call the server never reads those URIs and the files are lost.
+            t_notify0 = time.perf_counter()
             if batch_pending > 0:
                 print(f"Sending {nb_objects} object(s) to server...")
                 ctx.control_mq.notify_server(
@@ -6234,6 +6239,14 @@ def _action_s3_transfer(ctx):
                 )
             elif nb_objects > 0:
                 print(f"Sent {nb_objects} object(s) to server in batches.")
+            notify_s = time.perf_counter() - t_notify0
+            # notify_s includes the server processing time when blocking=True
+            print(
+                f"[CLIENT_TIMING] bucket={full_bucket_name} subdir={subdir or '-'} "
+                f"files={len(all_files)} n={nb_objects} blocking={blocking} "
+                f"scan_s={scan_s:.3f} upload_s={upload_s:.3f} notify_s={notify_s:.3f}",
+                flush=True,
+            )
         return s3_key_list, file_list
 
     def download_results_fn(full_bucket_name, modality, subdir):
