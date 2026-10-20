@@ -452,6 +452,7 @@ def compute_and_store_embedding_batch(items, store_fn=None):
         # Direct-compute models manage their own I/O; process per-item.
         results = []
         for item in items:
+            t0 = time.perf_counter()
             try:
                 compute_and_store_embedding(
                     item["path_to_bucket"], item["s3_keys"], item["data_base"],
@@ -464,6 +465,7 @@ def compute_and_store_embedding_batch(items, store_fn=None):
             except Exception:
                 logger.exception("compute_and_store_embedding_batch: item failed")
                 results.append(False)
+            item["_timings"] = {"path": "direct", "embed_s": time.perf_counter() - t0}
         return results
 
     # Standard path: choose sequential or pipelined depending on batch_size.
@@ -494,7 +496,16 @@ def compute_and_store_embedding_batch(items, store_fn=None):
         from umrs.server.sql import store_embeddings_in_db
         store_fn = store_embeddings_in_db
 
-    return [_store_item(item, per_item[i], model, store_fn) for i, item in enumerate(items)]
+    results = []
+    for i, item in enumerate(items):
+        t0 = time.perf_counter()
+        results.append(_store_item(item, per_item[i], model, store_fn))
+        # read back by processing.process_model_group for the [TIMING] line
+        item["_timings"] = {
+            "path": path, "fetch_preprocess_s": t_io, "forward_s": t_compute,
+            "embed_s": t_wall, "store_s": time.perf_counter() - t0,
+        }
+    return results
 
 
 def load_embedding_model(model_name):

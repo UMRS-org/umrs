@@ -26,12 +26,13 @@ from .base import CommandHandler, HandlerContext
 logger = logging.getLogger(__name__)
 
 
-def filter_already_indexed(ctx, client_entries):
+def filter_already_indexed(ctx, client_entries, timings=None):
     """Return client_entries with already-indexed objects removed.
 
     For each bucket, fires head_object calls in parallel to get ETags, then
     does a single SQL query to find objects already stored with the same checksum.
     Objects present in DB with a matching ETag are dropped from the result.
+    If *timings* is a dict, it receives ``{path_to_bucket: (head_s, sql_s)}``.
     """
     # Group all s3_uris by bucket so we can batch per (data_base, table_name)
     # s3_uri format: "s3://path_to_bucket/s3_key"
@@ -83,19 +84,16 @@ def filter_already_indexed(ctx, client_entries):
             data_base.put_conn(conn)
         t_sql = time.perf_counter() - t0
 
+        if timings is not None:
+            timings[path_to_bucket] = (t_head, t_sql)
+
         # Filter: skip if ETag matches DB checksum
-        n_skipped_before = len(skip_uris)
         for _, s3_uri, s3_key in items:
             db_key = f"{path_to_bucket}/{s3_key}"
             etag = etag_map.get(s3_uri)
             db_checksum = db_checksums.get(db_key)
             if etag and db_checksum and etag == db_checksum:
                 skip_uris.add(s3_uri)
-
-        logger.info(
-            "[PROCESS] already-indexed check: bucket=%s n=%d head_object=%.3fs sql=%.3fs skipped=%d",
-            path_to_bucket, len(items), t_head, t_sql, len(skip_uris) - n_skipped_before,
-        )
 
     if skip_uris:
         logger.info("filter_already_indexed: skipping %d already-indexed object(s)", len(skip_uris))
@@ -108,6 +106,51 @@ def filter_already_indexed(ctx, client_entries):
             filtered.append((client_id, kept))
 
     return filtered
+
+
+TIMING_FIELDS = (
+    "s3_events_s", "index_check_sql_s", "index_check_head_s", "dispatch_s", "lock_wait_s",
+    "fetch_preprocess_s", "forward_s", "embed_s", "store_s", "count_update_s", "total_s",
+)
+
+
+class _ClientTaskCallback:
+    """Status callback of one client's task(s); ``finish`` also logs the [TIMING] line."""
+
+    def __init__(self, client_id, task_ids, cbs, t_start):
+        self.client_id = client_id
+        self.task_ids = task_ids
+        self._cbs = cbs
+        self.t_start = t_start
+        self.t_ready = None
+        self.n = 0
+        self.skipped = 0
+        self.timings = dict.fromkeys(TIMING_FIELDS, 0.0)
+
+    def __call__(self, status):
+        for cb in self._cbs:
+            cb(status)
+
+    def finish(self, status, group):
+        # group: measurements of the pool thread (processing.process_model_group)
+        values = dict(self.timings)
+        values.update({k: v for k, v in group.items() if k in TIMING_FIELDS})
+        if self.t_ready is not None and "t_thread_start" in group:
+            values["dispatch_s"] = group["t_thread_start"] - self.t_ready
+        values["total_s"] = time.perf_counter() - self.t_start
+        logger.info(
+            "[TIMING] task_id=%s client=%s status=%s model=%s path=%s n=%d skipped=%d batch_tasks=%s %s",
+            ",".join(map(str, self.task_ids)),
+            self.client_id,
+            getattr(status, "name", status),
+            str(group.get("model", "none")).replace(" ", "_"),
+            group.get("path", "none"),
+            self.n,
+            self.skipped,
+            ",".join(map(str, group.get("batch_tasks", self.task_ids))),
+            " ".join(f"{k}={values[k]:.3f}" for k in TIMING_FIELDS),
+        )
+        self(status)
 
 
 class ProcessObjectsBatchHandler(CommandHandler):
@@ -132,7 +175,9 @@ class ProcessObjectsBatchHandler(CommandHandler):
         # a client appears N times, the single callable stored in the dict is
         # a closure that fires all N sub-task callbacks at once.  Callers are
         # unaware of this multiplicity — they just call cb(status) as usual.
+        t_start = time.perf_counter()
         per_client_cbs: dict[str, list] = {}
+        per_client_tids: dict[str, list] = {}
         task_ids: list[tuple[str, int]] = []
         # client_task_ids maps each client_id to its most-recent task_id so
         # we can link threads to tasks after launch_s3_threads_batch returns.
@@ -140,6 +185,7 @@ class ProcessObjectsBatchHandler(CommandHandler):
         for client_id, nb_objects in payload:
             task_id, cb = self._make_task(ctx, TaskCmd.PROCESS_OBJECTS, (client_id, nb_objects))
             per_client_cbs.setdefault(client_id, []).append(cb)
+            per_client_tids.setdefault(client_id, []).append(task_id)
             task_ids.append((client_id, task_id))
             client_task_ids[client_id] = task_id
         logger.info(
@@ -147,11 +193,9 @@ class ProcessObjectsBatchHandler(CommandHandler):
             [(cid, tid) for cid, tid in task_ids],
         )
 
-        # Adapter closure: dict[str, callable] interface, multi-task internals.
-        # The lambda captures `cbs` by value (default-arg trick) to avoid the
-        # classic late-binding pitfall in Python loop closures.
+        # Adapter: dict[str, callable] interface, multi-task internals.
         client_callbacks: dict[str, Any] = {
-            cid: (lambda status, cbs=cbs: [cb(status) for cb in cbs])
+            cid: _ClientTaskCallback(cid, per_client_tids[cid], cbs, t_start)
             for cid, cbs in per_client_cbs.items()
         }
 
@@ -174,10 +218,8 @@ class ProcessObjectsBatchHandler(CommandHandler):
                 return client_id, None
             t0 = time.perf_counter()
             objects = data_queue.wait_for_s3_events(nb_objects, timeout_s=60)
-            logger.info(
-                "[PROCESS] S3 events: client=%s received %d/%d in %.3fs",
-                client_id, len(objects), nb_objects, time.perf_counter() - t0,
-            )
+            client_callbacks[client_id].timings["s3_events_s"] = time.perf_counter() - t0
+            client_callbacks[client_id].n = len(objects)
             if len(objects) < nb_objects:
                 logger.warning(
                     "Received %s/%s S3 events for client=%s (timeout)",
@@ -213,7 +255,17 @@ class ProcessObjectsBatchHandler(CommandHandler):
 
             if filter:
                 original_entries = client_entries
-                client_entries = filter_already_indexed(ctx, client_entries)
+                index_timings: dict = {}
+                client_entries = filter_already_indexed(ctx, client_entries, index_timings)
+                kept_per_client = {cid: len(objs) for cid, objs in client_entries}
+                for cid, objs in original_entries:
+                    cb = client_callbacks[cid]
+                    cb.skipped = len(objs) - kept_per_client.get(cid, 0)
+                    buckets = {uri.replace("s3://", "").split("/", 1)[0] for uri in objs}
+                    for bucket in buckets:
+                        head_s, sql_s = index_timings.get(bucket, (0.0, 0.0))
+                        cb.timings["index_check_head_s"] += head_s
+                        cb.timings["index_check_sql_s"] += sql_s
 
                 surviving_cids = {cid for cid, _ in client_entries}
                 filtered_entries = [(cid, objs) for cid, objs in original_entries if cid not in surviving_cids]
@@ -237,7 +289,7 @@ class ProcessObjectsBatchHandler(CommandHandler):
                     for cid, _ in filtered_entries:
                         if cid in client_callbacks:
                             client_callbacks[cid](TaskStatus.RUNNING)
-                            client_callbacks[cid](TaskStatus.COMPLETED)
+                            client_callbacks[cid].finish(TaskStatus.COMPLETED, {"path": "all_indexed"})
 
                 if not client_entries:
                     logger.info("[PROCESS] All objects already indexed, nothing to do.")
@@ -263,6 +315,10 @@ class ProcessObjectsBatchHandler(CommandHandler):
                     for s3_uri in objects:
                         ptb, _ = s3_uri.replace("s3://", "").split("/", 1)
                         original_counts[ptb] = original_counts.get(ptb, 0) + 1
+
+            t_ready = time.perf_counter()
+            for cb in active_callbacks.values():
+                cb.t_ready = t_ready
 
             try:
                 client_thread_map = ctx.task_manager.active_threads.launch_s3_threads_batch(
