@@ -1,7 +1,12 @@
+import logging
+import time
+
 import torch
 import torchvision.models as models
 from torchvision import transforms
 from torchvision.models import ResNet50_Weights
+
+logger = logging.getLogger(__name__)
 
 ################################ ResNet-50 ###########################
 
@@ -75,12 +80,15 @@ def compute_embeddings_batch(model, image_batch_tensor, device="cpu"):
 
 
 def compute_embeddings_resnet_50(self, images):
-    # Preprocess all images into a single batch tensor
+    t0 = time.perf_counter()
     image_batch_tensor = preprocess_images_batch(images)
+    t_pil = time.perf_counter() - t0
 
-    # Compute embeddings for the entire batch
+    t0 = time.perf_counter()
     embeddings = compute_embeddings_batch(
         self.model, image_batch_tensor, device=self.device
     )
+    t_gpu = time.perf_counter() - t0
 
+    logger.info("[resnet50] n=%d  pil=%.3fs  forward=%.3fs", len(images), t_pil, t_gpu)
     return embeddings
