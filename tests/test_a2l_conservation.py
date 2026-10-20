@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from pathlib import Path
@@ -390,3 +391,101 @@ async def test_workflow_run_emission_null_recorder_never_raises() -> None:
         artifacts=[{"source_ref": "s3://b/x", "content_hash": "h"}],
         record=MagicMock(),
     )
+
+
+# ── Loop affinity (2026-10-20) ───────────────────────────────────────────
+
+
+class _LoopRecordingStore:
+    """Records which OS thread its coroutines execute on."""
+
+    def __init__(self) -> None:
+        self.ran_on: list[int] = []
+
+    async def create_artifact(self, _record: Any) -> Any:
+        import threading
+
+        self.ran_on.append(threading.get_ident())
+
+        class _R:
+            id = "a2l-loop-1"
+
+        return _R()
+
+    async def derive_artifact(self, _derive: Any) -> Any:  # pragma: no cover
+        raise AssertionError("parentless path expected")
+
+
+def _artifact_kwargs() -> dict:
+    return {
+        "job_id": "j1",
+        "attempt_id": "1",
+        "artifact_uri": "s3://b/x",
+        "artifact_type": "mask",
+        "user_id": "u",
+        "content_hash": "h",
+    }
+
+
+@pytest.mark.asyncio
+async def test_store_recorder_same_loop_runs_inline() -> None:
+    import threading
+
+    store = _LoopRecordingStore()
+    rec = StoreA2lRecorder(store, owner_loop=asyncio.get_running_loop())
+
+    result = await rec.record_attempt_artifact(**_artifact_kwargs())
+
+    assert result == "a2l-loop-1"
+    assert store.ran_on == [threading.get_ident()]
+
+
+@pytest.mark.asyncio
+async def test_store_recorder_bounces_store_calls_to_the_owner_loop() -> None:
+    """The durable runtime's loop must never touch the sidecar loop's pool:
+    with a foreign owner loop the store coroutine executes on the owner's
+    thread (ops-watch 2026-10-17: "Future attached to a different loop" and
+    kin on bdrt)."""
+    import threading
+
+    started = threading.Event()
+    stop = threading.Event()
+    loops: list = []
+
+    def _drive_loop() -> None:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loops.append(loop)
+        started.set()
+        try:
+            while not stop.is_set():
+                loop.run_until_complete(asyncio.sleep(0.01))
+        finally:
+            loop.close()
+
+    driver = threading.Thread(target=_drive_loop, daemon=True)
+    driver.start()
+    assert started.wait(5)
+    owner = loops[0]
+    store = _LoopRecordingStore()
+    rec = StoreA2lRecorder(store, owner_loop=owner)
+    try:
+        result = await rec.record_attempt_artifact(**_artifact_kwargs())
+        assert result == "a2l-loop-1"
+        assert store.ran_on and store.ran_on[0] != threading.get_ident()
+    finally:
+        stop.set()
+        driver.join(5)
+
+
+@pytest.mark.asyncio
+async def test_store_recorder_without_owner_loop_awaits_inline() -> None:
+    store = _LoopRecordingStore()
+    rec = StoreA2lRecorder(store)  # legacy wiring: no owner recorded
+
+    import threading
+
+    result = await rec.record_attempt_artifact(**_artifact_kwargs())
+
+    assert result == "a2l-loop-1"
+    assert store.ran_on == [threading.get_ident()]

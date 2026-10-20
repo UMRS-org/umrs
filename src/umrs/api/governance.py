@@ -383,8 +383,13 @@ class GovernanceStore:
     ) -> dict[str, Any] | None:
         """Get quota for a project+resource_type."""
         for attempt in (1, 2):
-            cur = self.conn.cursor()
+            # cursor() belongs inside the retry too: on a dead connection it
+            # raises the very InterfaceError this loop recovers from, before
+            # any execute — which let the 2026-10 recurrence (ops-watch,
+            # 49 hits on bdrt) escape past the Sep-8 fix.
+            cur = None
             try:
+                cur = self.conn.cursor()
                 cur.execute(
                     "SELECT project_id, resource_type, max_count, current_count, "
                     "updated_at, warn_count "
@@ -409,7 +414,8 @@ class GovernanceStore:
                     pass
                 return None
             finally:
-                cur.close()
+                if cur is not None:
+                    cur.close()
 
         if not row:
             return None
