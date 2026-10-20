@@ -26,6 +26,7 @@ from umrs.core.MessageQueue import MessageQueue
 from umrs.core.TaskCmdStatus import TaskCmd, TaskStatus
 from umrs.core.TaskManager import TaskManager
 from umrs.core.thread_pool import PoolConfig, ServerOverloadedError, ThreadPoolManager
+from umrs.inference import preproc_pool
 from umrs.inference.embedding_backend import LocalEmbeddingBackend
 from umrs.server.config import ENABLE_PRETTY_PRINT, get_default_db_subdir
 from umrs.server.durable_job_runtime import start_durable_job_runtime_from_env
@@ -466,6 +467,9 @@ def main():
 
     print("Initial configuration done.")
     reconcile_status_on_startup(task_manager.active_threads, server_cfg.buckets_cfg)
+
+    if preproc_pool.configured_workers() > 0:
+        threading.Thread(target=preproc_pool.warm_up, name="preproc-pool-warmup", daemon=True).start()
 
     durable_job_runtime = start_durable_job_runtime_from_env()
     if durable_job_runtime is not None:
