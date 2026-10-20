@@ -1,7 +1,19 @@
+import logging
+import time
+from io import BytesIO
+
+import numpy as np
 import torch
 import torchvision.models as models
+from PIL import Image
 from torchvision import transforms
 from torchvision.models import ResNet50_Weights
+
+logger = logging.getLogger(__name__)
+
+_RESIZE_CROP = transforms.Compose([transforms.Resize(256), transforms.CenterCrop(224)])
+_MEAN = (0.485, 0.456, 0.406)
+_STD = (0.229, 0.224, 0.225)
 
 ################################ ResNet-50 ###########################
 
@@ -75,12 +87,39 @@ def compute_embeddings_batch(model, image_batch_tensor, device="cpu"):
 
 
 def compute_embeddings_resnet_50(self, images):
-    # Preprocess all images into a single batch tensor
+    t0 = time.perf_counter()
     image_batch_tensor = preprocess_images_batch(images)
+    t_pil = time.perf_counter() - t0
 
-    # Compute embeddings for the entire batch
+    t0 = time.perf_counter()
     embeddings = compute_embeddings_batch(
         self.model, image_batch_tensor, device=self.device
     )
+    t_gpu = time.perf_counter() - t0
 
+    logger.info("[resnet50] n=%d  pil=%.3fs  forward=%.3fs", len(images), t_pil, t_gpu)
+    return embeddings
+
+
+def preprocess_bytes_uint8(raw):
+    """Image bytes -> 224x224x3 uint8 (Resize + CenterCrop); runs in preprocessing pool workers."""
+    img = Image.open(BytesIO(raw)).convert("RGB")
+    return np.asarray(_RESIZE_CROP(img), dtype=np.uint8)
+
+
+def uint8_batch_to_input(arrays, device):
+    """HWC uint8 images -> normalized NCHW float batch on *device* (same as ToTensor + Normalize)."""
+    x = torch.from_numpy(np.stack(arrays)).to(device)
+    x = x.permute(0, 3, 1, 2).float().div_(255)
+    mean = torch.tensor(_MEAN, device=device).view(1, 3, 1, 1)
+    std = torch.tensor(_STD, device=device).view(1, 3, 1, 1)
+    return ((x - mean) / std).contiguous()
+
+
+def compute_embeddings_resnet_50_from_uint8(self, arrays):
+    t0 = time.perf_counter()
+    embeddings = compute_embeddings_batch(
+        self.model, uint8_batch_to_input(arrays, self.device), device=self.device
+    )
+    logger.info("[resnet50] n=%d  forward=%.3fs  (preproc pool)", len(arrays), time.perf_counter() - t0)
     return embeddings

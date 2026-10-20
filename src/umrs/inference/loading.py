@@ -27,6 +27,9 @@ class EmbeddingModel:
         self.modality = modality
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.tokenizer = tokenizer
+        # optional fast path: CPU preprocessing in umrs.inference.preproc_pool workers
+        self.pool_preprocess = None
+        self.compute_embeddings_from_arrays = None
         if self.model and hasattr(self.model, "to"):
             self.model.to(self.device)
         if compute_embeddings:
@@ -261,7 +264,12 @@ def load_model(model_cfg, modality, task=None):
     )
 
     # Attach extra attributes for vision models
-    if model_type == "HMAE":
+    if model_type == "Resnet-50":
+        from .resnet_50 import compute_embeddings_resnet_50_from_uint8, preprocess_bytes_uint8
+
+        em.pool_preprocess = preprocess_bytes_uint8
+        em.compute_embeddings_from_arrays = compute_embeddings_resnet_50_from_uint8.__get__(em)
+    elif model_type == "HMAE":
         em._hmae_config = _hmae_config
         em.device = device
     elif model_type == "SAM3":

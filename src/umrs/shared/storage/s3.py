@@ -200,6 +200,8 @@ def connect_to_s3(config_file, *, endpoint_url_override: str | None = None):
         aws_secret_access_key=secret_key,
         verify=verify_ssl,  # Disables SSL verification if False
     )
+    # lets worker processes rebuild an equivalent client without passing credentials
+    s3._umrs_connect_args = (config_file, endpoint_url_override)
 
     # Test connection
     try:

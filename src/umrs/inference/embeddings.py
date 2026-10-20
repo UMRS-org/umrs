@@ -326,6 +326,70 @@ def _pipelined_embed(items, model, batch_size):
     return per_item, sum(io_times), t_compute
 
 
+def _can_use_preproc_pool(items, model):
+    from umrs.inference import preproc_pool
+
+    return (
+        preproc_pool.configured_workers() > 0
+        and getattr(model, "pool_preprocess", None) is not None
+        and all(preproc_pool.s3_connect_args(item["s3_connection"]) for item in items)
+    )
+
+
+def _pool_embed(items, model, batch_size):
+    """Fetch + preprocess each object in the preprocessing process pool, forward here.
+
+    Returns (per_item, t_io, t_compute); t_io is the time spent waiting on the pool.
+    """
+    from concurrent.futures.process import BrokenProcessPool
+
+    from umrs.inference import preproc_pool
+
+    flat = [(i, key) for i, item in enumerate(items) for key in item["s3_keys"]]
+    tasks = [
+        (preproc_pool.s3_connect_args(items[i]["s3_connection"]),
+         items[i]["path_to_bucket"], key, model.pool_preprocess)
+        for i, key in flat
+    ]
+    per_item = {
+        i: {"embeddings": [], "checksums": [], "metadata": [],
+            "sizes": [], "has_zero": False}
+        for i in range(len(items))
+    }
+    t_io = t_compute = 0.0
+    batch = []
+
+    def run_batch():
+        nonlocal t_compute
+        t0 = time.perf_counter()
+        embeddings = model.compute_embeddings_from_arrays([row[1] for row in batch])
+        t_compute += time.perf_counter() - t0
+        for k, (item_idx, _data, checksum, meta, size) in enumerate(batch):
+            d = per_item[item_idx]
+            d["embeddings"].append(embeddings[k])
+            d["checksums"].append(checksum)
+            d["metadata"].append(meta)
+            d["sizes"].append(size)
+        batch.clear()
+
+    try:
+        results = preproc_pool.get_pool().map(preproc_pool.load_and_preprocess, tasks)
+        for item_idx, _key in flat:
+            t0 = time.perf_counter()
+            data, checksum, meta, size = next(results)
+            t_io += time.perf_counter() - t0
+            batch.append((item_idx, data, checksum, meta, size))
+            if len(batch) == batch_size:
+                run_batch()
+        if batch:
+            run_batch()
+    except BrokenProcessPool:
+        preproc_pool.reset_pool()
+        raise
+
+    return per_item, t_io, t_compute
+
+
 def _store_item(item, d, model, store_fn):
     """Store one item's embeddings in the DB. Returns True on success."""
     embeddings = d["embeddings"]
@@ -406,9 +470,14 @@ def compute_and_store_embedding_batch(items, store_fn=None):
     batch_size = int(os.getenv("UMRS_INFERENCE_BATCH_SIZE", "0"))
 
     t_wall0 = time.perf_counter()
-    if batch_size > 0:
+    if batch_size > 0 and _can_use_preproc_pool(items, model):
+        path = "preproc_pool"
+        per_item, t_io, t_compute = _pool_embed(items, model, batch_size)
+    elif batch_size > 0:
+        path = "pipelined"
         per_item, t_io, t_compute = _pipelined_embed(items, model, batch_size)
     else:
+        path = "sequential"
         per_item, t_io, t_compute = _sequential_embed(items, model)
     t_wall = time.perf_counter() - t_wall0
 
@@ -417,8 +486,8 @@ def compute_and_store_embedding_batch(items, store_fn=None):
         return [False] * len(items)
 
     logger.info(
-        "[embed] n=%d  wall=%.3fs  io=%.3fs  compute=%.3fs  model=%s",
-        n_objects, t_wall, t_io, t_compute, getattr(model, "model_name", "?"),
+        "[embed] n=%d  wall=%.3fs  io=%.3fs  compute=%.3fs  model=%s  path=%s  batch_size=%d",
+        n_objects, t_wall, t_io, t_compute, getattr(model, "model_name", "?"), path, batch_size,
     )
 
     if store_fn is None:

@@ -175,6 +175,82 @@ ggplot(long, aes(x = n_label, y = s, fill = part)) +
   )
 
 ggsave("log/batch_speedup.pdf", width = 9, height = 5.5)
-ggsave("log/batch_speedup.png", width = 9, height = 5.5, dpi = 300)
 message("Saved: batch_speedup.pdf / batch_speedup.png")
 
+library(ggplot2)
+library(tidyr)
+
+bench <- data.frame(
+  n_users = c(1, 2, 4, 8, 16, 32, 64, 128),
+  batch_s = c(6.203, 7.190, 8.362, 13.742, 22.118, 41.103, 103.287, 328.055)
+)
+
+bench$serial_s <- bench$n_users * bench$batch_s[1]   # extrapolation
+bench$speedup  <- bench$serial_s / bench$batch_s
+bench$n_label  <- factor(bench$n_users, levels = bench$n_users)
+
+long <- pivot_longer(bench, c(batch_s, serial_s),
+                     names_to  = "series",
+                     values_to = "s")
+long$series <- factor(long$series,
+                      levels = c("serial_s", "batch_s"),
+                      labels = c("Sequential baseline (N \u00d7 t\u2081, extrapolated)",
+                                 "Batch (measured)"))
+
+ggplot(long, aes(x = n_label, y = s, fill = series)) +
+  geom_col(position = position_dodge(width = 0.75), width = 0.68) +
+  
+  # speedup label above the taller bar (serial_s)
+  geom_text(
+    data    = bench,
+    mapping = aes(x      = n_label,
+                  y      = serial_s,
+                  label  = sprintf("\u00d7%.2f", speedup),
+                  colour = n_users == 32),
+    inherit.aes = FALSE,
+    position = position_dodge(width = 0.75),
+    vjust = -0.4, fontface = "bold", size = 3.6
+  ) +
+  
+  annotate("segment",
+           x = 6.45, xend = 6.10, y = 228, yend = 195,
+           arrow  = arrow(length = unit(0.18, "cm"), type = "closed"),
+           colour = "#d4a000", linewidth = 0.8) +
+  annotate("text",
+           x = 6.52, y = 234,
+           label = "GPU sweet spot", hjust = 0,
+           colour = "#d4a000", size = 3.4, fontface = "bold") +
+  
+  scale_fill_manual(values = c(
+    "Sequential baseline (N \u00d7 t\u2081, extrapolated)" = "#d96828",
+    "Batch (measured)"                                     = "#10c890"
+  )) +
+  scale_colour_manual(
+    values = c("TRUE" = "#d4a000", "FALSE" = "#444444"),
+    guide  = "none"
+  ) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.16)),
+                     labels = \(x) paste0(x, " s")) +
+  
+  labs(
+    title    = "GPU batch inference: up to 4.51\u00d7 faster than sequential",
+    subtitle = "Orange = sequential cost extrapolated as N \u00d7 t(1 user). Green = actual measured batch time.",
+    x    = "Concurrent users (N)",
+    y    = "Time (s)",
+    fill = NULL
+  ) +
+  
+  theme_minimal(base_size = 13) +
+  theme(
+    plot.title         = element_text(face = "bold", size = 14),
+    plot.subtitle      = element_text(colour = "grey50", size = 10,
+                                      margin = margin(b = 10)),
+    legend.position    = "top",
+    legend.text        = element_text(size = 10),
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor   = element_blank()
+  )
+
+ggsave("log/batch_speedup_side.pdf", width = 9, height = 5.5)
+
+message("Saved: log/batch_speedup_side.pdf")
