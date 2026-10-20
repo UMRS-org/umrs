@@ -530,7 +530,7 @@ class UMRSThreads:
                 if item.done():
                     exc = item.exception()
                     if exc is not None:
-                        logger.error("Pool task raised: %s", exc)
+                        logger.error("Pool task raised: %s", exc, exc_info=exc)
                     finished_idents.append(id(item))
                 else:
                     running.append(item)
