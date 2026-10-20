@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
@@ -61,10 +62,13 @@ def filter_already_indexed(ctx, client_entries):
             except Exception:
                 return s3_uri, None
 
+        t0 = time.perf_counter()
         with ThreadPoolExecutor(max_workers=10) as pool:
             etag_map = dict(pool.map(_head, items))
+        t_head = time.perf_counter() - t0
 
         # Single SQL batch query for this bucket
+        t0 = time.perf_counter()
         db_keys = [f"{path_to_bucket}/{s3_key}" for _, _, s3_key in items]
         conn = data_base.get_conn()
         try:
@@ -77,14 +81,21 @@ def filter_already_indexed(ctx, client_entries):
                 db_checksums = {row[0]: row[1] for row in cur.fetchall()}
         finally:
             data_base.put_conn(conn)
+        t_sql = time.perf_counter() - t0
 
         # Filter: skip if ETag matches DB checksum
+        n_skipped_before = len(skip_uris)
         for _, s3_uri, s3_key in items:
             db_key = f"{path_to_bucket}/{s3_key}"
             etag = etag_map.get(s3_uri)
             db_checksum = db_checksums.get(db_key)
             if etag and db_checksum and etag == db_checksum:
                 skip_uris.add(s3_uri)
+
+        logger.info(
+            "[PROCESS] already-indexed check: bucket=%s n=%d head_object=%.3fs sql=%.3fs skipped=%d",
+            path_to_bucket, len(items), t_head, t_sql, len(skip_uris) - n_skipped_before,
+        )
 
     if skip_uris:
         logger.info("filter_already_indexed: skipping %d already-indexed object(s)", len(skip_uris))
@@ -161,7 +172,12 @@ class ProcessObjectsBatchHandler(CommandHandler):
             if data_queue is None:
                 logger.warning("No data queue for client=%s in batch", client_id)
                 return client_id, None
+            t0 = time.perf_counter()
             objects = data_queue.wait_for_s3_events(nb_objects, timeout_s=60)
+            logger.info(
+                "[PROCESS] S3 events: client=%s received %d/%d in %.3fs",
+                client_id, len(objects), nb_objects, time.perf_counter() - t0,
+            )
             if len(objects) < nb_objects:
                 logger.warning(
                     "Received %s/%s S3 events for client=%s (timeout)",
