@@ -3,6 +3,7 @@
 import logging
 import os
 import threading
+import time
 from collections import defaultdict
 
 from umrs.core.TaskCmdStatus import TaskStatus
@@ -129,6 +130,22 @@ def prepare_model_groups(
     return result_groups
 
 
+def _client_timings(cid, items, client_sets, count_update_s, common):
+    """Pool-thread measurements for one client, for its [TIMING] line."""
+    idx = [i for i, clients in enumerate(client_sets) if cid in clients]
+    item_timings = [items[i].get("_timings", {}) for i in idx]
+    shared = item_timings[0] if item_timings else {}
+    return {
+        **common,
+        "path": shared.get("path", "none"),
+        "fetch_preprocess_s": shared.get("fetch_preprocess_s", 0.0),
+        "forward_s": shared.get("forward_s", 0.0),
+        "embed_s": shared.get("embed_s", 0.0),
+        "store_s": sum(t.get("store_s", 0.0) for t in item_timings),
+        "count_update_s": sum(count_update_s[i] for i in idx if i < len(count_update_s)),
+    }
+
+
 def process_model_group(
     active_threads,
     items,
@@ -151,6 +168,7 @@ def process_model_group(
     ``_clients``, and ``_user`` from each item before forwarding to the
     embedding backend.
     """
+    t_thread_start = time.perf_counter()
     # Register this thread in thread_dict so update_status_to_done() can locate it.
     # Must happen before any items are popped (s3_keys and path_to_bucket are still present).
     keys_per_bucket = {item["path_to_bucket"]: item["s3_keys"] for item in items}
@@ -195,8 +213,10 @@ def process_model_group(
     for item in items:
         item.pop("_user", None)
 
+    t0 = time.perf_counter()
     for lock in reentrant_locks:
         lock.acquire()
+    lock_wait_s = time.perf_counter() - t0
     try:
         results = embedding_backend.compute_and_store_batch(items)
     finally:
@@ -205,17 +225,30 @@ def process_model_group(
 
     # --- Per-bucket result processing ---
     client_status = {cid: TaskStatus.COMPLETED for cid in group_callbacks}
+    count_update_s = []
     for item, ok in zip(items, results):
+        t0 = time.perf_counter()
         buckets_cfg.update_num_objects(item["path_to_bucket"])
+        count_update_s.append(time.perf_counter() - t0)
         if not ok:
             for cid in client_sets[items.index(item)]:
                 if cid in client_status:
                     client_status[cid] = TaskStatus.ERROR
 
     # --- Fire per-client final callbacks ---
+    common = {
+        "model": model_name,
+        "batch_tasks": sorted(tid for cb in group_callbacks.values() for tid in getattr(cb, "task_ids", ())),
+        "t_thread_start": t_thread_start,
+        "lock_wait_s": lock_wait_s,
+    }
     for cid, status in client_status.items():
         cb = group_callbacks.get(cid)
-        if cb:
+        if cb is None:
+            continue
+        if hasattr(cb, "finish"):
+            cb.finish(status, _client_timings(cid, items, client_sets, count_update_s, common))
+        else:
             cb(status)
 
     # --- Thread-dict lifecycle ---
