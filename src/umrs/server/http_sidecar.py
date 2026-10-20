@@ -620,7 +620,12 @@ async def _wire_a2l_recorder(application) -> None:
                 kwargs["ssl"] = "disable"  # jobs pool parity
             pool = await asyncpg.create_pool(**kwargs)
             application.state.umrs_knowledge_asyncpg_pool = pool
-            configure_recorder(StoreA2lRecorder(init_a2l_store(pool)))
+            # The durable runtime's checkers run on their own loop thread;
+            # asyncpg is loop-affine, so the recorder bounces store calls
+            # home (2026-10-20, ops-watch cross-loop errors).
+            configure_recorder(
+                StoreA2lRecorder(init_a2l_store(pool), owner_loop=asyncio.get_running_loop())
+            )
             logger.info("a2l conservation recorder wired (ADR-034)")
         else:
             logger.info("a2l conservation recorder: no DSN — Null recorder")

@@ -11,12 +11,22 @@ Event keying contract (ADR-034): every event carries ``job_id`` and
 ``attempt_id``; artifact events also carry the deterministic content hash.
 The recorder persists conserved *additions* only — it does not copy execution
 state.
+
+Loop affinity (2026-10-20): the sidecar builds the asyncpg pool on the
+uvicorn loop, but the durable job runtime drives workflow checkers on its
+own loop thread. asyncpg connections are loop-affine — awaited from the
+wrong loop they logged "Future attached to a different loop", "another
+operation is in progress", "connection was closed in the middle of
+operation" (ops-watch 2026-10-17/18). ``StoreA2lRecorder`` therefore bounces
+store calls to the pool's owner loop when the caller runs elsewhere.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
-from typing import Protocol
+from collections.abc import Coroutine
+from typing import Any, Protocol
 
 logger = logging.getLogger(__name__)
 
@@ -86,9 +96,26 @@ def configure_recorder(recorder: A2lRecorder) -> None:
 class StoreA2lRecorder:
     """Recorder backed by the durable ConservationStore (asyncpg)."""
 
-    def __init__(self, store: object) -> None:
+    def __init__(
+        self, store: object, owner_loop: asyncio.AbstractEventLoop | None = None
+    ) -> None:
         # typed loosely to avoid a hard import cycle with store module state
         self._store = store
+        # The loop the store's asyncpg pool belongs to; store calls from any
+        # other loop bounce through run_coroutine_threadsafe (module docstring).
+        self._owner_loop = owner_loop
+
+    async def _on_owner_loop(self, coro: Coroutine[Any, Any, Any]) -> Any:
+        """Await *coro* on the pool's loop, wherever the caller runs."""
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        owner = self._owner_loop
+        if owner is None or running is owner or not owner.is_running():
+            return await coro
+        future = asyncio.run_coroutine_threadsafe(coro, owner)
+        return await asyncio.wait_for(asyncio.wrap_future(future), timeout=30)
 
     async def record_attempt_artifact(self, **kwargs: object) -> str | None:
         from datetime import datetime, timezone
@@ -115,22 +142,24 @@ class StoreA2lRecorder:
                     job_id=job_id,
                     attempt_id=attempt_id,
                 )
-                record = await self._store.derive_artifact(derive)  # type: ignore[attr-defined]
+                record = await self._on_owner_loop(self._store.derive_artifact(derive))  # type: ignore[attr-defined]
             else:
                 # Parent-less conservation (ingest-style): direct row.
-                record = await self._store.create_artifact(  # type: ignore[attr-defined]
-                    ArtifactRecord(
-                        id=compute_artifact_id(
-                            str(kw["content_hash"]), operation, str(kw["artifact_type"])
-                        ),
-                        type=str(kw["artifact_type"]),
-                        uri=str(kw["artifact_uri"]),
-                        user_id=str(kw["user_id"]),
-                        metadata=dict(kw.pop("metadata", None) or {}),
-                        project_id=kw.get("project_id"),  # type: ignore[arg-type]
-                        job_id=job_id,
-                        attempt_id=attempt_id,
-                        created_at=datetime.now(timezone.utc).isoformat(),
+                record = await self._on_owner_loop(
+                    self._store.create_artifact(  # type: ignore[attr-defined]
+                        ArtifactRecord(
+                            id=compute_artifact_id(
+                                str(kw["content_hash"]), operation, str(kw["artifact_type"])
+                            ),
+                            type=str(kw["artifact_type"]),
+                            uri=str(kw["artifact_uri"]),
+                            user_id=str(kw["user_id"]),
+                            metadata=dict(kw.pop("metadata", None) or {}),
+                            project_id=kw.get("project_id"),  # type: ignore[arg-type]
+                            job_id=job_id,
+                            attempt_id=attempt_id,
+                            created_at=datetime.now(timezone.utc).isoformat(),
+                        )
                     )
                 )
             return record.id
@@ -147,15 +176,17 @@ class StoreA2lRecorder:
 
         kw = dict(kwargs)
         try:
-            record = await self._store.create_decision(  # type: ignore[attr-defined]
-                DecisionCreate(
-                    decided_by=str(kw["decided_by"]),
-                    decision=str(kw["decision"]),
-                    rationale=str(kw.get("rationale") or ""),
-                    job_id=str(kw.get("job_id") or ""),
-                    attempt_id=str(kw.get("attempt_id") or ""),
-                    artifact_id=str(kw.get("artifact_id") or ""),
-                    payload=dict(kw.get("payload") or {}),
+            record = await self._on_owner_loop(
+                self._store.create_decision(  # type: ignore[attr-defined]
+                    DecisionCreate(
+                        decided_by=str(kw["decided_by"]),
+                        decision=str(kw["decision"]),
+                        rationale=str(kw.get("rationale") or ""),
+                        job_id=str(kw.get("job_id") or ""),
+                        attempt_id=str(kw.get("attempt_id") or ""),
+                        artifact_id=str(kw.get("artifact_id") or ""),
+                        payload=dict(kw.get("payload") or {}),
+                    )
                 )
             )
             return record.id

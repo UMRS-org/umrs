@@ -23,7 +23,6 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-import psycopg2
 from psycopg2.extras import RealDictCursor
 
 from umrs.metrics import METRICS
@@ -303,47 +302,44 @@ class JobStore:
         now = datetime.now(timezone.utc).replace(tzinfo=None)
 
         with self._get_conn() as conn, conn.cursor() as cur:
-            try:
-                cur.execute(
-                    """
-                        INSERT INTO jobs (
-                            job_id, project_id, user_id, job_type, spec,
-                            idempotency_key, status, priority,
-                            desired_max_attempts, restart_policy, ttl_seconds,
-                            venue, created_at, updated_at
-                        ) VALUES (
-                            %s, %s, %s, %s, %s,
-                            %s, %s, %s,
-                            %s, %s, %s,
-                            %s, %s, %s
-                        )
-                    """,
-                    (
-                        job_id,
-                        project_id,
-                        user_id,
-                        job_type.value,
-                        json.dumps(spec),
-                        idempotency_key,
-                        JobStatus.PLANNED.value,
-                        priority,
-                        max_attempts,
-                        restart_policy.value,
-                        ttl_seconds,
-                        venue,
-                        now,
-                        now,
-                    ),
-                )
-                conn.commit()
-                logger.info(f"Created job {job_id} (type={job_type.value})")
-                METRICS.job_submitted(job_type.value)
-                METRICS.jobs_created(job_type.value)
-                return job_id
-
-            except psycopg2.errors.UniqueViolation:
-                conn.rollback()
-                # Find existing job
+            # ON CONFLICT (not try/UniqueViolation): a plain INSERT that loses
+            # the idempotency race logs an ERROR server-side for a fully
+            # handled path — it surfaced as ops-watch noise (2026-10-17).
+            cur.execute(
+                """
+                    INSERT INTO jobs (
+                        job_id, project_id, user_id, job_type, spec,
+                        idempotency_key, status, priority,
+                        desired_max_attempts, restart_policy, ttl_seconds,
+                        venue, created_at, updated_at
+                    ) VALUES (
+                        %s, %s, %s, %s, %s,
+                        %s, %s, %s,
+                        %s, %s, %s,
+                        %s, %s, %s
+                    )
+                    ON CONFLICT (project_id, idempotency_key) DO NOTHING
+                    RETURNING job_id
+                """,
+                (
+                    job_id,
+                    project_id,
+                    user_id,
+                    job_type.value,
+                    json.dumps(spec),
+                    idempotency_key,
+                    JobStatus.PLANNED.value,
+                    priority,
+                    max_attempts,
+                    restart_policy.value,
+                    ttl_seconds,
+                    venue,
+                    now,
+                    now,
+                ),
+            )
+            if cur.fetchone() is None:
+                # Lost the idempotency race: no row inserted above.
                 cur.execute(
                     """
                         SELECT job_id FROM jobs
@@ -353,7 +349,13 @@ class JobStore:
                 )
                 row = cur.fetchone()
                 existing_id = row[0] if row else "unknown"
-                raise DuplicateJobError(existing_id) from None
+                raise DuplicateJobError(existing_id)
+
+            conn.commit()
+            logger.info(f"Created job {job_id} (type={job_type.value})")
+            METRICS.job_submitted(job_type.value)
+            METRICS.jobs_created(job_type.value)
+            return job_id
 
     def create_fan_out_graph(
         self,

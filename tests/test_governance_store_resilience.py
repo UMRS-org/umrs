@@ -133,3 +133,28 @@ def test_get_quota_success_second_attempt_when_pool_conn_recovers_later():
 
     assert out is not None
     assert store.conn is fresh_conn
+
+
+def test_get_quota_recovers_when_cursor_open_raises_on_dead_conn():
+    """2026-10 recurrence: ``conn.cursor()`` raising (not ``execute``) skipped
+    the Sep-8 retry loop entirely — cursor creation moved inside the try."""
+    dead = MagicMock(name="dead_conn")
+    dead.cursor.side_effect = psycopg2.InterfaceError("connection already closed")
+    fresh_conn = _conn(_cursor_with(None, _row()))
+    pool = _FakePool(fresh_conn)
+    store = GovernanceStore(dead, pool=pool)
+
+    result = store.get_quota("default", "endpoints")
+
+    assert result is not None
+    assert result["project_id"] == "default"
+    assert store.conn is fresh_conn
+    assert pool.getconn_calls == 1
+
+
+def test_get_quota_cursor_open_raises_twice_no_pool_fails_gracefully():
+    dead = MagicMock(name="dead_conn")
+    dead.cursor.side_effect = psycopg2.InterfaceError("connection already closed")
+    store = GovernanceStore(dead)  # no pool
+
+    assert store.get_quota("default", "endpoints") is None
