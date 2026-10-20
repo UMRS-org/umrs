@@ -265,21 +265,18 @@ def _load_one_batch(items, key_batch):
         loaded.append((item_idx, objs[0], checksums[0], metas[0], sizes[0], has_zero))
     return loaded
 
-
 def _prefetch_worker(items, batches, out_q, io_times):
-    """Background thread: load S3 batches and push them onto *out_q*.
-
-    Appends each batch's pure S3 load time to *io_times* (queue blocking
-    time is intentionally excluded so the log reflects actual I/O cost).
-    Pushes ``None`` as a done sentinel.
-    """
-    for batch in batches:
-        t0 = time.perf_counter()
-        loaded = _load_one_batch(items, batch)   # measure only S3 loading
-        io_times.append(time.perf_counter() - t0)
-        out_q.put(loaded)                         # may block if queue is full
-    out_q.put(None)
-
+    try:
+        for batch in batches:
+            t0 = time.perf_counter()
+            loaded = _load_one_batch(items, batch)
+            io_times.append(time.perf_counter() - t0)
+            out_q.put(loaded)
+    except Exception:
+        logger.exception("_prefetch_worker failed")
+    finally:
+        out_q.put(None)  # workd even with an exception
+        
 
 def _pipelined_embed(items, model, batch_size):
     """Overlap S3 I/O with GPU compute using a one-batch prefetch queue.
@@ -417,8 +414,8 @@ def compute_and_store_embedding_batch(items, store_fn=None):
         return [False] * len(items)
 
     logger.info(
-        "[embed] n=%d  wall=%.3fs  io=%.3fs  compute=%.3fs  model=%s",
-        n_objects, t_wall, t_io, t_compute, getattr(model, "model_name", "?"),
+        "[embed] n=%d  wall=%.3fs  io=%.3fs  compute=%.3fs  model=%s batch_size=%d",
+        n_objects, t_wall, t_io, t_compute, getattr(model, "model_name", "?"), batch_size
     )
 
     if store_fn is None:
