@@ -4388,6 +4388,22 @@ def _lazy_artifact_reader() -> Any:
     return read
 
 
+def _lazy_chunked_reader() -> Any:
+    """``source_ref -> bytes | None``: only the bytes the embed job chunked
+    (:func:`read_chunked_bytes`), which every chunk-text slice lies in — the
+    export's fallback for a chunk whose stored text does not match read the
+    artifact whole (fixverify memfix-r3 round 2; retrieval reads the same)."""
+    state: dict[str, Any] = {}
+
+    def read(source_ref: str) -> bytes | None:
+        if "client" not in state:
+            state["client"], state["bucket"] = _build_s3_client({})
+        got = read_chunked_bytes(state["client"], state["bucket"], source_ref)
+        return None if got is None else got.content
+
+    return read
+
+
 def _chunk_text_kwargs(
     spec: dict[str, Any] | None, submitter: str = ""
 ) -> dict[str, Any]:
@@ -4439,6 +4455,7 @@ class _ExportIntegrityMixin:
             secret_key=secret_key,
             allow_unsigned=allow_unsigned,
             artifact_reader=_lazy_artifact_reader(),
+            chunk_reader=_lazy_chunked_reader(),
             include_raw=bool((raw or {}).get("include")),
             raw_acknowledgement=(raw or {}).get("acknowledgement"),
             **_chunk_text_kwargs(chunk_text_spec, submitter),
