@@ -19,8 +19,9 @@ import json
 import os
 from typing import Any
 
-from fastapi import HTTPException, Request
+from fastapi import Request
 
+from umrs.api.error_responses import DATABASE_UNAVAILABLE_CODE
 from umrs.api.typed_errors import PlatformError, raise_typed
 
 
@@ -107,7 +108,16 @@ async def knowledge_asyncpg_pool(request: Request):
 
     dsn, is_local = _resolve_knowledge_dsn()
     if not dsn:
-        raise HTTPException(status_code=503, detail="Database unavailable (no DSN)")
+        # Typed (cycle-3, 2026-10-22): an untyped 503 reads in r4 as "no
+        # model endpoint, run `r4 endpoint up`"; database.unavailable reads
+        # as the platform's database service. Detail unchanged.
+        raise_typed(
+            PlatformError(
+                code=DATABASE_UNAVAILABLE_CODE,
+                message="Database unavailable (no DSN)",
+                http_status=503,
+            )
+        )
     try:
         import asyncpg
     except ImportError as exc:
