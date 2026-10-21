@@ -153,7 +153,8 @@ def test_an_object_that_is_gone_is_a_permanent_failure(monkeypatch, code):
     failure = _text(monkeypatch, None, s3=_S3(_S3Error(code)))
     assert failure == {
         "artifact_id": "art-1",
-        "error": "artifact object is gone",
+        "error": "document content missing: the stored object k/a.md is gone",
+        "code": "content_missing",
         "permanent": True,
     }
 
