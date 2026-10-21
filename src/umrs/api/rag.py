@@ -736,13 +736,14 @@ async def _upload_via_endpoint(
     )
 
     try:
-        content = await file.read()
-
         async with httpx.AsyncClient(timeout=timeout) as client:
+            # The spooled part itself: httpx streams a file object in 64 KiB
+            # chunks. ``await file.read()`` held the whole upload in memory
+            # (cycle-3 N4: a 1 GiB upload, +1 GiB peak RSS; nginx allows 10 GB).
             files = {
                 "file": (
                     file.filename,
-                    content,
+                    file.file,
                     file.content_type or "application/octet-stream",
                 )
             }

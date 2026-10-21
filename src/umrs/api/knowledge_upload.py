@@ -19,6 +19,8 @@ pre-dwell ambiguity this leg closes).
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import logging
 from typing import Any
 from uuid import uuid4
@@ -67,43 +69,61 @@ def _refuse_oversize_upload(size: int | None) -> None:
         )
 
 
+class _UploadTooLarge(Exception):
+    """The streamed part passed the cap (a part whose size was not known)."""
+
+
+class _StagingReader:
+    """File-like view boto3 stages the part through: sha256 and size as it
+    streams, refused once the cap is passed. Only one chunk is held at a time."""
+
+    def __init__(self, raw: Any) -> None:
+        self._raw = raw
+        self.sha256 = hashlib.sha256()
+        self.size = 0
+
+    def read(self, size: int = -1) -> bytes:
+        chunk = self._raw.read(size)
+        self.size += len(chunk)
+        if self.size > _KNOWLEDGE_UPLOAD_MAX_BYTES:
+            raise _UploadTooLarge
+        self.sha256.update(chunk)
+        return chunk
+
+
 async def _stage_upload_bytes(
     file: UploadFile, *, bucket: str, staged_key: str, client: Any
 ) -> tuple[str, int]:
-    """Read + size-check + put_object (venue faults are honest 503s/413s).
+    """Size-check + stream the part to the object store (venue faults are
+    honest 503s, oversize 413s).
 
     Returns ``(content_sha256, byte_size)`` of the staged payload so the
     per-user disk ledger (ADR-051 D-3) can charge the uploader once per
-    unique object.
+    unique object. The part is streamed, never read whole: ``await
+    file.read()`` held the upload in memory (cycle-3 N4: a 400 MiB
+    /umrs/rag/upload, +412 MiB peak RSS).
     """
     # The part's size first: refusing only after read() held the whole
     # oversize body in memory (2026-10-21: a 700 MiB upload, +683 MiB RSS).
     _refuse_oversize_upload(getattr(file, "size", None))
+    reader = _StagingReader(file.file)
     try:
-        content = await file.read()
-    except Exception as exc:  # body-read failure is caller-side physics
-        raise_typed(
-            PlatformError.knowledge2(
-                "bad_request", f"Failed to read upload body: {exc}"
-            ),
-            cause=exc,
+        await asyncio.to_thread(
+            client.upload_fileobj,
+            reader,
+            bucket,
+            staged_key,
+            ExtraArgs={"ContentType": file.content_type or "application/octet-stream"},
         )
-    _refuse_oversize_upload(len(content))
-    try:
-        client.put_object(
-            Bucket=bucket,
-            Key=staged_key,
-            Body=content,
-            ContentType=file.content_type or "application/octet-stream",
-        )
+    except _UploadTooLarge:
+        _cleanup_staged_bytes(client=client, bucket=bucket, staged_key=staged_key)
+        _refuse_oversize_upload(reader.size)
     except Exception as exc:  # venue fault: fail honest, never silent-fallback
         raise_typed(
             PlatformError.knowledge2("unavailable", f"S3 staging unavailable: {exc}"),
             cause=exc,
         )
-    import hashlib
-
-    return hashlib.sha256(content).hexdigest(), len(content)
+    return reader.sha256.hexdigest(), reader.size
 
 
 def _cleanup_staged_bytes(*, client: Any, bucket: str, staged_key: str) -> None:

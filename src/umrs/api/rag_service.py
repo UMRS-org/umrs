@@ -16,7 +16,7 @@ os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 import contextlib
 
 import httpx
-from fastapi import FastAPI, File, Form, Query, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from langchain_community.embeddings import SentenceTransformerEmbeddings
 from langchain_core.callbacks import CallbackManagerForRetrieverRun
 from langchain_core.documents import Document
@@ -1635,8 +1635,28 @@ def rag_query(payload: GatewayQueryRequest) -> GatewayQueryResponse:
     )
 
 
+def _upload_max_bytes() -> int:
+    """Cap on one /rag/upload (UMRS_RAG_UPLOAD_MAX_BYTES, default 512 MiB)."""
+    try:
+        return int(os.environ.get("UMRS_RAG_UPLOAD_MAX_BYTES", "") or 512 * 1024 * 1024)
+    except ValueError:
+        return 512 * 1024 * 1024
+
+
+def _refuse_oversize(size: int | None) -> None:
+    """413 from the part's size, before the text is read and decoded whole
+    (chunking needs it whole; the gateway lets 10 GB through, cycle-3 N4)."""
+    cap = _upload_max_bytes()
+    if isinstance(size, int) and size > cap:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Upload exceeds the {cap // (1024 * 1024)} MiB RAG upload limit",
+        )
+
+
 async def _read_upload_text(file: UploadFile) -> tuple[bytes, str]:
     """Validate upload basics; return (raw_bytes, decoded_text)."""
+    _refuse_oversize(getattr(file, "size", None))
     if not file.filename:
         raise_typed(PlatformError.ragservice("bad_request", "Filename required"))
     if EMBEDDINGS is None:

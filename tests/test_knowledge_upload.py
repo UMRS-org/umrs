@@ -22,6 +22,11 @@ class _FakeS3Client:
             raise RuntimeError("minio wedged")
         self.puts.append(kwargs)
 
+    def upload_fileobj(self, fileobj, bucket, key, ExtraArgs=None):  # noqa: N803 — boto3's name
+        # Staging streams since cycle-3 N4; recorded in put_object's shape.
+        body = b"".join(iter(lambda: fileobj.read(65536), b""))
+        self.put_object(Bucket=bucket, Key=key, Body=body, **(ExtraArgs or {}))
+
 
 _RUNTIME_CALLS: list[dict] = []
 

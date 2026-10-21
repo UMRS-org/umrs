@@ -42,6 +42,9 @@ class _NoS3:
     def put_object(self, **_kw):
         raise AssertionError("an oversize upload must not be staged")
 
+    def upload_fileobj(self, *_a, **_kw):
+        raise AssertionError("an oversize upload must not be staged")
+
 
 def test_oversize_knowledge_upload_is_413_without_reading(monkeypatch) -> None:
     monkeypatch.setattr(knowledge_upload, "_KNOWLEDGE_UPLOAD_MAX_BYTES", 1024)
