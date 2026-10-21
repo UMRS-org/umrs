@@ -95,6 +95,13 @@ umrs = "umrs.client.cli:main"
 umrs-client = "umrs.client.cli:main"  # backwards-compatible alias
 umrs-server = "umrs.server.main:main"
 
+[tool.uv]
+# uv lock resolution only (pip ignores it): src/uv.lock resolves for Python
+# >= 3.11 so it can carry pillow 13 (CRITICAL CVE-2026-112403; 13.0.0 needs
+# 3.11). requires-python stays >=3.10 so `pip install -e src[client]` keeps
+# working for the r4 client on 3.10 (ADR-096, 2026-10-21).
+environments = ["python_version >= '3.11'"]
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["umrs*"]

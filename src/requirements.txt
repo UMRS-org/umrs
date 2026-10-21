@@ -11,6 +11,9 @@ scikit-learn
 psycopg2-binary
 boto3
 pillow>=12.3.0
+# 13.0.0 fixes CVE-2026-112403 (CRITICAL) + 6 HIGH but needs Python 3.11;
+# 3.10 server hosts keep the 12.3.0 floor above (ADR-096, 2026-10-21).
+pillow>=13.0.0; python_version >= "3.11"
 posix_ipc
 sysv_ipc
 pyzmq
