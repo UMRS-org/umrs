@@ -266,7 +266,19 @@ def compute_idempotency_key(
 #: D-11, wave F). Hashing its spec made an identical repeat 409 for ever (the
 #: unique index on (project_id, idempotency_key) is not partial on status)
 #: and, over ZMQ, silently return the old completed job.
-FRESH_PASS_JOB_TYPES = frozenset({JobType.KNOWLEDGE_REINDEX})
+#: Job types deduplicated ONLY while an identical job is in flight (N3,
+#: 2026-10-21): a KNOWLEDGE_INGEST of the same sources is double-click
+#: protected (409 naming the live job), but once that job is terminal the
+#: same spec is a fresh pass, so a git repo or URL can be re-ingested to pick
+#: up new content. Their keys are fresh-pass keys (below);
+#: ``JobStore.create_job`` refuses while a job of the same spec hash is live.
+INFLIGHT_DEDUPE_JOB_TYPES = frozenset({JobType.KNOWLEDGE_INGEST})
+FRESH_PASS_JOB_TYPES = frozenset({JobType.KNOWLEDGE_REINDEX}) | INFLIGHT_DEDUPE_JOB_TYPES
+
+#: Statuses after which a job does no more work.
+TERMINAL_JOB_STATUSES = frozenset(
+    {JobStatus.COMPLETED, JobStatus.ALL_COMPLETE, JobStatus.FAILED, JobStatus.CANCELLED}
+)
 
 
 def default_idempotency_key(

@@ -28,6 +28,8 @@ from psycopg2.extras import RealDictCursor
 from umrs.metrics import METRICS
 
 from .models import (
+    INFLIGHT_DEDUPE_JOB_TYPES,
+    TERMINAL_JOB_STATUSES,
     AttemptStatus,
     Job,
     JobAttempt,
@@ -73,6 +75,47 @@ class InvalidTransitionError(JobStoreError):
 #: for at most this many tries, instead of failing the user's cancel.
 _CANCEL_LOCK_TRIES = 20
 _LOCK_RETRY_DELAY_S = 0.05
+
+
+#: Advisory-lock class (two-key form, its own key space) serialising the
+#: in-flight check + insert of INFLIGHT_DEDUPE_JOB_TYPES submits.
+_INFLIGHT_LOCK_CLASS = 0x4E33
+
+
+def _refuse_inflight_duplicate(conn: Any, cur: Any, project_id: str, base_key: str) -> None:
+    """Raise DuplicateJobError naming a live job of the same spec hash.
+
+    The check and the caller's INSERT run in one transaction under an
+    advisory lock on (project, spec hash), so two identical submits racing
+    each other still yield one job. A terminal job of the same spec does not
+    count: the new submit is a fresh pass (N3, 2026-10-21). Keys are the
+    bare hash (rows before the fresh-pass key) or ``<hash>:<nonce>``.
+    """
+    digest = hashlib.sha256(f"{project_id}:{base_key}".encode()).digest()
+    lock_key = int.from_bytes(digest[:4], byteorder="big") & 0x7FFFFFFF
+    cur.execute(
+        "SELECT pg_advisory_xact_lock(%s, %s)", (_INFLIGHT_LOCK_CLASS, lock_key)
+    )
+    cur.execute(
+        """
+            SELECT job_id FROM jobs
+            WHERE project_id = %s
+              AND (idempotency_key = %s OR idempotency_key LIKE %s)
+              AND NOT (status = ANY(%s))
+            ORDER BY created_at
+            LIMIT 1
+        """,
+        (
+            project_id,
+            base_key,
+            f"{base_key}:%",
+            sorted(s.value for s in TERMINAL_JOB_STATUSES),
+        ),
+    )
+    row = cur.fetchone()
+    if row is not None:
+        conn.rollback()  # ends the transaction: releases the advisory lock
+        raise DuplicateJobError(row[0])
 
 
 def _try_advisory_lock(cur: Any, lock_key: int, tries: int) -> bool:
@@ -286,10 +329,15 @@ class JobStore:
         """
         job_id = generate_job_id()
 
+        inflight_base: str | None = None
         if idempotency_key is None:
             idempotency_key = default_idempotency_key(
                 project_id, user_id, job_type, spec
             )
+            if job_type in INFLIGHT_DEDUPE_JOB_TYPES:
+                inflight_base = compute_idempotency_key(
+                    project_id, user_id, job_type, spec
+                )
 
         # WP-14 venue resolution: cluster-set venue wins with prefix stripped
         # (`cluster:rccs-front` → the site-bound label 'rccs-front' so claims
@@ -302,6 +350,8 @@ class JobStore:
         now = datetime.now(timezone.utc).replace(tzinfo=None)
 
         with self._get_conn() as conn, conn.cursor() as cur:
+            if inflight_base is not None:
+                _refuse_inflight_duplicate(conn, cur, project_id, inflight_base)
             # ON CONFLICT (not try/UniqueViolation): a plain INSERT that loses
             # the idempotency race logs an ERROR server-side for a fully
             # handled path — it surfaced as ops-watch noise (2026-10-17).
