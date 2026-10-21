@@ -482,6 +482,15 @@ def _dict_to_dataclass(cls, data: dict):
     return cls(**{k: v for k, v in data.items() if k in field_names})
 
 
+def resolve_site_config_path(path: str | None = None) -> str | None:
+    """Absolute path of the site.yaml that load_site_config would read, or None."""
+    candidates = [path] if path else [path_fn() for path_fn in _SEARCH_PATHS]
+    for candidate in candidates:
+        if candidate and os.path.isfile(candidate):
+            return os.path.abspath(candidate)
+    return None
+
+
 def load_site_config(path: str | None = None) -> SiteConfig:
     """Load a SiteConfig from a YAML file.
 
@@ -497,18 +506,8 @@ def load_site_config(path: str | None = None) -> SiteConfig:
     """
     import yaml  # deferred to avoid hard dep when unused
 
-    resolved: str | None = None
-
-    if path:
-        resolved = path
-    else:
-        for path_fn in _SEARCH_PATHS:
-            candidate = path_fn()
-            if candidate and os.path.isfile(candidate):
-                resolved = candidate
-                break
-
-    if not resolved or not os.path.isfile(resolved):
+    resolved = resolve_site_config_path(path)
+    if not resolved:
         raise FileNotFoundError(
             "No site.yaml found.  Set UMRS_SITE_CONFIG or place site.yaml in "
             "the working directory or the resolved UMRS config directory."

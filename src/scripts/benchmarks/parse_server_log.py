@@ -5,6 +5,7 @@ Usage: ./parse_umrs_logs.py <logfile> [--csv]
 """
 
 import argparse
+import csv
 import re
 import sys
 from datetime import datetime
@@ -20,6 +21,26 @@ P_SKIP        = re.compile(TS + r".*filter_already_indexed: skipping (\d+)")
 P_S3_READY    = re.compile(TS + r".*S3 events ready.*\('(\S+)',\s*(\d+)\)")
 P_RUNNING     = re.compile(TS + r".*\[TASK\] client=(\S+) task_id=(\d+) → Running")
 P_COMPLETED   = re.compile(TS + r".*\[TASK\] client=(\S+) task_id=(\d+) → Completed")
+P_TIMING      = re.compile(r"\[TIMING\] (.*)$")
+
+# [TIMING] keys -> CSV columns ("NA" when the log has no [TIMING] line for the task)
+TIMING_COLUMNS = [
+    ("status", "status"),
+    ("model", "model"),
+    ("path", "path"),
+    ("batch_tasks", "batch_tasks"),
+    ("s3_events_s", "s3_events(s)"),
+    ("index_check_sql_s", "index_check_sql(s)"),
+    ("index_check_head_s", "index_check_head(s)"),
+    ("dispatch_s", "dispatch(s)"),
+    ("lock_wait_s", "lock_wait(s)"),
+    ("fetch_preprocess_s", "fetch_preprocess(s)"),
+    ("forward_s", "forward(s)"),
+    ("embed_s", "embed(s)"),
+    ("store_s", "store(s)"),
+    ("count_update_s", "count_update(s)"),
+    ("total_s", "server_total(s)"),
+]
 
 
 def parse_ts(s):
@@ -44,6 +65,7 @@ class Task:
     t_s3_ready: datetime = None
     t_running: datetime = None
     t_completed: datetime = None
+    timing: dict = field(default_factory=dict)   # key=value fields of the [TIMING] line
 
     @property
     def upload_s3(self):
@@ -65,7 +87,10 @@ class Task:
 def main():
     parser = argparse.ArgumentParser(description="Parse UMRS server logs for timing info.")
     parser.add_argument("logfile")
-    parser.add_argument("--csv", action="store_true")
+    parser.add_argument("--csv", action="store_true",
+                        help="CSV output, including every field of the [TIMING] lines")
+    parser.add_argument("--timing", action="store_true",
+                        help="no effect: the [TIMING] columns are always in the CSV")
     args = parser.parse_args()
 
     tasks = {}            # task_id -> Task
@@ -153,18 +178,27 @@ def main():
                 tasks[task_id].t_completed = ts
             continue
 
+        m = P_TIMING.search(line)
+        if m:
+            fields = dict(kv.split("=", 1) for kv in m.group(1).split() if "=" in kv)
+            for task_id in fields.get("task_id", "").split(","):
+                if task_id in tasks:
+                    tasks[task_id].timing = fields
+            continue
+
     # Print
     header = ["task_id", "user", "n_batch", "n_skipped", "n_processed",
               "upload_s3(s)", "s3_check(s)", "server_exec(s)", "end_to_end(s)"]
 
     if args.csv:
-        print(",".join(header))
+        writer = csv.writer(sys.stdout, lineterminator="\n")  # quotes batch_tasks="1,2"
+        writer.writerow(header + [col for _, col in TIMING_COLUMNS])
         for t in tasks.values():
             n_proc = (t.n_objects_s3 or 0)
-            print(",".join(str(x) for x in [
+            writer.writerow([
                 t.task_id, t.user, t.n_objects_batch, t.n_skipped, n_proc,
-                t.upload_s3, t.s3_check, t.server_exec, t.end_to_end
-            ]))
+                t.upload_s3, t.s3_check, t.server_exec, t.end_to_end,
+            ] + [t.timing.get(key, "NA") for key, _ in TIMING_COLUMNS])
     else:
         col_w = [10, 12, 9, 10, 12, 14, 12, 16, 14]
         fmt = "".join(f"{{:<{w}}}" for w in col_w)
