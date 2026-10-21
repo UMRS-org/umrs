@@ -21,7 +21,7 @@ from unittest.mock import MagicMock, patch
 # ---------------------------------------------------------------------------
 # CurveSessionManager tests
 # ---------------------------------------------------------------------------
-from r4.curve_session import CurveSession, CurveSessionManager
+from r4.curve_session import CurveSession, CurveSessionManager, session_subject
 
 
 def _make_session(*, ttl: float = 3600.0, session_id: str = "s1") -> CurveSession:
@@ -40,15 +40,26 @@ class TestCurveSessionManagerResume:
     """ensure_session() correctly re-registers when sessions expire."""
 
     def test_reuse_valid_session(self, tmp_path: Path):
-        """A session with plenty of TTL is reused, not re-registered."""
+        """A session with plenty of TTL is reused, not re-registered.
+
+        Hermetic since 2026-10-21 (cycle 3): the session carried no subject,
+        so since the same-identity rule (r4 curve_session, cycle 2) it was not
+        reusable and the manager made a REAL POST to localhost:8082 — a 401
+        on any host where something listens there, a refusal elsewhere.
+        The session is now the caller's own, and registering is a failure.
+        """
         mgr = CurveSessionManager(
             umrs_base_url="http://localhost:8082",
             config_dir=tmp_path,
         )
         good_session = _make_session(ttl=3600)
+        good_session.subject = session_subject("fake-jwt")
         mgr._cached_session = good_session
 
-        result = mgr.ensure_session(jwt_token="fake-jwt")
+        with patch.object(
+            mgr, "_register_new_session", side_effect=AssertionError("re-registered")
+        ):
+            result = mgr.ensure_session(jwt_token="fake-jwt")
         assert result.session_id == good_session.session_id
 
     def test_reregister_when_ttl_under_60s(self, tmp_path: Path):
