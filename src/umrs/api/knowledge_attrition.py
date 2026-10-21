@@ -15,6 +15,15 @@ Contract (WP-15 ledger note):
 - Shared access rules: caller project-scoped results stay per-caller —
   you also orchestrate only your own corpus unless you're admin (P14
   occupancy).
+
+The per-project vector store is ``knowledge_node_embeddings`` (migration
+0075), the table KNOWLEDGE_EMBED writes for every chunk node of an ingested
+artifact, joined to ``knowledge_nodes`` for the project and the artifact
+(``content.artifact_id``). Until 2026-10-21 the route read
+``memory_vectors(id, vector, metadata, document_id, project_id)``: columns
+no migration creates (0010's ``memory_vectors`` is context memory, keyed by
+``memory_id``), so every call was a 500. A deployment without the table
+answers a typed ``knowledge.unavailable`` (503), never a 500.
 """
 
 from __future__ import annotations
@@ -28,9 +37,23 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from ..api._asyncpg_pool import knowledge_asyncpg_pool
 from ..api.files import get_project_id
+from .typed_errors import PlatformError, raise_typed
 
 router = APIRouter(prefix="/umrs/knowledge", tags=["knowledge"])
 logger = logging.getLogger(__name__)
+
+# One row per stored vector of the project's corpus (chunk nodes carry the
+# artifact they cut; another node's vector counts as its own document).
+_CORPUS_VECTORS_SQL = """
+    SELECT kne.node_id AS id,
+           COALESCE(kn.content->>'artifact_id', kn.node_id) AS document_id,
+           kn.content->>'corpus_venue' AS corpus_venue,
+           kne.created_at
+    FROM knowledge_node_embeddings kne
+    JOIN knowledge_nodes kn ON kn.node_id = kne.node_id
+    WHERE kn.project_id = $1
+"""
+_CORPUS_SOURCE = "knowledge_node_embeddings"
 
 _BUCKETS = (
     ("lt_30d", 30),
@@ -67,10 +90,9 @@ def _bucket(days: int | None) -> str:
 
 
 def _accumulate_row(out: dict[str, Any], row: Any, now: datetime) -> None:
-    """One memory_vector row into the running per-project report (never nulled)."""
+    """One stored vector into the running per-project report (never nulled)."""
     created_at = row["created_at"]
-    metadata = row["metadata"] if isinstance(row["metadata"], dict) else {}
-    venue = metadata.get("corpus_venue") or ""
+    venue = row["corpus_venue"] or ""
     days = _days_since(created_at, now)
     bucket = _bucket(days)
     bucket_entry = out["buckets"][bucket]
@@ -135,18 +157,31 @@ async def _report_for_project(pool: Any, project_id: str) -> dict[str, Any]:
             "newest": None,
         }
 
-    async with pool.acquire() as conn:
-        rows = await conn.fetch(
-            """
-            SELECT id, vector, metadata, document_id, created_at
-            FROM memory_vectors
-            WHERE project_id = $1
-            """,
-            project_id,
-        )
+    rows = await _corpus_vector_rows(pool, project_id)
     for row in rows:
         _accumulate_row(out, row, now)
+    out["source"] = _CORPUS_SOURCE
     return _finalize(out)
+
+
+async def _corpus_vector_rows(pool: Any, project_id: str) -> list[Any]:
+    """The project's stored vectors; a typed 503 when this deployment has no
+    per-project vector table (never a 500)."""
+    from asyncpg.exceptions import UndefinedColumnError, UndefinedTableError
+
+    try:
+        async with pool.acquire() as conn:
+            return list(await conn.fetch(_CORPUS_VECTORS_SQL, project_id))
+    except (UndefinedTableError, UndefinedColumnError) as exc:
+        raise_typed(
+            PlatformError.knowledge(
+                "unavailable",
+                "corpus attrition report is not available on this deployment: "
+                f"the per-project vector table ({_CORPUS_SOURCE}, migration "
+                "0075) is missing",
+            ),
+            cause=exc,
+        )
 
 
 @router.post("/corpus-attrition-report")
@@ -160,8 +195,8 @@ async def corpus_attrition_report(
     """Issue the read-only corpus-attrition report (WP-15 dwell sweep).
     # auth: verified
 
-    Rows come from per-documents-vector; counts and age buckets are
-    honest CSV receipts, never mutated by a caller.
+    Rows are the project's stored vectors (knowledge_node_embeddings);
+    counts and age buckets are honest receipts, never mutated by a caller.
     """
     pool = await knowledge_asyncpg_pool(request)
     if pool is None:

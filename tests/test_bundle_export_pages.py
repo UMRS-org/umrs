@@ -63,24 +63,6 @@ async def test_a_store_whose_count_disagrees_still_ends_and_counts_what_it_read(
     assert len(rows) == 15 and total == 15
 
 
-@pytest.mark.asyncio
-async def test_every_embedding_cursor_page_is_read(monkeypatch):
-    monkeypatch.setattr(bundle_export, "_PAGE_SIZE", 4)
-    vectors = [{"id": f"v{i:03d}", "vector": [float(i)]} for i in range(10)]
-    cursors: list[str] = []
-
-    async def paged(self, *, store, project_id, cursor, page_size):
-        cursors.append(cursor)
-        after = [v for v in vectors if v["id"] > cursor]
-        return after[:page_size], len(vectors)
-
-    monkeypatch.setattr(KnowledgeExportEngine, "_list_embeddings_paged", paged)
-    rows, total = await _engine(_PagedStore(0))._all_embeddings("p")
-    assert [r["id"] for r in rows] == [v["id"] for v in vectors]
-    assert total == 10
-    assert cursors == ["0", "v003", "v007"]
-
-
 def test_artifact_pages_have_a_total_order():
     """OFFSET paging over ``created_at`` alone can skip or repeat rows that
     share a timestamp (a bulk upload); the artifact id breaks the tie."""

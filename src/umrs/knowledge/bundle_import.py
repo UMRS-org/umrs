@@ -108,6 +108,8 @@ class KnowledgeImportResult:
     # trusted model / left for re-embedding (ADR-032 precondition #3).
     node_embedding_count: int = 0
     node_embeddings_pending: int = 0
+    # N1: legacy embeddings.jsonl rows (document-keyed) not imported.
+    legacy_embeddings_skipped: int = 0
     # ADR-032 raw-materials amendment: objects stored in the destination and
     # re-bound to their artifact / carried but not bound (the artifact row
     # deduped onto an existing one) / declined by the importer.
@@ -171,6 +173,7 @@ class KnowledgeImportResult:
             "catalog_registered": self.catalog_registered,
             "node_embedding_count": self.node_embedding_count,
             "node_embeddings_pending": self.node_embeddings_pending,
+            "legacy_embeddings_skipped": self.legacy_embeddings_skipped,
             "upgraded_from": self.upgraded_from,
             "canonical_matches": list(self.canonical_matches),
             "raw_restored": self.raw_restored,
@@ -1102,10 +1105,12 @@ class KnowledgeImportEngine:
         project_id: str,
         result: KnowledgeImportResult,
     ) -> tuple[int, int]:
-        embeddings = await self._restore_embeddings(bundle_path, project_id, result)
+        """``(embedding_count, catalog_count)``: the embeddings are the
+        project's node vectors (0075), as the export counts them (N1)."""
+        self._skip_legacy_embeddings(bundle_path, result)
         catalog = await self._restore_catalog(bundle_path, project_id, result)
         await self._restore_node_embeddings(bundle_path, result)
-        return embeddings, catalog
+        return result.node_embedding_count, catalog
 
     def _pool(self) -> Any:
         return getattr(self._store, "_pool", None)
@@ -1116,37 +1121,26 @@ class KnowledgeImportEngine:
             f"{result.degraded_reason}; {note}" if result.degraded_reason else note
         )
 
-    async def _restore_embeddings(
-        self,
-        bundle_path: Path,
-        project_id: str,
-        result: KnowledgeImportResult,
-    ) -> int:
+    def _skip_legacy_embeddings(
+        self, bundle_path: Path, result: KnowledgeImportResult
+    ) -> None:
+        """Legacy ``embeddings.jsonl`` rows are document-keyed vectors with no
+        per-project table to land in, so they are not imported -- and the
+        result says so (N1, 2026-10-21: they went to ``memory_vectors``
+        columns no migration creates, so a bundle carrying any failed the
+        import). The project's vectors ride ``node_embeddings.jsonl``."""
         path = bundle_path / _TABLE_FILES["embeddings"]
         if not path.exists():
-            return 0
-        pool = self._pool()
-        if pool is None:
-            self._mark_degraded(result, "embeddings skipped (no DB pool)")
-            return 0
-        count = 0
-        async with pool.acquire() as conn:
-            for row in _iter_rows(path):
-                try:
-                    await conn.execute(
-                        """INSERT INTO memory_vectors
-                           (project_id, vector, metadata, document_id)
-                           VALUES ($1, $2, $3, $4)
-                           ON CONFLICT DO NOTHING""",
-                        project_id,
-                        _vector_literal(row.get("vector")),
-                        row.get("metadata") or {},
-                        row.get("document_id"),
-                    )
-                    count += 1
-                except (KeyError, TypeError, ValueError) as exc:
-                    logger.warning("Skipping malformed embedding row: %s", exc)
-        return count
+            return
+        skipped = sum(1 for _ in _iter_rows(path))
+        result.legacy_embeddings_skipped = skipped
+        if skipped:
+            self._mark_degraded(
+                result,
+                f"embeddings not included: {skipped} legacy embeddings.jsonl "
+                "row(s) not imported (document-keyed vectors have no per-project "
+                "table; re-embed the artifacts to restore them)",
+            )
 
     async def _restore_node_embeddings(
         self, bundle_path: Path, result: KnowledgeImportResult

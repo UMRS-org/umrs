@@ -307,10 +307,8 @@ class TestKnowledgeExportEngine:
         )
 
         with (
-            patch.object(engine, "_list_embeddings_paged") as mock_emb,
             patch.object(engine, "_list_catalog") as mock_cat,
         ):
-            mock_emb.return_value = ([], 0)
             mock_cat.return_value = []
 
             result = await engine.export_project("test-project")
@@ -340,10 +338,8 @@ class TestKnowledgeExportEngine:
         )
 
         with (
-            patch.object(engine, "_list_embeddings_paged") as mock_emb,
             patch.object(engine, "_list_catalog") as mock_cat,
         ):
-            mock_emb.return_value = ([], 0)
             mock_cat.return_value = []
             await engine.export_project("test-project")
 
@@ -365,10 +361,8 @@ class TestKnowledgeExportEngine:
         )
 
         with (
-            patch.object(engine, "_list_embeddings_paged") as mock_emb,
             patch.object(engine, "_list_catalog") as mock_cat,
         ):
-            mock_emb.return_value = ([], 0)
             mock_cat.return_value = []
             await engine.export_project("test-project")
 
@@ -388,10 +382,8 @@ class TestKnowledgeExportEngine:
         )
 
         with (
-            patch.object(engine, "_list_embeddings_paged") as mock_emb,
             patch.object(engine, "_list_catalog") as mock_cat,
         ):
-            mock_emb.return_value = ([], 0)
             mock_cat.return_value = []
             await engine.export_project("test-project")
 
@@ -430,36 +422,14 @@ class TestKnowledgeExportEngine:
         )
 
         with (
-            patch.object(engine, "_list_embeddings_paged") as mock_emb,
             patch.object(engine, "_list_catalog") as mock_cat,
         ):
-            mock_emb.return_value = ([], 0)
             mock_cat.return_value = []
             await engine.export_project("test-project")
 
         manifest = json.loads((tmp_bundle_dir / "manifest.json").read_text())
         assert manifest["unsigned"] is True
         assert (tmp_bundle_dir / "signature.sig").read_text().strip() == ""
-
-    @pytest.mark.asyncio
-    async def test_embed_paged_cursor(self, fake_store: MagicMock) -> None:
-        """_list_embeddings_paged should use cursor-based pagination."""
-        engine = KnowledgeExportEngine(
-            store=fake_store,
-            output_dir=Path("/tmp/test"),
-            secret_key="",
-        )
-
-        rows, total = await engine._list_embeddings_paged(
-            store=fake_store,
-            project_id="test-project",
-            cursor="0",
-            page_size=500,
-        )
-
-        # Should have called the pool and returned rows (may be empty if mock not perfect)
-        assert isinstance(rows, list)
-        assert isinstance(total, int)
 
 
 # ── Backend Tests ─────────────────────────────────────────────────────────────
@@ -634,10 +604,8 @@ class TestReconcileSnapshotAttach:
             secret_key="k",
         )
         with (
-            patch.object(engine, "_list_embeddings_paged") as mock_emb,
             patch.object(engine, "_list_catalog") as mock_cat,
         ):
-            mock_emb.return_value = ([], 0)
             mock_cat.return_value = []
             await engine.export_project("test-project")
         manifest = json.loads((tmp_bundle_dir / "manifest.json").read_text())
@@ -659,10 +627,8 @@ class TestReconcileSnapshotAttach:
             secret_key="k",
         )
         with (
-            patch.object(engine, "_list_embeddings_paged") as mock_emb,
             patch.object(engine, "_list_catalog") as mock_cat,
         ):
-            mock_emb.return_value = ([], 0)
             mock_cat.return_value = []
             await engine.export_project("test-project")
         manifest = json.loads((tmp_bundle_dir / "manifest.json").read_text())
@@ -710,10 +676,8 @@ class TestBundleFormat:
         )
 
         with (
-            patch.object(engine, "_list_embeddings_paged") as mock_emb,
             patch.object(engine, "_list_catalog") as mock_cat,
         ):
-            mock_emb.return_value = ([], 0)
             mock_cat.return_value = []
             await engine.export_project("test-project")
 
@@ -758,10 +722,8 @@ class TestBundleFormat:
         fake_store.list_artifacts = AsyncMock(return_value=([], 0))
 
         with (
-            patch.object(engine, "_list_embeddings_paged") as mock_emb,
             patch.object(engine, "_list_catalog") as mock_cat,
         ):
-            mock_emb.return_value = ([], 0)
             mock_cat.return_value = []
             await engine.export_project("test-project")
 
@@ -785,10 +747,8 @@ class TestBundleFormat:
         )
 
         with (
-            patch.object(engine, "_list_embeddings_paged") as mock_emb,
             patch.object(engine, "_list_catalog") as mock_cat,
         ):
-            mock_emb.return_value = ([], 0)
             mock_cat.return_value = []
             await engine.export_project("test-project")
 
@@ -814,21 +774,8 @@ class TestBundleFormat:
         )
 
         with (
-            patch.object(engine, "_list_embeddings_paged") as mock_emb,
             patch.object(engine, "_list_catalog") as mock_cat,
         ):
-            mock_emb.return_value = (
-                [
-                    {
-                        "id": "1",
-                        "vector": [0.1, 0.2],
-                        "metadata": {},
-                        "document_id": "doc-1",
-                        "created_at": None,
-                    }
-                ],
-                1,
-            )
             mock_cat.return_value = [
                 {
                     "id": "1",
