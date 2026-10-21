@@ -9,7 +9,7 @@ import time
 import traceback
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 from umrs.cli.completion import (
     emit_completion_if_requested,
@@ -392,7 +392,7 @@ def _handle_info(args):
     lines.append(_section("ZMQ Status"))
     try:
         # Load CURVE session so ZMQ check uses auth if available
-        _maybe_load_saved_curve_session()
+        _maybe_load_saved_curve_session(connection)
         mq = MessageQueue(
             role="client",
             queue_type="control",
@@ -6870,46 +6870,98 @@ _ACTION_HANDLERS = {
 }
 
 
-def _maybe_load_saved_curve_session() -> bool:
+def _curve_session_path():
+    """``~/.config/r4/curve-session.json`` (shared with ``r4 login``)."""
+    from pathlib import Path as _Path
+
+    xdg = os.environ.get("XDG_CONFIG_HOME")
+    return (_Path(xdg, "r4") if xdg else _Path.home() / ".config" / "r4") / "curve-session.json"
+
+
+def _session_subject(credential: str) -> str:
+    """Who ``credential`` speaks for, as a cache key — r4's ``session_subject``.
+
+    A JWT's unverified ``iss`` + ``sub`` (a refreshed token keeps it); any
+    other credential's own digest. Never sent anywhere.
+    """
+    import base64 as _b64
+    import hashlib as _hashlib
+    import json as _json
+
+    claims: dict = {}
+    parts = credential.split(".")
+    if len(parts) == 3:
+        try:
+            decoded = _json.loads(_b64.urlsafe_b64decode(parts[1] + "=" * (-len(parts[1]) % 4)))
+            claims = decoded if isinstance(decoded, dict) else {}
+        except (ValueError, TypeError):
+            claims = {}
+    sub = claims.get("sub")
+    basis = f"jwt|{claims.get('iss', '')}|{sub}" if sub else f"key|{credential}"
+    return _hashlib.sha256(basis.encode()).hexdigest()[:32]
+
+
+def _session_is_live_for(data: dict, connection, jwt_token: str) -> bool:
+    """``data`` has >60 s left and was registered by ``jwt_token``'s identity at this deployment."""
+    import time as _time
+
+    expires_at = data.get("expires_at", 0)
+    if not isinstance(expires_at, (int, float)) or _time.time() >= expires_at - 60:
+        return False
+    if data.get("subject") != _session_subject(jwt_token):
+        return False
+    gateway_url = (getattr(connection, "gateway_url", None) or "").rstrip("/")
+    return not gateway_url or str(data.get("umrs_base_url") or "").rstrip("/") == gateway_url
+
+
+def _saved_session_keys(data, connection, jwt_token: str) -> tuple[str, str, str] | None:
+    """The saved session's keys when it is live, this deployment's and this identity's.
+
+    Before 2026-10-21 any live file was reused: after ``r4 login`` as bob,
+    bob's umrs commands rode alice's session and the server bound them to
+    alice (an admin's grants included).
+    """
+    if not isinstance(data, dict) or not _session_is_live_for(data, connection, jwt_token):
+        return None
+    server_pk = str(data.get("server_public_key") or "")
+    client_pk = str(data.get("client_public_key") or "")
+    client_sk = str(data.get("client_secret_key") or "")
+    if not (server_pk and client_pk and client_sk):
+        return None
+    return server_pk, client_pk, client_sk
+
+
+def _maybe_load_saved_curve_session(connection=None, jwt_token: str | None = None) -> bool:
     """Try to load a saved CURVE session from ``~/.config/r4/curve-session.json``.
 
-    If a valid (non-expired, >60s remaining) session exists, inject its keys
-    into the environment so MessageQueue picks them up.  Returns True on success.
+    If a live (>60s remaining) session registered by the identity
+    ``jwt_token`` speaks for (resolved from ``connection`` when not given)
+    at this deployment exists, inject its keys into the environment so
+    MessageQueue picks them up. Returns True on success; anything else is
+    left for a fresh registration.
 
     This avoids creating a new session on every client invocation when ``r4 login``
     has already established one.  No r4 package import — reads the JSON directly.
     """
     try:
         import json as _json
-        import time as _time
-        from pathlib import Path as _Path
 
-        xdg = os.environ.get("XDG_CONFIG_HOME")
-        session_path = (
-            _Path(xdg, "r4") if xdg else _Path.home() / ".config" / "r4"
-        ) / "curve-session.json"
-        if not session_path.is_file():
+        if jwt_token is None and connection is not None:
+            jwt_token = _resolve_session_jwt(connection)
+        session_path = _curve_session_path()
+        if not jwt_token or not session_path.is_file():
             return False
         data = _json.loads(session_path.read_text(encoding="utf-8"))
-        expires_at = data.get("expires_at", 0)
-        if _time.time() >= (expires_at - 60):
-            return False
-        server_pk = data.get("server_public_key", "")
-        client_pk = data.get("client_public_key", "")
-        client_sk = data.get("client_secret_key", "")
-        if not (server_pk and client_pk and client_sk):
+        keys = _saved_session_keys(data, connection, jwt_token)
+        if keys is None:
             return False
         os.environ["UMRS_ZMQ_AUTH_TYPE"] = "session"
-        os.environ["UMRS_ZMQ_CURVE_SERVER_PUBLIC_KEY"] = server_pk
-        os.environ["UMRS_ZMQ_CURVE_CLIENT_PUBLIC_KEY"] = client_pk
-        os.environ["UMRS_ZMQ_CURVE_CLIENT_SECRET_KEY"] = client_sk
+        os.environ["UMRS_ZMQ_CURVE_SERVER_PUBLIC_KEY"] = keys[0]
+        os.environ["UMRS_ZMQ_CURVE_CLIENT_PUBLIC_KEY"] = keys[1]
+        os.environ["UMRS_ZMQ_CURVE_CLIENT_SECRET_KEY"] = keys[2]
         import logging as _logging
 
-        _logging.getLogger(__name__).debug(
-            "Loaded saved CURVE session from %s (TTL %.0fs)",
-            session_path,
-            expires_at - _time.time(),
-        )
+        _logging.getLogger(__name__).debug("Loaded saved CURVE session from %s", session_path)
         return True
     except Exception:
         return False
@@ -6944,21 +6996,22 @@ def _resolve_session_jwt(connection) -> str | None:
     return jwt_token or None
 
 
-def _persist_curve_session(info, gateway_url: str) -> None:
+def _persist_curve_session(info, gateway_url: str, jwt_token: str | None = None) -> None:
     """Persist a freshly-bootstrapped CURVE session to ``~/.config/r4/curve-session.json``.
 
-    Matches the on-disk format written by ``r4 login`` so later client/r4
-    invocations reuse it.  Best-effort: failures are swallowed (the in-process
-    env vars set by ``bootstrap_curve_session`` already cover this invocation).
+    Matches the on-disk format written by ``r4 login`` (including the
+    ``subject`` of ``jwt_token``) so later client/r4 invocations by the same
+    identity reuse it. The secret key is 0600 from the first byte: a private
+    temp file, then one rename (before 2026-10-21: written under the umask,
+    world-readable, and chmod'ed afterwards). Best-effort: failures are
+    swallowed (the in-process env vars set by ``bootstrap_curve_session``
+    already cover this invocation).
     """
     try:
         import json as _json
-        from pathlib import Path as _Path
 
-        xdg = os.environ.get("XDG_CONFIG_HOME")
-        config_dir = _Path(xdg, "r4") if xdg else _Path.home() / ".config" / "r4"
-        config_dir.mkdir(parents=True, exist_ok=True)
-        session_path = config_dir / "curve-session.json"
+        session_path = _curve_session_path()
+        session_path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "session_id": info.session_id,
             "server_public_key": info.server_public_key,
@@ -6966,14 +7019,29 @@ def _persist_curve_session(info, gateway_url: str) -> None:
             "client_secret_key": info.client_secret_key,
             "expires_at": info.expires_at,
             "umrs_base_url": gateway_url.rstrip("/"),
+            "subject": _session_subject(jwt_token) if jwt_token else "",
         }
-        session_path.write_text(_json.dumps(payload, indent=2), encoding="utf-8")
-        try:
-            os.chmod(session_path, 0o600)
-        except OSError:
-            pass
+        _write_private_file(session_path, _json.dumps(payload, indent=2))
     except Exception:
         pass
+
+
+def _write_private_file(path, text: str) -> None:
+    """Write ``text`` to ``path`` atomically with mode 0600 from the first byte."""
+    import tempfile as _tempfile
+
+    fd, tmp = _tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}-", suffix=".tmp")
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def _force_refresh_curve_session(connection) -> bool:
@@ -7001,7 +7069,7 @@ def _force_refresh_curve_session(connection) -> bool:
             gateway_url=gateway_url,
             jwt_token=jwt_token,
         )
-        _persist_curve_session(info, gateway_url)
+        _persist_curve_session(info, gateway_url, jwt_token)
         import logging as _logging
 
         _logging.getLogger(__name__).debug(
@@ -7019,50 +7087,67 @@ def _force_refresh_curve_session(connection) -> bool:
         return False
 
 
+class CurveSessionUnavailable(RuntimeError):
+    """Session-mode ZMQ auth got no CURVE session; the client refuses plaintext."""
+
+
+def _fail_closed_session(reason: str) -> NoReturn:
+    """Keep ``UMRS_ZMQ_AUTH_TYPE=session`` (MessageQueue never builds a NULL socket) and raise."""
+    os.environ["UMRS_ZMQ_AUTH_TYPE"] = "session"
+    raise CurveSessionUnavailable(
+        f"ZMQ auth is 'session' but no CURVE session could be set up ({reason}); "
+        "refusing a plaintext connection. Run `r4 login` (or `umrs login`) and retry."
+    )
+
+
 def _maybe_bootstrap_curve_session(connection) -> None:
     """Bootstrap a CURVE session if the connection uses session-mode ZMQ auth.
 
     First tries to reuse a saved session from ``~/.config/r4/curve-session.json``
-    (written by ``r4 login``).  Falls back to bootstrapping a new session via HTTP.
+    (written by ``r4 login``) registered by the same identity at the same
+    deployment. Otherwise registers a new session via HTTP.
 
-    This is a no-op when:
-    - No gateway_url is configured (direct ZMQ or static CURVE)
-    - zmq.auth_type in profile (or UMRS_ZMQ_AUTH_TYPE env) is not 'session'
-    - No JWT token is available (env vars or profile .token file)
+    This is a no-op when no gateway_url is configured (direct ZMQ or static
+    CURVE) or zmq.auth_type in profile (or UMRS_ZMQ_AUTH_TYPE env) is not
+    'session'. In session mode every failure (no JWT, registration refused
+    or unreachable) raises :class:`CurveSessionUnavailable`: before
+    2026-10-21 it was logged at DEBUG and the client went on with a
+    plaintext MessageQueue, so a rogue listener on the control port got the
+    commands in clear.
     """
     if not _is_session_mode(connection):
-        return
-
-    # Try to reuse a saved session from r4 login (avoids creating new sessions)
-    if _maybe_load_saved_curve_session():
         return
 
     gateway_url = getattr(connection, "gateway_url", None)
     jwt_token = _resolve_session_jwt(connection)
     if not jwt_token:
+        _fail_closed_session("no valid JWT")
+
+    # Reuse a session r4 login (or an earlier run) registered for this identity
+    if _maybe_load_saved_curve_session(connection, jwt_token):
         return
 
     try:
         from umrs.client.session_bootstrap import bootstrap_curve_session
 
+        # set_env=True (default) injects UMRS_ZMQ_AUTH_TYPE / UMRS_ZMQ_CURVE_*
+        # so MessageQueue picks them up on construction.
         info = bootstrap_curve_session(
             gateway_url=gateway_url,
             jwt_token=jwt_token,
         )
-        # bootstrap_curve_session(set_env=True by default) injects correct
-        # UMRS_ZMQ_AUTH_TYPE / UMRS_ZMQ_CURVE_* env vars so MessageQueue picks
-        # them up automatically on construction. Persist so later invocations
-        # reuse this session instead of creating a new one each time.
-        _persist_curve_session(info, gateway_url)
     except Exception as exc:
-        # Non-fatal: fall back to whatever auth the MessageQueue already supports
-        import logging as _logging
+        _fail_closed_session(f"registration at {gateway_url} failed: {exc}")
+    # Persist so later invocations reuse this session instead of creating a new one.
+    _persist_curve_session(info, gateway_url, jwt_token)
 
-        _logging.getLogger(__name__).debug(
-            "CURVE session bootstrap failed (non-fatal): %s",
-            exc,
-        )
-        # logged above at DEBUG level
+
+def _bootstrap_curve_session_or_exit(connection) -> None:
+    """:func:`_maybe_bootstrap_curve_session`, ending the CLI with its reason when it fails closed."""
+    try:
+        _maybe_bootstrap_curve_session(connection)
+    except CurveSessionUnavailable as exc:
+        sys.exit(f"{_red('✗')} {exc}")
 
 
 def main():
@@ -8098,7 +8183,7 @@ def main():
     # Connect to message queue
     # If the server uses session-mode CURVE auth and we have a gateway URL + JWT,
     # bootstrap the CURVE session first so the ZMQ connection is authenticated.
-    _maybe_bootstrap_curve_session(connection)
+    _bootstrap_curve_session_or_exit(connection)
 
     control_mq = MessageQueue(
         role="client",
