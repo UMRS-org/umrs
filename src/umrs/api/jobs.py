@@ -913,13 +913,16 @@ async def list_jobs(
     parsed_status = _parse_status_filter(status_filter)
     parsed_type = _parse_job_type_filter(job_type)
 
-    # Query jobs
+    # Query jobs. A non-admin's owner filter goes into the query: applied
+    # after LIMIT it paged over the whole project, so colleagues' newer jobs
+    # hid the caller's own (2026-10-21: limit=3 -> 0 of alice's 2 jobs).
     jobs = store.list_jobs(
         project_id=project_id,
         status=parsed_status,
         job_type=parsed_type,
         limit=limit,
         offset=offset,
+        user_id=None if caller.is_admin else caller.user_id,
     )
 
     # Non-admin callers only see their own jobs within the project
