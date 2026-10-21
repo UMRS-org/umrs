@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+import os
 from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
@@ -1237,6 +1238,25 @@ def _authorize_chunk_text(
     return ack, identity.user_id
 
 
+def _refuse_unsignable_export(body: ExportRequest) -> None:
+    """A server without a bundle signing key refuses a signed export here,
+    typed (503), instead of queueing a job that the engine refuses on every
+    attempt (ops-watch #521, 2026-10-21: "Backend submission failed ...
+    bundle signing key is not configured" three times per export on
+    umrs-server-ai4s). ``allow_unsigned`` stays the explicit opt-out."""
+    if body.allow_unsigned or os.getenv("UMRS_SECRET_KEY", ""):
+        return
+    raise_typed(
+        PlatformError.knowledge(
+            "unavailable",
+            "this server has no bundle signing key (UMRS_SECRET_KEY is not "
+            "configured), so it cannot produce a signed bundle — the operator "
+            "configures the key (the umrs-front converge generates one), or "
+            "export with allow_unsigned (--allow-unsigned) for an unsigned bundle",
+        )
+    )
+
+
 @router.post("/export", response_model=dict[str, Any])
 async def export_knowledge(
     body: ExportRequest,
@@ -1257,6 +1277,7 @@ async def export_knowledge(
                 f"verified project is {_get_project_id!r}",
             )
         )
+    _refuse_unsignable_export(body)
     raw_ack = _authorize_raw(request, body)
     chunk_ack, submitter = _authorize_chunk_text(request, body)
     try:

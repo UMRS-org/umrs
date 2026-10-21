@@ -703,6 +703,7 @@ def _post_export(monkeypatch, facts, user, **body):
 
     runtime = SimpleNamespace(submit_job_sync=AsyncMock(return_value="job-9"))
     monkeypatch.setattr("umrs.server.durable_job_runtime.get_runtime", lambda: runtime)
+    monkeypatch.setenv("UMRS_SECRET_KEY", "test-bundle-signing-key")  # the route refuses without
     app = FastAPI()
     app.include_router(kmod.router)
     app.state.umrs_db_pool = _FactsPool(facts) if facts is not None else None
