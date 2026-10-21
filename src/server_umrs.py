@@ -27,6 +27,7 @@ from umrs.core.TaskCmdStatus import TaskCmd, TaskStatus
 from umrs.core.TaskManager import TaskManager
 from umrs.core.thread_pool import PoolConfig, ServerOverloadedError, ThreadPoolManager
 from umrs.inference import preproc_pool
+from umrs.orchestrator.site_config import resolve_site_config_path
 from umrs.inference.embedding_backend import LocalEmbeddingBackend
 from umrs.server.config import ENABLE_PRETTY_PRINT, get_default_db_subdir
 from umrs.server.durable_job_runtime import start_durable_job_runtime_from_env
@@ -442,6 +443,8 @@ def main():
     _server_config.ENABLE_PRETTY_PRINT = args.pretty_print
 
     print(f"Starting UMRS server with configuration file: {configure_file}")
+    site_config_path = resolve_site_config_path()
+    print(f"Site config file is: {site_config_path or 'none found (environment variables only)'}")
     status_store = diskcache.Cache(f"{get_default_tmp_subdir()}/status_store", size_limit = 500*1024*1024)
 
     print("Initialized status store")
