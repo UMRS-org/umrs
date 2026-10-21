@@ -98,6 +98,50 @@ class ProvenanceListResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+# Declared before "/{job_id}": FastAPI matches in order, and "/{job_id}"
+# captured "diff" as a job id ("Job not found: diff") — cycle-2 N7.
+@router.get(
+    "/diff",
+    summary="Diff two provenance records (MEM-B7)",
+)
+def diff_provenance(
+    job_a: str = Query(..., description="Job ID A (baseline)"),
+    job_b: str = Query(..., description="Job ID B (comparison)"),
+    store: JobStore = Depends(get_job_store),
+    caller: CallerIdentity = Depends(get_caller_identity),
+    trace_store=Depends(get_trace_store),
+) -> dict[str, Any]:
+    """Compare two job provenance records and their execution traces.
+
+    Returns structured diff showing job-level, step-level, and artifact changes.
+    """
+    # Validate access to both jobs
+    for jid in (job_a, job_b):
+        try:
+            job = store.get_job(jid)
+        except JobNotFoundError:
+            raise_typed(PlatformError.provenance("not_found", f"Job not found: {jid}"))
+        if not caller.can_access_job(job):
+            # Another user's job reads like an unknown id (existence hiding).
+            raise_typed(PlatformError.provenance("not_found", f"Job not found: {jid}"))
+
+    # Build provenance records
+    job_obj_a = store.get_job(job_a)
+    attempts_a = store.get_attempts_for_job(job_a)
+    prov_a = build_provenance(job_obj_a, attempts_a).to_dict()
+
+    job_obj_b = store.get_job(job_b)
+    attempts_b = store.get_attempts_for_job(job_b)
+    prov_b = build_provenance(job_obj_b, attempts_b).to_dict()
+
+    # Fetch traces for step-level diff
+    traces_a = [t.to_dict() for t in trace_store.get_traces_for_job(job_a)]
+    traces_b = [t.to_dict() for t in trace_store.get_traces_for_job(job_b)]
+
+    diff = compute_provenance_diff(prov_a, prov_b, traces_a, traces_b)
+    return diff.to_dict()
+
+
 @router.get(
     "/{job_id}",
     response_model=ProvenanceResponse,
@@ -152,48 +196,6 @@ def get_provenance_lineage(
     traces = trace_store.get_traces_for_job(job_id)
     graph = build_lineage_graph(job_id, traces)
     return graph.to_dict()
-
-
-@router.get(
-    "/diff",
-    summary="Diff two provenance records (MEM-B7)",
-)
-def diff_provenance(
-    job_a: str = Query(..., description="Job ID A (baseline)"),
-    job_b: str = Query(..., description="Job ID B (comparison)"),
-    store: JobStore = Depends(get_job_store),
-    caller: CallerIdentity = Depends(get_caller_identity),
-    trace_store=Depends(get_trace_store),
-) -> dict[str, Any]:
-    """Compare two job provenance records and their execution traces.
-
-    Returns structured diff showing job-level, step-level, and artifact changes.
-    """
-    # Validate access to both jobs
-    for jid in (job_a, job_b):
-        try:
-            job = store.get_job(jid)
-        except JobNotFoundError:
-            raise_typed(PlatformError.provenance("not_found", f"Job not found: {jid}"))
-        if not caller.can_access_job(job):
-            # Another user's job reads like an unknown id (existence hiding).
-            raise_typed(PlatformError.provenance("not_found", f"Job not found: {jid}"))
-
-    # Build provenance records
-    job_obj_a = store.get_job(job_a)
-    attempts_a = store.get_attempts_for_job(job_a)
-    prov_a = build_provenance(job_obj_a, attempts_a).to_dict()
-
-    job_obj_b = store.get_job(job_b)
-    attempts_b = store.get_attempts_for_job(job_b)
-    prov_b = build_provenance(job_obj_b, attempts_b).to_dict()
-
-    # Fetch traces for step-level diff
-    traces_a = [t.to_dict() for t in trace_store.get_traces_for_job(job_a)]
-    traces_b = [t.to_dict() for t in trace_store.get_traces_for_job(job_b)]
-
-    diff = compute_provenance_diff(prov_a, prov_b, traces_a, traces_b)
-    return diff.to_dict()
 
 
 @router.get(

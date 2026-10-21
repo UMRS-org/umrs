@@ -163,8 +163,8 @@ def _diff_refusal(job_id: str) -> tuple[int, str]:
 
 
 def test_provenance_diff_hides_a_foreign_job() -> None:
-    """Called directly: over HTTP, GET /umrs/provenance/diff is shadowed by
-    GET /umrs/provenance/{job_id} (declared first), a separate defect."""
+    """Called directly (the route order is pinned separately in
+    test_c2_n7_provenance_diff_route.py; /diff now resolves over HTTP)."""
     assert _diff_refusal(JOB_ID) == _diff_refusal(RANDOM_JOB) == (404, "Job not found: <id>")
 
 
