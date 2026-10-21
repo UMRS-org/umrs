@@ -5,6 +5,7 @@ Usage: ./parse_umrs_logs.py <logfile> [--csv]
 """
 
 import argparse
+import csv
 import re
 import sys
 from datetime import datetime
@@ -22,9 +23,12 @@ P_RUNNING     = re.compile(TS + r".*\[TASK\] client=(\S+) task_id=(\d+) → Runn
 P_COMPLETED   = re.compile(TS + r".*\[TASK\] client=(\S+) task_id=(\d+) → Completed")
 P_TIMING      = re.compile(r"\[TIMING\] (.*)$")
 
-# [TIMING] keys -> CSV columns (--timing)
+# [TIMING] keys -> CSV columns ("NA" when the log has no [TIMING] line for the task)
 TIMING_COLUMNS = [
+    ("status", "status"),
+    ("model", "model"),
     ("path", "path"),
+    ("batch_tasks", "batch_tasks"),
     ("s3_events_s", "s3_events(s)"),
     ("index_check_sql_s", "index_check_sql(s)"),
     ("index_check_head_s", "index_check_head(s)"),
@@ -83,9 +87,8 @@ class Task:
 def main():
     parser = argparse.ArgumentParser(description="Parse UMRS server logs for timing info.")
     parser.add_argument("logfile")
-    parser.add_argument("--csv", action="store_true")
-    parser.add_argument("--timing", action="store_true",
-                        help="add the per-step columns of the [TIMING] lines (CSV only)")
+    parser.add_argument("--csv", action="store_true",
+                        help="CSV output, including every field of the [TIMING] lines")
     args = parser.parse_args()
 
     tasks = {}            # task_id -> Task
@@ -186,18 +189,14 @@ def main():
               "upload_s3(s)", "s3_check(s)", "server_exec(s)", "end_to_end(s)"]
 
     if args.csv:
-        if args.timing:
-            header = header + [col for _, col in TIMING_COLUMNS]
-        print(",".join(header))
+        writer = csv.writer(sys.stdout, lineterminator="\n")  # quotes batch_tasks="1,2"
+        writer.writerow(header + [col for _, col in TIMING_COLUMNS])
         for t in tasks.values():
             n_proc = (t.n_objects_s3 or 0)
-            row = [
+            writer.writerow([
                 t.task_id, t.user, t.n_objects_batch, t.n_skipped, n_proc,
-                t.upload_s3, t.s3_check, t.server_exec, t.end_to_end
-            ]
-            if args.timing:
-                row += [t.timing.get(key, "NA") for key, _ in TIMING_COLUMNS]
-            print(",".join(str(x) for x in row))
+                t.upload_s3, t.s3_check, t.server_exec, t.end_to_end,
+            ] + [t.timing.get(key, "NA") for key, _ in TIMING_COLUMNS])
     else:
         col_w = [10, 12, 9, 10, 12, 14, 12, 16, 14]
         fmt = "".join(f"{{:<{w}}}" for w in col_w)
