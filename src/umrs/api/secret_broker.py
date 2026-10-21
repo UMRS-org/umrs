@@ -174,21 +174,24 @@ def issue_lease(
             )
         )
     broker = get_broker()
-    lease, secret_value = broker.issue_lease(
-        job_id=req.job_id,
-        secret_name=req.secret_name,
-        scope=req.scope,
-        lease_seconds=req.lease_seconds,
-        bound_to_step=req.bound_to_step,
-        tier=req.tier,
-        owner_id=owner_id,
-        session_id=req.session_id,
-        source_ids=tuple(req.source_ids),
-        default_source_id=req.default_source_id,
-        egress_ip=req.egress_ip,
-        project=project,
-        max_lifetime_seconds=req.max_lifetime_seconds,
-    )
+    try:
+        lease, secret_value = broker.issue_lease(
+            job_id=req.job_id,
+            secret_name=req.secret_name,
+            scope=req.scope,
+            lease_seconds=req.lease_seconds,
+            bound_to_step=req.bound_to_step,
+            tier=req.tier,
+            owner_id=owner_id,
+            session_id=req.session_id,
+            source_ids=tuple(req.source_ids),
+            default_source_id=req.default_source_id,
+            egress_ip=req.egress_ip,
+            project=project,
+            max_lifetime_seconds=req.max_lifetime_seconds,
+        )
+    except ValueError as exc:  # bad scope / lease length: the caller's input
+        raise_typed(PlatformError.secretbroker("bad_request", str(exc)), cause=exc)
     d = lease.to_dict()
     return IssueLeaseResponse(
         lease_id=d["lease_id"],
