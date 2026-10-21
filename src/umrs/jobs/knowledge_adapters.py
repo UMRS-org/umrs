@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import re
+import tempfile
 import threading
 import uuid
 from contextlib import asynccontextmanager
@@ -557,9 +558,10 @@ def _read_bounded(
     """An artifact's bytes, never more than the reader uses: its first
     *limit* bytes; the whole object when it is a text of at most
     *whole_text_max* bytes, or a binary document (PDF, PPTX: extraction
-    needs every byte) within READ_CAP. A larger binary document is refused
-    by name. None when unreadable. ``name`` is the artifact's source name;
-    without one, any zip may be a PPTX."""
+    needs every byte) within READ_CAP. A larger binary document is streamed
+    to a file on disk and its extracted text is the content
+    (:func:`_extract_spooled`). None when unreadable. ``name`` is the
+    artifact's source name; without one, any zip may be a PPTX."""
     from umrs.knowledge.extract import _is_binary_document_bytes
 
     got = _fetch_artifact_prefix(s3_client, bucket, source_ref, limit)
@@ -575,8 +577,55 @@ def _read_bounded(
         whole = _fetch_artifact_bytes(s3_client, bucket, source_ref)
         return None if whole is None else _Bounded(whole, len(whole))
     if binary:
-        return _Bounded(None, size, refused=_too_large_to_extract(size))
+        return _extract_spooled(s3_client, bucket, source_ref, head, size)
     return _Bounded(_whole_utf8(head), size, cut=True)
+
+
+_NO_EXTRACTABLE_TEXT = (
+    "document with no extractable text (a scanned PDF? no OCR in this lane)"
+)
+# A binary document past READ_CAP is extracted from a file on disk up to
+# this size (the knowledge upload cap is 512 MiB); past it, it fails by name.
+_DOCUMENT_SPOOL_MAX = 1 << 30
+_SPOOL_DIR_ENV = "UMRS_KNOWLEDGE_SPOOL_DIR"  # unset: the system temp dir
+
+
+def _extract_spooled(
+    s3_client: Any, bucket: str, source_ref: str, head: bytes, size: int
+) -> _Bounded | None:
+    """A PDF or PPTX past READ_CAP, streamed to a temporary file in parts
+    and its text extracted from there, so its bytes stay on disk: an 80 MiB
+    thesis that understand and embed used to read whole was refused by name
+    after cycle-3 P1, though the upload takes 512 MiB (cycle-3 memfix #2).
+    The content is the extracted text (bounded by the extractor's page and
+    character caps); none is a named refusal; None when unreadable."""
+    if size > _DOCUMENT_SPOOL_MAX:
+        return _Bounded(None, size, refused=_too_large_to_extract(size))
+    from umrs.data_catalog.extract import extract_document_file
+
+    spool_dir = os.environ.get(_SPOOL_DIR_ENV) or None
+    kind = "pdf" if head.startswith(b"%PDF") else "pptx"
+    with tempfile.TemporaryFile(dir=spool_dir) as spool:
+        if not _spool_object(s3_client, bucket, source_ref, spool):
+            return None
+        spool.seek(0)
+        text, _tags = extract_document_file(kind, spool, spool_dir=spool_dir)
+    if not text.strip():
+        return _Bounded(None, size, refused=_NO_EXTRACTABLE_TEXT)
+    return _Bounded(text.encode("utf-8"), size)
+
+
+def _spool_object(s3_client: Any, bucket: str, source_ref: str, spool: Any) -> bool:
+    """Copy a stored object into *spool* in parts; False when unreadable."""
+    bucket, key = _object_ref(bucket, source_ref)
+    try:
+        body = s3_client.get_object(Bucket=bucket, Key=key)["Body"]
+        for part in iter(lambda: body.read(_STREAM_PART_BYTES), b""):
+            spool.write(part)
+    except Exception as exc:  # noqa: BLE001 — best-effort adapter path, reported not raised
+        _log_fetch_failure(key, exc)
+        return False
+    return True
 
 
 def _mib(size: int) -> str:
@@ -586,7 +635,7 @@ def _mib(size: int) -> str:
 def _too_large_to_extract(size: int) -> str:
     return (
         f"document too large to extract its text ({_mib(size)}; documents are "
-        f"read whole up to {_mib(canonical_identity.READ_CAP)})"
+        f"extracted up to {_mib(_DOCUMENT_SPOOL_MAX)})"
     )
 
 
@@ -1503,7 +1552,7 @@ def _text_content(src: dict[str, Any], content: bytes) -> tuple[bytes | None, st
         return content, ""
     text = resolve_extraction_content(name, content)
     if _is_binary_document_bytes(name, text):
-        return None, "document with no extractable text (a scanned PDF? no OCR in this lane)"
+        return None, _NO_EXTRACTABLE_TEXT
     return text, ""
 
 
@@ -1989,7 +2038,7 @@ def _understand_bytes(
     object is a typed "document content missing" failure. A text past
     READ_CAP is understood from its first MiB, and ``partial_reads`` names
     it (the run is not degraded for it: cycle-3 memfix #5); a binary
-    document past it fails by name (cycle-3 P1)."""
+    document past it is extracted from a file on disk (memfix #2)."""
     source_ref = str(src.get("source_ref") or "")
     if names_no_object(source_ref):
         result.no_object += 1
@@ -3098,7 +3147,8 @@ def read_chunked_bytes(
     s3_client: Any, bucket: str, source_ref: str, name: str = ""
 ) -> _Bounded | None:
     """The bytes of an artifact the embed job chunks — a text's first
-    :func:`_embed_read_bytes`, a binary document whole within READ_CAP —
+    :func:`_embed_read_bytes`, a binary document whole within READ_CAP (its
+    extracted text past it) —
     shared with retrieval, which slices chunks out of the same text."""
     return _read_bounded(
         s3_client, bucket, source_ref, name, limit=_embed_read_bytes(), whole_text_max=0
