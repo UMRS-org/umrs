@@ -279,9 +279,13 @@ def test_understand_reads_a_text_past_read_cap_only_to_its_prefix(monkeypatch):
     assert "understood from its first" in partial["reason"]
 
 
-def test_understand_refuses_a_pdf_past_read_cap_by_name(monkeypatch):
+def test_understand_refuses_a_pdf_past_the_spool_cap_by_name(monkeypatch):
+    """Past READ_CAP a document is extracted from disk (memfix #2,
+    test_memfix_large_documents.py); past the spool cap it fails by name,
+    after a ranged read only."""
     monkeypatch.setattr(ka, "_UNDERSTAND_PREFIX_BYTES", 1024)
     monkeypatch.setattr(canonical_identity, "READ_CAP", 4096)
+    monkeypatch.setattr(ka, "_DOCUMENT_SPOOL_MAX", 8192)
     s3, src = _stored(b"%PDF-1.7\n" + b"0" * 9000)
     content, result = _understand_read(s3, src)
     assert content is None and sum(s3.reads) <= 1025

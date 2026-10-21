@@ -7,7 +7,10 @@ import io
 import itertools
 import json
 import os
-from typing import Any
+import shutil
+import tempfile
+import zipfile
+from typing import Any, BinaryIO
 
 from .modality import detect_modality
 
@@ -120,17 +123,26 @@ def _extract_document_detailed(filename: str, content: bytes) -> tuple[str, list
 
 
 def _extract_pdf_detailed(content: bytes) -> tuple[str, list[str]]:
+    return _pdf_text(io.BytesIO(content))
+
+
+def _pdf_text(stream: BinaryIO) -> tuple[str, list[str]]:
+    """A PDF's text from a seekable stream; pypdf reads only the objects
+    the pages it extracts use, and they are dropped after each page: its
+    object cache kept every image a page draws (a 400 MiB figure-heavy
+    PDF read from disk still took +420 MB; cycle-3 memfix #2)."""
     try:
         from pypdf import PdfReader  # type: ignore[import-untyped]
     except ImportError:
         return "", ["extract_dependency_missing"]
 
     try:
-        reader = PdfReader(io.BytesIO(content))
+        reader = PdfReader(stream)
         parts = []
         max_pages = _max_document_pages()
         for page in reader.pages[:max_pages]:
             parts.append(page.extract_text() or "")
+            _drop_resolved_objects(reader)
         text = "\n".join(parts)[: _max_document_text_chars()]
     except Exception:
         return "", ["extract_failed"]
@@ -140,14 +152,25 @@ def _extract_pdf_detailed(content: bytes) -> tuple[str, list[str]]:
     return text, []
 
 
+def _drop_resolved_objects(reader: Any) -> None:
+    """Empty pypdf's resolved-object cache (re-read on the next use)."""
+    cache = getattr(reader, "resolved_objects", None)
+    if isinstance(cache, dict):
+        cache.clear()
+
+
 def _extract_pptx_detailed(content: bytes) -> tuple[str, list[str]]:
+    return _pptx_text(io.BytesIO(content))
+
+
+def _pptx_text(stream: BinaryIO) -> tuple[str, list[str]]:
     try:
         from pptx import Presentation  # type: ignore[import-untyped]
     except ImportError:
         return "", ["extract_dependency_missing"]
 
     try:
-        presentation = Presentation(io.BytesIO(content))
+        presentation = Presentation(stream)
         parts = []
         max_slides = _max_document_pages()
         # Slides support iteration, not slicing (python-pptx 1.0 raises on
@@ -164,6 +187,42 @@ def _extract_pptx_detailed(content: bytes) -> tuple[str, list[str]]:
     if not text.strip():
         return "", ["extract_empty"]
     return text, []
+
+
+def extract_document_file(
+    kind: str, spool: BinaryIO, *, spool_dir: str | None = None
+) -> tuple[str, list[str]]:
+    """``(text, tags)`` of a PDF (``kind`` "pdf") or a PPTX held in a
+    seekable file, never read whole into memory (cycle-3 memfix #2: a
+    document past READ_CAP is streamed to disk, not refused). pypdf reads
+    the objects the extracted pages use; python-pptx loads every part's
+    bytes, so a deck is first copied (in ``spool_dir``) without the bytes
+    of its non-XML parts — media, embeddings, thumbnails, the bulk of a
+    deck. Its text is all in the XML parts, so it is the same text."""
+    if kind == "pdf":
+        return _pdf_text(spool)
+    with tempfile.TemporaryFile(dir=spool_dir) as slim:
+        try:
+            _copy_xml_parts(spool, slim)
+        except (zipfile.BadZipFile, OSError, ValueError):
+            return "", ["extract_failed"]
+        slim.seek(0)
+        return _pptx_text(slim)
+
+
+def _copy_xml_parts(source: BinaryIO, target: BinaryIO) -> None:
+    """Copy a zip package part by part, streamed; a part that is not XML
+    (``.xml`` / ``.rels``) keeps its name with no bytes."""
+    with (
+        zipfile.ZipFile(source) as package,
+        zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as slim,
+    ):
+        for info in package.infolist():
+            if not info.filename.endswith((".xml", ".rels")):
+                slim.writestr(info.filename, b"")
+                continue
+            with package.open(info) as part, slim.open(info.filename, "w") as out:
+                shutil.copyfileobj(part, out, 1 << 20)
 
 
 def _extract_image_metadata(content: bytes) -> str:
