@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from ..models import ModelEntry, ModelScope
-from .errors import PermissionDeniedError
+from .errors import HiddenModelError, PermissionDeniedError
 
 if TYPE_CHECKING:  # avoids a hard import; grants stays a soft dependency
     from umrs.grants import AssetGrant
@@ -151,18 +151,24 @@ class ACLEnforcer:
             return project_id in ctx.project_memberships
         return scope == ModelScope.USER
 
-    def enforce_read(self, model: ModelEntry, ctx: AccessContext) -> None:
-        """Raise PermissionDeniedError if user cannot read model."""
+    def enforce_read(
+        self, model: ModelEntry, ctx: AccessContext, lookup_key: str | None = None
+    ) -> None:
+        """Raise HiddenModelError (reads as not found) if user cannot read model.
+
+        ``lookup_key`` is what the caller looked the model up by (its id by
+        default), so the refusal names exactly what an unknown key names.
+        """
         if not self.can_read(model, ctx):
-            raise PermissionDeniedError(
-                ctx.user_id,
-                model.model_id,
-                "read",
-                f"Not a member of {model.scope.value} scope",
-            )
+            raise HiddenModelError(lookup_key or model.model_id, ctx.user_id)
 
     def enforce_write(self, model: ModelEntry, ctx: AccessContext) -> None:
-        """Raise PermissionDeniedError if user cannot write model."""
+        """Raise PermissionDeniedError if user cannot write model.
+
+        A model the caller cannot even read stays hidden (HiddenModelError);
+        only a model the caller can see is refused with a 403-style error.
+        """
+        self.enforce_read(model, ctx)
         if not self.can_write(model, ctx):
             raise PermissionDeniedError(
                 ctx.user_id,

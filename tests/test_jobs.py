@@ -483,8 +483,9 @@ class TestCallerIdentity:
 
         assert exc_info.value.status_code == 401
 
-    def test_enforce_raises_403_for_non_owner(self):
-        """_enforce_job_access raises HTTPException 403 for non-owners."""
+    def test_enforce_raises_404_for_non_owner(self):
+        """_enforce_job_access answers 404 for non-owners, like an unknown id
+        (existence hiding, N2 2026-10-21)."""
         from fastapi import HTTPException as FastAPIHTTPException
         from umrs.api.jobs import CallerIdentity, _enforce_job_access
 
@@ -493,7 +494,8 @@ class TestCallerIdentity:
 
         with pytest.raises(FastAPIHTTPException) as exc_info:
             _enforce_job_access(caller, job, action="cancel")
-        assert exc_info.value.status_code == 403
+        assert exc_info.value.status_code == 404
+        assert exc_info.value.detail == f"Job not found: {job.job_id}"
 
     def test_enforce_passes_for_owner(self):
         """_enforce_job_access does not raise for job owner."""

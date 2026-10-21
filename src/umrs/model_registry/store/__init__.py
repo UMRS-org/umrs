@@ -9,6 +9,7 @@ from .acl import AccessContext, ACLEnforcer
 from .crud import ModelStore
 from .errors import (
     DuplicateModelError,
+    HiddenModelError,
     ModelNotFoundError,
     PathNotAllowedError,
     PermissionDeniedError,
@@ -21,6 +22,7 @@ __all__ = [
     "ACLEnforcer",
     "AccessContext",
     "DuplicateModelError",
+    "HiddenModelError",
     "ModelNotFoundError",
     "ModelStore",
     "PathNotAllowedError",

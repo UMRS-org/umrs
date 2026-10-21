@@ -158,11 +158,8 @@ def _verify_job_access(
     except JobNotFoundError:
         raise_typed(PlatformError.jobs("not_found", f"Job not found: {job_id}"))
     if not caller.can_access_job(job):
-        raise_typed(
-            PlatformError.traces(
-                "forbidden", "Not authorized to access traces for this job"
-            )
-        )
+        # Another user's job reads like an unknown id (existence hiding).
+        raise_typed(PlatformError.jobs("not_found", f"Job not found: {job_id}"))
 
 
 def _can_read_job(job_id: str, store: JobStore, caller: CallerIdentity) -> bool:
@@ -559,15 +556,12 @@ def _plan_run_job(run_id: str, store: JobStore, caller: CallerIdentity) -> Any:
         job = plan_run_records.find_run_job(store, caller.project_id, caller.user_id, run_id)
     except plan_run_records.PlanRunRecordError as exc:
         _plan_run_refusal(exc)
-    if job is None:
+    if job is None or not caller.can_access_job(job):
+        # Another user's run reads like an unknown id (existence hiding).
         raise_typed(
             PlatformError.jobs(
                 "not_found", f"No durable record of plan run {run_id} for this caller"
             )
-        )
-    if not caller.can_access_job(job):
-        raise_typed(
-            PlatformError.traces("forbidden", "Not authorized to access this plan run's records")
         )
     return job
 

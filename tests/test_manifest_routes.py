@@ -103,7 +103,7 @@ class TestManifestRoutes:
 
     def test_outsider_denied(self, store):
         client = TestClient(_app(store, caller=_FakeCaller(project_id="proj-y")))
-        assert client.get("/umrs/jobs/job-1/manifest").status_code == 403
+        assert client.get("/umrs/jobs/job-1/manifest").status_code == 404
 
 
 class TestReproduceRoute:
@@ -130,4 +130,4 @@ class TestReproduceRoute:
 
     def test_reproduce_outsider_denied(self, store):
         client = TestClient(_app(store, caller=_FakeCaller(project_id="proj-y")))
-        assert client.post("/umrs/jobs/job-1/reproduce").status_code == 403
+        assert client.post("/umrs/jobs/job-1/reproduce").status_code == 404
