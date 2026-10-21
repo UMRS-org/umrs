@@ -115,11 +115,8 @@ def get_provenance(
         raise_typed(PlatformError.provenance("not_found", f"Job not found: {job_id}"))
 
     if not caller.can_access_job(job):
-        raise_typed(
-            PlatformError.provenance(
-                "forbidden", "Not authorized to view this job's provenance"
-            )
-        )
+        # Another user's job reads like an unknown id (existence hiding).
+        raise_typed(PlatformError.provenance("not_found", f"Job not found: {job_id}"))
 
     attempts = store.get_attempts_for_job(job_id)
     record = build_provenance(job, attempts)
@@ -149,11 +146,8 @@ def get_provenance_lineage(
         raise_typed(PlatformError.provenance("not_found", f"Job not found: {job_id}"))
 
     if not caller.can_access_job(job):
-        raise_typed(
-            PlatformError.provenance(
-                "forbidden", "Not authorized to view this job's lineage"
-            )
-        )
+        # Another user's job reads like an unknown id (existence hiding).
+        raise_typed(PlatformError.provenance("not_found", f"Job not found: {job_id}"))
 
     traces = trace_store.get_traces_for_job(job_id)
     graph = build_lineage_graph(job_id, traces)
@@ -182,11 +176,8 @@ def diff_provenance(
         except JobNotFoundError:
             raise_typed(PlatformError.provenance("not_found", f"Job not found: {jid}"))
         if not caller.can_access_job(job):
-            raise_typed(
-                PlatformError.provenance(
-                    "forbidden", f"Not authorized to view job: {jid}"
-                )
-            )
+            # Another user's job reads like an unknown id (existence hiding).
+            raise_typed(PlatformError.provenance("not_found", f"Job not found: {jid}"))
 
     # Build provenance records
     job_obj_a = store.get_job(job_a)

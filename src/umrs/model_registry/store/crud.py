@@ -335,7 +335,7 @@ class ModelStore:
         model = ModelEntry.from_row(row)
 
         if ctx:
-            self.acl.enforce_read(model, ctx)
+            self.acl.enforce_read(model, ctx, lookup_key=f"{scope.value}:{name}")
 
         return model
 
@@ -613,7 +613,8 @@ class ModelStore:
         new_name: str | None = None,
     ) -> ModelEntry:
         """Publish a user model to project scope (U-815)."""
-        model = self.get_model(model_id)
+        # A model the caller cannot read stays hidden (reads as not found).
+        model = self.get_model(model_id, ctx)
 
         if model.owner_id != ctx.user_id:
             raise PermissionDeniedError(

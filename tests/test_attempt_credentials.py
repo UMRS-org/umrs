@@ -160,7 +160,7 @@ class TestCredentialRoutes:
 
     def test_mint_outsider_denied(self, store):
         outsider = TestClient(_app(store, caller=_FakeCaller(project_id="proj-y")))
-        assert outsider.post("/umrs/jobs/job-1/attempts/att-1/credentials").status_code == 403
+        assert outsider.post("/umrs/jobs/job-1/attempts/att-1/credentials").status_code == 404
 
     def test_presign_requires_mint_first(self, client):
         resp = client.post(

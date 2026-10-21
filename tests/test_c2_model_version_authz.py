@@ -12,6 +12,9 @@ access only, ``detect`` never passed the caller at all, and a version's
 
 The store here is the real ``ModelStore`` (real ACL, real path validator)
 over a scripted connection, so the SQL each call would run is visible.
+
+2026-10-21 (umrs-follow, N2): bob cannot even read the model, so every
+refusal now reads as not found (404, like an unknown id), never a 403.
 """
 
 from __future__ import annotations
@@ -183,7 +186,7 @@ def test_http_foreign_version_post_is_refused(client: TestClient, conn: _Conn) -
         json={"version": "9.9", "storage_ref": "/shared/projects/pb/models/evil"},
         headers=_headers("bob", "pb"),
     )
-    assert r.status_code == 403
+    assert r.status_code == 404
     assert conn.writes() == []
 
 
@@ -196,13 +199,13 @@ def test_http_foreign_version_post_is_refused(client: TestClient, conn: _Conn) -
         ("PATCH", "/versions/1.0", {"active": False}),
     ],
 )
-def test_http_foreign_version_routes_are_403_not_500(
+def test_http_foreign_version_routes_are_404_not_500(
     client: TestClient, conn: _Conn, method: str, path: str, body: dict | None
 ) -> None:
     r = client.request(
         method, f"/umrs/models/{MODEL_ID}{path}", json=body, headers=_headers("bob", "pb")
     )
-    assert r.status_code == 403
+    assert r.status_code == 404
     assert conn.writes() == []
 
 
@@ -223,7 +226,7 @@ def test_http_foreign_detect_is_refused(client: TestClient, conn: _Conn, dry_run
         params={"dry_run": dry_run},
         headers=_headers("bob", "pb"),
     )
-    assert r.status_code == 403
+    assert r.status_code == 404
     assert "/shared/projects/pa" not in r.text
     assert conn.writes() == []
 

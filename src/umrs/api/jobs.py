@@ -590,7 +590,12 @@ def _enforce_job_access(
     job: Job,
     action: str = "access",
 ) -> None:
-    """Raise 403 if caller does not own the job and is not admin."""
+    """404 unless the caller owns the job or is admin.
+
+    Another user's job answers exactly like an unknown id (same status and
+    body), so a caller cannot probe which job ids exist (H-1 / ADR-086
+    existence hiding; 2026-10-21: it was a 403, an existence oracle).
+    """
     if not caller.can_access_job(job):
         logger.warning(
             "User %s/%s denied %s on job %s (owner: %s/%s)",
@@ -601,11 +606,7 @@ def _enforce_job_access(
             job.project_id,
             job.user_id,
         )
-        raise_typed(
-            PlatformError.jobs(
-                "forbidden", f"Not authorised to {action} job {job.job_id}"
-            )
-        )
+        raise_typed(PlatformError.jobs("not_found", f"Job not found: {job.job_id}"))
 
 
 # =============================================================================
@@ -952,7 +953,7 @@ async def get_job(
     """
     Get job details (U-733).
 
-    Returns 403 if the caller does not own the job and is not admin.
+    Another user's job answers 404, like an unknown id.
     """
     try:
         job = store.get_job(job_id)
@@ -1045,7 +1046,7 @@ async def cancel_job(
     """
     Cancel a job (U-734).
 
-    Returns 403 if the caller does not own the job and is not admin.
+    Another user's job answers 404, like an unknown id.
     The durable flip ALSO broadcasts to in-process listener classes (6b-3b):
     model-download backends interrupt mid-flight chunk loops — the loop's
     progress callback is where a cancel currently shakes open; for
