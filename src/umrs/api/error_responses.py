@@ -171,8 +171,11 @@ _UNAVAILABLE_RETRY_AFTER = "5"
 # it r4 (every version: its hint reads only x-platform-error-code) read the
 # untyped 503 as "no model endpoint" and told the user to run
 # `r4 endpoint up`; a typed non-endpoint code reads as "the platform's
-# database service is unavailable ... retry shortly".
-_DATABASE_UNAVAILABLE_CODE = "database.unavailable"
+# database service is unavailable ... retry shortly". Public: every UMRS
+# database-unavailable 503 uses it (the no-DSN pool path too); registered in
+# r4-contracts DATABASE_ERRORS, but set as a literal here so a server never
+# needs a newer r4-contracts than it was installed with.
+DATABASE_UNAVAILABLE_CODE = "database.unavailable"
 
 
 def _exception_chain(exc: BaseException) -> list[BaseException]:
@@ -242,5 +245,5 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
     )
     if status_code == 503:
         response.headers["Retry-After"] = _UNAVAILABLE_RETRY_AFTER
-        response.headers[ERROR_CODE_HEADER] = _DATABASE_UNAVAILABLE_CODE
+        response.headers[ERROR_CODE_HEADER] = DATABASE_UNAVAILABLE_CODE
     return response

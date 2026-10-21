@@ -106,3 +106,22 @@ def test_pool_created_with_json_codecs(monkeypatch):
     import anyio
 
     anyio.run(run)
+
+
+def test_no_dsn_503_is_typed_database_unavailable():
+    """Cycle-3 (2026-10-22): the no-DSN 503 carries database.unavailable.
+
+    Untyped, r4 (every version) read it as "No active endpoint available. Run
+    `r4 endpoint up`"; the typed code reads as the platform's database
+    service. The detail string is unchanged.
+    """
+    from fastapi import FastAPI, HTTPException, Request
+
+    request = Request(scope={"type": "http", "app": FastAPI(), "headers": []})
+    with pytest.raises(HTTPException) as info:
+        import anyio
+
+        anyio.run(_asyncpg_pool.knowledge_asyncpg_pool, request)
+    assert info.value.status_code == 503
+    assert info.value.detail == "Database unavailable (no DSN)"
+    assert info.value.headers == {"x-platform-error-code": "database.unavailable"}
