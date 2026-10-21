@@ -218,8 +218,15 @@ async def derive_artifact(
     store=Depends(_get_store),
     identity: CallerIdentity = Depends(get_caller_identity),
 ) -> dict[str, Any]:
-    """Derive a conserved artifact from parents (lineage edges atomically)."""
+    """Derive a conserved artifact from parents (lineage edges atomically).
+
+    Every parent must be an artifact the caller can read: an unreadable or
+    missing one answers 404 like GET does (2026-10-21: a foreign parent got
+    an edge, a missing one a 500 from the foreign key).
+    """
     user_id, project_id = _as_caller(identity, body.user_id, body.project_id)
+    for parent in body.parents:
+        await _visible_artifact(store, identity, parent)
     req = ArtifactDerive.from_dict(
         {
             **body.model_dump(),
