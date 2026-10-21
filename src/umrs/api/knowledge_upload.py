@@ -53,6 +53,20 @@ def _safe_basename(name: str) -> str:
     return base[:_SAFE_BASENAME_MAX]
 
 
+_KNOWLEDGE_UPLOAD_MAX_BYTES = 512 * 1024 * 1024
+
+
+def _refuse_oversize_upload(size: int | None) -> None:
+    """Typed 413 when a known upload size passes the knowledge upload cap."""
+    if isinstance(size, int) and size > _KNOWLEDGE_UPLOAD_MAX_BYTES:
+        raise_typed(
+            PlatformError.knowledge2(
+                "upload_too_large",
+                f"Upload exceeds {_KNOWLEDGE_UPLOAD_MAX_BYTES // (1024 * 1024)} MiB limit",
+            )
+        )
+
+
 async def _stage_upload_bytes(
     file: UploadFile, *, bucket: str, staged_key: str, client: Any
 ) -> tuple[str, int]:
@@ -62,7 +76,9 @@ async def _stage_upload_bytes(
     per-user disk ledger (ADR-051 D-3) can charge the uploader once per
     unique object.
     """
-    MAX_BYTES = 512 * 1024 * 1024
+    # The part's size first: refusing only after read() held the whole
+    # oversize body in memory (2026-10-21: a 700 MiB upload, +683 MiB RSS).
+    _refuse_oversize_upload(getattr(file, "size", None))
     try:
         content = await file.read()
     except Exception as exc:  # body-read failure is caller-side physics
@@ -72,13 +88,7 @@ async def _stage_upload_bytes(
             ),
             cause=exc,
         )
-    if len(content) > MAX_BYTES:
-        raise_typed(
-            PlatformError.knowledge2(
-                "upload_too_large",
-                f"Upload exceeds {MAX_BYTES // (1024 * 1024)} MiB limit",
-            )
-        )
+    _refuse_oversize_upload(len(content))
     try:
         client.put_object(
             Bucket=bucket,
