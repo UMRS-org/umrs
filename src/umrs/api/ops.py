@@ -11,6 +11,7 @@ Provides operator-facing inspection of the running UMRS instance:
 
 from __future__ import annotations
 
+import hmac
 import logging
 import os
 import time
@@ -249,21 +250,32 @@ def governance_user_id(
     x_verified_project_id: str | None = Header(None),
     x_verified_is_admin: str | None = Header(None),
     x_verified_hmac: str | None = Header(None),
+    x_admin_token: str = Header("", alias="x-admin-token"),
 ) -> str:
     """The user a governance share route acts as (owner check).
 
     A bare ``X-User-ID`` named the owner (H-1 item 7). Strict mode honours
-    only a signed identity tuple; without one the caller is nobody ("") and
-    only the ``x-admin-token`` path remains. Mvp keeps the raw header.
+    only a signed identity tuple; without one only the ``x-admin-token``
+    path remains (user ""), and a caller with neither is a 401
+    (2026-10-21: "nobody" was user "", which listed shares with a 200 and
+    matched a resource recorded without an owner). Mvp keeps the raw header.
     """
     uid = _hdr(x_user_id)
-    if not uid or not _strict_mode():
+    if not _strict_mode():
         return uid
-    if not _hdr(x_verified_project_id):
+    if uid and _hdr(x_verified_project_id):
+        return _header_caller(
+            x_user_id, x_verified_project_id, x_verified_is_admin, x_verified_hmac
+        ).user_id
+    expected = os.environ.get("UMRS_ADMIN_TOKEN", "")
+    if expected and hmac.compare_digest(_hdr(x_admin_token), expected):
         return ""
-    return _header_caller(
-        x_user_id, x_verified_project_id, x_verified_is_admin, x_verified_hmac
-    ).user_id
+    raise_typed(
+        PlatformError.auth(
+            "caller_identity_required",
+            "Governance shares need a gateway-verified identity or the admin token",
+        )
+    )
 
 
 # ---------------------------------------------------------------------------
