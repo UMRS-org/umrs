@@ -67,7 +67,6 @@ class HpcScriptBackend:
         # ssh is an awaitable factory returning a connected SSHControlManager
         # (injected by the adapters registry; None → named degraded ref).
         self._ssh_factory = ssh
-        self._project_id: str = ""
 
     @property
     def backend_name(self) -> str:
@@ -75,8 +74,6 @@ class HpcScriptBackend:
 
     async def submit_job(self, job: Job, attempt: JobAttempt) -> str:
         spec = validate_hpc_script_spec(dict(job.spec or {}))
-        project_id = self._project_id or job.spec.get("project_id", job.project_id)
-        self._project_id = project_id
         script_path = spec["script_path"]
         if self._ssh_factory is None:
             return f"hpc_script|script={script_path}|degraded=no_ssh"

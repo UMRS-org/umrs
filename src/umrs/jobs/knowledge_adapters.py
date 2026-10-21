@@ -659,9 +659,6 @@ class KnowledgeIngestBackend(OrchestratorBackend):
 class KnowledgeUnderstandBackend(OrchestratorBackend):
     """Parse artifacts lacking current-version IR → KnowledgeIR + graph."""
 
-    def __init__(self) -> None:
-        self._project_id: str = ""
-
     @property
     def backend_name(self) -> str:
         return "knowledge_understand"
@@ -671,8 +668,10 @@ class KnowledgeUnderstandBackend(OrchestratorBackend):
         job: Job,
         attempt: JobAttempt,
     ) -> str:
-        project_id = self._project_id or job.spec.get("project_id", job.project_id)
-        self._project_id = project_id
+        # The job's own project, every time: these backends are process
+        # singletons, and caching the first job's project ran every later
+        # job under it (cycle-3 N7, 2026-10-22).
+        project_id = job.spec.get("project_id", job.project_id)
         _sse_token = None
         try:  # SSE project attribution for every event in this attempt
             from umrs.knowledge import events_sse
@@ -3620,9 +3619,6 @@ async def _run_verifier(
 class KnowledgeVerifyBackend(OrchestratorBackend):
     """Run all verifiers → produce confidence report."""
 
-    def __init__(self) -> None:
-        self._project_id: str = ""
-
     @property
     def backend_name(self) -> str:
         return "knowledge_verify"
@@ -3639,8 +3635,10 @@ class KnowledgeVerifyBackend(OrchestratorBackend):
         )
         from umrs.knowledge.verifiers import get_all_verifiers
 
-        project_id = self._project_id or job.spec.get("project_id", job.project_id)
-        self._project_id = project_id
+        # The job's own project, every time: these backends are process
+        # singletons, and caching the first job's project ran every later
+        # job under it (cycle-3 N7, 2026-10-22).
+        project_id = job.spec.get("project_id", job.project_id)
 
         KnowledgeEvent(
             event_type="verify",
@@ -4036,9 +4034,6 @@ class _ExportIntegrityMixin:
 class KnowledgeExportBackend(OrchestratorBackend, _ExportIntegrityMixin):
     """Export project knowledge to a .kb bundle directory."""
 
-    def __init__(self) -> None:
-        self._project_id: str = ""
-
     @property
     def backend_name(self) -> str:
         return "knowledge_export"
@@ -4054,8 +4049,10 @@ class KnowledgeExportBackend(OrchestratorBackend, _ExportIntegrityMixin):
         )
         from umrs.knowledge.store import KnowledgeStore
 
-        project_id = self._project_id or job.spec.get("project_id", job.project_id)
-        self._project_id = project_id
+        # The job's own project, every time: these backends are process
+        # singletons, and caching the first job's project ran every later
+        # job under it (cycle-3 N7, 2026-10-22).
+        project_id = job.spec.get("project_id", job.project_id)
         allow_unsigned = bool(job.spec.get("allow_unsigned", False))
 
         KnowledgeEvent(
