@@ -250,23 +250,34 @@ def governance_user_id(
     x_verified_project_id: str | None = Header(None),
     x_verified_is_admin: str | None = Header(None),
     x_verified_hmac: str | None = Header(None),
-    x_admin_token: str = Header("", alias="x-admin-token"),
 ) -> str:
     """The user a governance share route acts as (owner check).
 
     A bare ``X-User-ID`` named the owner (H-1 item 7). Strict mode honours
-    only a signed identity tuple; without one only the ``x-admin-token``
-    path remains (user ""), and a caller with neither is a 401
-    (2026-10-21: "nobody" was user "", which listed shares with a 200 and
-    matched a resource recorded without an owner). Mvp keeps the raw header.
+    only a signed identity tuple; without one the caller is nobody ("") and
+    only the ``x-admin-token`` path remains. Mvp keeps the raw header.
     """
     uid = _hdr(x_user_id)
-    if not _strict_mode():
+    if not uid or not _strict_mode():
         return uid
-    if uid and _hdr(x_verified_project_id):
-        return _header_caller(
-            x_user_id, x_verified_project_id, x_verified_is_admin, x_verified_hmac
-        ).user_id
+    if not _hdr(x_verified_project_id):
+        return ""
+    return _header_caller(
+        x_user_id, x_verified_project_id, x_verified_is_admin, x_verified_hmac
+    ).user_id
+
+
+def governance_share_caller(
+    user_id: str = Depends(governance_user_id),
+    x_admin_token: str = Header("", alias="x-admin-token"),
+) -> str:
+    """The share routes' caller: a verified user, or "" on the admin-token
+    path; nobody at all is a 401 in strict mode (2026-10-21: "nobody" was
+    user "", which listed shares with a 200 and matched a resource recorded
+    without an owner). connect-info keeps ``governance_user_id`` (anonymous
+    discovery stays open there)."""
+    if user_id or not _strict_mode():
+        return user_id
     expected = os.environ.get("UMRS_ADMIN_TOKEN", "")
     if expected and hmac.compare_digest(_hdr(x_admin_token), expected):
         return ""
@@ -1459,7 +1470,7 @@ async def governance_create_share(
     granted_to_type: str = Query("user", description="'user' or 'group'"),
     access_level: str = Query("read", description="'read' or 'write'"),
     expires_at: str | None = Query(None, description="ISO 8601 expiry (optional)"),
-    user_id: str = Depends(governance_user_id),
+    user_id: str = Depends(governance_share_caller),
     admin_token: str = Header("", alias="x-admin-token"),
 ):
     """Share a resource with a user or group.
@@ -1516,7 +1527,7 @@ async def governance_revoke_share(
     resource_id: str = Query(..., description="Resource ID"),
     granted_to: str = Query(..., description="User or group ID to revoke"),
     granted_to_type: str = Query("user", description="'user' or 'group'"),
-    user_id: str = Depends(governance_user_id),
+    user_id: str = Depends(governance_share_caller),
     admin_token: str = Header("", alias="x-admin-token"),
 ):
     """Revoke a specific share. Caller must be resource owner or admin."""
@@ -1571,7 +1582,7 @@ async def governance_revoke_share(
 async def governance_list_shares(
     resource_type: str = Query("", description="Filter by resource type"),
     resource_id: str = Query("", description="Filter by resource ID"),
-    user_id: str = Depends(governance_user_id),
+    user_id: str = Depends(governance_share_caller),
     admin_token: str = Header("", alias="x-admin-token"),
 ):
     """List shares for a resource or for the current user."""
