@@ -224,6 +224,46 @@ def _raise_for_spec_resources(
         raise ValueError(refusal)
 
 
+def _raise_for_spec_project(job_type: JobType, spec: Any, project_id: Any) -> None:
+    refusal = spec_project_refusal(job_type, spec, str(project_id or ""))
+    if refusal:
+        raise ValueError(refusal)
+
+
+# Job types whose backend acts on a project's data: the job's own project,
+# never another one a spec names (umrs.jobs.knowledge_adapters.job_project).
+PROJECT_SCOPED_JOB_TYPES = frozenset(
+    {
+        JobType.KNOWLEDGE_INGEST,
+        JobType.KNOWLEDGE_UNDERSTAND,
+        JobType.KNOWLEDGE_EMBED,
+        JobType.KNOWLEDGE_VERIFY,
+        JobType.KNOWLEDGE_EXPORT,
+        JobType.KNOWLEDGE_REINDEX,
+        JobType.DOMAIN_BENCHMARK,
+        JobType.DATA_INGESTION,
+    }
+)
+
+
+def spec_project_refusal(job_type: JobType, spec: Any, project_id: str) -> str | None:
+    """Why this spec may not be submitted in *project_id*, or None: a
+    project-scoped job's ``spec.project_id`` naming another project. The
+    job is stored under the caller's verified project, and every knowledge
+    backend ran in the spec's (cycle-3 memfix N7). The answer never depends
+    on whether the named project exists. Shared by the ZMQ and HTTP submit
+    paths, admin or not: neither creates a job in another project."""
+    if job_type not in PROJECT_SCOPED_JOB_TYPES or not isinstance(spec, dict):
+        return None
+    named = str(spec.get("project_id") or "").strip()
+    if not named or named == project_id:
+        return None
+    return (
+        f"{job_type.value} spec.project_id {named!r} is not the project this job "
+        f"is submitted in ({project_id!r}): a job runs in its caller's project"
+    )
+
+
 def _check_submit_surface(job_type: JobType, internal: bool) -> None:
     if (job_type == JobType.WORKFLOW_RUN) != internal:
         raise ValueError(
@@ -429,6 +469,7 @@ class DurableJobCommandBackend:
             if policy_err:
                 return json.dumps({"status": "error", "message": policy_err})
             _raise_for_spec_resources(job_type, spec, client_id, is_admin)
+            _raise_for_spec_project(job_type, spec, project_id)
             priority = int(payload.get("priority", 0))
             max_attempts = int(payload.get("max_attempts", 3))
             restart_policy = _parse_restart_policy(

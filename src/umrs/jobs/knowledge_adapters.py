@@ -148,6 +148,29 @@ def _utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def job_project(job: Job) -> str:
+    """The project a knowledge job acts on: its own row's, verified at
+    submit. A ``spec.project_id`` naming another project is ignored (and
+    logged): every backend read it first, so a caller verified for A ran
+    ingest, understand, embed, verify, export and benchmark jobs in B's
+    graph (cycle-3 memfix N7). POST /umrs/jobs refuses such a spec; this
+    is the run-time half. A job with no project of its own fails by name."""
+    own = str(getattr(job, "project_id", "") or "").strip()
+    named = str((getattr(job, "spec", None) or {}).get("project_id") or "").strip()
+    if named and named != own:
+        logger.warning(
+            "job %s: spec.project_id %r ignored; it runs in its own project %r",
+            getattr(job, "job_id", "?"),
+            named,
+            own,
+        )
+    if not own:
+        raise ValueError(
+            "a knowledge job runs in its own project and this job has none"
+        )
+    return own
+
+
 def _fire_coroutine(coro: Any, label: str = "") -> None:
     """Run a coroutine from sync code, respecting the ambient loop.
 
@@ -755,7 +778,7 @@ class KnowledgeIngestBackend(OrchestratorBackend):
         if not source_refs:
             raise ValueError("knowledge_ingest requires spec.sources")
 
-        project_id = job.spec.get("project_id", job.project_id)
+        project_id = job_project(job)
         allow_domains = job.spec.get("allow_domains")
         _sse_token = None
         try:  # SSE project attribution for every event in this attempt
@@ -862,8 +885,9 @@ class KnowledgeUnderstandBackend(OrchestratorBackend):
     ) -> str:
         # The job's own project, every time: these backends are process
         # singletons, and caching the first job's project ran every later
-        # job under it (cycle-3 N7, 2026-10-22).
-        project_id = job.spec.get("project_id", job.project_id)
+        # job under it (cycle-3 N7, 2026-10-22); never spec.project_id
+        # (``job_project``).
+        project_id = job_project(job)
         _sse_token = None
         try:  # SSE project attribution for every event in this attempt
             from umrs.knowledge import events_sse
@@ -1894,7 +1918,7 @@ async def _graph_written(store: Any, job: Job, artifact_id: str) -> bool:
     restarted mid-understand, 2026-10-09): skipping on "already has IR" then
     left the artifact out of the graph for good and failed every embed on the
     missing file node. Probe errors answer True — never a rebuild loop."""
-    project_id = str(job.spec.get("project_id") or getattr(job, "project_id", ""))
+    project_id = job_project(job)
     scope = _node_id_scope(project_id, str(job.spec.get("graph_id") or ""))
     try:
         found = await store._pool.fetchval(  # type: ignore[union-attr]
@@ -1916,7 +1940,7 @@ async def _artifact_row_absent(store: Any, job: Job, artifact_id: str) -> str:
     """Why the artifact's active row cannot be confirmed in the job's
     project, or ``""`` when it exists. A probe error answers absent: fail
     closed, by name."""
-    project_id = str(job.spec.get("project_id") or getattr(job, "project_id", ""))
+    project_id = job_project(job)
     try:
         found = await store._pool.fetchval(  # type: ignore[union-attr]
             _ARTIFACT_ROW_SQL, artifact_id, project_id
@@ -3793,7 +3817,7 @@ class KnowledgeEmbedBackend(OrchestratorBackend):
         job: Job,
         attempt: JobAttempt,
     ) -> str:
-        project_id = job.spec.get("project_id", job.project_id)
+        project_id = job_project(job)
         _sse_token = None
         try:  # SSE project attribution for every attempt event
             from umrs.knowledge import events_sse
@@ -3955,8 +3979,9 @@ class KnowledgeVerifyBackend(OrchestratorBackend):
 
         # The job's own project, every time: these backends are process
         # singletons, and caching the first job's project ran every later
-        # job under it (cycle-3 N7, 2026-10-22).
-        project_id = job.spec.get("project_id", job.project_id)
+        # job under it (cycle-3 N7, 2026-10-22); never spec.project_id
+        # (``job_project``).
+        project_id = job_project(job)
 
         KnowledgeEvent(
             event_type="verify",
@@ -4095,7 +4120,7 @@ class DomainBenchmarkBackend(OrchestratorBackend):
         return "domain_benchmark"
 
     async def submit_job(self, job: Job, attempt: JobAttempt) -> str:
-        project_id = job.spec.get("project_id", job.project_id)
+        project_id = job_project(job)
         items = self._validated_items(job.spec.get("benchmark"))
         if items is None:
             ref = f"domain_benchmark|project={project_id}|error=bad_benchmark_spec"
@@ -4369,8 +4394,9 @@ class KnowledgeExportBackend(OrchestratorBackend, _ExportIntegrityMixin):
 
         # The job's own project, every time: these backends are process
         # singletons, and caching the first job's project ran every later
-        # job under it (cycle-3 N7, 2026-10-22).
-        project_id = job.spec.get("project_id", job.project_id)
+        # job under it (cycle-3 N7, 2026-10-22); never spec.project_id
+        # (``job_project``).
+        project_id = job_project(job)
         allow_unsigned = bool(job.spec.get("allow_unsigned", False))
 
         KnowledgeEvent(
