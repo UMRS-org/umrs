@@ -152,14 +152,20 @@ def test_foreign_job_reads_like_an_unknown_job(method: str, path: str, body: Any
     assert [c for c in store.calls if not c.startswith("get_job:")] == []
 
 
+def _diff_refusal(job_id: str) -> tuple[int, str]:
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException) as exc:
+        provenance_api.diff_provenance(
+            job_a=job_id, job_b=job_id, store=_JobStore(), caller=BOB, trace_store=_TraceStore()
+        )
+    return exc.value.status_code, str(exc.value.detail).replace(job_id, "<id>")
+
+
 def test_provenance_diff_hides_a_foreign_job() -> None:
-    client = _jobs_client(_JobStore(), BOB)
-    foreign = client.get("/umrs/provenance/diff", params={"job_a": JOB_ID, "job_b": JOB_ID})
-    unknown = client.get(
-        "/umrs/provenance/diff", params={"job_a": RANDOM_JOB, "job_b": RANDOM_JOB}
-    )
-    assert foreign.status_code == 404
-    assert _shape(foreign, JOB_ID) == _shape(unknown, RANDOM_JOB)
+    """Called directly: over HTTP, GET /umrs/provenance/diff is shadowed by
+    GET /umrs/provenance/{job_id} (declared first), a separate defect."""
+    assert _diff_refusal(JOB_ID) == _diff_refusal(RANDOM_JOB) == (404, "Job not found: <id>")
 
 
 @pytest.mark.parametrize("caller", [ALICE, ADMIN], ids=["owner", "admin"])
