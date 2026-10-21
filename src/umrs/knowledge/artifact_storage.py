@@ -5,6 +5,7 @@ Presigned URLs are internal-only — never exposed in API responses.
 
 Key operations:
   - put_artifact: upload raw bytes, return content_hash
+  - copy_artifact: store an object already in the store under its hash (server side)
   - get_artifact: download by content_hash, return bytes
   - get_presigned_url: generate internal-only presigned URL (TTL 5 min)
   - artifact_exists: check if content exists by hash
@@ -92,6 +93,37 @@ class ArtifactStorage:
             presigned_url = self._generate_presigned_url(key, ttl_seconds)
 
         return content_hash, len(content), presigned_url
+
+    def copy_artifact(
+        self,
+        project_id: str,
+        content_hash: str,
+        *,
+        source_bucket: str,
+        source_key: str,
+        size: int,
+        etag: str = "",
+    ) -> tuple[str, int]:
+        """Store an object already in the store under *content_hash*, server
+        side: the bytes never pass through this process (a 400 MiB staged
+        upload read whole took UMRS past 3 GB RSS, cycle-3 P1). The caller
+        hashed the object it read; *etag* (that read's ETag) makes the copy
+        conditional, so an object replaced since is refused (412), never
+        stored under the other bytes' hash. Returns ``(content_hash, size)``.
+        """
+        key = self.key(project_id, content_hash)
+        head = self._head_object(key)
+        if head:
+            return content_hash, head["content_length"]
+        condition = {"CopySourceIfMatch": etag} if etag else {}
+        self._s3.copy_object(
+            Bucket=self._bucket,
+            Key=key,
+            CopySource={"Bucket": source_bucket, "Key": source_key},
+            **condition,
+        )
+        logger.info("Artifact copied: %s (size=%d)", content_hash, size)
+        return content_hash, size
 
     def get_artifact(self, project_id: str, content_hash: str) -> bytes | None:
         """Download artifact by content hash.

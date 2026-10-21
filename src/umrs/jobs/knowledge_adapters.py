@@ -136,6 +136,9 @@ class KnowledgeEmbedResult:
     # Vectors of rewritten chunks that another model name held in the same
     # space, or that recorded the text the chunk had before (integrator).
     vectors_removed: int = 0
+    # Artifacts whose text was read only up to _embed_read_bytes (cycle-3 P1):
+    # their last chunks may end at the cut, so they are not written.
+    cut_texts: set[str] = field(default_factory=set)
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -417,30 +420,221 @@ def _build_s3_client(job_spec: dict[str, Any]) -> tuple[Any, str]:
         return None, bucket
 
 
+def _object_ref(bucket: str, source_ref: str) -> tuple[str, str]:
+    """``(bucket, key)`` a source_ref names.
+
+    The upload facade records ``s3://<bucket>/<key>`` (api/knowledge_upload.py)
+    while other producers record a bare key. Passing the URI as the key made
+    every `r4 knowledge upload` fail with NoSuchKey: understand produced
+    nothing and embed requeued forever (measured 2026-10-09).
+    """
+    if source_ref.startswith("s3://"):
+        named, _, key = source_ref[len("s3://") :].partition("/")
+        return named, key
+    return bucket, source_ref
+
+
+def _readable_ref(s3_client: Any, source_ref: str) -> bool:
+    return (
+        s3_client is not None and bool(source_ref) and not names_no_object(source_ref)
+    )
+
+
+def _log_fetch_failure(key: str, exc: Exception) -> None:
+    if _missing_object_error(exc):
+        # Typed by the caller ("document content missing"); not a store fault.
+        logger.info("document content missing for %s: the stored object is gone", key)
+    else:
+        logger.warning("S3 fetch failed for %s: %s", key, exc)
+
+
 def _fetch_artifact_bytes(s3_client: Any, bucket: str, source_ref: str) -> bytes | None:
-    """Download real artifact bytes from S3 by source_ref key.
+    """Download real artifact bytes from S3 by source_ref key, WHOLE.
 
     Returns None when unreadable — callers record the failure explicitly;
-    we never substitute the content_hash hex string for content.
+    we never substitute the content_hash hex string for content. The
+    knowledge chain reads through :func:`_stream_artifact` (ingest) and
+    :func:`_read_bounded` (understand, embed, retrieval) instead: a whole
+    read of a 400 MiB upload took UMRS peak RSS past 3 GB (cycle-3 P1).
     """
-    if s3_client is None or not source_ref or names_no_object(source_ref):
+    if not _readable_ref(s3_client, source_ref):
         return None
-    # The upload facade records ``s3://<bucket>/<key>`` (api/knowledge_upload.py)
-    # while other producers record a bare key. Passing the URI as the key made
-    # every `r4 knowledge upload` fail with NoSuchKey: understand produced
-    # nothing and embed requeued forever (measured 2026-10-09).
-    if source_ref.startswith("s3://"):
-        bucket, _, source_ref = source_ref[len("s3://") :].partition("/")
+    bucket, key = _object_ref(bucket, source_ref)
     try:
-        obj = s3_client.get_object(Bucket=bucket, Key=source_ref)
-        return obj["Body"].read()
+        return s3_client.get_object(Bucket=bucket, Key=key)["Body"].read()
     except Exception as exc:  # noqa: BLE001 — best-effort adapter path, reported not raised
-        if _missing_object_error(exc):
-            # Typed by the caller ("document content missing"); not a store fault.
-            logger.info("document content missing for %s: the stored object is gone", source_ref)
-        else:
-            logger.warning("S3 fetch failed for %s: %s", source_ref, exc)
+        _log_fetch_failure(key, exc)
         return None
+
+
+def _fetch_artifact_prefix(
+    s3_client: Any, bucket: str, source_ref: str, limit: int
+) -> tuple[bytes, int] | None:
+    """``(the object's first *limit* bytes, the object's size)`` by a ranged
+    GET, or None when unreadable. A store that ignores the range answers the
+    whole object: only *limit* + 1 bytes of it are read."""
+    if not _readable_ref(s3_client, source_ref):
+        return None
+    bucket, key = _object_ref(bucket, source_ref)
+    try:
+        obj = s3_client.get_object(Bucket=bucket, Key=key, Range=f"bytes=0-{limit - 1}")
+        data = obj["Body"].read(limit + 1)
+    except Exception as exc:  # noqa: BLE001 — best-effort adapter path, reported not raised
+        if _error_code(exc) == "InvalidRange":  # a range over an empty object
+            return b"", 0
+        _log_fetch_failure(key, exc)
+        return None
+    return data[:limit], max(_object_size(obj), len(data))
+
+
+def _object_size(obj: dict[str, Any]) -> int:
+    """The whole object's size: a ranged answer names it in ``ContentRange``
+    (``bytes 0-9/42``), a whole one in ``ContentLength``."""
+    total = str(obj.get("ContentRange") or "").rpartition("/")[2]
+    return int(total) if total.isdigit() else int(obj.get("ContentLength") or 0)
+
+
+def _error_code(exc: Exception) -> str:
+    response = getattr(exc, "response", None)
+    error = response.get("Error", {}) if isinstance(response, dict) else {}
+    return str(error.get("Code", ""))
+
+
+# The understand job reads an artifact whole up to canonical_identity.READ_CAP
+# (64 MiB: code parses and graph-JSON imports need all of it); past that, a
+# text is understood from its first MiB (the excerpt and the LLM extraction
+# read 9000 characters at most) and the run says so (cycle-3 P1).
+_UNDERSTAND_PREFIX_BYTES = 1 << 20
+
+
+@dataclass(frozen=True)
+class _Bounded:
+    """What a bounded read kept of an artifact: ``content`` (None: refused,
+    ``refused`` says why), the object's ``size``, and whether a text was
+    ``cut`` short of it."""
+
+    content: bytes | None
+    size: int
+    cut: bool = False
+    refused: str = ""
+
+
+def _read_bounded(
+    s3_client: Any,
+    bucket: str,
+    source_ref: str,
+    name: str,
+    *,
+    limit: int,
+    whole_text_max: int,
+) -> _Bounded | None:
+    """An artifact's bytes, never more than the reader uses: its first
+    *limit* bytes; the whole object when it is a text of at most
+    *whole_text_max* bytes, or a binary document (PDF, PPTX: extraction
+    needs every byte) within READ_CAP. A larger binary document is refused
+    by name. None when unreadable. ``name`` is the artifact's source name;
+    without one, any zip may be a PPTX."""
+    from umrs.knowledge.extract import _is_binary_document_bytes
+
+    got = _fetch_artifact_prefix(s3_client, bucket, source_ref, limit)
+    if got is None:
+        return None
+    head, size = got
+    if size <= len(head):
+        return _Bounded(head, size)
+    binary = _is_binary_document_bytes(name, head) or (
+        not name and head.startswith(b"PK\x03\x04")
+    )
+    if size <= (canonical_identity.READ_CAP if binary else whole_text_max):
+        whole = _fetch_artifact_bytes(s3_client, bucket, source_ref)
+        return None if whole is None else _Bounded(whole, len(whole))
+    if binary:
+        return _Bounded(None, size, refused=_too_large_to_extract(size))
+    return _Bounded(_whole_utf8(head), size, cut=True)
+
+
+def _mib(size: int) -> str:
+    return f"{size / (1 << 20):.1f} MiB"
+
+
+def _too_large_to_extract(size: int) -> str:
+    return (
+        f"document too large to extract its text ({_mib(size)}; documents are "
+        f"read whole up to {_mib(canonical_identity.READ_CAP)})"
+    )
+
+
+def _whole_utf8(data: bytes) -> bytes:
+    """*data* without the multi-byte character a cut split (a ranged read
+    ends anywhere; strict decoders would refuse the whole text over it)."""
+    for back in range(1, min(4, len(data)) + 1):
+        byte = data[-back]
+        if byte < 0x80:
+            return data
+        if byte >= 0xC0:  # the lead byte of the last character
+            width = 2 if byte < 0xE0 else 3 if byte < 0xF0 else 4
+            return data if back >= width else data[:-back]
+    return data
+
+
+def _source_name(src: dict[str, Any]) -> str:
+    return str((src.get("metadata") or {}).get("source_name") or "")
+
+
+# Ingest reads a staged object once, in parts of this size: it hashes the
+# bytes, stamps their canonical identity and keeps the head that decides the
+# kind; the copy itself is server side (ArtifactStorage.copy_artifact).
+_STREAM_PART_BYTES = 1 << 20
+_HEAD_BYTES = 8192  # _modality reads 8 KiB at most
+
+
+@dataclass(frozen=True)
+class _StreamedObject:
+    """One pass over a stored object: where it is and what ingest keeps."""
+
+    bucket: str
+    key: str
+    etag: str
+    content_hash: str
+    size: int
+    head: bytes
+    identity: canonical_identity.CanonicalIdentity
+
+
+def _stream_artifact(
+    s3_client: Any, bucket: str, source_ref: str
+) -> _StreamedObject | None:
+    """Read an object once in parts, never whole; None when unreadable."""
+    if not _readable_ref(s3_client, source_ref):
+        return None
+    bucket, key = _object_ref(bucket, source_ref)
+    try:
+        obj = s3_client.get_object(Bucket=bucket, Key=key)
+        return _digest_body(obj, bucket, key)
+    except Exception as exc:  # noqa: BLE001 — best-effort adapter path, reported not raised
+        _log_fetch_failure(key, exc)
+        return None
+
+
+def _digest_body(obj: dict[str, Any], bucket: str, key: str) -> _StreamedObject:
+    body = obj["Body"]
+    digest = hashlib.sha256()
+    identity = canonical_identity.IdentityStream()
+    head, size = b"", 0
+    for part in iter(lambda: body.read(_STREAM_PART_BYTES), b""):
+        digest.update(part)
+        identity.feed(part)
+        size += len(part)
+        head += part[: max(_HEAD_BYTES - len(head), 0)]
+    return _StreamedObject(
+        bucket=bucket,
+        key=key,
+        etag=str(obj.get("ETag") or ""),
+        content_hash=digest.hexdigest(),
+        size=size,
+        head=head,
+        identity=identity.identity(),
+    )
 
 
 # Rows minted without bytes name no object in artifact storage: RAG corpus
@@ -461,9 +655,7 @@ def names_no_object(source_ref: str) -> bool:
 
 def _missing_object_error(exc: Exception) -> bool:
     """Whether an object-store error says the object does not exist."""
-    response = getattr(exc, "response", None)
-    error = response.get("Error", {}) if isinstance(response, dict) else {}
-    return str(error.get("Code", "")) in _MISSING_OBJECT_CODES
+    return _error_code(exc) in _MISSING_OBJECT_CODES
 
 
 # Object-store answers that mean the object is gone, not that the store is
@@ -1069,25 +1261,35 @@ def _copy_s3_reference(
     content-addressed key (canonical_identity.stored_object). Measured on the
     stand-alone stack 2026-10-09. The staged object is left in place: the
     upload response hands its key to the caller.
+
+    The object is read once in parts (hash, identity, head) and copied server
+    side: reading it whole took UMRS peak RSS past 3 GB for a 400 MiB upload
+    (cycle-3 P1, 2026-10-22). The copy is conditional on the ETag that was
+    hashed, so an object replaced in between is never stored under the
+    other bytes' hash.
     """
-    content = _fetch_artifact_bytes(s3_client, bucket, uri)
-    if content is None:
+    streamed = _stream_artifact(s3_client, bucket, uri)
+    if streamed is None:
         result.failed_items.append(
             {"source": "s3_uri", "uri": uri, "error": "s3 object unreadable"}
         )
         return
-
-    content_hash, size_bytes, _ = storage.put_artifact(project_id, content)
+    content_hash, size_bytes = _copy_streamed(
+        storage, project_id, streamed, uri, result
+    )
+    if not content_hash:
+        return
     success_ids.append(artifact_id)
     success_descs.append(
         {
             "artifact_id": artifact_id,
             "content_hash": content_hash,
             # The staged key ends in the uploaded basename.
-            "kind": _artifact_kind(uri, content),
+            "kind": _artifact_kind(uri, streamed.head),
             "source_ref": storage.key(project_id, content_hash),
             "metadata": {
-                **_stamp(content, content_hash, Path(uri).name),
+                **canonical_identity.stamp_identity(streamed.identity),
+                "source_name": Path(uri).name,
                 "staged_from": uri,
             },
         }
@@ -1102,6 +1304,38 @@ def _copy_s3_reference(
         source_ref=uri,
         details=f"s3 copy hash={content_hash[:16]}... size={size_bytes}",
     ).emit()
+
+
+def _copy_streamed(
+    storage: ArtifactStorage,
+    project_id: str,
+    streamed: _StreamedObject,
+    uri: str,
+    result: KnowledgeIngestResult,
+) -> tuple[str, int]:
+    """Store a streamed object under its hash: ``(content_hash, size)``, or
+    ``("", 0)`` with the failure on *result* when the object changed after it
+    was read (the conditional copy's 412)."""
+    try:
+        return storage.copy_artifact(
+            project_id,
+            streamed.content_hash,
+            source_bucket=streamed.bucket,
+            source_key=streamed.key,
+            size=streamed.size,
+            etag=streamed.etag,
+        )
+    except Exception as exc:
+        if _error_code(exc) not in ("PreconditionFailed", "412"):
+            raise
+    result.failed_items.append(
+        {
+            "source": "s3_uri",
+            "uri": uri,
+            "error": "the staged object changed while it was ingested: upload it again",
+        }
+    )
+    return "", 0
 
 
 def _fetch_and_store_remote(
@@ -1708,17 +1942,44 @@ def _understand_bytes(
     """The artifact's real bytes — never the hash string parsed — or None
     with the reason on *result*: a row minted without bytes (rag://, loop:)
     is counted as ``no_object``, not failed (ops-watch #522/#523); a gone
-    object is a typed "document content missing" failure."""
+    object is a typed "document content missing" failure. A text past
+    READ_CAP is understood from its first MiB, and the run says so; a binary
+    document past it fails by name (cycle-3 P1)."""
     source_ref = str(src.get("source_ref") or "")
     if names_no_object(source_ref):
         result.no_object += 1
         return None
-    content = _fetch_artifact_bytes(s3_client, bucket, source_ref)
-    if content is None:
+    read = _read_bounded(
+        s3_client,
+        bucket,
+        source_ref,
+        _source_name(src),
+        limit=_UNDERSTAND_PREFIX_BYTES,
+        whole_text_max=canonical_identity.READ_CAP,
+    )
+    if read is None:
         result.failed_items.append(
             _unreadable(src["artifact_id"], s3_client, bucket, source_ref)
         )
-    return content
+        return None
+    if read.content is None:
+        result.failed_items.append(
+            {"artifact_id": src["artifact_id"], "error": read.refused}
+        )
+    elif read.cut:
+        result.degraded = True
+        result.degraded_reason = "; ".join(
+            filter(None, [result.degraded_reason, _understood_from_prefix(src, read)])
+        )
+    return read.content
+
+
+def _understood_from_prefix(src: dict[str, Any], read: _Bounded) -> str:
+    return (
+        f"{src['artifact_id']} understood from its first "
+        f"{_mib(len(read.content or b''))} of {_mib(read.size)} (texts are read "
+        f"whole up to {_mib(canonical_identity.READ_CAP)})"
+    )
 
 
 async def _understand_input(
@@ -2755,10 +3016,8 @@ def _artifact_text(
     if not artifact_id:
         result.failed_items.append({"artifact_id": "", "error": "missing artifact_id"})
         return None
-    source_ref = src.get("source_ref", "")
-    content = _fetch_artifact_bytes(s3_client, bucket, source_ref)
+    content = _embed_bytes(src, s3_client, bucket, result)
     if content is None:
-        result.failed_items.append(_unreadable(artifact_id, s3_client, bucket, source_ref))
         return None
     from umrs.knowledge.retrieval.hydrate import decode_chunked
 
@@ -2772,6 +3031,48 @@ def _artifact_text(
         result.skipped += 1
         return None
     return text
+
+
+def _embed_read_bytes() -> int:
+    """The bytes of a text the embed job reads: room for the chunks it keeps
+    (``UMRS_KNOWLEDGE_EMBED_MAX_CHUNKS`` chunks of
+    ``UMRS_KNOWLEDGE_EMBED_CHUNK_TOKENS`` tokens, 16 bytes a token), at least
+    256 KiB. It read and embedded every chunk and kept the first 128: 8 MiB
+    of text embedded 8656 chunks, and a 400 MiB upload was read whole
+    (cycle-3 P1, 2026-10-22)."""
+    cap = max(int(os.environ.get(_NODE_EMBED_MAX_CHUNKS_ENV, "128")), 1)
+    tokens = max(int(os.environ.get(_NODE_EMBED_CHUNK_TOKENS_ENV, "256")), 1)
+    return max(cap * tokens * 16, 256 * 1024)
+
+
+def read_chunked_bytes(
+    s3_client: Any, bucket: str, source_ref: str, name: str = ""
+) -> _Bounded | None:
+    """The bytes of an artifact the embed job chunks — a text's first
+    :func:`_embed_read_bytes`, a binary document whole within READ_CAP —
+    shared with retrieval, which slices chunks out of the same text."""
+    return _read_bounded(
+        s3_client, bucket, source_ref, name, limit=_embed_read_bytes(), whole_text_max=0
+    )
+
+
+def _embed_bytes(
+    src: dict[str, Any], s3_client: Any, bucket: str, result: KnowledgeEmbedResult
+) -> bytes | None:
+    """The bytes the embed job chunks, or None (the failure on *result*); a
+    text cut short is named in ``result.cut_texts``."""
+    artifact_id, source_ref = src["artifact_id"], str(src.get("source_ref") or "")
+    read = read_chunked_bytes(s3_client, bucket, source_ref, _source_name(src))
+    if read is None:
+        result.failed_items.append(
+            _unreadable(artifact_id, s3_client, bucket, source_ref)
+        )
+        return None
+    if read.content is None:
+        result.failed_items.append(_not_embeddable(artifact_id, read.refused))
+    elif read.cut:
+        result.cut_texts.add(artifact_id)
+    return read.content
 
 
 def _unreadable(
@@ -3097,7 +3398,7 @@ async def _write_embedded_chunks(
     )
     model_name = configured_text_embedder()
     cap = int(os.environ.get(_NODE_EMBED_MAX_CHUNKS_ENV, "128"))
-    pairs = list(zip(chunks, vectors))[: max(cap, 0)]
+    pairs, total = _kept_chunks(chunks, vectors, cap, artifact_id in result.cut_texts)
     async with pool.acquire() as conn, conn.transaction():
         await _require_artifact_row(conn, wanted)
         target = await _resolve_target(conn, wanted)
@@ -3112,9 +3413,26 @@ async def _write_embedded_chunks(
         return
     result.chunks_removed += removed
     result.vectors_removed += stale
-    stamp = ChunkStamp(scheme=scheme, total=len(chunks), indexed=len(pairs))
+    stamp = ChunkStamp(scheme=scheme, total=total, indexed=len(pairs))
     _note_truncation(artifact_id, stamp, result)
     await _stamp_embedded(store, artifact_id, model_name, len(vectors[0]), stamp)
+
+
+def _kept_chunks(
+    chunks: list[Any], vectors: list[Any], cap: int, cut: bool
+) -> tuple[list[tuple[Any, Any]], int]:
+    """``(the (chunk, vector) pairs written, the chunk total stamped)``.
+
+    A text read only up to the embed budget (``cut``) ends at the cut: its
+    last two chunks may differ from the whole text's (the cut ends a
+    sentence, a short tail merges back), so they are never written, and its
+    total — the chunks of the part read, a lower bound — always exceeds the
+    chunks written, so the truncation is reported."""
+    if cut:
+        chunks, vectors = chunks[:-2], vectors[:-2]
+    pairs = list(zip(chunks, vectors))[: max(cap, 0)]
+    total = max(len(chunks), len(pairs) + 1) if cut else len(chunks)
+    return pairs, total
 
 
 # Wave F: the artifact's active row, locked against a delete for the length

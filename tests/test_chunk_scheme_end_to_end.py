@@ -29,7 +29,6 @@ import asyncio
 import contextlib
 import copy
 import hashlib
-import io
 import json
 import re
 from collections.abc import Sequence
@@ -37,6 +36,7 @@ from typing import Any
 
 import numpy as np
 import pytest
+from tests.s3_ranged import ranged
 from umrs.jobs import knowledge_adapters as ka
 from umrs.knowledge import bundle_export, chunking, embedding_metadata
 from umrs.knowledge import store as store_mod
@@ -135,8 +135,8 @@ class _S3:
     def __init__(self, objects: dict[str, str]) -> None:
         self.objects = objects
 
-    def get_object(self, Bucket: str, Key: str) -> dict[str, Any]:  # noqa: N803 — boto3's names
-        return {"Body": io.BytesIO(self.objects[f"{Bucket}/{Key}"].encode("utf-8"))}
+    def get_object(self, Bucket: str, Key: str, Range: str = "") -> dict[str, Any]:  # noqa: N803 — boto3's names
+        return ranged(self.objects[f"{Bucket}/{Key}"].encode("utf-8"), Range)
 
 
 # ── the database ────────────────────────────────────────────────────────────

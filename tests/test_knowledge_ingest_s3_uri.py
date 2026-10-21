@@ -12,9 +12,9 @@ stack 2026-10-09.
 from __future__ import annotations
 
 import hashlib
-import io
 from types import SimpleNamespace
 
+from tests.s3_ranged import ranged
 from umrs.jobs import knowledge_adapters as ka
 from umrs.knowledge import canonical_identity
 
@@ -34,11 +34,16 @@ class _S3:
     def __init__(self, objects: dict[tuple[str, str], bytes]):
         self.objects = dict(objects)
         self.puts: list[tuple[str, str]] = []
+        self.copies: list[tuple] = []
 
-    def get_object(self, Bucket, Key):  # noqa: N803 — boto3 signature
+    def get_object(self, Bucket, Key, Range=""):  # noqa: N803 — boto3 signature
         if (Bucket, Key) not in self.objects:
             raise KeyError(f"NoSuchKey {Bucket}/{Key}")
-        return {"Body": io.BytesIO(self.objects[(Bucket, Key)])}
+        return {**ranged(self.objects[(Bucket, Key)], Range), "ETag": '"e1"'}
+
+    def copy_object(self, Bucket, Key, CopySource, **kw):  # noqa: N803
+        self.copies.append(((CopySource["Bucket"], CopySource["Key"]), (Bucket, Key), kw))
+        self.objects[(Bucket, Key)] = self.objects[(CopySource["Bucket"], CopySource["Key"])]
 
     def head_object(self, Bucket, Key):  # noqa: N803
         if (Bucket, Key) not in self.objects:
@@ -133,4 +138,5 @@ def test_same_bytes_twice_dedup_to_one_object(monkeypatch):
     )
     _ingest(s3, "s3://r4-data/knowledge-uploads/proj-1/a/n.md")
     _ingest(s3, "s3://r4-data/knowledge-uploads/proj-1/b/n.md")
-    assert len(s3.puts) == 1
+    # Copied server side (cycle-3 P1), once: the second finds the hash's key.
+    assert s3.puts == [] and len(s3.copies) == 1

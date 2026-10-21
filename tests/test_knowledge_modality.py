@@ -13,6 +13,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
+from tests.s3_ranged import ranged
 from umrs.jobs import knowledge_adapters as ka
 
 _PNG = b"\x89PNG\r\n\x1a\n" + b"\x00\x00\x00\rIHDR" + b"\x00" * 64
@@ -51,10 +52,11 @@ def test_an_uploaded_image_is_registered_as_an_image(monkeypatch):
         def __init__(self):
             self.objects = {("r4-data", "knowledge-uploads/p/u/photo.png"): _PNG}
 
-        def get_object(self, Bucket, Key):  # noqa: N803 — boto3 signature
-            import io
+        def get_object(self, Bucket, Key, Range=""):  # noqa: N803 — boto3 signature
+            return ranged(self.objects[(Bucket, Key)], Range)
 
-            return {"Body": io.BytesIO(self.objects[(Bucket, Key)])}
+        def copy_object(self, Bucket, Key, CopySource, **_kw):  # noqa: N803
+            self.objects[(Bucket, Key)] = self.objects[(CopySource["Bucket"], CopySource["Key"])]
 
         def head_object(self, **_kw):
             raise KeyError("404")
@@ -124,7 +126,7 @@ def _understand(monkeypatch, src, content):
     parsed = []
     monkeypatch.setattr(ka, "_artifact_row_absent", row_present)
     monkeypatch.setattr(ka, "_existing_current_ir", no_ir)
-    monkeypatch.setattr(ka, "_fetch_artifact_bytes", lambda *_a: content)
+    monkeypatch.setattr(ka, "_read_bounded", lambda *_a, **_k: ka._Bounded(content, len(content)))
     monkeypatch.setattr(
         ka, "_parse_for_understand", lambda _aid, c, _kind: parsed.append(c) or {"ok": True}
     )
@@ -157,7 +159,7 @@ def test_understand_reads_a_pdf_through_its_text(monkeypatch):
 
 
 def test_embed_fails_an_image_for_want_of_an_image_model(monkeypatch):
-    monkeypatch.setattr(ka, "_fetch_artifact_bytes", lambda *_a: _PNG)
+    monkeypatch.setattr(ka, "_read_bounded", lambda *_a, **_k: ka._Bounded(_PNG, len(_PNG)))
     result = ka.KnowledgeEmbedResult()
     assert ka._artifact_text({"artifact_id": "art-1", "kind": "image"}, None, "b", result) is None
     failure = result.failed_items[0]
@@ -263,7 +265,9 @@ def _understand_with(monkeypatch, *, ir_exists, file_node_exists, artifact_row=T
             return 1 if file_node_exists else None
 
     monkeypatch.setattr(ka, "_existing_current_ir", ir)
-    monkeypatch.setattr(ka, "_fetch_artifact_bytes", lambda *_a: b"# Note\nZirconia.")
+    monkeypatch.setattr(
+        ka, "_read_bounded", lambda *_a, **_k: ka._Bounded(b"# Note\nZirconia.", 16)
+    )
     monkeypatch.setattr(ka, "_parse_for_understand", lambda *_a: {"ok": True})
     result = ka.KnowledgeUnderstandResult()
     out = asyncio.run(

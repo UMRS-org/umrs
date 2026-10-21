@@ -228,7 +228,7 @@ async def test_failed_batch_fails_its_artifacts_by_name(monkeypatch):
     from umrs.jobs import knowledge_adapters as ka
     from umrs.jobs.knowledge_adapters import KnowledgeEmbedResult
 
-    monkeypatch.setattr(ka, "_fetch_artifact_bytes", lambda *_a, **_k: b"some text")
+    monkeypatch.setattr(ka, "_read_bounded", lambda *_a, **_k: ka._Bounded(b"some text", 9))
 
     class _Broken:
         lane = "sandbox"
@@ -253,7 +253,7 @@ async def test_a_batch_embeds_off_the_event_loop(monkeypatch):
     from umrs.jobs import knowledge_adapters as ka
     from umrs.jobs.knowledge_adapters import KnowledgeEmbedResult
 
-    monkeypatch.setattr(ka, "_fetch_artifact_bytes", lambda *_a, **_k: b"some text")
+    monkeypatch.setattr(ka, "_read_bounded", lambda *_a, **_k: ka._Bounded(b"some text", 9))
 
     class _Slow:
         lane = "in_process"

@@ -21,8 +21,10 @@ at export time and carried on import (never a rewrite in place).
 
 from __future__ import annotations
 
+import codecs
 import hashlib
 import json
+import re
 import unicodedata
 from dataclasses import dataclass
 from typing import Any
@@ -81,6 +83,105 @@ def identity_of(raw: bytes | None, physical_digest: str) -> CanonicalIdentity:
     return CanonicalIdentity(hashlib.sha256(raw).hexdigest(), BYTES)
 
 
+class IdentityStream:
+    """:func:`identity_of` over bytes fed in parts, never holding the whole.
+
+    Ingest copies a staged object of up to 512 MiB; reading it whole to stamp
+    it took UMRS peak RSS past 3 GB (cycle-3 P1, 2026-10-22). ``text-v1`` is
+    computed a line at a time: NFC never composes across a line break, so
+    the normalized lines are the lines normalized. A line longer than
+    ``_FLUSH_CHARS`` is flushed at a boundary between two ASCII characters
+    (no composition and no reordering crosses one), keeping its trailing
+    spaces and tabs back for the line's end. ``feed`` the parts in order,
+    then ``identity`` once.
+    """
+
+    def __init__(self) -> None:
+        self._raw = hashlib.sha256()
+        self._text: Any = hashlib.sha256()  # None once the bytes are not text
+        self._decoder = codecs.getincrementaldecoder("utf-8")()
+        self._lead = b""  # the first bytes, until a leading BOM is decided
+        self._carry = ""  # the current line, not yet normalized
+        self._owed = 0  # line breaks owed before the next written character
+        self._open = False  # the current line has written characters
+        self._next_flush = _FLUSH_CHARS
+
+    def feed(self, part: bytes) -> None:
+        self._raw.update(part)
+        if len(self._lead) < len(_BOM):
+            self._lead += part
+            if len(self._lead) < len(_BOM) and _BOM.startswith(self._lead):
+                return
+            part, self._lead = self._lead.removeprefix(_BOM), _BOM
+        self._decode(part, final=False)
+
+    def identity(self) -> CanonicalIdentity:
+        """The identity of every byte fed."""
+        if len(self._lead) < len(_BOM):  # fewer bytes than a BOM, all a BOM's start
+            self._decode(self._lead, final=False)
+        self._decode(b"", final=True)
+        if self._text is None:
+            return CanonicalIdentity(self._raw.hexdigest(), BYTES)
+        return CanonicalIdentity(self._text.hexdigest(), TEXT_V1)
+
+    def _decode(self, part: bytes, *, final: bool) -> None:
+        if self._text is None:
+            return
+        try:
+            if b"\x00" in part:
+                raise UnicodeDecodeError("utf-8", part, 0, 1, "NUL")
+            text = self._decoder.decode(part, final)
+        except UnicodeDecodeError:
+            self._text = None
+            return
+        self._lines(self._carry + text, final=final)
+
+    def _lines(self, text: str, *, final: bool) -> None:
+        hold = "\r" if not final and text.endswith("\r") else ""
+        text = text[: len(text) - len(hold)].replace("\r\n", "\n").replace("\r", "\n")
+        *lines, rest = text.split("\n")
+        for line in lines:
+            self._end_line(line)
+        if final:
+            self._end_line(rest)
+            return
+        self._carry = self._flush_long(rest) + hold
+
+    def _flush_long(self, line: str) -> str:
+        """The unwritten tail of a long open line (its safe head written)."""
+        if len(line) < self._next_flush:
+            return line
+        match = _ASCII_PAIR_REVERSED.search(line[::-1])
+        if match is None:
+            self._next_flush = len(line) + _FLUSH_CHARS
+            return line
+        cut = len(line) - 1 - match.start()
+        self._write(unicodedata.normalize("NFC", line[:cut]))
+        self._next_flush = _FLUSH_CHARS
+        return line[cut:]
+
+    def _end_line(self, line: str) -> None:
+        self._write(unicodedata.normalize("NFC", line).rstrip(" \t"))
+        self._owed += 1  # the break after this line; trailing ones are never written
+        self._open = False
+
+    def _write(self, chunk: str) -> None:
+        if not chunk:
+            return
+        if not self._open and self._owed:
+            self._text.update(b"\n" * self._owed)
+            self._owed = 0
+        self._open = True
+        self._text.update(chunk.encode("utf-8"))
+
+
+# A text-v1 flush point, searched in the reversed line: an ASCII character
+# that follows (in the line) an ASCII character other than a space or a tab
+# (rstrip's set: a line's trailing whitespace is decided at its end).
+_ASCII_PAIR_REVERSED = re.compile(r"[\x00-\x7f][\x00-\x08\x0a-\x1f\x21-\x7f]")
+_FLUSH_CHARS = 1 << 20
+
+
 def from_row(row: dict[str, Any]) -> dict[str, str] | None:
     """The ``canonical_identity`` block of an exported artifact row, when it
     names this contract and a known normalization (anything else: None)."""
@@ -122,7 +223,13 @@ def carried(metadata: Any) -> dict[str, str] | None:
 
 def stamp(raw: bytes, physical_digest: str) -> dict[str, dict[str, str]]:
     """Metadata fragment stamping bytes in hand at ingest time."""
-    return {"canonical_identity": identity_of(raw, physical_digest).to_dict()}
+    return stamp_identity(identity_of(raw, physical_digest))
+
+
+def stamp_identity(identity: CanonicalIdentity) -> dict[str, dict[str, str]]:
+    """Metadata fragment stamping an identity already computed (an
+    :class:`IdentityStream` over bytes never held whole)."""
+    return {"canonical_identity": identity.to_dict()}
 
 
 __all__ = [
@@ -133,11 +240,13 @@ __all__ = [
     "READ_CAP",
     "TEXT_V1",
     "CanonicalIdentity",
+    "IdentityStream",
     "carried",
     "from_row",
     "identity_of",
     "metadata_dict",
     "normalize_text",
     "stamp",
+    "stamp_identity",
     "stored_object",
 ]

@@ -136,7 +136,8 @@ class _S3:
 
 
 def _text(monkeypatch, content, s3=None, src=None):
-    monkeypatch.setattr(ka, "_fetch_artifact_bytes", lambda *_a: content)
+    read = None if content is None else ka._Bounded(content, len(content))
+    monkeypatch.setattr(ka, "_read_bounded", lambda *_a, **_k: read)
     result = ka.KnowledgeEmbedResult()
     src = src or {"artifact_id": "art-1", "kind": "document", "source_ref": "k/a.md"}
     assert ka._artifact_text(src, s3, "b", result) is None
