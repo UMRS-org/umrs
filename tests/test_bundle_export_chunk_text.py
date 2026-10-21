@@ -349,11 +349,18 @@ async def _run_export_job(tmp_path, monkeypatch, user: str):
     nodes, search_texts, refs = _corpus()
     pool = _ExportPool(search_texts, refs, ("alice", "sensitive"))
     artifacts = [_artifact("art-a", _REF_A, _DOC_A), _artifact("art-b", _REF_B, _DOC_B)]
+    for reader in ("_lazy_artifact_reader", "_lazy_chunked_reader"):
+        monkeypatch.setattr(ka, reader, lambda: {_REF_A: _DOC_A.encode()}.get, raising=False)
+    return await _submit_export_job(tmp_path, monkeypatch, user, pool, nodes, artifacts)
+
+
+async def _submit_export_job(tmp_path, monkeypatch, user, pool, nodes, artifacts):
+    from umrs.jobs import knowledge_adapters as ka
+
     async def created():
         return pool
 
     monkeypatch.setattr(ka, "_created_pool", created)
-    monkeypatch.setattr(ka, "_lazy_artifact_reader", lambda: {_REF_A: _DOC_A.encode()}.get)
     monkeypatch.setattr(
         ka.KnowledgeExportBackend, "_publish_archive", staticmethod(lambda *_a: None)
     )
@@ -380,6 +387,29 @@ async def test_the_owner_submitting_the_job_exports_the_chunk_text(tmp_path, mon
     ref = await _run_export_job(tmp_path, monkeypatch, "alice")
     assert ref.startswith("knowledge_export|project=p|")
     assert _rows(tmp_path / "p")["n-a1"]["text"] == _DOC_A[0:37]
+
+
+# The chunk-text fallback (a chunk whose stored search_text does not match)
+# read the artifact WHOLE: a 400 MiB upload in memory for one chunk, the
+# last knowledge read path cycle-3 P1 left unbounded (fixverify memfix-r3
+# round 2). It reads what the embed job chunked, as retrieval does.
+async def test_the_chunk_text_fallback_reads_only_what_the_embed_job_chunked(tmp_path, monkeypatch):
+    from tests.test_c3_knowledge_bounded_reads import _S3
+    from umrs.jobs import knowledge_adapters as ka
+    from umrs.knowledge import canonical_identity
+
+    doc = _DOC_A + " " + "Filler sentence about catalysis. " * (1 << 17)  # ~4 MiB
+    s3 = _S3({("kb", _REF_A): doc.encode()})
+    monkeypatch.setattr(ka, "_build_s3_client", lambda _spec: (s3, "kb"))
+    monkeypatch.setattr(ka, "_embed_read_bytes", lambda: 64 * 1024)
+    monkeypatch.setattr(canonical_identity, "READ_CAP", 1 << 20)  # no identity read
+    pool = _ExportPool({"n-a2": "stale text"}, {"art-a": _REF_A}, _OWNER)
+    nodes = [_chunk("n-a2", "art-a", _DOC_A, 38, len(_DOC_A))]
+    await _submit_export_job(
+        tmp_path, monkeypatch, "alice", pool, nodes, [_artifact("art-a", _REF_A, doc)]
+    )
+    assert _rows(tmp_path / "p")["n-a2"]["text"] == _DOC_A[38:]
+    assert 0 < sum(s3.reads) <= 64 * 1024 + 1, s3.reads
 
 
 async def test_the_signature_covers_the_chunk_text(tmp_path, monkeypatch):

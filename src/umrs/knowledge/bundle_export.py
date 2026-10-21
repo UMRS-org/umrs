@@ -455,6 +455,7 @@ class KnowledgeExportEngine:
         raw_acknowledgement: dict[str, Any] | None = None,
         chunk_text: bool = False,
         chunk_text_submitter: str = "",
+        chunk_reader: Callable[[str], bytes | None] | None = None,
     ) -> None:
         self._store = store
         # ADR-032 raw-materials amendment: opt-in carriage of artifact bytes;
@@ -472,6 +473,9 @@ class KnowledgeExportEngine:
         # ADR-032 #1: reads one artifact's raw bytes by source_ref (None =
         # unreadable) so the export can map each row to its canonical identity.
         self._artifact_reader = artifact_reader
+        # The bytes a chunk-text slice is cut from: what the embed job
+        # chunked (bounded), not the whole object (fixverify memfix-r3 r2).
+        self._chunk_reader = chunk_reader or artifact_reader
         self._identity_counts: dict[str, int] = {}
         self._output_dir = output_dir
         self._secret_key = secret_key
@@ -833,7 +837,7 @@ class KnowledgeExportEngine:
             str(row[0]): (str(row[1] or ""), str(row[2] or ""))
             for row in await self._fetch_rows(_ARTIFACT_REFS_SQL, project_id)
         }
-        texts = _ChunkTexts(search_texts, artifacts, self._artifact_reader)
+        texts = _ChunkTexts(search_texts, artifacts, self._chunk_reader)
         # Visit by artifact (rows change in place; nodes.jsonl keeps its
         # order) so each artifact is read at most once whatever the order.
         for row in sorted(node_rows, key=_artifact_of):
