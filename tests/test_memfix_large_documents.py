@@ -269,3 +269,54 @@ def test_a_full_spool_disk_fails_that_document_only(small_cap, monkeypatch, capl
     (failed,) = result.failed_items
     assert failed["permanent"] is False
     assert "No space left on device" in caplog.text and "spool" in caplog.text
+
+
+# A deck is first copied, without its media, to a second spool file (the
+# slim copy). A full disk there was caught with the deck's bad-zip errors
+# and recorded as the PERMANENT refusal "document with no extractable text"
+# (fixverify memfix-r3 round 2): a deck with text, never retried. It is the
+# spool disk, like the first copy: transient, and logged as the spool.
+def test_a_full_disk_under_the_slim_deck_copy_fails_that_deck_transiently(
+    small_cap, monkeypatch, caplog
+):
+    import tempfile as real_tempfile
+    from types import SimpleNamespace
+
+    class _FullSlim:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            self._file = real_tempfile.TemporaryFile(*args, **kwargs)  # noqa: SIM115 — closed in __exit__
+
+        def __enter__(self) -> _FullSlim:
+            return self
+
+        def __exit__(self, *exc: object) -> None:
+            self._file.close()
+
+        def write(self, _data: bytes) -> int:
+            raise OSError(28, "No space left on device")
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(self._file, name)
+
+    monkeypatch.setattr(extract, "tempfile", SimpleNamespace(TemporaryFile=_FullSlim))
+    monkeypatch.setattr(ka, "_embed_read_bytes", lambda: 1024)
+    s3 = _S3({_KEY: _pptx(256)})
+    understood = ka.KnowledgeUnderstandResult()
+    assert ka._understand_bytes(s3, "kb", _source("talk.pptx"), understood) is None
+    embedded = ka.KnowledgeEmbedResult()
+    assert ka._embed_bytes(_source("talk.pptx"), s3, "kb", embedded) is None
+    for result in (understood, embedded):
+        (failed,) = result.failed_items
+        assert failed["error"] == "artifact content unavailable", failed
+        assert failed["permanent"] is False, failed
+    assert ka.read_chunked_bytes(s3, "kb", _KEY[1], "talk.pptx") is None
+    assert "No space left on device" in caplog.text and ka._SPOOL_DIR_ENV in caplog.text
+
+
+def test_a_deck_that_is_not_a_zip_is_still_refused_by_name(small_cap, monkeypatch):
+    monkeypatch.setattr(ka, "_embed_read_bytes", lambda: 1024)
+    s3 = _S3({_KEY: b"PK\x03\x04" + b"not a zip" * 2048})
+    result = ka.KnowledgeEmbedResult()
+    assert ka._embed_bytes(_source("talk.pptx"), s3, "kb", result) is None
+    (failed,) = result.failed_items
+    assert failed["permanent"] is True and "no extractable text" in failed["error"]

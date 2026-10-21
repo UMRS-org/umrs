@@ -198,24 +198,51 @@ def extract_document_file(
     the objects the extracted pages use; python-pptx loads every part's
     bytes, so a deck is first copied (in ``spool_dir``) without the bytes
     of its non-XML parts — media, embeddings, thumbnails, the bulk of a
-    deck. Its text is all in the XML parts, so it is the same text."""
+    deck. Its text is all in the XML parts, so it is the same text.
+
+    A failed write of that copy raises :class:`SpoolWriteError` (an
+    ``OSError``): it is the spool disk, not the deck (fixverify memfix-r3
+    round 2: a full disk was "extract_failed", a permanent refusal)."""
     if kind == "pdf":
         return _pdf_text(spool)
     with tempfile.TemporaryFile(dir=spool_dir) as slim:
         try:
             _copy_xml_parts(spool, slim)
+        except SpoolWriteError:
+            raise
         except (zipfile.BadZipFile, OSError, ValueError):
             return "", ["extract_failed"]
         slim.seek(0)
         return _pptx_text(slim)
 
 
+class SpoolWriteError(OSError):
+    """A write to a spool file failed (a full or read-only spool disk)."""
+
+
+class _SpoolWriter:
+    """A spool file whose failed writes raise :class:`SpoolWriteError`."""
+
+    def __init__(self, target: BinaryIO) -> None:
+        self._target = target
+
+    def write(self, data: bytes) -> int:
+        try:
+            return self._target.write(data)
+        except OSError as exc:
+            raise SpoolWriteError(exc.errno, exc.strerror or str(exc)) from exc
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._target, name)
+
+
 def _copy_xml_parts(source: BinaryIO, target: BinaryIO) -> None:
     """Copy a zip package part by part, streamed; a part that is not XML
     (``.xml`` / ``.rels``) keeps its name with no bytes."""
+    writer: Any = _SpoolWriter(target)
     with (
         zipfile.ZipFile(source) as package,
-        zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as slim,
+        zipfile.ZipFile(writer, "w", zipfile.ZIP_DEFLATED) as slim,
     ):
         for info in package.infolist():
             if not info.filename.endswith((".xml", ".rels")):
