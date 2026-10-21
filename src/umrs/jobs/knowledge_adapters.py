@@ -110,6 +110,8 @@ class KnowledgeUnderstandResult:
     nodes_created: int = 0
     edges_created: int = 0
     already_ir: int = 0  # Skipped (idempotent)
+    # Rows minted without bytes (rag://, loop:): nothing to understand.
+    no_object: int = 0
     failed_items: list[dict[str, Any]] = field(default_factory=list)
     # V-09/D-35: skills compiled from the understood IRs as pending_review
     # proposals (never auto-approved; registered disabled in the registry).
@@ -421,7 +423,7 @@ def _fetch_artifact_bytes(s3_client: Any, bucket: str, source_ref: str) -> bytes
     Returns None when unreadable — callers record the failure explicitly;
     we never substitute the content_hash hex string for content.
     """
-    if s3_client is None or not source_ref:
+    if s3_client is None or not source_ref or names_no_object(source_ref):
         return None
     # The upload facade records ``s3://<bucket>/<key>`` (api/knowledge_upload.py)
     # while other producers record a bare key. Passing the URI as the key made
@@ -433,8 +435,35 @@ def _fetch_artifact_bytes(s3_client: Any, bucket: str, source_ref: str) -> bytes
         obj = s3_client.get_object(Bucket=bucket, Key=source_ref)
         return obj["Body"].read()
     except Exception as exc:  # noqa: BLE001 — best-effort adapter path, reported not raised
-        logger.warning("S3 fetch failed for %s: %s", source_ref, exc)
+        if _missing_object_error(exc):
+            # Typed by the caller ("document content missing"); not a store fault.
+            logger.info("document content missing for %s: the stored object is gone", source_ref)
+        else:
+            logger.warning("S3 fetch failed for %s: %s", source_ref, exc)
         return None
+
+
+# Rows minted without bytes name no object in artifact storage: RAG corpus
+# rows (``rag://<document_id>``; the RAG service holds their text) and loop
+# findings (``loop:<loop>#iteration-<n>``). A GET for them is a guaranteed
+# NoSuchKey: on umrs-server-octopus every understand pass over a project
+# with a legacy RAG corpus logged one "S3 fetch failed" warning per row
+# (ops-watch #522/#523, 2026-10-21: 211 in one window) and failed the rows.
+_NO_OBJECT_PREFIXES = ("rag://", "loop:")
+
+
+def names_no_object(source_ref: str) -> bool:
+    """Whether ``source_ref`` is a reference minted without bytes (rag://,
+    loop:), so there is nothing to fetch. An empty reference is not one:
+    that row is broken, and its read fails by name."""
+    return source_ref.startswith(_NO_OBJECT_PREFIXES)
+
+
+def _missing_object_error(exc: Exception) -> bool:
+    """Whether an object-store error says the object does not exist."""
+    response = getattr(exc, "response", None)
+    error = response.get("Error", {}) if isinstance(response, dict) else {}
+    return str(error.get("Code", "")) in _MISSING_OBJECT_CODES
 
 
 # Object-store answers that mean the object is gone, not that the store is
@@ -447,19 +476,30 @@ def _object_gone(s3_client: Any, bucket: str, source_ref: str) -> bool:
     reference, or the store answers that the key does not exist). Any other
     answer — unreachable, denied, a probe that raises otherwise — is
     transient, so the artifact is retried."""
+    if not source_ref or names_no_object(source_ref):
+        return True
     if s3_client is None:
         return False
-    if not source_ref:
-        return True
     if source_ref.startswith("s3://"):
         bucket, _, source_ref = source_ref[len("s3://") :].partition("/")
     try:
         s3_client.head_object(Bucket=bucket, Key=source_ref)
     except Exception as exc:  # noqa: BLE001 — classified, never raised
-        response = getattr(exc, "response", None)
-        error = response.get("Error", {}) if isinstance(response, dict) else {}
-        return str(error.get("Code", "")) in _MISSING_OBJECT_CODES
+        return _missing_object_error(exc)
     return False
+
+
+def _content_missing(source_ref: str) -> str:
+    """The typed "document content missing" reason for a row whose bytes are
+    not in artifact storage, permanently (ops-watch #522/#523)."""
+    if not source_ref:
+        return "document content missing: the row names no source_ref"
+    if names_no_object(source_ref):
+        return (
+            f"document content missing: {source_ref} names no stored object "
+            "(RAG corpus and loop-finding rows carry no bytes)"
+        )
+    return f"document content missing: the stored object {source_ref} is gone"
 
 
 # ── Backend Protocol ─────────────────────────────────────────────────────────
@@ -694,7 +734,11 @@ class KnowledgeUnderstandBackend(OrchestratorBackend):
         # no site embedder is configured. An artifact this stage failed by
         # name has no file node to hang chunks on: it is not sent on, where it
         # would only fail its three embed attempts (ADR-093 D-11, wave F).
-        embed_sources = _not_failed(sources, result.failed_items)
+        embed_sources = [
+            src
+            for src in _not_failed(sources, result.failed_items)
+            if not names_no_object(str(src.get("source_ref") or ""))
+        ]
         if embed_sources:
             try:
                 _enqueue_embed_job(project_id, job.user_id or "", job, embed_sources)
@@ -708,6 +752,7 @@ class KnowledgeUnderstandBackend(OrchestratorBackend):
         return (
             f"knowledge_understand|project={project_id}|"
             f"ir_ids={len(result.ir_ids)}|already={result.already_ir}|fail={len(result.failed_items)}"
+            f"|no_object={result.no_object}"
         )
 
 
@@ -1658,6 +1703,25 @@ async def _already_understood(store: Any, job: Job, artifact_id: str, inserted: 
     return not inserted and await _graph_written(store, job, artifact_id)
 
 
+def _understand_bytes(
+    s3_client: Any, bucket: str, src: dict[str, Any], result: KnowledgeUnderstandResult
+) -> bytes | None:
+    """The artifact's real bytes — never the hash string parsed — or None
+    with the reason on *result*: a row minted without bytes (rag://, loop:)
+    is counted as ``no_object``, not failed (ops-watch #522/#523); a gone
+    object is a typed "document content missing" failure."""
+    source_ref = str(src.get("source_ref") or "")
+    if names_no_object(source_ref):
+        result.no_object += 1
+        return None
+    content = _fetch_artifact_bytes(s3_client, bucket, source_ref)
+    if content is None:
+        result.failed_items.append(
+            _unreadable(src["artifact_id"], s3_client, bucket, source_ref)
+        )
+    return content
+
+
 async def _understand_input(
     job: Job,
     attempt: JobAttempt,
@@ -1697,15 +1761,8 @@ async def _understand_input(
         ).emit()
         return None
 
-    # Fetch real artifact bytes — never parse the hash string
-    content = _fetch_artifact_bytes(s3_client, bucket, src.get("source_ref", ""))
+    content = _understand_bytes(s3_client, bucket, src, result)
     if content is None:
-        result.failed_items.append(
-            {
-                "artifact_id": artifact_id,
-                "error": "artifact content unavailable (source_ref unreadable)",
-            }
-        )
         return None
 
     content, other = _text_content(src, content)
@@ -2452,6 +2509,7 @@ def _write_result(attempt: JobAttempt, result: Any) -> None:
         "nodes_created": getattr(result, "nodes_created", 0),
         "edges_created": getattr(result, "edges_created", 0),
         "already_ir": getattr(result, "already_ir", 0),
+        "no_object": getattr(result, "no_object", 0),
         "failed_items": result.failed_items if hasattr(result, "failed_items") else [],
         "degraded": getattr(result, "degraded", False),
         "degraded_reason": getattr(result, "degraded_reason", ""),
@@ -2723,8 +2781,18 @@ def _unreadable(
     """The failure of an artifact whose bytes could not be read: permanent
     only when the object is gone (ADR-093 D-11, 2026-10-11)."""
     missing = _object_gone(s3_client, bucket, source_ref)
-    error = "artifact object is gone" if missing else "artifact content unavailable"
-    return {"artifact_id": artifact_id, "error": error, "permanent": missing}
+    if not missing:
+        return {
+            "artifact_id": artifact_id,
+            "error": "artifact content unavailable",
+            "permanent": False,
+        }
+    return {
+        "artifact_id": artifact_id,
+        "error": _content_missing(source_ref),
+        "code": "content_missing",
+        "permanent": True,
+    }
 
 
 def _not_embeddable(artifact_id: str, other: str) -> dict[str, Any]:
