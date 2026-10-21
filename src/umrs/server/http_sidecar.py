@@ -874,6 +874,12 @@ def _create_app():
 
     app.add_middleware(CorrelationIDMiddleware)
 
+    # JSON bodies above UMRS_MAX_JSON_BODY_BYTES (default 64 MiB) are a 413
+    # before they are read (2026-10-21: a 300 MB body took ~1 GB of RSS).
+    from umrs.server.body_limit import JsonBodyLimitMiddleware
+
+    app.add_middleware(JsonBodyLimitMiddleware)
+
     # Structured error responses: all HTTPException responses include
     # error_id and request_id for distributed tracing and automation.
     from fastapi import HTTPException as _HTTPException
