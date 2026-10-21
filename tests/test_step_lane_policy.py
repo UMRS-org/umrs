@@ -431,6 +431,7 @@ def test_llm_step_never_mocks_a_failed_call_on_the_staged_lane(monkeypatch, stag
 
     monkeypatch.setenv("UMRS_STEP_STAGED", staged)
     monkeypatch.delenv("UMRS_LLM_MOCK", raising=False)
+    monkeypatch.setenv("UMRS_STEP_MOCK_FALLBACK", "1")  # the opt-in never reaches staged
     step = LLMStep()
     step.setup({"prompt_template": "hi", "api_base": "http://127.0.0.1:9/v1", "timeout_sec": 2})
     ctx = StepContext(s3=None, input_bucket="b", input_keys=[], output_bucket="b-output")
@@ -438,7 +439,7 @@ def test_llm_step_never_mocks_a_failed_call_on_the_staged_lane(monkeypatch, stag
         with pytest.raises(RuntimeError, match="no mock answer is returned"):
             step.run(ctx)
     else:
-        assert "response_text" in step.run(ctx).extra  # the legacy mock fallback
+        assert "response_text" in step.run(ctx).extra  # the opt-in mock fallback
 
 
 @pytest.mark.parametrize("staged", ["", "1"])
@@ -447,6 +448,7 @@ def test_vision_step_never_mocks_a_failed_call_on_the_staged_lane(monkeypatch, s
 
     monkeypatch.setenv("UMRS_STEP_STAGED", staged)
     monkeypatch.delenv("UMRS_VISION_MOCK", raising=False)
+    monkeypatch.setenv("UMRS_STEP_MOCK_FALLBACK", "1")  # the opt-in never reaches staged
     step = vision_step.VisionStep()
     step.setup({"mode": "caption", "api_base": "http://127.0.0.1:9/v1", "timeout_sec": 2})
     image = vision_step._ImageRef(bytes_data=b"\x89PNG")

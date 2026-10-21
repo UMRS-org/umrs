@@ -21,7 +21,8 @@ and the image-guard sandbox).
 
 If the environment variable ``UMRS_VISION_MOCK=1`` is set, the step
 returns a deterministic mock perception — used by unit/E2E tests that
-do not bring up a real VLM.
+do not bring up a real VLM. A failed call fails the step; it falls back to
+a mock only with ``UMRS_STEP_MOCK_FALLBACK=1`` (``mock_policy``).
 """
 
 from __future__ import annotations
@@ -33,6 +34,7 @@ import logging
 import os
 from typing import Any
 
+from umrs.pipeline_sdk.mock_policy import mock_fallback_allowed, no_mock_reason
 from umrs.pipeline_sdk.staged_s3 import is_staged
 from umrs.pipeline_sdk.step import Step, StepContext, StepResult
 from umrs.schemas.vision import (
@@ -186,6 +188,9 @@ class VisionStep(Step):
                 f"VisionStep: the vision call failed on the staged HPC lane ({error}); "
                 "no mock perception is returned"
             )
+        # Off the staged lane the mock is opt-in too (ops-watch #520).
+        if not mock_fallback_allowed():
+            raise RuntimeError(no_mock_reason("VisionStep", error))
         return self._mock_perception(image_ref, fallback=True, error=error)
 
     def _invoke_vlm(self, image_ref: _ImageRef) -> VisionPerception:
@@ -245,8 +250,7 @@ class VisionStep(Step):
         # The Vision MCP runs inside mini-rivault and is not directly
         # reachable from a step process in every environment.  When
         # available the path is exposed via UMRS_VISION_MCP_URL; if not,
-        # we fall back to a mock perception (callers can opt into the
-        # heavier path via that env).
+        # the step fails (a mock only by opt-in: umrs.pipeline_sdk.mock_policy).
         mcp_url = os.environ.get("UMRS_VISION_MCP_URL")
         if not mcp_url:
             raise RuntimeError(
