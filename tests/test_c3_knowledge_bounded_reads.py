@@ -30,6 +30,7 @@ from typing import Any
 
 import pytest
 from botocore.exceptions import ClientError
+from tests.s3_ranged import check_copy_precondition, etag_of, ranged
 from umrs.api import rag_spine
 from umrs.jobs import knowledge_adapters as ka
 from umrs.knowledge import canonical_identity
@@ -60,17 +61,13 @@ class _S3:
         self.copies: list[dict[str, Any]] = []
         self.puts: list[str] = []
         self.copy_error: Exception | None = None
+        self.replaced_after_read: bytes | None = None  # another upload lands
 
     def get_object(self, Bucket: str, Key: str, Range: str = "") -> dict[str, Any]:  # noqa: N803
-        data = self.objects[(Bucket, Key)]
-        answer: dict[str, Any] = {"ETag": '"etag-1"', "ContentLength": len(data)}
-        if Range:
-            first, _, last = Range.removeprefix("bytes=").partition("-")
-            part = data[int(first) : int(last) + 1]
-            answer["ContentRange"] = f"bytes {first}-{len(part) - 1}/{len(data)}"
-            answer["ContentLength"] = len(part)
-            data = part
-        answer["Body"] = _Body(data, self.reads)
+        answer = ranged(self.objects[(Bucket, Key)], Range)
+        answer["Body"] = _Body(answer["Body"].read(), self.reads)
+        if self.replaced_after_read is not None and not Range:
+            self.objects[(Bucket, Key)] = self.replaced_after_read
         return answer
 
     def head_object(self, Bucket: str, Key: str) -> dict[str, Any]:  # noqa: N803
@@ -81,8 +78,10 @@ class _S3:
     def copy_object(self, Bucket: str, Key: str, CopySource: dict, **kw: Any) -> None:  # noqa: N803
         if self.copy_error is not None:
             raise self.copy_error
+        source = self.objects[(CopySource["Bucket"], CopySource["Key"])]
         self.copies.append({"to": (Bucket, Key), "from": CopySource, **kw})
-        self.objects[(Bucket, Key)] = self.objects[(CopySource["Bucket"], CopySource["Key"])]
+        check_copy_precondition(source, kw)
+        self.objects[(Bucket, Key)] = source
 
     def put_object(self, Bucket: str, Key: str, Body: bytes, **_kw: Any) -> None:  # noqa: N803
         self.puts.append(Key)
@@ -138,7 +137,7 @@ def test_ingest_copies_the_staged_upload_server_side_on_its_etag(monkeypatch):
     (copy,) = s3.copies
     assert copy["to"] == ("kb", f"projects/p/knowledge/artifacts/{digest}")
     assert copy["from"] == {"Bucket": _STAGED[0], "Key": _STAGED[1]}
-    assert copy["CopySourceIfMatch"] == '"etag-1"'
+    assert copy["CopySourceIfMatch"] == etag_of(body)
     assert s3.objects[copy["to"]] == body
 
 
@@ -153,15 +152,23 @@ def test_ingest_stamps_the_identity_of_every_byte(monkeypatch):
 
 
 def test_an_upload_replaced_while_it_was_ingested_is_not_stored(monkeypatch):
+    """The store refuses the conditional copy itself (412), as SeaweedFS
+    does (test_s3_fake_parity.py): nothing is injected."""
     s3 = _S3({_STAGED: b"# note\n"})
-    s3.copy_error = ClientError(
-        {"Error": {"Code": "PreconditionFailed"}, "ResponseMetadata": {"HTTPStatusCode": 412}},
-        "CopyObject",
-    )
+    s3.replaced_after_read = b"# another note\n"
     result, descs = _ingest(s3, monkeypatch)
     assert descs == []
     (failed,) = result.failed_items
     assert "changed while it was ingested" in failed["error"]
+    assert set(s3.objects) == {_STAGED}  # nothing stored under the hash
+
+
+def test_a_ranged_read_of_an_empty_object_is_empty_not_unreadable():
+    """S3 answers a range over an empty object 416 InvalidRange."""
+    s3, src = _stored(b"")
+    assert ka._fetch_artifact_prefix(s3, "kb", src["source_ref"], 1024) == (b"", 0)
+    content, result = _understand_read(s3, src)
+    assert content == b"" and result.failed_items == []
 
 
 def test_any_other_copy_fault_still_raises(monkeypatch):
