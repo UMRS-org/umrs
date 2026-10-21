@@ -11,7 +11,7 @@ df <- read.csv("log/h100_resnet.csv", check.names = TRUE)
 # columns: task_id, user, n_batch, n_skipped, n_processed,
 #          upload_s3.s., s3_check.s., server_exec.s., end_to_end.s.
 
-names(df) <- c("task_id","user","n_batch","n_skipped","n_processed",
+names(df)[1:9] <- c("task_id","user","n_batch","n_skipped","n_processed",
                "upload_s3","s3_check","server_exec","end_to_end")
 
 # end_to_end ≈ s3_check + server_exec (residual < 0.1% — negligible network overhead)
