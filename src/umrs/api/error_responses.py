@@ -31,6 +31,7 @@ from typing import Any
 
 from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse
+from r4_contracts.errors import ERROR_CODE_HEADER
 
 # HTTP status → default error_id mapping
 _STATUS_ERROR_MAP: dict[int, str] = {
@@ -166,6 +167,12 @@ async def structured_warning_exception_handler(
 
 _NUL_MARKERS = ("NUL (0x00)", '"UTF8": 0x00')
 _UNAVAILABLE_RETRY_AFTER = "5"
+# The typed code a database outage carries (cycle-3, 2026-10-22). Without
+# it r4 (every version: its hint reads only x-platform-error-code) read the
+# untyped 503 as "no model endpoint" and told the user to run
+# `r4 endpoint up`; a typed non-endpoint code reads as "the platform's
+# database service is unavailable ... retry shortly".
+_DATABASE_UNAVAILABLE_CODE = "database.unavailable"
 
 
 def _exception_chain(exc: BaseException) -> list[BaseException]:
@@ -235,4 +242,5 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
     )
     if status_code == 503:
         response.headers["Retry-After"] = _UNAVAILABLE_RETRY_AFTER
+        response.headers[ERROR_CODE_HEADER] = _DATABASE_UNAVAILABLE_CODE
     return response

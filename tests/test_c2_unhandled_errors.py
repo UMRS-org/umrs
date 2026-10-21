@@ -88,6 +88,36 @@ def test_database_outage_is_a_typed_503(make_client, exc: BaseException) -> None
     assert r.headers.get("retry-after")
 
 
+# r4's 503 hint reads only x-platform-error-code; these codes (and no code
+# at all) make it say "No active endpoint ... run `r4 endpoint up`"
+# (r4/src/r4/errors.py _ENDPOINT_UNAVAILABLE_CODES).
+_R4_ENDPOINT_HINT_CODES = {
+    "llm.unavailable",
+    "endpoints.unavailable",
+    "models.unavailable",
+    "chatapi.unavailable",
+    "provider.unavailable",
+}
+
+
+def test_database_outage_carries_a_typed_non_endpoint_code(make_client) -> None:
+    """Cycle-3 client-server-compat#1 (2026-10-22): the 503 carried no
+    x-platform-error-code, so every r4 told a user whose server lost its
+    database to provision a model endpoint."""
+    exc = psycopg2.OperationalError("server closed the connection unexpectedly")
+    r = make_client(exc).get("/umrs/jobs", headers=HEADERS)
+    assert r.status_code == 503
+    code = r.headers.get("x-platform-error-code")
+    assert code == "database.unavailable"
+    assert code not in _R4_ENDPOINT_HINT_CODES
+
+
+def test_non_database_errors_carry_no_database_code(make_client) -> None:
+    r = make_client(KeyError("k")).get("/umrs/jobs", headers=HEADERS)
+    assert r.status_code == 500
+    assert "x-platform-error-code" not in r.headers
+
+
 def test_wrapped_database_outage_is_a_typed_503(make_client) -> None:
     try:
         raise psycopg2.OperationalError("server closed the connection unexpectedly")
