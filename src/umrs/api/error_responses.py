@@ -26,6 +26,7 @@ Response format:
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from fastapi import HTTPException, Request
@@ -91,13 +92,35 @@ async def structured_http_exception_handler(
     except Exception:
         pass
 
-    detail = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
-
-    return structured_error_response(
+    message, details = _detail_parts(exc.detail)
+    response = structured_error_response(
         exc.status_code,
-        detail,
+        message,
         request_id=request_id,
+        details=details,
     )
+    # The exception's own headers ride along: the typed code
+    # (x-platform-error-code), Retry-After, WWW-Authenticate (2026-10-21:
+    # dropped here, so no client ever saw a typed code).
+    if exc.headers:
+        response.headers.update(exc.headers)
+    return response
+
+
+def _detail_parts(detail: Any) -> tuple[str, dict[str, Any] | None]:
+    """``(message, details)`` for an HTTPException detail.
+
+    A dict detail keeps its fields under ``details`` (a duplicate job's
+    ``existing_job_id``) and lends its ``message``; it was a Python repr.
+    """
+    if isinstance(detail, str):
+        return detail, None
+    if isinstance(detail, dict):
+        message = detail.get("message") or detail.get("detail") or detail.get("error")
+        if not isinstance(message, str) or not message:
+            message = json.dumps(detail, default=str)
+        return message, detail
+    return str(detail), None
 
 
 async def structured_warning_exception_handler(
