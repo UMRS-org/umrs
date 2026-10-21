@@ -709,6 +709,20 @@ def _build_usage_record(
     )
 
 
+async def _json_object_body(request: Request) -> dict:
+    """The request body as a JSON object; anything else is the caller's 400
+    (2026-10-21: an empty, non-JSON or array body was a 500)."""
+    try:
+        body = await request.json()
+    except ValueError:  # json.JSONDecodeError, UnicodeDecodeError
+        body = None
+    if not isinstance(body, dict):
+        raise_typed(
+            PlatformError.llm("bad_request", "Request body must be a JSON object"),
+        )
+    return body
+
+
 def _extract_model(body: dict) -> str:
     """Extract model name from request body."""
     model = body.get("model")
@@ -809,7 +823,7 @@ async def chat_completions(
     """
     caller = _verified_caller(request)
     user_id, project_id = caller.user_id, caller.project_id
-    body = await request.json()
+    body = await _json_object_body(request)
     model = _extract_model(body)
 
     logger.info("Chat completion: project=%s, model=%s", project_id, model)
@@ -840,7 +854,7 @@ async def completions(
     """OpenAI-compatible completions endpoint (legacy)."""
     caller = _verified_caller(request)
     user_id, project_id = caller.user_id, caller.project_id
-    body = await request.json()
+    body = await _json_object_body(request)
     model = _extract_model(body)
 
     endpoint = _discover_endpoint(
@@ -1077,7 +1091,7 @@ async def embeddings(
     """OpenAI-compatible embeddings endpoint."""
     caller = _verified_caller(request)
     user_id, project_id = caller.user_id, caller.project_id
-    body = await request.json()
+    body = await _json_object_body(request)
     model = _extract_model(body)
 
     endpoint = _discover_endpoint(
