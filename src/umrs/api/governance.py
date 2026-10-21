@@ -397,8 +397,11 @@ class GovernanceStore:
                     (project_id, resource_type),
                 )
                 row = cur.fetchone()
+                # One SELECT per call: without this break attempt 2 always
+                # re-ran it, and a failure on that pass returned None, which
+                # check_quota reads as "no quota" (fail-open) — 2026-10-21.
+                break
             except Exception as exc:
-                last_exc = exc
                 if attempt == 1 and self._is_conn_dead(exc):
                     try:
                         self._reconnect()

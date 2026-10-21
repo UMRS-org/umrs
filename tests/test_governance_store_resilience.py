@@ -158,3 +158,42 @@ def test_get_quota_cursor_open_raises_twice_no_pool_fails_gracefully():
     store = GovernanceStore(dead)  # no pool
 
     assert store.get_quota("default", "endpoints") is None
+
+
+def test_get_quota_runs_one_select_on_a_healthy_conn():
+    """services#1 (2026-10-21): the retry loop had no break, so every call
+    opened a second cursor and re-ran the SELECT."""
+    cur = _cursor_with(None, _row())
+    conn = _conn(cur)
+    store = GovernanceStore(conn)
+
+    result = store.get_quota("default", "endpoints")
+
+    assert result is not None
+    assert conn.cursor.call_count == 1
+    assert cur.execute.call_count == 1
+
+
+def test_check_quota_blocks_at_quota_project_when_conn_dies_after_select(
+    monkeypatch,
+):
+    """services#1: a row fetched on attempt 1 must be returned. The old loop
+    re-ran the SELECT; when the conn died on that extra pass get_quota
+    returned None and check_quota let an at-quota project through."""
+    from fastapi import HTTPException
+    from umrs.api import governance
+
+    conn = MagicMock(name="conn")
+    conn.cursor.side_effect = [
+        _cursor_with(None, _row(count=2, max_count=2)),
+        psycopg2.InterfaceError("connection already closed"),
+    ]
+    monkeypatch.setattr(governance, "_governance_store", GovernanceStore(conn))
+    monkeypatch.setattr(
+        "umrs.api.audit_events.emit_audit", lambda *_a, **_k: None, raising=False
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        governance.check_quota("default", "endpoints")
+
+    assert exc_info.value.status_code == 409
