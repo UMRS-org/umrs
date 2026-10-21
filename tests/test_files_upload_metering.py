@@ -27,6 +27,11 @@ class _FakeS3Client:
         self.objects[Key] = Body
         return {"ETag": '"etag-x"'}
 
+    def upload_fileobj(self, fileobj, bucket, key, ExtraArgs=None):  # noqa: N803 — boto3
+        # The project upload streams since 2026-10-21 (test_c2_upload_streams).
+        del ExtraArgs
+        self.put_object(Bucket=bucket, Key=key, Body=fileobj.read())
+
     def delete_object(self, *, Bucket, Key):
         assert Bucket == TEST_BUCKET
         self.deleted.append(Key)

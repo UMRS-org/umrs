@@ -425,18 +425,22 @@ async def upload_file(
     object_key = validate_key(key or _upload_key(file.filename, purpose), project_id)
     bucket = config.bucket
     content_type = file.content_type or "application/octet-stream"
-    content = await file.read()
-
+    # Streamed like the owned-bucket branch: `await file.read()` held the
+    # whole upload in memory (2026-10-21: a 1 GiB upload, +1 GiB peak RSS).
+    s3_client = config.get_client()
+    reader = _HashingReader(file.file)
     try:
-        s3_client = config.get_client()
-        put_response = s3_client.put_object(
-            Bucket=bucket,
-            Key=object_key,
-            Body=content,
-            ContentType=content_type,
-            Metadata={
-                "project_id": project_id,
-                "filename": _safe_filename(file.filename),
+        await asyncio.to_thread(
+            s3_client.upload_fileobj,
+            reader,
+            bucket,
+            object_key,
+            ExtraArgs={
+                "ContentType": content_type,
+                "Metadata": {
+                    "project_id": project_id,
+                    "filename": _safe_filename(file.filename),
+                },
             },
         )
     except ClientError as e:
@@ -445,18 +449,21 @@ async def upload_file(
             PlatformError.files("upload_failed", "Failed to upload file"), cause=e
         )
 
-    object_etag = (put_response.get("ETag") or "").strip('"')
+    content_md5 = reader.md5.hexdigest()
+    _charge_upload_quota(
+        request, s3_client, bucket, object_key, (content_md5, reader.size), x_user_id
+    )
 
-    _charge_upload_quota(request, s3_client, bucket, object_key, content, x_user_id)
-
+    # The md5 stands in for the ETag (a multipart ETag differs); ingest
+    # re-reads the live ETag when they disagree (data_catalog.ingest).
     _fire_post_upload_ingest(
-        s3_client, bucket, object_key, object_etag, project_id, x_user_id, file.filename
+        s3_client, bucket, object_key, content_md5, project_id, x_user_id, file.filename
     )
     return UploadResponse(
         key=object_key,
         bucket=bucket,
         uri=f"s3://{bucket}/{object_key}",
-        size=len(content),
+        size=reader.size,
         content_type=content_type,
         filename=file.filename,
     )
