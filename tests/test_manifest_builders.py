@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 
 from umrs.jobs.manifest import code_version_ref, environment_snapshot, execution_manifest
 
@@ -36,6 +37,20 @@ class TestCodeVersionRef:
         ref = code_version_ref(str(tmp_path))
         assert ref["commit_sha"] == ""
         assert ref["dirty"] is False
+
+    def test_inherited_git_dir_never_answers_for_repo_root(self, tmp_path, monkeypatch):
+        # Under a git hook GIT_DIR names the hook's repository; the manifest
+        # must still describe repo_root, not record that repository's SHA.
+        decoy = tmp_path / "decoy"
+        decoy.mkdir()
+        clean = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+        git = ["git", "-C", str(decoy), "-c", "user.name=t", "-c", "user.email=t@t"]
+        subprocess.run([*git, "init", "-q"], env=clean, check=True)
+        subprocess.run([*git, "commit", "-q", "--allow-empty", "-m", "d"], env=clean, check=True)
+        monkeypatch.setenv("GIT_DIR", str(decoy / ".git"))
+        not_a_repo = tmp_path / "plain"
+        not_a_repo.mkdir()
+        assert code_version_ref(str(not_a_repo))["commit_sha"] == ""
 
     def test_repo_root_resolves_a_revision(self):
         # umrs/ is itself a git checkout in CI and developer environments.

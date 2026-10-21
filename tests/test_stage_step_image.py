@@ -130,8 +130,22 @@ def write_docker_archive(
     return image_id, diff_ids
 
 
+def _hermetic_env(**extra: str) -> dict[str, str]:
+    """os.environ without any GIT_* variable, plus ``extra``.
+
+    A git hook exports GIT_DIR / GIT_INDEX_FILE; inherited, they sent this
+    file's `git init/add/commit` (and the stager's git) into the CALLER's
+    repository: 2026-10-21 a pre-commit run from a superproject worktree set
+    core.bare=true in the shared config and committed this fake 4-file tree
+    as a merge.
+    """
+    env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+    env.update(extra)
+    return env
+
+
 def _git(checkout: Path, *args: str) -> str:
-    env = {**os.environ, "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1"}
+    env = _hermetic_env(GIT_CONFIG_GLOBAL="/dev/null", GIT_CONFIG_NOSYSTEM="1")
     return subprocess.run(
         [
             "git",
@@ -197,11 +211,7 @@ class Lane:
         (self.state / "image_id").write_text(self.image_id + "\n")
 
     def run(self, *extra: str, arch: str = "x86_64") -> subprocess.CompletedProcess[str]:
-        env = {
-            **os.environ,
-            "PATH": f"{self.bin}:{os.environ['PATH']}",
-            "FAKE_STATE": str(self.state),
-        }
+        env = _hermetic_env(PATH=f"{self.bin}:{os.environ['PATH']}", FAKE_STATE=str(self.state))
         args = [
             "bash",
             str(STAGER),

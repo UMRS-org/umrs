@@ -37,8 +37,27 @@ def _umrs_version() -> str:
         return "unknown"
 
 
+# Variables that point git at a repository other than ``repo_root``'s.
+_REPO_LOCATORS = (
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_COMMON_DIR",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_PREFIX",
+    "GIT_NAMESPACE",
+)
+
+
 def _git_field(repo_root: str, args: list[str]) -> str:
-    """One read-only git query; empty on any failure (recorded, not invented)."""
+    """One read-only git query; empty on any failure (recorded, not invented).
+
+    An inherited GIT_DIR & co. would answer for ANOTHER repository and put
+    its revision into the manifest (2026-10-21, found under a git hook), so
+    they are dropped: ``-C repo_root`` alone decides the repository.
+    """
+    env = {key: value for key, value in os.environ.items() if key not in _REPO_LOCATORS}
     try:
         out = subprocess.run(
             ["git", "-C", repo_root, *args],
@@ -46,6 +65,7 @@ def _git_field(repo_root: str, args: list[str]) -> str:
             text=True,
             timeout=5,
             check=False,
+            env=env,
         )
     except (OSError, subprocess.TimeoutExpired):
         return ""
