@@ -118,6 +118,9 @@ class KnowledgeUnderstandResult:
     compiled_skill_count: int = 0
     degraded: bool = False
     degraded_reason: str = ""
+    # Texts past READ_CAP understood from their first MiB, each named
+    # ({artifact_id, reason}): per artifact, never a degraded run (memfix #5).
+    partial_reads: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -967,7 +970,7 @@ class KnowledgeUnderstandBackend(OrchestratorBackend):
         return (
             f"knowledge_understand|project={project_id}|"
             f"ir_ids={len(result.ir_ids)}|already={result.already_ir}|fail={len(result.failed_items)}"
-            f"|no_object={result.no_object}"
+            f"|no_object={result.no_object}|partial={len(result.partial_reads)}"
         )
 
 
@@ -1773,22 +1776,50 @@ async def _run_understand(
             origin_actor=origin_actor,
         )
 
-    # V-09/D-35 leg: promote-to-skill proposals from the freshly understood
-    # IRs. Best-effort, never fails the job; gated off a degraded run.
     if not result.degraded:
-        try:
-            result.compiled_skill_count = await _compile_skill_proposals(
-                store, project_id
-            )
-        except Exception as exc:  # noqa: BLE001 — proposal leg is best-effort
-            logger.warning(
-                "compiled-skill proposal leg failed for %s: %s", project_id, exc
-            )
-
+        await _propose_skills(store, project_id, result)
     return result
 
 
-async def _compile_skill_proposals(store: Any, project_id: str) -> int:
+async def _propose_skills(
+    store: Any, project_id: str, result: KnowledgeUnderstandResult
+) -> None:
+    """V-09/D-35 leg: promote-to-skill proposals from the freshly understood
+    IRs. Best-effort, never fails the job; gated off a degraded run. A text
+    understood from its prefix only leaves its own IR out (memfix #5)."""
+    try:
+        result.compiled_skill_count = await _compile_skill_proposals(
+            store,
+            project_id,
+            exclude={str(item["artifact_id"]) for item in result.partial_reads},
+        )
+    except Exception as exc:  # noqa: BLE001 — proposal leg is best-effort
+        logger.warning("compiled-skill proposal leg failed for %s: %s", project_id, exc)
+
+
+def _current_irs(rows: list[Any], exclude: set[str] | frozenset[str]) -> list[Any]:
+    """The KnowledgeIRs of the project's current IR rows, but the ``exclude``
+    artifacts'."""
+    from umrs.knowledge.ir import KnowledgeIR
+
+    return [
+        KnowledgeIR(
+            ir_id=str(r["ir_id"]),
+            artifact_id=str(r["artifact_id"]),
+            project_id=str(r["project_id"]),
+            artifact_type=str(r["ir_type"] or ""),
+            content_hash=str(r["content_hash"] or ""),
+            extractor_version="",
+            extracted=r["content"] if isinstance(r["content"], dict) else {},
+        )
+        for r in rows
+        if str(r["artifact_id"]) not in exclude
+    ]
+
+
+async def _compile_skill_proposals(
+    store: Any, project_id: str, exclude: set[str] | frozenset[str] = frozenset()
+) -> int:
     """Compile pending_review skills from the project's current IRs and
     register them DISABLED in the skills registry (V-09/D-35).
 
@@ -1801,10 +1832,10 @@ async def _compile_skill_proposals(store: Any, project_id: str) -> int:
     the registry row is a no-op). The conflict key carries the project
     (``project_key``, migration 0123): keyed on (scope, owner_id, name), a
     proposal was dropped whenever another project already held one of the
-    same title (H-10.1 follow-up, 2026-10-18).
+    same title (H-10.1 follow-up, 2026-10-18). The IRs of the ``exclude``
+    artifacts (this run's prefix-only reads) are left out.
     """
     from umrs.knowledge.compiled_skill import compile_skills_from_irs
-    from umrs.knowledge.ir import KnowledgeIR
 
     rows = await store._pool.fetch(  # type: ignore[union-attr]
         "SELECT ir.ir_id, ir.artifact_id, ir.content, ir.content_hash, ir.ir_type,"
@@ -1815,18 +1846,7 @@ async def _compile_skill_proposals(store: Any, project_id: str) -> int:
     )
     if not rows:
         return 0
-    irs = [
-        KnowledgeIR(
-            ir_id=str(r["ir_id"]),
-            artifact_id=str(r["artifact_id"]),
-            project_id=str(r["project_id"]),
-            artifact_type=str(r["ir_type"] or ""),
-            content_hash=str(r["content_hash"] or ""),
-            extractor_version="",
-            extracted=r["content"] if isinstance(r["content"], dict) else {},
-        )
-        for r in rows
-    ]
+    irs = _current_irs(rows, exclude)
     skills = compile_skills_from_irs(irs)
     registered = 0
     for skill in skills:
@@ -1967,7 +1987,8 @@ def _understand_bytes(
     with the reason on *result*: a row minted without bytes (rag://, loop:)
     is counted as ``no_object``, not failed (ops-watch #522/#523); a gone
     object is a typed "document content missing" failure. A text past
-    READ_CAP is understood from its first MiB, and the run says so; a binary
+    READ_CAP is understood from its first MiB, and ``partial_reads`` names
+    it (the run is not degraded for it: cycle-3 memfix #5); a binary
     document past it fails by name (cycle-3 P1)."""
     source_ref = str(src.get("source_ref") or "")
     if names_no_object(source_ref):
@@ -1991,9 +2012,11 @@ def _understand_bytes(
             {"artifact_id": src["artifact_id"], "error": read.refused}
         )
     elif read.cut:
-        result.degraded = True
-        result.degraded_reason = "; ".join(
-            filter(None, [result.degraded_reason, _understood_from_prefix(src, read)])
+        result.partial_reads.append(
+            {
+                "artifact_id": src["artifact_id"],
+                "reason": _understood_from_prefix(src, read),
+            }
         )
     return read.content
 
@@ -2800,6 +2823,8 @@ def _write_result(attempt: JobAttempt, result: Any) -> None:
     }
     if getattr(result, "archive_key", ""):
         result_dict["archive_key"] = result.archive_key
+    if getattr(result, "partial_reads", None):
+        result_dict["partial_reads"] = result.partial_reads
     attempt.metrics["result"] = json.dumps(result_dict)
     logger.info(
         "Job result written: type=%s degraded=%s",
