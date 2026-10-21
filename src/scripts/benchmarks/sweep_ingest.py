@@ -39,7 +39,7 @@ def main():
                    help="directory holding one sub-directory per size: <root>/<N>")
     p.add_argument("--bucket", default="bucket-3", help="bucket alias")
     p.add_argument("--reps", type=int, default=3)
-    p.add_argument("--pause", type=float, default=10.0, help="seconds between runs")
+    p.add_argument("--pause", type=float, default=60.0, help="seconds between runs")
     p.add_argument("--tag", default=datetime.now().strftime("%Y%m%d-%H%M%S"),
                    help="part of the S3 prefix, keeps runs unique")
     p.add_argument("--client", default=str(SRC / "client_umrs.py"))
