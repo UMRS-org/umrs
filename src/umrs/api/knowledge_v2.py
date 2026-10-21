@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field
 
 from umrs.api.files import get_project_id
 from umrs.jobs.models import JobType
+from umrs.jobs.store import DuplicateJobError
 from umrs.knowledge.graph_registry import default_graph_id
 from umrs.shared.storage.s3_config import S3Config, get_s3_config
 
@@ -390,6 +391,31 @@ async def trigger_ingest(
     if body.proposal_id:
         spec["proposal_id"] = body.proposal_id
 
+    job_id = await _submit_ingest(runtime, request, project_id, spec)
+    mark_proposal_executed(
+        request,
+        body.proposal_id,
+        actor=request_actor(request),
+        session_id=request_session_id(request),
+        operation="knowledge_ingest",
+        extra={"job_id": job_id},
+    )
+    return {
+        "job_id": job_id,
+        "job_type": JobType.KNOWLEDGE_INGEST.value,
+        "status": "queued",
+    }
+
+
+async def _submit_ingest(
+    runtime: Any, request: Request, project_id: str, spec: dict[str, Any]
+) -> str:
+    """Queue the KNOWLEDGE_INGEST job; an identical earlier submit is a 409.
+
+    The job's idempotency key is the spec hash, so the same sources again
+    raise DuplicateJobError: answer like POST /umrs/jobs (409 naming the
+    existing job) instead of a 500 (2026-10-21).
+    """
     try:
         job_id = await runtime.submit_job_sync(
             job_type=JobType.KNOWLEDGE_INGEST,
@@ -397,23 +423,23 @@ async def trigger_ingest(
             spec=spec,
             user_id=_job_owner(request),
         )
-        logger.info("Knowledge ingest queued: %s", job_id)
-        mark_proposal_executed(
-            request,
-            body.proposal_id,
-            actor=request_actor(request),
-            session_id=request_session_id(request),
-            operation="knowledge_ingest",
-            extra={"job_id": job_id},
-        )
-        return {
-            "job_id": job_id,
-            "job_type": JobType.KNOWLEDGE_INGEST.value,
-            "status": "queued",
-        }
+    except DuplicateJobError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "duplicate_ingest",
+                "message": (
+                    "An identical ingest (same sources, graph and options) was "
+                    f"already submitted as {exc.existing_job_id}"
+                ),
+                "existing_job_id": exc.existing_job_id,
+            },
+        ) from exc
     except Exception as exc:
         logger.exception("Failed to queue knowledge ingest")
         raise_typed(PlatformError.knowledge2("failure", str(exc)), cause=exc)
+    logger.info("Knowledge ingest queued: %s", job_id)
+    return job_id
 
 
 @router.get("/artifacts")
