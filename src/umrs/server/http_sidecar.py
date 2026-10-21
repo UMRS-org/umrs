@@ -881,11 +881,15 @@ def _create_app():
     from umrs.api.error_responses import (
         structured_http_exception_handler,
         structured_warning_exception_handler,
+        unhandled_exception_handler,
     )
     from umrs.shared.warnings import UMRSWarningError
 
     app.add_exception_handler(_HTTPException, structured_http_exception_handler)
     app.add_exception_handler(UMRSWarningError, structured_warning_exception_handler)
+    # Anything no route caught: typed 503 for a database outage, 400 for a
+    # NUL Postgres cannot store, typed 500 otherwise (was plain text).
+    app.add_exception_handler(Exception, unhandled_exception_handler)
 
     app.include_router(catalog_router)
     app.include_router(a2l_router)

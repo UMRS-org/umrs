@@ -153,3 +153,85 @@ async def structured_warning_exception_handler(
         content=body,
         headers=headers,
     )
+
+
+# ---------------------------------------------------------------------------
+# Unhandled exceptions (2026-10-21, cycle-2 umrs-api lane)
+# ---------------------------------------------------------------------------
+# Without this handler Starlette answered any exception no route caught with
+# a plain-text "Internal Server Error" 500: a stopped Postgres read as a
+# server bug on every store-backed route, and a NUL in a JSON body (which
+# Postgres text cannot hold) read the same way.
+
+_NUL_MARKERS = ("NUL (0x00)", '"UTF8": 0x00')
+_UNAVAILABLE_RETRY_AFTER = "5"
+
+
+def _exception_chain(exc: BaseException) -> list[BaseException]:
+    """``exc`` and the exceptions it was raised from or while handling."""
+    chain: list[BaseException] = []
+    current: BaseException | None = exc
+    while current is not None and current not in chain and len(chain) < 16:
+        chain.append(current)
+        current = current.__cause__ or current.__context__
+    return chain
+
+
+def _database_error_types() -> tuple[type[BaseException], ...]:
+    """Connection-level failures of either Postgres driver."""
+    types: list[type[BaseException]] = []
+    try:
+        import psycopg2
+        import psycopg2.pool
+
+        types += [psycopg2.OperationalError, psycopg2.InterfaceError, psycopg2.pool.PoolError]
+    except ImportError:
+        pass
+    try:
+        import asyncpg
+
+        types += [
+            asyncpg.exceptions.PostgresConnectionError,
+            asyncpg.exceptions.InterfaceError,
+            asyncpg.exceptions.CannotConnectNowError,
+        ]
+    except ImportError:
+        pass
+    return tuple(types)
+
+
+def _classify_unhandled(exc: BaseException) -> tuple[int, str]:
+    """``(status, message)`` for an exception no route handled."""
+    chain = _exception_chain(exc)
+    if any(isinstance(e, _database_error_types()) for e in chain):
+        return 503, "Database unavailable; retry shortly"
+    if any(any(m in str(e) for m in _NUL_MARKERS) for e in chain):
+        return 400, "Input contains a NUL (0x00) character, which cannot be stored"
+    return 500, "Internal server error"
+
+
+def _request_id_for(request: Request) -> str:
+    from umrs.server.correlation import get_request_id
+
+    request_id = get_request_id()  # "" outside a request context
+    if request_id:
+        return request_id
+    header = request.headers.get("x-request-id") or request.headers.get("x-correlation-id")
+    if header:
+        return header
+    import uuid
+
+    return uuid.uuid4().hex
+
+
+async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    """Typed envelope for an exception no route caught (Starlette re-raises
+    it after this response, so the traceback still reaches the server log;
+    the client never sees it)."""
+    status_code, message = _classify_unhandled(exc)
+    response = structured_error_response(
+        status_code, message, request_id=_request_id_for(request)
+    )
+    if status_code == 503:
+        response.headers["Retry-After"] = _UNAVAILABLE_RETRY_AFTER
+    return response
