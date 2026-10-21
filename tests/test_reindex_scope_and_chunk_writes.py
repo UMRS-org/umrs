@@ -26,6 +26,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from tests.s3_ranged import ranged
 from umrs.jobs import knowledge_adapters as ka
 from umrs.jobs import reindex
 from umrs.jobs.knowledge_adapters import KnowledgeEmbedResult
@@ -360,8 +361,8 @@ class _S3:
     def __init__(self, objects: dict[str, bytes]):
         self.objects = objects
 
-    def get_object(self, Bucket, Key):  # noqa: N803 — boto3's names
-        return {"Body": io.BytesIO(self.objects[f"{Bucket}/{Key}"])}
+    def get_object(self, Bucket, Key, Range=""):  # noqa: N803 — boto3's names
+        return ranged(self.objects[f"{Bucket}/{Key}"], Range)
 
 
 def _sources(*ids: str) -> list[dict]:

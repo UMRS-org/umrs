@@ -283,7 +283,9 @@ class TestEmbedOneArtifact:
         from umrs.jobs import knowledge_adapters as ka
 
         text = "The catalogue is the physical-existence authority. " * 40
-        monkeypatch.setattr(ka, "_fetch_artifact_bytes", lambda *_a, **_k: text.encode("utf-8"))
+        monkeypatch.setattr(
+            ka, "_read_bounded", lambda *_a, **_k: ka._Bounded(text.encode(), len(text.encode()))
+        )
         model_dir = str(tmp_path / "fake-model")
         monkeypatch.setenv("UMRS_KNOWLEDGE_EMBED_MODEL", model_dir)
         store = _CapturingStore()
@@ -316,7 +318,7 @@ class TestEmbedOneArtifact:
     async def test_missing_content_fails_artifact(self, monkeypatch):
         from umrs.jobs import knowledge_adapters as ka
 
-        monkeypatch.setattr(ka, "_fetch_artifact_bytes", lambda *_a, **_k: None)
+        monkeypatch.setattr(ka, "_read_bounded", lambda *_a, **_k: None)
         store = _CapturingStore()
         result = KnowledgeEmbedResult()
         await ka._embed_one_artifact(

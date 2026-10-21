@@ -497,15 +497,21 @@ def _answer_limit(profile_name: str) -> int | None:
 
 
 def _artifact_fetcher() -> FetchBytes:
-    """Fetch artifact bytes with the server's storage client, built on first use."""
+    """Fetch artifact bytes with the server's storage client, built on first use.
+
+    Only the bytes the embed job chunked (``read_chunked_bytes``): every chunk
+    a passage is sliced from lies in them, and a slice is used only when its
+    md5 matches. A whole read pulled a 400 MiB artifact into memory for one
+    passage (cycle-3 P1, 2026-10-22)."""
     state: dict[str, Any] = {}
 
     def fetch(source_ref: str) -> bytes | None:
-        from umrs.jobs.knowledge_adapters import _build_s3_client, _fetch_artifact_bytes
+        from umrs.jobs.knowledge_adapters import _build_s3_client, read_chunked_bytes
 
         if "client" not in state:
             state["client"], state["bucket"] = _build_s3_client({})
-        return _fetch_artifact_bytes(state["client"], state["bucket"], source_ref)
+        read = read_chunked_bytes(state["client"], state["bucket"], source_ref)
+        return None if read is None else read.content
 
     return fetch
 
