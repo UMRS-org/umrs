@@ -745,55 +745,6 @@ async def generate_presigned_urls_batch(
     return PresignBatchResponse(results=results, errors=errors)
 
 
-@router.get(
-    "/{file_id}/metadata",
-    response_model=FileMetadata,
-    summary="Get file metadata",
-    description="Get metadata for a file by its ID (key).",
-)
-async def get_file_metadata(
-    file_id: str,
-    bucket: str | None = None,
-    project_id: str = Depends(get_project_id),
-    config: S3Config = Depends(get_project_s3_config),
-    x_user_id: str | None = Header(None),
-) -> FileMetadata:
-    """Get file metadata."""
-
-    # Validate and namespace the key
-    key = validate_key(file_id, project_id, warn_on_rename=True)
-    bucket_name = _namespace_bucket(bucket, config, x_user_id)
-
-    try:
-        s3_client = config.get_client()
-
-        response = s3_client.head_object(Bucket=bucket_name, Key=key)
-
-        return FileMetadata(
-            key=key,
-            bucket=bucket_name,
-            size=response.get("ContentLength", 0),
-            content_type=response.get("ContentType"),
-            last_modified=response.get(
-                "LastModified", datetime.now(timezone.utc)
-            ).isoformat()
-            + "Z",
-            etag=response.get("ETag", "").strip('"'),
-            metadata=response.get("Metadata", {}),
-        )
-
-    except ClientError as e:
-        if e.response["Error"]["Code"] == "404":
-            raise_typed(
-                PlatformError.files("not_found", f"File not found: {key}"), cause=e
-            )
-        logger.error(f"S3 error getting file metadata: {e}")
-        raise_typed(
-            PlatformError.files("metadata_failed", "Failed to get file metadata"),
-            cause=e,
-        )
-
-
 @router.delete(
     # ``:path``: every key /upload writes has a slash (``uploads/<id>_name``),
     # and a plain ``{file_id}`` never matched one, so no uploaded file could be
@@ -1385,3 +1336,57 @@ async def check_download_status(
         return await _poll_job_until_ready(job_store, job_id, timeout, scope)
 
     return _nonblocking_job_status(job_store, job_id, scope)
+
+
+# Declared after /download/{path:path}: a download of a key ending in
+# "/metadata" stays a download.
+@router.get(
+    # ``:path``: every key /upload writes has a slash (``uploads/<id>_name``);
+    # a plain ``{file_id}`` never matched one, so no uploaded file's metadata
+    # could be read (404 from the router, encoded or not; cycle-3, 2026-10-22).
+    "/{file_id:path}/metadata",
+    response_model=FileMetadata,
+    summary="Get file metadata",
+    description="Get metadata for a file by its ID (key).",
+)
+async def get_file_metadata(
+    file_id: str,
+    bucket: str | None = None,
+    project_id: str = Depends(get_project_id),
+    config: S3Config = Depends(get_project_s3_config),
+    x_user_id: str | None = Header(None),
+) -> FileMetadata:
+    """Get file metadata."""
+
+    # Validate and namespace the key
+    key = validate_key(file_id, project_id, warn_on_rename=True)
+    bucket_name = _namespace_bucket(bucket, config, x_user_id)
+
+    try:
+        s3_client = config.get_client()
+
+        response = s3_client.head_object(Bucket=bucket_name, Key=key)
+
+        return FileMetadata(
+            key=key,
+            bucket=bucket_name,
+            size=response.get("ContentLength", 0),
+            content_type=response.get("ContentType"),
+            last_modified=response.get(
+                "LastModified", datetime.now(timezone.utc)
+            ).isoformat()
+            + "Z",
+            etag=response.get("ETag", "").strip('"'),
+            metadata=response.get("Metadata", {}),
+        )
+
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "404":
+            raise_typed(
+                PlatformError.files("not_found", f"File not found: {key}"), cause=e
+            )
+        logger.error(f"S3 error getting file metadata: {e}")
+        raise_typed(
+            PlatformError.files("metadata_failed", "Failed to get file metadata"),
+            cause=e,
+        )
