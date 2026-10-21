@@ -268,10 +268,23 @@ class TestRestoreFlow:
 
         result = await engine.import_project(bundle, verify=False, allow_unsigned=True)
 
-        assert result.embedding_count == 1
         assert result.catalog_count == 1
         assert result.a2l_link_count == 1
         assert result.a2l_ref_count == 1
+
+    async def test_legacy_embeddings_are_reported_not_imported(self, tmp_path):
+        """The bundle's one legacy embeddings.jsonl row is not imported, and
+        the result says so (N1): no per-project table holds it."""
+        bundle = _write_bundle(tmp_path)
+        store = _FakeStore()
+        engine = KnowledgeImportEngine(store=store)
+
+        result = await engine.import_project(bundle, verify=False, allow_unsigned=True)
+
+        assert (result.embedding_count, result.legacy_embeddings_skipped) == (0, 1)
+        assert result.degraded
+        assert "embeddings not included" in result.degraded_reason
+        assert not [q for q, _ in store._pool.executed if "memory_vectors" in q]
 
     async def test_retarget_rewrites_project_scope(self, tmp_path):
         bundle = _write_bundle(tmp_path, project_id="old-project")
@@ -286,7 +299,6 @@ class TestRestoreFlow:
         assert all(a["project_id"] == "new-project" for a in store.artifacts)
         assert all(n.project_id == "new-project" for n in store.nodes)
         # SQL tables carry the new scope in their bound params.
-        # embeddings: (project, vector, metadata, document_id)
         # catalog:    (name, project, metadata)
         for _sql, params in store._pool.executed:
             assert "new-project" in params

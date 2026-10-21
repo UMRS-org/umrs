@@ -10,13 +10,23 @@ Tables dumped:
   - knowledge_ir         → documents.jsonl (IR content as documents)
   - knowledge_nodes      → nodes.jsonl
   - knowledge_edges      → edges.jsonl
-  - memory_vectors       → embeddings.jsonl (paged cursor)
+  - knowledge_node_embeddings → node_embeddings.jsonl (the project's vectors)
+  - embeddings.jsonl     → written empty (v1.x layout; see below)
   - catalog artifacts    → catalog.jsonl
   - knowledge_a2l_links  → a2l_links.jsonl (knowledge → A2L mapping)
   - a2l_artifact_refs    → a2l_refs.jsonl (A2L artifact identity metadata)
 
 The a2l_links and a2l_refs tables are backward-compatible: older bundle
 readers (v1.0) that do not know these tables simply ignore them.
+
+Embeddings (2026-10-21, N1): the vectors knowledge ingest writes per project
+live in ``knowledge_node_embeddings`` (0075, KNOWLEDGE_EMBED) and ride
+``node_embeddings.jsonl``; ``embedding_count`` counts them. The legacy
+``embeddings.jsonl`` read ``memory_vectors(id, vector, metadata, document_id,
+project_id)``, columns no migration creates, so it was always empty behind a
+"degraded" log line; it stays in the layout, empty. When the vector table
+cannot be read the export says so: ``embeddings_note`` in the manifest and a
+degraded result ("embeddings not included: ..."), never silently.
 
 Downloaded via Gateway with auth, validated on client with signature.sig.
 
@@ -468,6 +478,9 @@ class KnowledgeExportEngine:
         self._allow_unsigned = allow_unsigned
         self._populate_embedding_pin = populate_embedding_pin
         self._manifest: dict[str, Any] = {}
+        # Set when the project's vectors could not be read (N1): the export
+        # states it instead of shipping an empty table silently.
+        self._embeddings_note = ""
 
     async def export_project(
         self,
@@ -525,6 +538,8 @@ class KnowledgeExportEngine:
         )
         self._manifest["raw"] = raw_block
         self._stamp_chunk_text(self._manifest)
+        if self._embeddings_note:
+            self._manifest["embeddings_note"] = self._embeddings_note
         # The signature must cover the table CONTENTS, not only their names
         # and counts: each listed file's sha256 rides the signed manifest.
         stamp_table_digests(self._manifest, writer.path)
@@ -552,7 +567,7 @@ class KnowledgeExportEngine:
             table_counts["documents"][0],
             table_counts["nodes"][0],
             table_counts["edges"][0],
-            table_counts["embeddings"][0],
+            table_counts["node_embeddings"][0],
             table_counts["catalog"][0],
         )
 
@@ -563,10 +578,12 @@ class KnowledgeExportEngine:
             document_count=table_counts["documents"][0],
             node_count=table_counts["nodes"][0],
             edge_count=table_counts["edges"][0],
-            embedding_count=table_counts["embeddings"][0],
+            embedding_count=table_counts["node_embeddings"][0],
             catalog_count=table_counts["catalog"][0],
             manifest_hash=manifest_hash,
             signature=signature,
+            degraded=bool(self._embeddings_note),
+            degraded_reason=self._embeddings_note,
         )
 
     # ── Serialization helpers ─────────────────────────────────────────────────
@@ -725,14 +742,8 @@ class KnowledgeExportEngine:
         await writer.write_edges(edge_rows)
         logger.info("Exported %d edges for project=%s", len(edge_rows), project_id)
 
-        emb_rows, emb_total = await self._all_embeddings(project_id)
-        await writer.write_embeddings(emb_rows)
-        logger.info(
-            "Exported %d/%d embeddings for project=%s",
-            len(emb_rows),
-            emb_total,
-            project_id,
-        )
+        # v1.x layout: the file stays, empty; the vectors are node_embeddings.
+        await writer.write_embeddings([])
 
         cat_rows = await self._list_catalog(project_id=project_id)
         await writer.write_catalog(cat_rows)
@@ -745,7 +756,7 @@ class KnowledgeExportEngine:
             "documents": (len(doc_rows), "documents.jsonl"),
             "nodes": (node_count, "nodes.jsonl"),
             "edges": (len(edge_rows), "edges.jsonl"),
-            "embeddings": (emb_total, "embeddings.jsonl"),
+            "embeddings": (0, "embeddings.jsonl"),
             "catalog": (len(cat_rows), "catalog.jsonl"),
         }
 
@@ -768,24 +779,6 @@ class KnowledgeExportEngine:
             if len(rows) < _PAGE_SIZE:
                 return collected, max(total, len(collected))
             page += 1
-
-    async def _all_embeddings(self, project_id: str) -> tuple[list[dict[str, Any]], int]:
-        """Every ``memory_vectors`` row of the project, cursor page by
-        cursor page (one page was exported before 2026-10-11)."""
-        collected: list[dict[str, Any]] = []
-        total = 0
-        cursor = _DEFAULT_EMBEDDING_CURSOR
-        while True:
-            rows, total = await self._list_embeddings_paged(
-                store=self._store,
-                project_id=project_id,
-                cursor=cursor,
-                page_size=_PAGE_SIZE,
-            )
-            collected.extend(rows)
-            if len(rows) < _PAGE_SIZE:
-                return collected, max(total, len(collected))
-            cursor = str(rows[-1]["id"])
 
     async def _dump_nodes(
         self,
@@ -881,7 +874,8 @@ class KnowledgeExportEngine:
         """Write the project's canonical node vectors (0075, KNOWLEDGE_EMBED).
 
         Rows of snapshot-excluded nodes stay out, like the nodes themselves.
-        Best-effort: an unreadable table writes an empty file (0 rows).
+        An unreadable table writes an empty file (0 rows) and the export
+        states "embeddings not included" (manifest + degraded result).
         """
         try:
             rows = await self._store._pool.fetch(  # type: ignore[union-attr]
@@ -894,6 +888,10 @@ class KnowledgeExportEngine:
             )
         except Exception as exc:  # noqa: BLE001 — optional table, honest empty file
             logger.warning("node embeddings not exported for %s: %s", project_id, exc)
+            self._embeddings_note = (
+                "embeddings not included: the project's vectors "
+                f"(knowledge_node_embeddings) could not be read ({type(exc).__name__})"
+            )
             rows = []
         out = [
             _node_vector_row(r)
@@ -1103,31 +1101,8 @@ class KnowledgeExportEngine:
         """Resolve the vector-pipeline trust pin (best-effort, never crashes)."""
         if not self._populate_embedding_pin:
             return _pending_pin()
-        pin = await self._pin_from_memory_vectors(project_id)
-        if pin is None:
-            pin = await self._pin_from_node_embeddings(project_id)
+        pin = await self._pin_from_node_embeddings(project_id)
         return pin if pin is not None else _pending_pin()
-
-    async def _pin_from_memory_vectors(self, project_id: str) -> dict[str, Any] | None:
-        """Pin from the newest non-'default' memory_vectors lineage row (0041)."""
-        try:
-            row = await self._store._pool.fetchrow(  # type: ignore[union-attr]
-                "SELECT model, model_path, model_version, embedding_dimension "
-                "FROM memory_vectors WHERE project_id = $1 "
-                "AND model IS NOT NULL AND model <> 'default' "
-                "ORDER BY created_at DESC LIMIT 1",
-                project_id,
-            )
-            if row is None:
-                return None
-            return _pin(
-                model=str(row["model"] or ""),
-                model_path=str(row["model_path"] or ""),
-                revision=str(row["model_version"] or ""),
-                dimensions=int(row["embedding_dimension"] or 0),
-            )
-        except Exception:  # noqa: BLE001 — pin is best-effort metadata
-            return None
 
     async def _pin_from_node_embeddings(self, project_id: str) -> dict[str, Any] | None:
         """Pin by aggregating knowledge_node_embeddings (0075) of this project's nodes."""
@@ -1153,59 +1128,8 @@ class KnowledgeExportEngine:
         except Exception:  # noqa: BLE001 — pin is best-effort metadata
             return None
 
-    # ── Paged embedding fetch ─────────────────────────────────────────────────
-
-    async def _list_embeddings_paged(
-        self,
-        store: KnowledgeStore,
-        project_id: str,
-        cursor: str,
-        page_size: int,
-    ) -> tuple[list[dict[str, Any]], int]:
-        """Fetch embeddings via paged cursor from memory_vectors.
-
-        Uses a cursor-based pagination on the id column for large datasets.
-        Returns (rows, total_count).
-        """
-        try:
-            async with store._pool.acquire() as conn:
-                # Get total count
-                total_row = await conn.fetchrow(
-                    "SELECT COUNT(*) FROM memory_vectors WHERE project_id = $1",
-                    project_id,
-                )
-                total = int(total_row["count"]) if total_row else 0
-
-                # Cursor pagination: rows where id > cursor
-                rows = await conn.fetch(
-                    """SELECT id, vector, metadata, document_id, created_at
-                       FROM memory_vectors
-                       WHERE project_id = $1 AND id > $2
-                       ORDER BY id
-                       LIMIT $3""",
-                    project_id,
-                    cursor,
-                    page_size,
-                )
-
-                result = []
-                for row in rows:
-                    result.append(
-                        {
-                            "id": str(row["id"]),
-                            "vector": list(row["vector"]) if row["vector"] else [],
-                            "metadata": row["metadata"] or {},
-                            "document_id": row["document_id"],
-                            "created_at": _iso(row["created_at"]),
-                        }
-                    )
-                return result, total
-        except Exception as exc:
-            logger.warning("Embedding fetch failed (degraded): %s", exc)
-            return [], 0
-
     async def _list_catalog(self, project_id: str) -> list[dict[str, Any]]:
-        """Fetch catalog entries from the catalog_store or memory_vectors.
+        """Fetch catalog entries from the knowledge_catalog table.
 
         Falls back to empty list if catalog table unavailable.
         """
