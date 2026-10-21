@@ -10,9 +10,11 @@ existing workflow registry command handlers used by the ZMQ server.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
+import shutil
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -35,7 +37,11 @@ from ..core.TaskCmdStatus import TaskCmd
 from ..core.zmq_correlation import dumps_with_correlation_id
 from ..jobs.models import JobStatus
 from ..jobs.store import JobNotFoundError, JobStore
-from ..server.file_handling import handle_upload_workflow, workflow_name_refusal
+from ..server.file_handling import (
+    MAX_UPLOAD_BYTES,
+    handle_upload_workflow,
+    workflow_name_refusal,
+)
 from ..server.job_tracking_handler import DurableJobCommandBackend
 from ..server.workflow_registry_handler import (
     _resolve_workflow_catalog_entry,
@@ -257,6 +263,27 @@ def _parse_command_response(raw: str, *, action: str) -> dict[str, Any]:
         code = status.HTTP_500_INTERNAL_SERVER_ERROR
 
     raise HTTPException(status_code=code, detail=message)
+
+
+_MAX_WORKFLOW_UPLOAD_BYTES = MAX_UPLOAD_BYTES
+_SPOOL_CHUNK = 1024 * 1024
+
+
+async def _spool_upload(file: UploadFile, dest_path: str) -> None:
+    """Copy the uploaded zip to *dest_path* in chunks, refusing an oversize
+    part by its size before reading it (2026-10-21: ``await file.read()``
+    held a 600 MiB upload in memory before the 500 MiB cap refused it)."""
+    size = getattr(file, "size", None)
+    if isinstance(size, int) and size > _MAX_WORKFLOW_UPLOAD_BYTES:
+        _raise_upload_error(
+            f"Zip file too large ({size} bytes, max {_MAX_WORKFLOW_UPLOAD_BYTES})"
+        )
+    await asyncio.to_thread(_copy_part, file.file, dest_path)
+
+
+def _copy_part(source: Any, dest_path: str) -> None:
+    with open(dest_path, "wb") as dest:
+        shutil.copyfileobj(source, dest, _SPOOL_CHUNK)
 
 
 def _raise_upload_error(message: str) -> None:
@@ -1281,7 +1308,7 @@ async def upload_workflow(
 
     with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as temp_file:
         temp_path = temp_file.name
-        temp_file.write(await file.read())
+    await _spool_upload(file, temp_path)
 
     ok, dest, notice = handle_upload_workflow(
         resolved_user_id, temp_path, resolved_workflow_name

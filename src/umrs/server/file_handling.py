@@ -122,7 +122,7 @@ def ensure_user_file_in_conf(conf_path, username, canonical_user_path):
 #: tree: an absolute name or ``..`` put the upload's files wherever the server
 #: may write (its own modules, another owner's workflow tree).
 WORKFLOW_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
-_MAX_UPLOAD_BYTES = 500 * 1024 * 1024
+MAX_UPLOAD_BYTES = 500 * 1024 * 1024
 MAX_WORKFLOW_JSON_BYTES = 1024 * 1024
 
 
@@ -153,9 +153,9 @@ def _precheck_upload(zip_path: str, workflow_name: object) -> None:
     if not os.path.isfile(zip_path):
         raise _UploadRefused(f"Uploaded file not found: {zip_path}")
     size = os.path.getsize(zip_path)
-    if size > _MAX_UPLOAD_BYTES:
+    if size > MAX_UPLOAD_BYTES:
         raise _UploadRefused(
-            f"Zip file too large ({size} bytes, max {_MAX_UPLOAD_BYTES})"
+            f"Zip file too large ({size} bytes, max {MAX_UPLOAD_BYTES})"
         )
     if not zipfile.is_zipfile(zip_path):
         raise _UploadRefused(f"Uploaded file is not a valid zip archive: {zip_path}")
