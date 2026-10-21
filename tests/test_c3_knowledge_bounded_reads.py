@@ -266,7 +266,10 @@ def test_understand_reads_a_text_past_read_cap_only_to_its_prefix(monkeypatch):
     assert content is not None and data.startswith(content)
     assert len(content) <= 1024 and sum(s3.reads) <= 1025
     content.decode("utf-8")  # the cut never splits a character
-    assert result.degraded and "understood from its first" in result.degraded_reason
+    assert not result.degraded  # per artifact (cycle-3 memfix #5)
+    (partial,) = result.partial_reads
+    assert partial["artifact_id"] == "art-1"
+    assert "understood from its first" in partial["reason"]
 
 
 def test_understand_refuses_a_pdf_past_read_cap_by_name(monkeypatch):
