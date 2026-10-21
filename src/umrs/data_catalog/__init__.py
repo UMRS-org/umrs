@@ -2,6 +2,7 @@
 
 from .adapter import CatalogArtifactAdapter
 from .artifacts import (
+    CatalogObjectMissing,
     artifact_id_for_meta,
     load_artifact_content,
     meta_to_artifact,
@@ -15,6 +16,7 @@ from .schema import CatalogObjectMeta, CatalogState
 __all__ = [
     "CatalogArtifactAdapter",
     "CatalogObjectMeta",
+    "CatalogObjectMissing",
     "CatalogState",
     "artifact_id_for_meta",
     "encode_s3_key",

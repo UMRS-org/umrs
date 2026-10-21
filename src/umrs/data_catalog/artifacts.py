@@ -16,6 +16,31 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_MAX_CONTENT_BYTES = 10 * 1024 * 1024
 
+# S3 codes for an object that is not there (head_object answers a bare 404).
+_MISSING_OBJECT_CODES = frozenset({"404", "NoSuchKey", "NotFound"})
+
+
+class CatalogObjectMissing(LookupError):
+    """A catalogued object is gone from the object store (deleted out of
+    band): the catalog row outlived its bytes. Callers answer it honestly
+    instead of as a 500 (cycle-3 N6)."""
+
+    def __init__(self, s3_key: str) -> None:
+        super().__init__(
+            f"Catalogued object {s3_key!r} is no longer in the object store "
+            "(deleted outside UMRS); upload it again, or delete it "
+            "(DELETE /umrs/files/{key}) to drop its catalog entry"
+        )
+        self.s3_key = s3_key
+
+
+def _is_missing_object(exc: Exception) -> bool:
+    error = getattr(exc, "response", None)
+    if not isinstance(error, dict):
+        return False
+    return str(error.get("Error", {}).get("Code")) in _MISSING_OBJECT_CODES
+
+
 _MODALITY_TO_ARTIFACT_TYPE: dict[str, str] = {
     "notebook": "notebook",
     "code": "code",
@@ -84,13 +109,18 @@ def load_artifact_content(
                 s3_key,
                 exc,
             )
-    content, _ = get_object_range(
-        s3_client,
-        bucket,
-        s3_key,
-        offset=0,
-        length=max_bytes,
-    )
+    try:
+        content, _ = get_object_range(
+            s3_client,
+            bucket,
+            s3_key,
+            offset=0,
+            length=max_bytes,
+        )
+    except Exception as exc:
+        if _is_missing_object(exc):
+            raise CatalogObjectMissing(s3_key) from exc
+        raise
     return content
 
 
