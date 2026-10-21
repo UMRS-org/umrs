@@ -605,27 +605,59 @@ def _extract_spooled(
 
     spool_dir = os.environ.get(_SPOOL_DIR_ENV) or None
     kind = "pdf" if head.startswith(b"%PDF") else "pptx"
-    with tempfile.TemporaryFile(dir=spool_dir) as spool:
-        if not _spool_object(s3_client, bucket, source_ref, spool):
-            return None
-        spool.seek(0)
-        text, _tags = extract_document_file(kind, spool, spool_dir=spool_dir)
+    try:
+        with tempfile.TemporaryFile(dir=spool_dir) as spool:
+            if not _spool_object(s3_client, bucket, source_ref, spool):
+                return None
+            spool.seek(0)
+            text, _tags = extract_document_file(kind, spool, spool_dir=spool_dir)
+    except OSError as exc:  # the spool disk, not the store: retried, not refused
+        _log_spool_failure(spool_dir, source_ref, exc)
+        return None
     if not text.strip():
         return _Bounded(None, size, refused=_NO_EXTRACTABLE_TEXT)
     return _Bounded(text.encode("utf-8"), size)
 
 
+class _SpoolWriteError(OSError):
+    """A write to the spool file failed (a full or read-only spool disk)."""
+
+
 def _spool_object(s3_client: Any, bucket: str, source_ref: str, spool: Any) -> bool:
-    """Copy a stored object into *spool* in parts; False when unreadable."""
+    """Copy a stored object into *spool* in parts; False when unreadable.
+    A failed write raises :class:`_SpoolWriteError`: it is the spool disk,
+    not the store (it was logged as "S3 fetch failed")."""
     bucket, key = _object_ref(bucket, source_ref)
     try:
         body = s3_client.get_object(Bucket=bucket, Key=key)["Body"]
         for part in iter(lambda: body.read(_STREAM_PART_BYTES), b""):
-            spool.write(part)
+            _write_spool(spool, part)
+    except _SpoolWriteError:
+        raise
     except Exception as exc:  # noqa: BLE001 — best-effort adapter path, reported not raised
         _log_fetch_failure(key, exc)
         return False
     return True
+
+
+def _write_spool(spool: Any, part: bytes) -> None:
+    try:
+        spool.write(part)
+    except OSError as exc:
+        raise _SpoolWriteError(exc.errno, exc.strerror or str(exc)) from exc
+
+
+def _log_spool_failure(spool_dir: str | None, source_ref: str, exc: OSError) -> None:
+    """A spool dir that is missing, unwritable or full fails only the
+    document being extracted, transiently (fixverify memfix-r3: it raised
+    out of the bounded read and failed the whole understand or embed run)."""
+    logger.warning(
+        "knowledge document spool failed for %s in %s (%s): %s",
+        source_ref,
+        spool_dir or tempfile.gettempdir(),
+        _SPOOL_DIR_ENV,
+        exc,
+    )
 
 
 def _mib(size: int) -> str:

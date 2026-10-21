@@ -219,3 +219,53 @@ def test_a_large_document_is_extracted_in_bounded_memory(small_cap, name, make):
     content, peak = _peak_while(lambda: ka._understand_bytes(s3, "kb", _source(name), result))
     assert result.failed_items == [] and _TEXT in content.decode()
     assert peak < 8 << 20, peak
+
+
+# The spool is the disk under UMRS_KNOWLEDGE_SPOOL_DIR (else the temp dir). A
+# spool dir that does not exist, is not writable or is full raised out of the
+# bounded read (fixverify memfix-r3, 2026-10-22): one document failed the
+# whole understand or embed run and every retrieval passage it held. Now that
+# document alone is unavailable — a transient failure, retried — and the
+# reason is logged with the spool dir.
+@pytest.mark.parametrize(
+    ("name", "make"), [("thesis.pdf", lambda: _pdf(64 * 1024)), ("talk.pptx", lambda: _pptx(256))]
+)
+def test_a_spool_dir_that_is_missing_fails_that_document_only(
+    small_cap, monkeypatch, tmp_path, caplog, name, make
+):
+    missing = tmp_path / "no-such-spool"
+    monkeypatch.setattr(ka, "_embed_read_bytes", lambda: 1024)
+    monkeypatch.setenv(ka._SPOOL_DIR_ENV, str(missing))
+    s3 = _S3({_KEY: make()})
+    understood = ka.KnowledgeUnderstandResult()
+    assert ka._understand_bytes(s3, "kb", _source(name), understood) is None
+    embedded = ka.KnowledgeEmbedResult()
+    assert ka._embed_bytes(_source(name), s3, "kb", embedded) is None
+    for result in (understood, embedded):
+        (failed,) = result.failed_items
+        assert failed["permanent"] is False, failed
+    assert ka.read_chunked_bytes(s3, "kb", _KEY[1], name) is None
+    assert str(missing) in caplog.text and ka._SPOOL_DIR_ENV in caplog.text
+
+
+def test_a_full_spool_disk_fails_that_document_only(small_cap, monkeypatch, caplog):
+    class _Full:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        def __enter__(self) -> _Full:
+            return self
+
+        def __exit__(self, *exc: object) -> None:
+            return None
+
+        def write(self, _data: bytes) -> int:
+            raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(ka.tempfile, "TemporaryFile", _Full)
+    s3 = _S3({_KEY: _pdf(64 * 1024)})
+    result = ka.KnowledgeUnderstandResult()
+    assert ka._understand_bytes(s3, "kb", _source("thesis.pdf"), result) is None
+    (failed,) = result.failed_items
+    assert failed["permanent"] is False
+    assert "No space left on device" in caplog.text and "spool" in caplog.text
