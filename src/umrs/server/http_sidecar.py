@@ -18,6 +18,7 @@ import logging
 import os
 import pathlib
 import threading
+import time
 
 from fastapi import Request
 from fastapi.staticfiles import StaticFiles
@@ -854,6 +855,9 @@ def _create_app():
         redoc_url="/redoc" if enable_docs else None,
         lifespan=_lifespan,
     )
+    # /health and the dashboard health read this; nothing set it, so both
+    # reported uptime_seconds 0 for the life of the process (2026-10-21).
+    app.state.start_time = time.time()
 
     # WP-16 r2 problem+json (opt-in): RFC 7807 projection applies only to
     # responses carrying x-platform-error-code; all other shapes unchanged.
