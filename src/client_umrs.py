@@ -326,6 +326,51 @@ def _extract_bucket_aliases(user_cfg):
 # ---------------------------------------------------------------------------
 # umrs info — one-shot connection diagnostic
 # ---------------------------------------------------------------------------
+def _info_probe(connection) -> bool:
+    """One control-port readiness ping (``HANDSHAKE``) on the env's transport."""
+    mq = MessageQueue(
+        role="client",
+        queue_type="control",
+        server_ip=connection.server_host,
+        port=connection.control_port,
+        tunnel_mode=connection.tunnel_mode,
+        prefer_env_server_host=False,
+    )
+    try:
+        return mq.is_server_ready(timeout_ms=min(connection.health_check_timeout_ms, 3000))
+    finally:
+        mq.close()
+
+
+def _info_zmq_status(connection) -> str:
+    """``umrs info``'s server line.
+
+    In session mode the CURVE session is set up (reused or registered)
+    before the first ping, and when none can be the ping is not sent: the
+    probe used to go out on a NULL socket first, a plaintext ``HANDSHAKE``
+    any listener on the control port could read and answer, and only then
+    refresh the session (cycle-3, 2026-10-21).
+    """
+    where = _dim(f"{connection.server_host}:{connection.control_port}")
+    if _is_session_mode(connection):
+        try:
+            _maybe_bootstrap_curve_session(connection)
+        except CurveSessionUnavailable as exc:
+            return _kv("server", f"{_yellow('● not probed')}  {where}  {_dim(str(exc))}")
+    else:
+        # Load CURVE session so ZMQ check uses auth if available
+        _maybe_load_saved_curve_session(connection)
+    ready = _info_probe(connection)
+    # Session-mode failures are often a stale session (server restarted and
+    # dropped its in-memory registry). Try a one-shot fresh registration so
+    # `info` self-heals and reports the true reachability.
+    if not ready and _is_session_mode(connection) and _force_refresh_curve_session(connection):
+        ready = _info_probe(connection)
+    if ready:
+        return _kv("server", f"{_green('● reachable')}  {where}")
+    return _kv("server", f"{_red('● not responding')}  {where}")
+
+
 def _handle_info(args):
     """Show transport, auth, and S3 status at a glance."""
     import configparser as _cp
@@ -391,54 +436,7 @@ def _handle_info(args):
     lines.append("")
     lines.append(_section("ZMQ Status"))
     try:
-        # Load CURVE session so ZMQ check uses auth if available
-        _maybe_load_saved_curve_session(connection)
-        mq = MessageQueue(
-            role="client",
-            queue_type="control",
-            server_ip=zmq_host,
-            port=zmq_port,
-            tunnel_mode=tunnel,
-            prefer_env_server_host=False,
-        )
-        ready = mq.is_server_ready(
-            timeout_ms=min(connection.health_check_timeout_ms, 3000)
-        )
-        mq.close()
-        # Session-mode failures are often a stale session (server restarted and
-        # dropped its in-memory registry). Try a one-shot fresh registration so
-        # `info` self-heals and reports the true reachability.
-        if (
-            not ready
-            and _is_session_mode(connection)
-            and _force_refresh_curve_session(connection)
-        ):
-            mq = MessageQueue(
-                role="client",
-                queue_type="control",
-                server_ip=zmq_host,
-                port=zmq_port,
-                tunnel_mode=tunnel,
-                prefer_env_server_host=False,
-            )
-            ready = mq.is_server_ready(
-                timeout_ms=min(connection.health_check_timeout_ms, 3000)
-            )
-            mq.close()
-        if ready:
-            lines.append(
-                _kv(
-                    "server",
-                    f"{_green('● reachable')}  {_dim(f'{zmq_host}:{zmq_port}')}",
-                )
-            )
-        else:
-            lines.append(
-                _kv(
-                    "server",
-                    f"{_red('● not responding')}  {_dim(f'{zmq_host}:{zmq_port}')}",
-                )
-            )
+        lines.append(_info_zmq_status(connection))
     except Exception as exc:
         lines.append(_kv("server", f"{_red('● error')}  {_dim(str(exc)[:80])}"))
 
