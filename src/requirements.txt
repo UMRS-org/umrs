@@ -26,6 +26,10 @@ requests
 python-multipart>=0.0.30
 langchain
 langchain-community
+# aiohttp is transitive (langchain-community, bentoml); listed only for its
+# security floor: 3.14.4 fixes CVE-2026-111064 / GHSA-2g87-pp6c-29x5 (HIGH,
+# Trivy on main 190c1c2a, 2026-10-21).
+aiohttp>=3.14.4
 langchain-openai
 bentoml>=1.4.39
 opencv-python-headless
