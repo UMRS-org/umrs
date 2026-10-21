@@ -369,8 +369,8 @@ def main():
                              not args.no_hnsw, args.index_check, args.upload_threads]
                             + [f"{t[c]:.3f}" for c in STEP_COLUMNS] + [f"{total:.3f}"])
             fh.flush()
-            print(f"rep={rep} n={n:>5}  total={total:8.2f}s  upload={t['client_upload']:7.2f}  "
-                  f"read={t['read_decode']:6.2f}  fwd={t['forward']:6.2f}  store={t['store']:7.2f}",
+            print(f"rep={rep} n={n:>5}  total={total:9.3f}s  upload={t['client_upload']:8.3f}  "
+                  f"read={t['read_decode']:7.3f}  fwd={t['forward']:7.3f}  store={t['store']:8.3f}",
                   flush=True)
             time.sleep(args.pause)
 
