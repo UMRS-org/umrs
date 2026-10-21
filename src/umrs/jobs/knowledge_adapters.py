@@ -3449,11 +3449,15 @@ def _kept_chunks(
 
     A text read only up to the embed budget (``cut``) ends at the cut: its
     last two chunks may differ from the whole text's (the cut ends a
-    sentence, a short tail merges back), so they are never written, and its
-    total — the chunks of the part read, a lower bound — always exceeds the
-    chunks written, so the truncation is reported."""
+    sentence, a short tail merges back), so they are not written — except
+    the first, which is always kept: a cut text of one or two chunks (a
+    single-line FASTA or hex dump is one tokenizer word) wrote nothing, no
+    stamp and no failure (cycle-3 memfix #3). Its total — the chunks of the
+    part read, a lower bound — always exceeds the chunks written, so the
+    truncation is reported."""
     if cut:
-        chunks, vectors = chunks[:-2], vectors[:-2]
+        kept = max(len(chunks) - 2, min(len(chunks), 1))
+        chunks, vectors = chunks[:kept], vectors[:kept]
     pairs = list(zip(chunks, vectors))[: max(cap, 0)]
     total = max(len(chunks), len(pairs) + 1) if cut else len(chunks)
     return pairs, total
