@@ -410,11 +410,13 @@ async def trigger_ingest(
 async def _submit_ingest(
     runtime: Any, request: Request, project_id: str, spec: dict[str, Any]
 ) -> str:
-    """Queue the KNOWLEDGE_INGEST job; an identical earlier submit is a 409.
+    """Queue the KNOWLEDGE_INGEST job; an identical one still in flight is a 409.
 
-    The job's idempotency key is the spec hash, so the same sources again
-    raise DuplicateJobError: answer like POST /umrs/jobs (409 naming the
-    existing job) instead of a 500 (2026-10-21).
+    The same sources while an identical ingest is live raise
+    DuplicateJobError: answer like POST /umrs/jobs (409 naming the existing
+    job) instead of a 500. Once that job is terminal the same spec queues a
+    fresh pass (INFLIGHT_DEDUPE_JOB_TYPES), so a repo or URL can be
+    re-ingested to pick up new content (N3, 2026-10-21).
     """
     try:
         job_id = await runtime.submit_job_sync(
@@ -429,8 +431,9 @@ async def _submit_ingest(
             detail={
                 "error": "duplicate_ingest",
                 "message": (
-                    "An identical ingest (same sources, graph and options) was "
-                    f"already submitted as {exc.existing_job_id}"
+                    "An identical ingest (same sources, graph and options) is "
+                    f"still in flight as {exc.existing_job_id}; submit again "
+                    "once it has finished to re-ingest"
                 ),
                 "existing_job_id": exc.existing_job_id,
             },
