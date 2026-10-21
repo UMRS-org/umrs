@@ -8,10 +8,11 @@ Writes log/baremetal_<tag>/baremetal.csv; plot it with: Rscript plot_breakdown.R
 
 Usage (from src/, with umrs_env):
   python scripts/benchmarks/bench_baremetal_ingest.py -c ~/.config/umrs/n_users/users/user1_1.json \
-      --bucket user1-1.images-and-texts.bucket-3 --workers 16 --reps 3
+      --workers 16 --reps 3        # bucket: the ResNet modality's alias in the JSON, or --bucket
   python scripts/benchmarks/bench_baremetal_ingest.py --drop-db      # delete the benchmark database
 """
 import argparse
+import atexit
 import contextlib
 import csv
 import io
@@ -82,6 +83,12 @@ class S3Images(Dataset):
 def _worker_init(_worker_id):
     ds = get_worker_info().dataset
     ds.s3 = _connect_s3(ds.s3_cfg)
+
+
+def _shutdown_workers(loader):
+    it = getattr(loader, "_iterator", None)
+    if it is not None:
+        it._shutdown_workers()
 
 
 class RunSampler(Sampler):
@@ -189,6 +196,19 @@ def store(conn, table, mode, rows):
 # Sweep
 # ---------------------------------------------------------------------------
 
+def check_bucket_writable(s3, bucket, tag):
+    """Fail in seconds, before the model and the DataLoader workers start."""
+    from botocore.exceptions import ClientError
+
+    key = f"baremetal-{tag}-write-test"
+    try:
+        s3.put_object(Bucket=bucket, Key=key, Body=b"")
+        s3.delete_object(Bucket=bucket, Key=key)
+    except ClientError as e:
+        sys.exit(f"Cannot write to bucket '{bucket}': {e}")
+    print(f"bucket={bucket}")
+
+
 def upload(s3, bucket, prefix, files, threads):
     def put(f):
         s3.put_object(Bucket=bucket, Key=f"{prefix}/{f.name}", Body=f.read_bytes())
@@ -219,7 +239,8 @@ def index_check(s3, bucket, keys, conn, table):
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("-c", "--config", help="UMRS user JSON (model, S3 config, table schema)")
-    p.add_argument("--bucket", help="full S3 bucket name, e.g. user1-1.images-and-texts.bucket-3")
+    p.add_argument("--bucket", help="bucket alias (e.g. bucket-3) or full name "
+                                    "(user1-1.images-and-texts.bucket-3); default: the ResNet modality's alias")
     p.add_argument("--sizes", default="10,100,1000,2000,3000,4000,5000,6000,7000")
     p.add_argument("--images-root", default="/mnt/storage/ejeannot/images")
     p.add_argument("--reps", type=int, default=3)
@@ -241,21 +262,26 @@ def main():
         drop_db(params, args.db_name)
         print(f"Database {args.db_name} dropped")
         return
-    if not args.config or not args.bucket:
-        p.error("-c/--config and --bucket are required")
+    if not args.config:
+        p.error("-c/--config is required")
 
     import psycopg2
 
     from umrs.inference.loading import load_model
+    from umrs.shared.storage.s3 import make_path_to_bucket_string
 
     cfg = json.load(open(os.path.expanduser(args.config)))
-    mod = next(m for xp in cfg["experiences"] for m in xp["modalities"]
-               if m["model"]["model_type"] == "Resnet-50")
+    xp, mod = next((xp, m) for xp in cfg["experiences"] for m in xp["modalities"]
+                   if m["model"]["model_type"] == "Resnet-50")
+    alias = args.bucket or mod["s3"]["bucket_alias"]
+    args.bucket = alias if "." in alias else make_path_to_bucket_string(xp["xp_name"], alias, cfg["username"])
+    s3_cfg = cfg["s3_configuration_file"]
+    s3 = _connect_s3(s3_cfg)
+    check_bucket_writable(s3, args.bucket, args.tag)
+
     em = load_model(mod["model"], mod["modality_name"])
     net, device = em.model, em.device
     table = mod["sql"]["table_name"].lower()
-    s3_cfg = cfg["s3_configuration_file"]
-    s3 = _connect_s3(s3_cfg)
 
     sizes = [int(x) for x in args.sizes.split(",")]
     runs, all_keys, run_files = [], [], {}
@@ -286,6 +312,8 @@ def main():
     )
     t0 = time.perf_counter()
     list(loader)  # empty run: starts the workers and their S3 clients before timing
+    # registered after torch's own exit hooks, so it runs first and stops the persistent workers
+    atexit.register(_shutdown_workers, loader)
     with torch.no_grad():
         net(torch.zeros(args.batch_size, 3, 224, 224, device=device)).cpu()
     print(f"tag={args.tag}  workers={args.workers}  store={args.store_mode}  "
