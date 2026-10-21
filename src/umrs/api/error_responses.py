@@ -40,6 +40,7 @@ _STATUS_ERROR_MAP: dict[int, str] = {
     404: "resource.not_found",
     408: "request.timeout",
     409: "resource.conflict",
+    413: "request.too_large",
     422: "input.validation_error",
     429: "request.rate_limited",
     500: "server.internal_error",
