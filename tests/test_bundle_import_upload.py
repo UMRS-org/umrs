@@ -121,9 +121,40 @@ def _export_client(monkeypatch):
 
     runtime = SimpleNamespace(submit_job_sync=AsyncMock(return_value="job-9"))
     monkeypatch.setattr("umrs.server.durable_job_runtime.get_runtime", lambda: runtime)
+    monkeypatch.setenv("UMRS_SECRET_KEY", "test-bundle-signing-key")
     app = FastAPI()
     app.include_router(kmod.router)
     return TestClient(app, raise_server_exceptions=False), runtime
+
+
+def test_export_without_a_signing_key_is_refused_before_any_job(monkeypatch):
+    """ops-watch #521: the job was queued and the engine refused it on every
+    attempt; the route now says so, typed, and queues nothing."""
+    client, runtime = _export_client(monkeypatch)
+    monkeypatch.delenv("UMRS_SECRET_KEY")
+    resp = client.post(
+        "/umrs/knowledge/export",
+        json={"project_id": "caller-proj"},
+        headers={"X-Project-ID": "caller-proj"},
+    )
+    assert (resp.status_code, resp.headers.get(ERROR_CODE_HEADER)) == (
+        503,
+        "knowledge.unavailable",
+    )
+    assert "UMRS_SECRET_KEY" in resp.text and "allow_unsigned" in resp.text
+    runtime.submit_job_sync.assert_not_called()
+
+
+def test_an_unsigned_export_is_still_an_explicit_opt_out(monkeypatch):
+    client, runtime = _export_client(monkeypatch)
+    monkeypatch.delenv("UMRS_SECRET_KEY")
+    resp = client.post(
+        "/umrs/knowledge/export",
+        json={"project_id": "caller-proj", "allow_unsigned": True},
+        headers={"X-Project-ID": "caller-proj"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert runtime.submit_job_sync.call_args.kwargs["spec"]["allow_unsigned"] is True
 
 
 def test_export_of_another_project_refused(monkeypatch):
