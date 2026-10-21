@@ -415,6 +415,7 @@ def test_data_ingestion_of_another_users_bucket_is_refused(buckets):
     backend = DurableJobCommandBackend(_submit_store())
     payload = json.dumps(
         {
+            "project_id": "p",
             "job_type": "data_ingestion",
             "spec": {"bucket": BOB_BUCKET, "s3_key": "k", "project_id": "p"},
         }
