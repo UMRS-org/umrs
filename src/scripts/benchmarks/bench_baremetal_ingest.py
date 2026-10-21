@@ -39,8 +39,11 @@ TRANSFORM = transforms.Compose([
     transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
 ])
 
+# The steps of the breakdown figure (plot_breakdown.R), with the same meaning as for UMRS
 STEP_COLUMNS = ["client_startup", "client_upload", "index_check", "read_decode",
                 "forward", "store", "server_other"]
+# Finer measurements the steps are made of
+DETAIL_COLUMNS = ["scan", "upload", "index_check_head", "index_check_sql"]
 
 
 # ---------------------------------------------------------------------------
@@ -228,12 +231,16 @@ def index_check(s3, bucket, keys, conn, table):
     def head(k):
         return k, s3.head_object(Bucket=bucket, Key=k)["ETag"].strip('"')
 
+    t0 = time.perf_counter()
     with ThreadPoolExecutor(max_workers=10) as pool:
         dict(pool.map(head, keys))
+    head_s = time.perf_counter() - t0
+    t0 = time.perf_counter()
     with conn.cursor() as cur:
         cur.execute(sql.SQL("SELECT s3_object, checksum FROM {} WHERE s3_object = ANY(%s)")
                     .format(sql.Identifier(table)), ([f"{bucket}/{k}" for k in keys],))
         cur.fetchall()
+    return head_s, time.perf_counter() - t0
 
 
 def main():
@@ -284,7 +291,7 @@ def main():
     table = mod["sql"]["table_name"].lower()
 
     sizes = [int(x) for x in args.sizes.split(",")]
-    runs, all_keys, run_files = [], [], {}
+    runs, all_keys = [], []
     for rep in range(1, args.reps + 1):
         for n in sizes:
             d = Path(args.images_root) / str(n)
@@ -295,7 +302,6 @@ def main():
             start = len(all_keys)
             all_keys += [f"{prefix}/{f.name}" for f in files]
             runs.append((rep, n, prefix, range(start, len(all_keys))))
-            run_files[(rep, n)] = files
 
     create_db(params, args.db_name)
     conn = psycopg2.connect(dbname=args.db_name, **params)
@@ -326,19 +332,21 @@ def main():
     with open(csv_path, "w", newline="") as fh:
         writer = csv.writer(fh)
         writer.writerow(["tag", "rep", "n", "prefix", "workers", "batch_size", "store_mode", "hnsw",
-                         "with_index_check", "upload_threads"] + STEP_COLUMNS + ["total"])
+                         "with_index_check", "upload_threads"]
+                        + STEP_COLUMNS + ["total"] + DETAIL_COLUMNS)
         for rep, n, prefix, idx in runs:
-            t = dict.fromkeys(STEP_COLUMNS, 0.0)
             t_run = time.perf_counter()
-
+            # client part, as in UMRS: list the directory, then upload (no server to notify)
             t0 = time.perf_counter()
-            upload(s3, args.bucket, prefix, run_files[(rep, n)], args.upload_threads)
-            t["client_upload"] = time.perf_counter() - t0
+            files = sorted(f for f in (Path(args.images_root) / str(n)).iterdir() if f.is_file())
+            scan_s = time.perf_counter() - t0
+            t0 = time.perf_counter()
+            upload(s3, args.bucket, prefix, files, args.upload_threads)
+            upload_s = time.perf_counter() - t0
 
+            head_s = sql_s = read_s = fwd_s = store_s = 0.0
             if args.index_check:
-                t0 = time.perf_counter()
-                index_check(s3, args.bucket, [all_keys[i] for i in idx], conn, table)
-                t["index_check"] = time.perf_counter() - t0
+                head_s, sql_s = index_check(s3, args.bucket, [all_keys[i] for i in idx], conn, table)
 
             sampler.indices = list(idx)
             batches = iter(loader)
@@ -348,12 +356,12 @@ def main():
                     x, ids, etags = next(batches)
                 except StopIteration:
                     break
-                t["read_decode"] += time.perf_counter() - t0
+                read_s += time.perf_counter() - t0
 
                 t0 = time.perf_counter()
                 with torch.no_grad():
                     emb = net(x.to(device, non_blocking=True)).cpu().numpy()
-                t["forward"] += time.perf_counter() - t0
+                fwd_s += time.perf_counter() - t0
 
                 t0 = time.perf_counter()
                 now = datetime.now()
@@ -361,16 +369,27 @@ def main():
                          now.strftime("%H:%M:%S"), etag, em.model_name)
                         for i, e, etag in zip(ids.tolist(), emb, etags)]
                 store(conn, table, args.store_mode, rows)
-                t["store"] += time.perf_counter() - t0
+                store_s += time.perf_counter() - t0
 
             total = time.perf_counter() - t_run
-            t["server_other"] = total - sum(t.values())
+            steps = {
+                "client_startup": 0.0,                 # persistent process: nothing per request
+                "client_upload": scan_s + upload_s,    # UMRS: scan + upload + notify
+                "index_check": head_s + sql_s,         # UMRS: s3_events + HEAD + SQL
+                "read_decode": read_s,
+                "forward": fwd_s,
+                "store": store_s,
+            }
+            steps["server_other"] = total - sum(steps.values())
+            details = {"scan": scan_s, "upload": upload_s,
+                       "index_check_head": head_s, "index_check_sql": sql_s}
             writer.writerow([args.tag, rep, n, prefix, args.workers, args.batch_size, args.store_mode,
                              not args.no_hnsw, args.index_check, args.upload_threads]
-                            + [f"{t[c]:.3f}" for c in STEP_COLUMNS] + [f"{total:.3f}"])
+                            + [f"{steps[c]:.3f}" for c in STEP_COLUMNS] + [f"{total:.3f}"]
+                            + [f"{details[c]:.3f}" for c in DETAIL_COLUMNS])
             fh.flush()
-            print(f"rep={rep} n={n:>5}  total={total:9.3f}s  upload={t['client_upload']:8.3f}  "
-                  f"read={t['read_decode']:7.3f}  fwd={t['forward']:7.3f}  store={t['store']:8.3f}",
+            print(f"rep={rep} n={n:>5}  total={total:9.3f}s  upload={upload_s:8.3f}  "
+                  f"check={head_s + sql_s:7.3f}  read={read_s:7.3f}  fwd={fwd_s:7.3f}  store={store_s:8.3f}",
                   flush=True)
             time.sleep(args.pause)
 
