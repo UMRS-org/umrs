@@ -45,7 +45,9 @@ class DataIngestionBackend(OrchestratorBackend):
         bucket = (spec.get("bucket") or "").strip()
         s3_key = (spec.get("s3_key") or "").strip()
         object_etag = (spec.get("object_etag") or "").strip()
-        project_id = (spec.get("project_id") or job.project_id).strip()
+        # The job's own project, never one the spec names (cycle-3 memfix
+        # N7; the submit paths refuse a mismatch).
+        project_id = (job.project_id or "").strip()
         if not bucket or not s3_key:
             raise ValueError("data_ingestion requires spec.bucket and spec.s3_key")
 

@@ -233,6 +233,23 @@ def _enforce_spec_resources(
         _deny_unless(refusal is None, refusal or "")
 
 
+def _enforce_spec_project(
+    job_type: "JobType",
+    spec: dict[str, Any],
+    project_id: str,
+    fan_out_jobs: list[dict[str, Any]] | None,
+) -> None:
+    """403 for a project-scoped spec (parent or fan-out child) naming a
+    project other than the verified one the job is stored under (shared
+    with the ZMQ submit, ``job_tracking_handler.spec_project_refusal``;
+    cycle-3 memfix N7). The refusal is the same whether that project exists."""
+    from ..server.job_tracking_handler import spec_project_refusal
+
+    for target_type, target_spec in _spec_targets(job_type, spec, fan_out_jobs):
+        refusal = spec_project_refusal(target_type, target_spec, project_id)
+        _deny_unless(refusal is None, refusal or "")
+
+
 def _enforce_endpoint_host_paths(
     job_type: "JobType",
     spec: dict[str, Any],
@@ -677,6 +694,7 @@ async def create_job(
         )
         _enforce_job_scope_policy(job_type, spec, user_id, project_id, is_admin)
         _enforce_spec_resources(job_type, spec, user_id, is_admin, request.fan_out_jobs)
+        _enforce_spec_project(job_type, spec, project_id, request.fan_out_jobs)
         _enforce_endpoint_host_paths(
             job_type, spec, (user_id, project_id, is_admin), request.fan_out_jobs
         )
