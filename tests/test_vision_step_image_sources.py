@@ -92,6 +92,7 @@ def test_an_oversized_object_is_refused_before_its_body_is_read():
 def test_a_run_never_posts_a_server_file_to_the_workflow_chosen_host(secret, monkeypatch):
     monkeypatch.delenv("UMRS_VISION_MOCK", raising=False)
     monkeypatch.delenv("UMRS_STEP_STAGED", raising=False)
+    monkeypatch.setenv("UMRS_STEP_MOCK_FALLBACK", "1")
     posted = []
 
     class _Client:
@@ -116,7 +117,7 @@ def test_a_run_never_posts_a_server_file_to_the_workflow_chosen_host(secret, mon
     result = step.run(_ctx(image=str(secret)))
     leaked = base64.b64encode(SECRET).decode()
     assert all(leaked not in str(body) for body in posted)
-    assert result.extra["perception"]["meta"]["mock"] is True  # the legacy fallback
+    assert result.extra["perception"]["meta"]["mock"] is True  # the opt-in fallback
 
 
 @pytest.mark.parametrize("key", ["api_key", "headers", "api_base", "_routing"])

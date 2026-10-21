@@ -11,6 +11,11 @@ substitutions are supported, where ``FIELD`` is a dotted path into the
 upstream step's ``StepResult.extra`` dict (e.g.
 ``{{ steps.vision_dense.dense_description }}``).  This avoids pulling
 Jinja2 as a hard dependency while still supporting the common case.
+
+A failed model call (no ``api_base`` resolved, a refused connection, an HTTP
+error) fails the step. ``UMRS_LLM_MOCK=1`` always answers with a mock, and
+``UMRS_STEP_MOCK_FALLBACK=1`` lets a failed call fall back to one — both for
+tests and development only (``umrs.pipeline_sdk.mock_policy``).
 """
 
 from __future__ import annotations
@@ -21,6 +26,11 @@ import os
 import re
 from typing import Any
 
+from umrs.pipeline_sdk.mock_policy import (
+    MOCK_FALLBACK_ENV,
+    mock_fallback_allowed,
+    no_mock_reason,
+)
 from umrs.pipeline_sdk.staged_s3 import is_staged
 from umrs.pipeline_sdk.step import Step, StepContext, StepResult
 
@@ -67,17 +77,8 @@ class LLMStep(Step):
         else:
             try:
                 response_text = self._call_llm(prompt)
-            except Exception as exc:
-                if is_staged():
-                    # ADR-074 D-5: a denial must never read as a success.
-                    raise RuntimeError(
-                        "LLMStep: the model call failed on the staged HPC lane, "
-                        f"which has no network ({exc}); no mock answer is returned"
-                    ) from exc
-                logger.warning(
-                    "LLMStep: LLM call failed (%s), returning mock response", exc
-                )
-                response_text = self._mock_response(prompt, fallback_error=str(exc))
+            except Exception as exc:  # noqa: BLE001 — _failed_call raises unless a mock is opted in
+                response_text = self._failed_call(prompt, exc)
 
         structured: dict[str, Any] | None = None
         validation_error: str | None = None
@@ -117,6 +118,24 @@ class LLMStep(Step):
 
         ctx.report_progress(100.0, "llm_step complete")
         return StepResult(output_keys=output_keys, extra=extra)
+
+    def _failed_call(self, prompt: str, exc: Exception) -> str:
+        """A failed model call fails the step; the mock answer is opt-in
+        (``UMRS_STEP_MOCK_FALLBACK``, never staged) — ops-watch #520."""
+        if is_staged():
+            # ADR-074 D-5: a denial must never read as a success.
+            raise RuntimeError(
+                "LLMStep: the model call failed on the staged HPC lane, "
+                f"which has no network ({exc}); no mock answer is returned"
+            ) from exc
+        if not mock_fallback_allowed():
+            raise RuntimeError(no_mock_reason("LLMStep", exc)) from exc
+        logger.warning(
+            "LLMStep: LLM call failed (%s), returning mock response (%s=1)",
+            exc,
+            MOCK_FALLBACK_ENV,
+        )
+        return self._mock_response(prompt, fallback_error=str(exc))
 
     # ------------------------------------------------------------------
     # Template rendering

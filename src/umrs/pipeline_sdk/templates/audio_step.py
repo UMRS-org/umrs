@@ -1,7 +1,8 @@
 """``AudioStep`` — built-in step that transcribes audio files.
 
 The step reads an audio file from S3, transcribes it using an
-OpenAI-compatible Whisper endpoint (or falls back to a mock), and
+OpenAI-compatible Whisper endpoint (a mock only by opt-in, see
+``umrs.pipeline_sdk.mock_policy``), and
 writes the transcript as a JSON document.
 
 Configuration keys:
@@ -30,6 +31,7 @@ import logging
 import os
 from typing import Any
 
+from umrs.pipeline_sdk.mock_policy import mock_fallback_allowed, no_mock_reason
 from umrs.pipeline_sdk.step import Step, StepContext, StepResult
 
 logger = logging.getLogger(__name__)
@@ -87,11 +89,17 @@ class AudioStep(Step):
     def _transcribe(self, raw: bytes, source_key: str) -> dict[str, Any]:
         """Transcribe audio bytes and return a transcript dict."""
         mock = os.environ.get("UMRS_AUDIO_MOCK", "0") in ("1", "true", "TRUE")
-        if mock or not self.whisper_url:
+        if mock:
             return self._mock_transcript(source_key)
         try:
+            if not self.whisper_url:
+                raise RuntimeError("AudioStep requires whisper_url")
             return self._call_whisper(raw, source_key)
         except Exception as exc:
+            # A failed transcription fails the step; the mock is opt-in
+            # (UMRS_STEP_MOCK_FALLBACK, never staged) — ops-watch #520.
+            if not mock_fallback_allowed():
+                raise RuntimeError(no_mock_reason("AudioStep", exc)) from exc
             logger.warning(
                 "AudioStep: Whisper call failed (%s), returning mock transcript",
                 exc,
