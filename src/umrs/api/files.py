@@ -795,7 +795,10 @@ async def get_file_metadata(
 
 
 @router.delete(
-    "/{file_id}",
+    # ``:path``: every key /upload writes has a slash (``uploads/<id>_name``),
+    # and a plain ``{file_id}`` never matched one, so no uploaded file could be
+    # deleted (404 from the router, encoded or not; cycle-3, 2026-10-21).
+    "/{file_id:path}",
     status_code=status.HTTP_204_NO_CONTENT,
     summary="Delete a file",
     description="Delete a file by its ID (key).",

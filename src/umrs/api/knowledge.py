@@ -6,7 +6,7 @@ import dataclasses
 import logging
 import os
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, NoReturn
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 
 from umrs.api._asyncpg_pool import knowledge_asyncpg_pool
 from umrs.api.files import get_project_id
+from umrs.data_catalog.artifacts import CatalogObjectMissing
 from umrs.jobs.models import JobType
 from umrs.knowledge.project import ProjectPhase, ResearchProject
 from umrs.knowledge.readiness_approvals import ReadinessApprovalStore
@@ -26,6 +27,18 @@ from .typed_errors import PlatformError, raise_typed
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/umrs/knowledge", tags=["knowledge"])
+
+
+def _raise_object_missing(
+    exc: CatalogObjectMissing, what: str, project_id: str
+) -> NoReturn:
+    """A catalogued object deleted out of band fails understand/verify as a
+    404 naming it; it was a 500 "HeadObject: Not Found" (cycle-3 N6)."""
+    logger.warning("%s for project %s: %s", what, project_id, exc)
+    raise_typed(
+        PlatformError.knowledge("not_found", str(exc), s3_key=exc.s3_key), cause=exc
+    )
+
 
 def build_research_project(
     project_id: str,
@@ -614,6 +627,8 @@ async def understand_project(
     project = build_research_project(project_id, config)
     try:
         project.understand()
+    except CatalogObjectMissing as exc:
+        _raise_object_missing(exc, "understand", project_id)
     except Exception as exc:
         logger.exception("understand failed for project %s", project_id)
         raise_typed(PlatformError.knowledge("failure", str(exc)), cause=exc)
@@ -663,12 +678,16 @@ async def verify_project_knowledge(
     ):
         try:
             project.understand()
+        except CatalogObjectMissing as exc:
+            _raise_object_missing(exc, "auto-understand", project_id)
         except Exception as exc:
             logger.exception("auto-understand failed for project %s", project_id)
             raise_typed(PlatformError.knowledge("failure", str(exc)), cause=exc)
 
     try:
         answer = project.verify(body.question)
+    except CatalogObjectMissing as exc:
+        _raise_object_missing(exc, "verify", project_id)
     except Exception as exc:
         logger.exception("verify failed for project %s", project_id)
         raise_typed(PlatformError.knowledge("failure", str(exc)), cause=exc)
