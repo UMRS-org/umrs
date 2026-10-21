@@ -1122,6 +1122,20 @@ class ModelStore:
     # Version Management (GitHub Issue #87, TASK-015-004)
     # =========================================================================
 
+    def _model_for_version_write(
+        self, model_id: str, ctx: AccessContext | None
+    ) -> ModelEntry:
+        """The model a version write targets; the caller must be able to write it.
+
+        Version writes change what the model serves (``is_latest``), so they
+        take the model's write rule, not its read rule (2026-10-21: any
+        caller could add or flip another project's versions).
+        """
+        model = self.get_model(model_id, ctx)
+        if ctx:
+            self.acl.enforce_write(model, ctx)
+        return model
+
     def create_version(
         self,
         model_id: str,
@@ -1131,8 +1145,18 @@ class ModelStore:
         changelog: str | None = None,
         source_type: str = "manual",
     ) -> ModelVersion:
-        """Create a new model version."""
-        self.get_model(model_id)  # Verify model exists
+        """Create a new model version.
+
+        Raises:
+            PermissionDeniedError: If the caller cannot write the model
+            PathNotAllowedError: If ``storage_ref`` leaves the model's scope
+        """
+        model = self._model_for_version_write(model_id, ctx)
+        # Same scope rule as create_model: a version cannot point the model
+        # at another user's or project's files.
+        self.path_validator.validate_scope_path(
+            storage_ref, model.scope, model.owner_id, model.project_id
+        )
 
         version_id = ModelVersion.generate_version_id()
         now = datetime.now()
@@ -1237,6 +1261,7 @@ class ModelStore:
         ctx: AccessContext | None = None,
     ) -> ModelVersion:
         """Mark a version as deprecated."""
+        self._model_for_version_write(model_id, ctx)
         versions = self.get_model_versions(model_id, ctx)
         ver = versions.get_version(version_str)
 
@@ -1272,6 +1297,7 @@ class ModelStore:
 
         This unsets is_latest on the current version and sets it on the target.
         """
+        self._model_for_version_write(model_id, ctx)
         versions = self.get_model_versions(model_id, ctx)
         ver = versions.get_version(version_str)
         if ver is None:

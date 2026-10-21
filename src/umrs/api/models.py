@@ -1223,13 +1223,7 @@ async def detect_model_capabilities(
     """
     from ..model_registry.detect import detect_capabilities
 
-    try:
-        model = store.get_model(model_id)
-    except ModelNotFoundError:
-        raise_typed(
-            PlatformError.models("not_found", f"Model not found: {model_id}"),
-            cause=None,
-        )
+    model = _model_for_detect(store, model_id, ctx, write=not dry_run)
 
     if not model.storage_ref:
         return ModelDetectResponse(
@@ -1279,6 +1273,26 @@ async def detect_model_capabilities(
         updated=True,
         message="Capabilities updated",
     )
+
+
+def _model_for_detect(
+    store: ModelStore, model_id: str, ctx: AccessContext, *, write: bool
+) -> ModelEntry:
+    """The model ``detect`` may inspect: the caller reads it, and writes it
+    unless it is a dry run (2026-10-21: any caller got another project's
+    model name and storage path, and could rewrite its capabilities)."""
+    try:
+        model = store.get_model(model_id, ctx)
+        if write:
+            store.acl.enforce_write(model, ctx)
+    except ModelNotFoundError:
+        raise_typed(
+            PlatformError.models("not_found", f"Model not found: {model_id}"),
+            cause=None,
+        )
+    except PermissionDeniedError as e:
+        raise_typed(PlatformError.models("forbidden", str(e)), cause=e)
+    return model
 
 
 def _merge_detected_capabilities(merged, detected):
@@ -2214,6 +2228,10 @@ async def create_model_version(
         raise_typed(
             PlatformError.models("not_found", f"Model not found: {model_id}"),
         )
+    except PermissionDeniedError as e:
+        raise_typed(PlatformError.models("forbidden", str(e)), cause=e)
+    except PathNotAllowedError as e:
+        raise_typed(PlatformError.models("bad_request", str(e)), cause=e)
 
 
 @router.get(
@@ -2241,6 +2259,8 @@ async def list_model_versions(
         raise_typed(
             PlatformError.models("not_found", f"Model not found: {model_id}"),
         )
+    except PermissionDeniedError as e:
+        raise_typed(PlatformError.models("forbidden", str(e)), cause=e)
 
 
 @router.post(
@@ -2277,6 +2297,8 @@ async def activate_model_version(
                 f"Version {version_str} not found for model {model_id}",
             ),
         )
+    except PermissionDeniedError as e:
+        raise_typed(PlatformError.models("forbidden", str(e)), cause=e)
 
 
 @router.patch(
@@ -2318,6 +2340,8 @@ async def update_model_version_activation(
             ),
             cause=exc,
         )
+    except PermissionDeniedError as e:
+        raise_typed(PlatformError.models("forbidden", str(e)), cause=e)
 
 
 @router.post(
@@ -2354,3 +2378,5 @@ async def deactivate_model_version(
                 f"Version {version_str} not found for model {model_id}",
             ),
         )
+    except PermissionDeniedError as e:
+        raise_typed(PlatformError.models("forbidden", str(e)), cause=e)
