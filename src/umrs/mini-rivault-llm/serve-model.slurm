@@ -505,6 +505,9 @@ _litellm_database_url_default=""
 if [[ "${_litellm_db_profile_active}" -eq 1 ]]; then
     _litellm_database_url_default="postgresql://${_litellm_postgres_user}:${_litellm_postgres_password}@ll-postgres:5432/${_litellm_postgres_db}"
 fi
+# The URL the env file below hands LiteLLM; the DB override passes it on
+# only when it is non-empty (see DbOverride).
+_litellm_database_url="${LITELLM_DATABASE_URL:-${_litellm_database_url_default}}"
 _litellm_db_sql_migrations_default="false"
 if [[ "${_litellm_db_profile_active}" -eq 1 ]]; then
     _litellm_db_sql_migrations_default="true"
@@ -711,7 +714,7 @@ MCPO_API_KEY=${MCPO_API_KEY:-$(openssl rand -hex 32)}
 LITELLM_POSTGRES_USER=${_litellm_postgres_user}
 LITELLM_POSTGRES_PASSWORD=${_litellm_postgres_password}
 LITELLM_POSTGRES_DB=${_litellm_postgres_db}
-LITELLM_DATABASE_URL=${LITELLM_DATABASE_URL:-${_litellm_database_url_default}}
+LITELLM_DATABASE_URL=${_litellm_database_url}
 LITELLM_DISABLE_SCHEMA_UPDATE=${LITELLM_DISABLE_SCHEMA_UPDATE:-${_litellm_disable_schema_update_default}}
 LITELLM_DB_SQL_MIGRATIONS=${_litellm_db_sql_migrations}
 
@@ -794,6 +797,16 @@ elif /bin/nvidia-smi --list-gpus 2>/dev/null | /bin/grep -qi '^GPU 0:' ; then
 elif /bin/rocm-smi -i 2>/dev/null | /bin/grep -qi '^GPU\[0\]' ; then
     GPUoverride+=("--file" "./x_rocm-override.yaml")
     echo "[rivault] ROCm GPU detected via rocm-smi"
+fi
+
+# LiteLLM's DATABASE_URL comes from an override file, and only when a URL is
+# set. An EMPTY DATABASE_URL makes the LiteLLM proxy exit at start
+# ("unsupported scheme '<missing scheme>'"), leaving nginx answering 502 while
+# vLLM serves (bdrt jobs 8218/8219, 2026-10-21). Without one it runs on the
+# static config (litellm_fs/config.yaml: store_model_in_db False).
+DbOverride=()
+if [[ -n "${_litellm_database_url}" ]]; then
+    DbOverride+=("--file" "./litellm-db-override.yaml")
 fi
 
 # Ensure podman-compose that can PARSE --profile (needed below).
@@ -1309,7 +1322,7 @@ cleanup_stack() {
                down >/dev/null 2>&1 || true
     podman-compose --project-name "${RIVAULT_COMPOSE_PROJECT}" --in-pod false \
                --env-file "./env.${uuid}" \
-               --file "./serve-model.yaml" ${GPUoverride[@]} \
+               --file "./serve-model.yaml" ${GPUoverride[@]} ${DbOverride[@]} \
                down >/dev/null 2>&1 || true
     podman network rm -f "${RIVAULT_NETWORK_NAME}" >/dev/null 2>&1 || true
     # Clear /tmp/run-user-* runtime state left by podman
@@ -1352,7 +1365,7 @@ run_litellm_db_sql_migrations() {
     if ! _rivault_compose_up podman-compose --project-name "${RIVAULT_COMPOSE_PROJECT}" --in-pod false \
              --env-file "./env.${uuid}" \
              --file "./serve-model.yaml" \
-             ${GPUoverride[@]} \
+             ${GPUoverride[@]} ${DbOverride[@]} \
              ${_profile_flags} \
              up --remove-orphans --detach ll-postgres; then
         echo "[rivault] ERROR: failed to start ll-postgres for LiteLLM DB migrations"
@@ -2224,7 +2237,7 @@ fi
 
 if ! _rivault_compose_up podman-compose --project-name "${RIVAULT_COMPOSE_PROJECT}" --in-pod false \
          --env-file "./env.${uuid}" \
-         --file "./serve-model.yaml" ${GPUoverride[@]} \
+         --file "./serve-model.yaml" ${GPUoverride[@]} ${DbOverride[@]} \
          ${_profile_flags} \
          up \
 	       --remove-orphans --detach; then
@@ -2401,7 +2414,7 @@ _engine_recreate() {
     else
         podman-compose --project-name "${RIVAULT_COMPOSE_PROJECT}" --in-pod false \
             --env-file "./env.${uuid}" \
-            --file "./serve-model.yaml" ${GPUoverride[@]} \
+            --file "./serve-model.yaml" ${GPUoverride[@]} ${DbOverride[@]} \
             ${_profile_flags} \
             up --detach --no-deps vllm
     fi

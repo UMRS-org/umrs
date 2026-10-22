@@ -334,3 +334,42 @@ def test_wrapper_writes_first_ready_marker_into_info():
     text = SERVE_MODEL_SLURM.read_text()
     assert "RIVAULT_FIRST_READY_AT" in text
     assert text.count("RIVAULT_FIRST_READY_AT") < 4  # written once (never a two-shot pattern)
+
+
+# ── 2026-10-22 LiteLLM exits on an EMPTY DATABASE_URL (bdrt 8218/8219) ──────
+
+LITELLM_DB_OVERRIDE = MINI_RIVAULT / "litellm-db-override.yaml"
+
+
+def _db_override_snippet() -> str:
+    text = SERVE_MODEL_SLURM.read_text()
+    start = text.index("DbOverride=()")
+    return text[start : text.index("\nfi\n", start) + 4]
+
+
+def _db_override_files(url: str) -> list[str]:
+    script = f'_litellm_database_url="{url}"\n{_db_override_snippet()}printf "%s\\n" "${{DbOverride[@]}}"'
+    out = subprocess.run(["bash", "-c", script], capture_output=True, text=True, check=True)
+    return out.stdout.split()
+
+
+def test_the_base_compose_passes_litellm_no_database_url():
+    env = yaml.safe_load(SERVE_MODEL.read_text())["services"]["litellm"]["environment"]
+    assert "DATABASE_URL" not in env
+
+
+def test_the_db_override_passes_the_resolved_url_and_never_an_empty_one():
+    env = yaml.safe_load(LITELLM_DB_OVERRIDE.read_text())["services"]["litellm"]["environment"]
+    assert env == {"DATABASE_URL": "${LITELLM_DATABASE_URL:?}"}
+
+
+def test_the_wrapper_adds_the_db_override_only_when_a_url_is_set():
+    assert _db_override_files("") == []
+    url = "postgresql://postgres:litellm@ll-postgres:5432/litellm"
+    assert _db_override_files(url) == ["--file", "./litellm-db-override.yaml"]
+
+
+def test_every_compose_call_carries_the_db_override():
+    text = SERVE_MODEL_SLURM.read_text()
+    assert text.count("${GPUoverride[@]}") == text.count("${GPUoverride[@]} ${DbOverride[@]}") >= 4
+    assert "LITELLM_DATABASE_URL=${_litellm_database_url}" in text
