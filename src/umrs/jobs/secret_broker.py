@@ -69,6 +69,8 @@ class SecretLease:
     egress_ip: str = ""
     project: str = ""
     max_lifetime_at: datetime | None = None  # hard cap across renewals
+    # The issuing site (0124): sites share umrs_db, accounts are per site.
+    venue: str = ""
 
     # Audit
     secret_hash: str = ""  # SHA-256 of issued secret value
@@ -102,6 +104,7 @@ class SecretLease:
             "egress_ip": self.egress_ip,
             "project": self.project,
             "max_lifetime_at": _iso(self.max_lifetime_at),
+            "venue": self.venue,
             "secret_hash": self.secret_hash,
             "access_count": self.access_count,
             "last_accessed_at": _iso(self.last_accessed_at),
@@ -151,12 +154,22 @@ class SecretBroker:
     Plaintext secrets are returned only at issue time.
     """
 
-    def __init__(self, db_pool: Any | None = None) -> None:
+    def __init__(self, db_pool: Any | None = None, *, venue: str | None = None) -> None:
         self._leases: dict[str, SecretLease] = {}
         self._secret_index: dict[str, str] = {}  # secret_hash → lease_id
         self._audit: list[AuditEntry] = []
         self._counter = 0
         self._pool = db_pool  # psycopg2-style pool; None = in-memory mode
+        self._venue = venue  # None = this process's site name, read on first use
+
+    @property
+    def venue(self) -> str:
+        """The site this broker issues for and revokes on (0124)."""
+        if self._venue is None:
+            from .store import configured_site_name
+
+            self._venue = configured_site_name()
+        return self._venue
 
     # ── Issue ──────────────────────────────────────────────────────────
 
@@ -233,6 +246,7 @@ class SecretBroker:
             egress_ip=egress_ip,
             project=project,
             max_lifetime_at=lifetime_cap,
+            venue=self.venue,
             secret_hash=secret_hash,
         )
 
@@ -317,6 +331,95 @@ class SecretBroker:
         if count:
             logger.info("Revoked %d leases referencing source %s", count, source_id)
         return count
+
+    def revoke_by_owner(
+        self,
+        owner_id: str,
+        *,
+        project: str | None = None,
+        actor: str = "",
+        reason: str = "",
+    ) -> list[SecretLease]:
+        """Revoke every live lease ``owner_id`` holds on this site (RS-0 S-2).
+
+        ``project`` narrows it to that project's leases (remove-from-project).
+        Leases of other sites are left alone: accounts are per site (0113) and
+        the sites share one database. A lease issued before 0124 has no site
+        and counts as this one's. Returns the leases revoked; the inference
+        proxy and the rail read leases live, so they refuse them at once.
+        """
+        if not owner_id:
+            return []
+        detail = f"owner cascade: {owner_id}" + (
+            f" project={project}" if project else ""
+        )
+        if reason:
+            detail += f" ({reason})"
+        revoked: list[SecretLease] = []
+        for lease_id in self._owned_live_lease_ids(owner_id, project):
+            lease = self.get_lease(lease_id)
+            if lease is None or not lease.is_valid:
+                continue
+            self._revoke_row(lease, actor, detail)
+            revoked.append(lease)
+        if revoked:
+            logger.info("Revoked %d leases owned by %s", len(revoked), owner_id)
+        return revoked
+
+    def active_owner_projects(self) -> set[tuple[str, str]]:
+        """``(owner_id, project)`` of every live lease on this site (the
+        standing sweep's work list)."""
+        if self._pool is None:
+            return {
+                (lease.owner_id, lease.project)
+                for lease in self._leases.values()
+                if lease.owner_id and lease.is_valid and self._is_ours(lease.venue)
+            }
+        rows = self._pool_fetch(
+            "SELECT DISTINCT owner_id, project FROM secret_leases"
+            " WHERE NOT is_revoked AND expires_at > now() AND owner_id <> ''"
+            " AND venue IN (%s, '')",
+            (self.venue,),
+        )
+        return {(str(r["owner_id"]), str(r["project"])) for r in rows}
+
+    def _is_ours(self, venue: str) -> bool:
+        return venue in (self.venue, "")
+
+    def _owned_live_lease_ids(self, owner_id: str, project: str | None) -> list[str]:
+        if self._pool is None:
+            return [
+                lease.lease_id
+                for lease in self._leases.values()
+                if self._owned_live(lease, owner_id, project)
+            ]
+        sql = (
+            "SELECT lease_id FROM secret_leases WHERE owner_id = %s"
+            " AND NOT is_revoked AND expires_at > now() AND venue IN (%s, '')"
+        )
+        params: tuple[Any, ...] = (owner_id, self.venue)
+        if project is not None:
+            sql += " AND project = %s"
+            params += (project,)
+        return [str(r["lease_id"]) for r in self._pool_fetch(sql, params)]
+
+    def _owned_live(
+        self, lease: SecretLease, owner_id: str, project: str | None
+    ) -> bool:
+        if lease.owner_id != owner_id or not lease.is_valid:
+            return False
+        return self._is_ours(lease.venue) and project in (None, lease.project)
+
+    def _pool_fetch(self, sql: str, params: tuple[Any, ...]) -> list[Any]:
+        conn = self._pool_conn()
+        try:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(sql, params)
+                rows = cur.fetchall()
+            conn.commit()
+        finally:
+            self._pool_putconn(conn)
+        return list(rows)
 
     def _revoke_row(self, lease: SecretLease, actor: str, detail: str) -> None:
         lease.is_revoked = True
@@ -491,12 +594,12 @@ class SecretBroker:
                 lease_id, token_hash, job_id, secret_name, scope, owner_id,
                 bound_to_step, tier, session_id, source_ids, default_source_id,
                 egress_ip, project, issued_at, expires_at, max_lifetime_at,
-                is_revoked, revoked_at, access_count, last_accessed_at
+                is_revoked, revoked_at, access_count, last_accessed_at, venue
             ) VALUES (
                 %s, %s, %s, %s, %s, %s,
                 %s, %s, %s, %s::uuid[], %s::uuid,
                 %s::inet, %s, %s, %s, %s,
-                %s, %s, %s, %s
+                %s, %s, %s, %s, %s
             ) ON CONFLICT (lease_id) DO NOTHING
         """
         conn = self._pool_conn()
@@ -525,6 +628,7 @@ class SecretBroker:
                         lease.revoked_at,
                         lease.access_count,
                         lease.last_accessed_at,
+                        lease.venue,
                     ),
                 )
             conn.commit()
