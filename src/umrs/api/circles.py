@@ -237,6 +237,21 @@ def _circle_row(row: Any) -> dict[str, Any]:
     }
 
 
+def find_active_circle(conn: Any, ref: str) -> str | None:
+    """The active circle ``ref`` (``project/circle``) names: itself when it
+    exists, else the one it matches ignoring letter case, else None."""
+    project_id, _, circle_id = ref.partition("/")
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT project_id, circle_id FROM circles WHERE status = 'active'"
+        " AND lower(project_id) = lower(%s) AND lower(circle_id) = lower(%s)"
+        " ORDER BY (project_id = %s AND circle_id = %s) DESC LIMIT 1",
+        (project_id, circle_id, project_id, circle_id),
+    )
+    row = cur.fetchone()
+    return f"{row[0]}/{row[1]}" if row else None
+
+
 def circles_for_user(conn: Any, user_id: str) -> list[str]:
     """Active circle refs (the access-guard resolution, ADR-080).
 

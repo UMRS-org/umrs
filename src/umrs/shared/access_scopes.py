@@ -59,6 +59,9 @@ class ResourceCaller:
     project_id: str = ""
     is_admin: bool = False
     circles_resolver: Callable[[], Iterable[str]] | None = None
+    #: ``project/circle`` → the active circle it names (exact id), or the
+    #: one it differs from only in letter case, or None; None = no lookup.
+    circle_finder: Callable[[str], str | None] | None = None
     _circles: frozenset[str] | None = field(default=None, init=False, repr=False)
 
     def circles(self) -> frozenset[str]:
@@ -123,6 +126,19 @@ def access_admits(raw: Any, caller: ResourceCaller) -> bool:
     return scopes_admit(stored_access_scopes(raw), caller)
 
 
+def _require_known_circle(scope: Scope, caller: ResourceCaller) -> None:
+    """A ``circle:`` entry must name an active circle exactly: matching stays
+    exact, so ``circle:BDR/opossum`` never admitted the members of
+    ``bdr/opossum`` (2026-10-22) and must not be stored as if it did."""
+    if scope.kind != "circle" or caller.circle_finder is None:
+        return
+    found = caller.circle_finder(scope.id)
+    if found == scope.id:
+        return
+    hint = f" — did you mean circle:{found}?" if found else ""
+    raise AccessListError(f"no active circle {scope.id}{hint}")
+
+
 def validate_access(raw: Any, caller: ResourceCaller) -> list[str]:
     """Normalize a requested access list; AccessListError when not grantable.
 
@@ -142,6 +158,7 @@ def validate_access(raw: Any, caller: ResourceCaller) -> list[str]:
         scope = parse_access_entry(entry)
         if scope.kind == "system" and not caller.is_admin:
             raise AccessListError(f"not allowed to share with {scope}")
+        _require_known_circle(scope, caller)
         if str(scope) not in normalized:
             normalized.append(str(scope))
     return normalized

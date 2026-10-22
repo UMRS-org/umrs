@@ -146,3 +146,52 @@ def test_multi_membership_comes_from_one_authority():
     ]
     assert "c.status = 'active'" in cur.sql  # retired circles never resolve
     assert cur.params == ("alice",)
+
+
+# ── a circle entry must name an existing circle (2026-10-22) ─────────────
+# `circle:BDR/opossum` was stored for two workflows while the circle is
+# `bdr/opossum`; matching is exact, so the share admitted no one, silently.
+
+
+def _finder(*active: str):
+    asked: list[str] = []
+
+    def find(ref: str) -> str | None:
+        asked.append(ref)
+        return next((a for a in active if a == ref), None) or next(
+            (a for a in active if a.lower() == ref.lower()), None
+        )
+
+    return find, asked
+
+
+def _caller_with(finder) -> ResourceCaller:
+    return ResourceCaller("alice", "proj-a", circle_finder=finder)
+
+
+def test_an_existing_circle_is_accepted():
+    find, _ = _finder("bdr/opossum")
+    assert validate_access(["circle:bdr/opossum"], _caller_with(find)) == ["circle:bdr/opossum"]
+
+
+def test_a_case_only_mismatch_is_refused_with_the_circle_it_meant():
+    find, _ = _finder("bdr/opossum")
+    with pytest.raises(AccessListError, match=r"no active circle BDR/opossum .*circle:bdr/opossum"):
+        validate_access(["circle:BDR/opossum"], _caller_with(find))
+
+
+def test_an_unknown_circle_is_refused():
+    find, _ = _finder("bdr/opossum")
+    with pytest.raises(AccessListError, match="no active circle lab/none$"):
+        validate_access(["circle:lab/none"], _caller_with(find))
+
+
+def test_only_circle_entries_are_looked_up():
+    find, asked = _finder("bdr/opossum")
+    validate_access(["user:bob", "project:p", "circle:bdr/opossum"], _caller_with(find))
+    assert asked == ["bdr/opossum"]
+
+
+def test_without_a_finder_the_entry_is_kept_as_before():
+    assert validate_access(["circle:BDR/opossum"], _caller()) == ["circle:BDR/opossum"]
+

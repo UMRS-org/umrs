@@ -42,6 +42,31 @@ def circles_resolver_for(raw_request: Any, user_id: str) -> Callable[[], list[st
     return resolve
 
 
+def circle_finder_for(raw_request: Any) -> Callable[[str], str | None]:
+    """``find_active_circle`` on the request's pool. Unreadable (no pool, a
+    database error) answers the ref itself: the share is stored unchecked,
+    as before the check existed — a validation, not the access boundary."""
+
+    def find(ref: str) -> str | None:
+        app = getattr(raw_request, "app", None)
+        pool = getattr(getattr(app, "state", None), "umrs_db_pool", None)
+        if pool is None:
+            return ref
+        from .circles import find_active_circle
+
+        conn = pool.getconn()
+        try:
+            return find_active_circle(conn, ref)
+        except Exception:  # noqa: BLE001 - any database error keeps the old behaviour
+            logger.warning("circle lookup failed for %s; share stored unchecked", ref)
+            conn.rollback()
+            return ref
+        finally:
+            pool.putconn(conn)
+
+    return find
+
+
 def resource_caller(
     raw_request: Any, *, user_id: str | None, project_id: str, is_admin: bool
 ) -> ResourceCaller:
@@ -51,6 +76,7 @@ def resource_caller(
         project_id=project_id or "",
         is_admin=is_admin,
         circles_resolver=circles_resolver_for(raw_request, user_id or ""),
+        circle_finder=circle_finder_for(raw_request),
     )
 
 

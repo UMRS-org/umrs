@@ -67,6 +67,7 @@ class _Conn:
     def __init__(self):
         self.rows: dict[str, dict] = {}
         self.circle_refs: list[str] = []
+        self.active_circles: list[tuple[str, str]] = []
         self.record: list[str] = []
 
     def cursor(self):
@@ -82,6 +83,7 @@ class _Conn:
         (lambda sql: sql.startswith("INSERT"), "_insert"),
         (lambda sql: sql.startswith("UPDATE"), "_update_access"),
         (lambda sql: "FROM circle_members" in sql, "_circle_rows"),
+        (lambda sql: "FROM circles WHERE status = 'active'" in sql, "_active_circle"),
         (lambda sql: "WHERE catalog_id = %s" in sql, "_one_row"),
         (lambda sql: "access != '[]'::jsonb" in sql, "_shared_rows"),
         (lambda sql: "ORDER BY created_at, catalog_id" in sql, "_name_versions"),
@@ -101,6 +103,11 @@ class _Conn:
 
     def _circle_rows(self, _params, cur: _Cursor) -> None:
         cur._result = [(g,) for g in self.circle_refs]
+
+    def _active_circle(self, params, cur: _Cursor) -> None:
+        # find_active_circle: an existing circle, matched ignoring case.
+        wanted = (params[0].lower(), params[1].lower())
+        cur._result = [c for c in self.active_circles if (c[0].lower(), c[1].lower()) == wanted][:1]
 
     def _one_row(self, params, cur: _Cursor) -> None:
         row = self.rows.get(params[0])
@@ -282,6 +289,7 @@ class TestCrossProjectReads:
 class TestSetCatalogAccess:
     def test_project_member_sets_users_and_circles(self):
         conn = _Conn()
+        conn.active_circles = [("proj-a", "lab")]
         _row(conn, "scat-x", "proj-a")
         client = _client(conn)
         r = client.put(
@@ -292,6 +300,21 @@ class TestSetCatalogAccess:
         assert r.status_code == 200, r.text
         assert r.json()["access"] == ["user:bob", "circle:proj-a/lab"]
         assert conn.rows["scat-x"]["access"] == ["user:bob", "circle:proj-a/lab"]
+
+    def test_a_circle_typo_is_refused_with_the_circle_it_meant(self):
+        # 2026-10-22: `circle:BDR/opossum` was stored while the circle is
+        # `bdr/opossum`, and admitted no one.
+        conn = _Conn()
+        conn.active_circles = [("proj-a", "lab")]
+        _row(conn, "scat-x", "proj-a")
+        r = _client(conn).put(
+            "/umrs/scientific-catalogs/scat-x/access",
+            json={"access": ["circle:PROJ-A/lab"]},
+            headers=_headers("alice"),
+        )
+        assert r.status_code == 403
+        assert "did you mean circle:proj-a/lab" in r.text
+        assert conn.rows["scat-x"]["access"] == []
 
     def test_foreign_project_cannot_set(self):
         conn = _Conn()
