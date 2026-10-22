@@ -20,12 +20,18 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .session_audit import audit_venue
+
 logger = logging.getLogger(__name__)
 
 SESSION_DIR_ROOT = Path("/var/lib/umrs/sessions")
 SECRET_NAME_PREFIX = "sess-"
 
 PodmanRunner = Callable[..., subprocess.CompletedProcess]
+
+
+def _iso_or_none(value: Any) -> str | None:
+    return value.isoformat() if hasattr(value, "isoformat") else None
 
 
 def default_podman_runner(
@@ -440,6 +446,15 @@ class FrontendPodmanProvisioner:
         )
         result.lease_id = lease.lease_id
         result.steps.append("lease")
+        audit_venue(
+            "lease.issue",
+            actor="provisioner",
+            session_id=cfg.session_id,
+            owner=cfg.owner,
+            project=cfg.project,
+            lease_id=lease.lease_id,
+            expires_at=_iso_or_none(getattr(lease, "expires_at", None)),
+        )
         return lease, token
 
     def _step_secret(
@@ -621,7 +636,15 @@ class FrontendPodmanProvisioner:
                 self._podman(*action)
             except Exception:  # noqa: BLE001 — teardown must never raise-chain
                 logger.warning("teardown step failed: %s", action)
-        self._broker.revoke_by_session(sid, actor="sweeper")
+        revoked = self._broker.revoke_by_session(sid, actor="sweeper")
+        if revoked:
+            audit_venue(
+                "lease.revoke",
+                actor="sweeper",
+                session_id=sid,
+                revoked=int(revoked),
+                via="teardown",
+            )
         session_dir = self._root / sid
         if session_dir.exists():
             shutil.rmtree(session_dir, ignore_errors=True)

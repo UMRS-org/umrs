@@ -1964,6 +1964,9 @@ def _active_list_response(
 async def list_endpoints(
     project_id: str | None = Depends(get_project_id_optional),
     status_filter: str | None = Query(None, description="Comma-separated statuses"),
+    all_projects: bool = Query(
+        False, description="Admin only: every project, not the caller's own"
+    ),
     is_admin: bool = Depends(_caller_is_admin),
     registry: EndpointRegistry = Depends(get_registry),
 ) -> EndpointsListResponse:
@@ -1977,6 +1980,10 @@ async def list_endpoints(
     # Cross-project dump is admin-only: anonymous or non-admin callers
     # would otherwise enumerate every tenant's endpoints incl. host/port/
     # litellm_url (audited: all-tenant registry dump with no admin gate).
+    # An admin JWT always names a project, so an admin asks for the
+    # cross-project view explicitly (RS-0: `umrs-server admin endpoint list`).
+    if is_admin and all_projects:
+        project_id = None
     if project_id is None and not is_admin:
         raise_typed(
             PlatformError.endpoints(
@@ -2098,15 +2105,16 @@ async def update_endpoint_status(
 async def refresh_endpoint(
     job_id: str,
     project_id: str = Depends(get_project_id),
+    is_admin: bool = Depends(_caller_is_admin),
     registry: EndpointRegistry = Depends(get_registry),
 ) -> EndpointResponse:
-    """Refresh a stuck endpoint."""
+    """Refresh a stuck endpoint (an admin: any project's)."""
     endpoint = registry.get_by_job_id(job_id)
     if not endpoint:
         raise_typed(
             PlatformError.endpoints("not_found", f"Endpoint not found: {job_id}"),
         )
-    _forbid_if_project_mismatch(endpoint, project_id)
+    _forbid_if_project_mismatch(endpoint, None if is_admin else project_id)
 
     from ..orchestrator.service import get_orchestration_service
 
@@ -2422,16 +2430,17 @@ def _overall_health(*, total: int, unhealthy: int) -> tuple[str, str | None]:
 async def get_endpoint(
     job_id: str,
     project_id: str | None = Depends(get_project_id_optional),
+    is_admin: bool = Depends(_caller_is_admin),
     registry: EndpointRegistry = Depends(get_registry),
 ) -> EndpointResponse:
-    """Get endpoint details by job_id."""
+    """Get endpoint details by job_id (an admin: any project's)."""
 
     endpoint = registry.get_by_job_id(job_id)
     if not endpoint:
         raise_typed(
             PlatformError.endpoints("not_found", f"Endpoint not found: {job_id}"),
         )
-    _forbid_if_project_mismatch(endpoint, project_id)
+    _forbid_if_project_mismatch(endpoint, None if is_admin else project_id)
 
     endpoint = await _refresh_endpoint_readiness(registry, endpoint)
 

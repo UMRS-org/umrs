@@ -40,6 +40,7 @@ from .frontend_config import (
     SubnetPoolExhausted,
     allocate_subnet,
 )
+from .session_audit import audit_session_stop, audit_venue
 from .venue_sessions import VenueSessionRow, VenueSessionStore, project_session_state
 
 logger = logging.getLogger(__name__)
@@ -325,6 +326,17 @@ class FrontendVenueService:
             job_id=job_id,
         )
         self._enqueue(job_id, session_id)
+        audit_venue(
+            "session.start",
+            actor=owner,
+            session_id=session_id,
+            owner=owner,
+            project=project,
+            job_id=job_id,
+            web_policy=policy,
+            sources=list(names),
+            plan_run_id=plan_run[0] if plan_run else "",
+        )
         row = self.store.get(session_id)
         assert row is not None
         return self._describe(row)
@@ -516,8 +528,16 @@ class FrontendVenueService:
         return failed or row
 
     def stop(
-        self, *, owner: str, session_id: str, actor: str = "user"
+        self,
+        *,
+        owner: str,
+        session_id: str,
+        actor: str = "user",
+        cause: str = "owner",
+        actor_id: str = "",
     ) -> dict[str, Any]:
+        """Tear down + revoke + settle the job. ``cause`` and ``actor_id``
+        (who stopped it; the owner by default) go to the audit row only."""
         row = self.store.get(session_id)
         if row is None or row.user_id != owner:
             raise VenueError("not_found", "no venue runtime for this session")
@@ -529,6 +549,14 @@ class FrontendVenueService:
             logger.warning("venue teardown raised for %s: %s", session_id, exc)
         stopped = self.store.mark_stopped(session_id, reason=f"stopped by {actor}")
         self._project_registry(owner, session_id, state="stopped")
+        audit_session_stop(
+            cause=cause,
+            actor=actor_id or owner,
+            session_id=session_id,
+            owner=owner,
+            detail=f"stopped by {actor}",
+            job_id=row.job_id,
+        )
         self._cancel_job(row.job_id, actor)
         assert stopped is not None
         return self._describe(stopped)
@@ -546,6 +574,7 @@ class FrontendVenueService:
         if paused is None:
             raise VenueError("conflict", f"cannot pause from state {row.state!r}")
         self._project_registry(owner, session_id, state="paused")
+        audit_venue("session.pause", actor=owner, session_id=session_id, owner=owner)
         return self._describe(paused)
 
     def resume(self, *, owner: str, session_id: str) -> dict[str, Any]:
@@ -557,7 +586,61 @@ class FrontendVenueService:
         if resumed is None:
             raise VenueError("conflict", f"cannot resume from state {row.state!r}")
         self._project_registry(owner, session_id, state="ongoing")
+        audit_venue("session.resume", actor=owner, session_id=session_id, owner=owner)
         return self._describe(resumed)
+
+    # ── admin (C-1, remote-session plan RS-0) ─────────────────────────
+
+    def admin_list(
+        self, *, user_id: str = "", state: str = "", project: str = "", limit: int = 100
+    ) -> list[dict[str, Any]]:
+        """Every user's session rows (newest first) with owner and project.
+
+        A list view: no per-row job or lease lookups (``admin_status`` has
+        those)."""
+        rows = self.store.list_for_admin(
+            user_id=user_id, state=state, project=project, limit=limit
+        )
+        return [_admin_row(row, row_project) for row, row_project in rows]
+
+    def admin_status(self, session_id: str) -> dict[str, Any] | None:
+        """One session of any owner: the owner view plus owner and project."""
+        row = self.store.get(session_id)
+        if row is None:
+            return None
+        out = self._describe(self._settle_dead_job(row))
+        out["user_id"] = row.user_id
+        out["project"] = self._job_project(row.job_id)
+        return admin_view(out)
+
+    def admin_stop(
+        self, *, session_id: str, admin: str, note: str = ""
+    ) -> dict[str, Any]:
+        """Stop any user's session (the owner stop path, actor = the admin)."""
+        row = self.store.get(session_id)
+        if row is None:
+            raise VenueError("not_found", "no venue runtime for this session")
+        label = f"admin {admin}" + (f": {note[:200]}" if note else "")
+        out = self.stop(
+            owner=row.user_id,
+            session_id=session_id,
+            actor=label,
+            cause="admin",
+            actor_id=admin,
+        )
+        out["user_id"] = row.user_id
+        out["project"] = self._job_project(row.job_id)
+        return admin_view(out)
+
+    def _job_project(self, job_id: str) -> str:
+        if not job_id or self.job_store is None:
+            return ""
+        try:
+            job = self.job_store.get_job(job_id)
+        except Exception:  # an unreadable job names no project
+            logger.warning("session job lookup failed for %s", job_id, exc_info=True)
+            return ""
+        return str(getattr(job, "project_id", "") or "")
 
     def _cancel_job(self, job_id: str, actor: str) -> None:
         """Settle the durable record after a direct stop (terminal → no-op)."""
@@ -614,6 +697,28 @@ class FrontendVenueService:
 
 
 IDEMPOTENCY_KEY_MAX = 64  # jobs.idempotency_key VARCHAR(64)
+
+# The session host every sandbox runs on today: the API's own podman host.
+# RS-2 (umrs-sessiond) replaces it with the host registry's id.
+SESSION_HOST = "local"
+
+# Worker-reported runtime fields an admin view leaves out: the live
+# assistant text and tool lines are the user's conversation, not control data.
+_ADMIN_HIDDEN_RUNTIME = ("partial", "tool_activity")
+
+
+def admin_view(out: dict[str, Any]) -> dict[str, Any]:
+    """An owner-shaped session dict made fit for an admin (host + no content)."""
+    runtime = {
+        k: v
+        for k, v in (out.get("runtime") or {}).items()
+        if k not in _ADMIN_HIDDEN_RUNTIME
+    }
+    return {**out, "runtime": runtime, "host": SESSION_HOST}
+
+
+def _admin_row(row: VenueSessionRow, project: str) -> dict[str, Any]:
+    return admin_view({**row.to_dict(), "user_id": row.user_id, "project": project})
 
 
 def _idempotency_key(session_id: str) -> str:
