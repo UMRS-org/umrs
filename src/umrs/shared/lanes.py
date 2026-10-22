@@ -131,6 +131,9 @@ FAMILY_LANES: dict[str, SurfaceLane] = {
     # internal — operator plane: egress audit sink written by the gateway,
     # read by `r4 agent audit` (A-1204/A-1209); never a user API.
     "egress": SurfaceLane.INTERNAL,
+    # internal — operator plane (RS-0, 2026-10-22): admin session control,
+    # admin JWT or gateway-signed admin only; no gateway location serves it.
+    "admin": SurfaceLane.INTERNAL,
 }
 
 

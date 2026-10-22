@@ -248,6 +248,14 @@ ALLOWLIST: dict[str, str] = {
     "POST /umrs/assets/patch": (
         "IDENTITY-ONLY: a non-admin's body project_id is replaced by the verified project (same rule as GET /umrs/assets)"
     ),
+    "GET /umrs/admin/sessions": (
+        "ADMIN-ONLY: require_session_admin needs an admin JWT or an HMAC-verified admin identity; project"
+        " only filters every user's sessions (RS-0 C-1, 2026-10-22)"
+    ),
+    "GET /umrs/endpoints": (
+        "ADMIN-ONLY: all_projects drops the project scope only when _caller_is_admin (admin JWT or"
+        " HMAC-verified admin); a non-admin stays on get_project_id_optional's project (RS-0, 2026-10-22)"
+    ),
     "GET /umrs/companion/sessions": (
         "IDENTITY-ONLY: project only filters the caller's own snapshots (WHERE user_id = the HMAC-verified _uid)"
     ),

@@ -168,6 +168,22 @@ class VenueSessionStore:
         )
         return [_row_from_tuple(r) for r in rows]
 
+    def list_for_admin(
+        self, *, user_id: str = "", state: str = "", project: str = "", limit: int = 100
+    ) -> list[tuple[VenueSessionRow, str]]:
+        """Every user's rows, newest first, with each row's project (the
+        ``frontend_session`` job's ``project_id``; "" when unlinked). Empty
+        filters match all (C-1 admin list, remote-session plan RS-0).
+
+        In memory (tests, dev) no job table exists: the project is "" and a
+        project filter matches nothing."""
+        if self._pool is None:
+            return _memory_admin_rows(
+                self._rows.values(), user_id, state, project, limit
+            )
+        rows = self._fetchall(*_admin_list_sql(user_id, state, project, limit))
+        return [(_row_from_tuple(r[:-1]), str(r[-1] or "")) for r in rows]
+
     def taken_subnets(self) -> set[str]:
         return {r.subnet for r in self.list_active() if r.subnet}
 
@@ -400,6 +416,37 @@ def project_session_state(pool: Any, owner: str, session_id: str, state: str) ->
         return False
     finally:
         pool.putconn(conn)
+
+
+def _memory_admin_rows(
+    rows: Any, user_id: str, state: str, project: str, limit: int
+) -> list[tuple[VenueSessionRow, str]]:
+    if project:
+        return []
+    picked = [
+        r
+        for r in rows
+        if (not user_id or r.user_id == user_id) and (not state or r.state == state)
+    ]
+    picked.sort(key=lambda r: r.started_at or _now(), reverse=True)
+    return [(r, "") for r in picked[: max(0, limit)]]
+
+
+def _admin_list_sql(
+    user_id: str, state: str, project: str, limit: int
+) -> tuple[str, tuple]:
+    """Rows joined to their session job for the project (one query)."""
+    cols = ", ".join(f"s.{c}" for c in _COLUMNS)
+    sql = (
+        f"SELECT {cols}, COALESCE(j.project_id, '') "
+        "FROM companion_venue_sessions s "
+        "LEFT JOIN jobs j ON j.job_id = s.job_id "
+        "WHERE (%s = '' OR s.user_id = %s) "
+        "AND (%s = '' OR s.state = %s) "
+        "AND (%s = '' OR j.project_id = %s) "
+        "ORDER BY s.started_at DESC NULLS LAST LIMIT %s"
+    )
+    return sql, (user_id, user_id, state, state, project, project, max(0, limit))
 
 
 def _transition_memory(
