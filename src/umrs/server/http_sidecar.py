@@ -801,7 +801,9 @@ def _run_boot_reconcile() -> None:
         loop = asyncio.new_event_loop()
         try:
             result = loop.run_until_complete(
-                service.reconcile_stale_endpoints(timeout_sec=_boot_reconcile_timeout_sec())
+                service.reconcile_stale_endpoints(
+                    timeout_sec=_boot_reconcile_timeout_sec()
+                )
             )
             logger.info(
                 "Boot-time reconciler: checked=%d ready=%d failed=%d errors=%d",
@@ -813,7 +815,9 @@ def _run_boot_reconcile() -> None:
         finally:
             loop.close()
     except Exception:
-        logger.exception("Boot-time reconciler failed (non-fatal — sidecar still starts)")
+        logger.exception(
+            "Boot-time reconciler failed (non-fatal — sidecar still starts)"
+        )
 
 
 async def _resume_interrupted_provisions() -> None:
