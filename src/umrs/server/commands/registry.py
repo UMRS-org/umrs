@@ -7,7 +7,10 @@ unaware of any individual command's logic.
 Authorization is centralized here: every payload is expected to carry
 ``client_id`` as its first element (string or first tuple item).  The
 registry checks authorization before delegating to the handler, so
-handlers never need to repeat that check.
+handlers never need to repeat that check. Since 2026-10-22 that includes
+the project check (ADR-097 D-7, ``project_check``): a payload's project
+must be one of the caller's live memberships unless the caller is an admin,
+and a client-supplied ``_identity_verified`` never reaches a handler.
 """
 
 from __future__ import annotations
@@ -18,6 +21,7 @@ import logging
 from typing import Any
 
 from .base import CommandHandler, HandlerContext
+from .project_check import project_refusal, strip_identity_claim
 
 logger = logging.getLogger(__name__)
 
@@ -87,7 +91,10 @@ class CommandRegistry:
 
         1. Look up the handler — reply UNKNOWN_COMMAND and return if not found.
         2. Extract client_id from payload and check authorization.
-        3. Call handler.execute(payload, ctx); the handler creates its own task_id(s).
+        3. Drop a client-supplied ``_identity_verified`` and check every
+           project the payload names against the caller's live memberships
+           (ADR-097 D-7).
+        4. Call handler.execute(payload, ctx); the handler creates its own task_id(s).
         """
         handler = self._handlers.get(cmd)
         zmq_sender_id = _extract_zmq_sender_id(payload)
@@ -108,6 +115,9 @@ class CommandRegistry:
         if cmd not in self._internal_cmds:
             client_id = _extract_client_id(payload)
             if not self._authorize(cmd, client_id, zmq_sender_id, ctx):
+                return
+            payload = strip_identity_claim(payload)
+            if not self._authorize_project(cmd, client_id, payload, zmq_sender_id, ctx):
                 return
 
         try:
@@ -177,4 +187,26 @@ class CommandRegistry:
         if zmq_sender_id is not None:
             with contextlib.suppress(RuntimeError):
                 ctx.control_mq.send_string(f"UNAUTHORIZED:{cmd}", zmq_sender_id)
+        return False
+
+    def _authorize_project(
+        self,
+        cmd: str,
+        client_id: str,
+        payload: Any,
+        zmq_sender_id: Any | None,
+        ctx: HandlerContext,
+    ) -> bool:
+        """ADR-097 D-7: True when every project *payload* names is one the
+        caller may act in; else a typed JSON error reply (the gateway's
+        codes: ``project_not_member``, ``project_membership_revoked``,
+        ``membership_unavailable``)."""
+        refusal = project_refusal(
+            cmd, client_id, payload, ctx.control_mq, zmq_sender_id
+        )
+        if refusal is None:
+            return True
+        code, message = refusal
+        logger.warning("ZMQ %s refused: user=%s %s (%s)", cmd, client_id, code, message)
+        self._reply_error(ctx, zmq_sender_id, code=code, message=message)
         return False

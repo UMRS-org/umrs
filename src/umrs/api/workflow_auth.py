@@ -165,6 +165,13 @@ def caller_from_identity(identity: CallerIdentity) -> tuple[str, str | None, boo
 def zmq_caller_from_payload(
     client_id: str, payload: dict[str, Any] | None
 ) -> ZmqWorkflowCaller:
+    """The caller of a ZMQ workflow-status command.
+
+    ``_identity_verified`` reaches this payload only from the server's own
+    verified path: the command registry drops it from every wire payload and
+    ``handle_workflow_command`` drops it unless ``trusted_identity`` is set
+    (ADR-097 D-7, 2026-10-22; before that a ZMQ client could set it).
+    """
     payload = payload if isinstance(payload, dict) else {}
     project_id = payload.get("project_id")
     if not isinstance(project_id, str) or not project_id.strip():
