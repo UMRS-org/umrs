@@ -159,6 +159,29 @@ def validate_username(username: str) -> None:
         )
 
 
+# One users row per (venue, username) (0110/0113): the boot sync, the
+# dual-write and the admin CLI's mirror all upsert with this statement.
+_UPSERT_SQL = """INSERT INTO users (venue, username, fullname, email, role, disabled,
+       slurm_account, slurm_accounts, projects, quota, oidc_subject,
+       curve_public_key, curve_key_revoked_at, extras,
+       created_at, last_updated)
+   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+   ON CONFLICT (venue, username) DO UPDATE SET
+       fullname = EXCLUDED.fullname,
+       email = EXCLUDED.email,
+       role = EXCLUDED.role,
+       disabled = EXCLUDED.disabled,
+       slurm_account = EXCLUDED.slurm_account,
+       slurm_accounts = EXCLUDED.slurm_accounts,
+       projects = EXCLUDED.projects,
+       quota = EXCLUDED.quota,
+       oidc_subject = EXCLUDED.oidc_subject,
+       curve_public_key = EXCLUDED.curve_public_key,
+       curve_key_revoked_at = EXCLUDED.curve_key_revoked_at,
+       extras = EXCLUDED.extras,
+       last_updated = EXCLUDED.last_updated"""
+
+
 def _now_iso() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
@@ -214,25 +237,7 @@ class UserStore:
             try:
                 cur = conn.cursor()
                 cur.execute(
-                    """INSERT INTO users (venue, username, fullname, email, role, disabled,
-                           slurm_account, slurm_accounts, projects, quota, oidc_subject,
-                           curve_public_key, curve_key_revoked_at, extras,
-                           created_at, last_updated)
-                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                       ON CONFLICT (venue, username) DO UPDATE SET
-                           fullname = EXCLUDED.fullname,
-                           email = EXCLUDED.email,
-                           role = EXCLUDED.role,
-                           disabled = EXCLUDED.disabled,
-                           slurm_account = EXCLUDED.slurm_account,
-                           slurm_accounts = EXCLUDED.slurm_accounts,
-                           projects = EXCLUDED.projects,
-                           quota = EXCLUDED.quota,
-                           oidc_subject = EXCLUDED.oidc_subject,
-                           curve_public_key = EXCLUDED.curve_public_key,
-                           curve_key_revoked_at = EXCLUDED.curve_key_revoked_at,
-                           extras = EXCLUDED.extras,
-                           last_updated = EXCLUDED.last_updated""",
+                    _UPSERT_SQL,
                     _pg_row(record),
                 )
                 conn.commit()
@@ -261,6 +266,14 @@ class UserStore:
         if not path.is_file():
             raise UserStoreError(f"User {username!r} not found at {path}")
         return UserRecord.from_json(self._read(path))
+
+    def json_disabled(self, username: str) -> bool:
+        """The JSON lane's disabled flag alone (False when unreadable): the
+        account cascade's sweep honours a disable written to either lane."""
+        try:
+            return bool(self._read(self._path(username)).get("disabled"))
+        except (OSError, ValueError, UserStoreError):
+            return False
 
     def list(self) -> builtins.list[UserRecord]:
         if not self._dir.is_dir():
@@ -485,25 +498,7 @@ def configure_user_store_pg(
             cur = conn.cursor()
             for record in store.list():
                 cur.execute(
-                    """INSERT INTO users (venue, username, fullname, email, role, disabled,
-                           slurm_account, slurm_accounts, projects, quota, oidc_subject,
-                           curve_public_key, curve_key_revoked_at, extras,
-                           created_at, last_updated)
-                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                       ON CONFLICT (venue, username) DO UPDATE SET
-                           fullname = EXCLUDED.fullname,
-                           email = EXCLUDED.email,
-                           role = EXCLUDED.role,
-                           disabled = EXCLUDED.disabled,
-                           slurm_account = EXCLUDED.slurm_account,
-                           slurm_accounts = EXCLUDED.slurm_accounts,
-                           projects = EXCLUDED.projects,
-                           quota = EXCLUDED.quota,
-                           oidc_subject = EXCLUDED.oidc_subject,
-                           curve_public_key = EXCLUDED.curve_public_key,
-                           curve_key_revoked_at = EXCLUDED.curve_key_revoked_at,
-                           extras = EXCLUDED.extras,
-                           last_updated = EXCLUDED.last_updated""",
+                    _UPSERT_SQL,
                     _pg_row(record),
                 )
                 synced += 1
@@ -515,6 +510,24 @@ def configure_user_store_pg(
         logger.warning("user store PG sync skipped (JSON stays authoritative): %s", exc)
         _PG_POOL = None
     return synced
+
+
+def mirror_record_to_pg(pool: Any, record: UserRecord, *, venue: str) -> None:
+    """Upsert one record into this site's ``users`` row, nothing read back.
+
+    The admin CLI's lane (RS-0 S-2, 2026-10-22): the CLI never wired the PG
+    lane, so its writes reached the JSON file only and the server, which
+    reads the row first, kept serving the old disabled flag and project list
+    until its next boot sync. The CLI keeps its JSON-first reads (a row that
+    lags an earlier CLI write must not overwrite the file) and mirrors the
+    record it just wrote."""
+    conn = pool.getconn()
+    try:
+        cur = conn.cursor()
+        cur.execute(_UPSERT_SQL, (venue, *_pg_row(record)[1:]))
+        conn.commit()
+    finally:
+        pool.putconn(conn)
 
 
 def reset_user_store_pg() -> None:

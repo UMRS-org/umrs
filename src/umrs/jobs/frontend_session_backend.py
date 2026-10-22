@@ -138,6 +138,7 @@ class FrontendSessionBackend(OrchestratorBackend):
 
         sid = spec["session_id"]
         owner = spec["owner"]
+        self._refuse_lost_standing(sid, owner, spec["project"])
         row = self.store.get(sid)
         if row is not None and row.job_id == job_id and row.state == "provisioning":
             subnet = row.subnet  # the start route already reserved it
@@ -187,6 +188,20 @@ class FrontendSessionBackend(OrchestratorBackend):
         project_session_state(self.pool, owner, sid, "ongoing")
         logger.info("frontend_session running: job=%s session=%s", job_id, sid)
         return f"{REF_PREFIX}session_id={sid}|lease_id={result.lease_id}"
+
+    def _refuse_lost_standing(self, sid: str, owner: str, project: str) -> None:
+        """RS-0 S-2: a session queued before its owner was disabled (or, under
+        ADR-097 ``enforce``, removed from the project) never comes up."""
+        from umrs.admin.account_cascade import refusal_for
+        from umrs.venues.venue_sessions import project_session_state
+
+        refusal = refusal_for(owner, project, pool=self.pool)
+        if not refusal:
+            return
+        if self.store.get(sid) is not None:
+            self.store.mark_failed(sid, refusal)
+            project_session_state(self.pool, owner, sid, "error")
+        raise RuntimeError(f"frontend_session refused: {refusal}")
 
     # ── ending a session (idempotent) ─────────────────────────────────
 
