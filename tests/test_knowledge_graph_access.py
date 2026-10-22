@@ -131,8 +131,8 @@ class TestSetGraphAccess:
     def test_owner_replaces_the_list(self):
         rows = _graph_row()
         updated = _graph_row(access=["user:bob", "circle:proj-a/lab"])
-        # resolve, set_access update, re-read
-        client, pool = _client([rows, None, updated])
+        # resolve, the circle exists (find_active_circle), set_access update, re-read
+        client, pool = _client([rows, ("proj-a", "lab"), None, updated])
         resp = client.put(
             "/umrs/knowledge/graphs/g-abc/access",
             json={"access": ["user:bob", "circle:proj-a/lab"]},

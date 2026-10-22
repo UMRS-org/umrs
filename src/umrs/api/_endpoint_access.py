@@ -16,7 +16,7 @@ from ..orchestrator.endpoint_access import (
     EndpointCaller,
     validate_access,
 )
-from ._access import circles_resolver_for
+from ._access import circle_finder_for, circles_resolver_for
 from .typed_errors import PlatformError, raise_typed
 
 logger = logging.getLogger(__name__)
@@ -30,6 +30,7 @@ def caller_for(
         project_id=project_id or "",
         is_admin=is_admin,
         circles_resolver=circles_resolver_for(raw_request, user_id or ""),
+        circle_finder=circle_finder_for(raw_request),
     )
 
 
