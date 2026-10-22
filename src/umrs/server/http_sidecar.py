@@ -19,11 +19,15 @@ import os
 import pathlib
 import threading
 import time
+from typing import TYPE_CHECKING
 
 from fastapi import Request
 from fastapi.staticfiles import StaticFiles
 
 from ..api.web_dashboard import router as web_dashboard_router
+
+if TYPE_CHECKING:
+    from umrs.admin.account_cascade import AccountStandingSweep
 
 logger = logging.getLogger(__name__)
 
@@ -625,7 +629,9 @@ async def _wire_a2l_recorder(application) -> None:
             # asyncpg is loop-affine, so the recorder bounces store calls
             # home (2026-10-20, ops-watch cross-loop errors).
             configure_recorder(
-                StoreA2lRecorder(init_a2l_store(pool), owner_loop=asyncio.get_running_loop())
+                StoreA2lRecorder(
+                    init_a2l_store(pool), owner_loop=asyncio.get_running_loop()
+                )
             )
             logger.info("a2l conservation recorder wired (ADR-034)")
         else:
@@ -684,6 +690,43 @@ def _upgrade_loop_store() -> None:
             )
     except Exception:
         logger.warning("loop store upgrade failed", exc_info=True)
+
+
+def _start_account_sweep() -> AccountStandingSweep | None:
+    """RS-0 S-2: the account standing sweep. Disabled accounts and, under
+    ``UMRS_PROJECT_MEMBERSHIP=enforce``, ex-members lose their leases, open
+    jobs and CURVE sessions within ``UMRS_ACCOUNT_SWEEP_SEC`` (30 s, at most
+    60); their remote sessions end on the next status check through the
+    revoked lease. Needs the site database; ``UMRS_ACCOUNT_SWEEP_ENABLED=false``
+    turns it off."""
+    flag = os.environ.get("UMRS_ACCOUNT_SWEEP_ENABLED", "true").strip().lower()
+    if flag in ("false", "0", "no"):
+        logger.warning("account standing sweep disabled (UMRS_ACCOUNT_SWEEP_ENABLED)")
+        return None
+    from umrs.api._asyncpg_pool import _resolve_knowledge_dsn
+
+    dsn, _ = _resolve_knowledge_dsn()
+    if not dsn:
+        logger.info("account standing sweep: no DSN, not started")
+        return None
+    try:
+        import psycopg2 as _psycopg2
+
+        from umrs.admin.account_cascade import AccountStandingSweep
+        from umrs.jobs.store import JobStore
+        from umrs.shared.pg_settings import pg_connect_kwargs
+
+        pool = _SingleConnPool(
+            lambda: _psycopg2.connect(dsn, **pg_connect_kwargs("account-sweep"))
+        )
+        sweep = AccountStandingSweep(
+            pool=pool, job_store_factory=lambda: JobStore(pool)
+        )
+        sweep.start()
+        return sweep
+    except Exception:
+        logger.warning("account standing sweep not started", exc_info=True)
+        return None
 
 
 class _SingleConnPool:
@@ -839,9 +882,12 @@ def _create_app():
             logger.info("Scheduler service started via lifespan hook")
         _start_durable_runtime()
         _rehydrate_loop_drivers()
+        account_sweep = _start_account_sweep()
         try:
             yield
         finally:
+            if account_sweep is not None:
+                account_sweep.stop()
             stop_scheduler()
             stop_endpoint_relay()
             stop_janitor()
@@ -1048,7 +1094,7 @@ def start_http_sidecar(
 
         try:
             app = _create_app()
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — the daemon runs on without its sidecar
             logger.warning("HTTP sidecar disabled — app creation failed: %s", exc)
             return
         logger.info("Starting HTTP sidecar on %s:%d", resolved_host, port)

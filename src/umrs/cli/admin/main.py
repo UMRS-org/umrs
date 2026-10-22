@@ -50,6 +50,22 @@ _MUTATING_ACTIONS: frozenset = frozenset(
 )
 
 
+def _mirror_user_write(args: argparse.Namespace, store: UserStore) -> None:
+    """Mutating user ops reach the ``users`` row the server reads first
+    (RS-0 S-2, 2026-10-22: they reached the JSON file only, so a disable,
+    re-enable or membership change waited for the server's next boot)."""
+    if getattr(args, "group", None) != "user":
+        return
+    if getattr(args, "action", None) not in _MUTATING_ACTIONS:
+        return
+    username = getattr(args, "username", "") or ""
+    if not username or not store.exists(username):
+        return
+    from umrs.cli.admin.cascade import cli_db_pool, mirror_to_pg
+
+    mirror_to_pg(cli_db_pool(), store, username)
+
+
 def _maybe_signal_reload(args: argparse.Namespace) -> None:
     """Best-effort SIGHUP to the daemon after mutating admin ops.
 
@@ -632,7 +648,9 @@ def _generate_jwt_command(args: argparse.Namespace, rec: UserRecord) -> tuple[st
         args, unset=f"the mint command below shows the example {_GATEWAY_URL_EXAMPLE}"
     )
     if getattr(args, "gateway_url", None):
-        return shlex.join([*parts, "--gateway-url", url or ""]), "embeds the gateway URL"
+        return shlex.join(
+            [*parts, "--gateway-url", url or ""]
+        ), "embeds the gateway URL"
     if url:
         return shlex.join(parts), f"embeds ${PUBLIC_GATEWAY_URL_ENV}={url}"
     return (
@@ -793,72 +811,14 @@ def _cmd_user_delete(args: argparse.Namespace, store: UserStore) -> int:
     except UserStoreError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
-
+    if _refuse_last_admin(store, args.username):
+        return 1
     if args.deprovision:
-        if not args.purge:
-            print("error: --deprovision requires --purge", file=sys.stderr)
-            return 1
-        if not _confirm(
-            f"Deprovision and hard-delete user {rec.username!r}? "
-            f"This removes all S3 buckets, Postgres databases, and the user JSON file.",
-            args.yes,
-        ):
-            print("aborted", file=sys.stderr)
-            return 1
-
-        # UserRecord preserves unknown top-level config in extras, so the
-        # deprovisioner can consume the same payload shape without reloading
-        # the JSON file through a store-private path helper.
-        user_cfg = rec.to_json()
-
-        # Resolve admin S3 config from the server config file.
-        import os
-
-        from umrs.shared.config import (
-            get_default_json_server_file,
-            get_resolved_umrs_cfg_dir,
-        )
-
-        server_json = os.path.join(
-            get_resolved_umrs_cfg_dir(), get_default_json_server_file()
-        )
-        admin_s3_cfg = None
-        if os.path.isfile(server_json):
-            with open(server_json, encoding="utf-8") as f:
-                srv = json.load(f)
-            admin_s3_cfg = srv.get("admin_s3_configuration_file")
-
-        if not admin_s3_cfg:
-            print(
-                "warning: admin_s3_configuration_file not found in server config; "
-                "S3/MinIO cleanup will be skipped.",
-                file=sys.stderr,
-            )
-
-        from umrs.server.provisioning import deprovision_user
-
-        deprovision_user(user_cfg, admin_s3_cfg or "")
-
-        path = store.delete(args.username)
-        _remove_client_template(store, args.username)
-        _maybe_unregister_from_server_config(args, store, args.username)
-        print(f"deprovisioned and deleted {path}")
-        return 0
-
+        return _delete_deprovision(args, store, rec)
     if args.purge:
-        if not _confirm(
-            f"Hard-delete user {rec.username!r} (JSON file will be removed)?",
-            args.yes,
-        ):
-            print("aborted", file=sys.stderr)
-            return 1
-        path = store.delete(args.username)
-        _remove_client_template(store, args.username)
-        _maybe_unregister_from_server_config(args, store, args.username)
-        print(f"deleted {path}")
-        return 0
+        return _delete_purge(args, store, rec)
     # Soft delete: mark disabled. Preserve job/audit history (Decision 1).
-    store.set_disabled(args.username, True)
+    _disable_and_cascade(store, args.username)
     print(f"soft-deleted (disabled) user {rec.username}")
     print("Use `--purge` to remove the JSON file and revoke filesystem presence.")
     print(
@@ -867,14 +827,116 @@ def _cmd_user_delete(args: argparse.Namespace, store: UserStore) -> int:
     return 0
 
 
+def _admin_s3_config_file() -> str | None:
+    """``admin_s3_configuration_file`` from the server config, when named."""
+    import os
+
+    from umrs.shared.config import (
+        get_default_json_server_file,
+        get_resolved_umrs_cfg_dir,
+    )
+
+    server_json = os.path.join(
+        get_resolved_umrs_cfg_dir(), get_default_json_server_file()
+    )
+    if not os.path.isfile(server_json):
+        return None
+    with open(server_json, encoding="utf-8") as f:
+        return json.load(f).get("admin_s3_configuration_file")
+
+
+def _delete_deprovision(
+    args: argparse.Namespace, store: UserStore, rec: UserRecord
+) -> int:
+    if not args.purge:
+        print("error: --deprovision requires --purge", file=sys.stderr)
+        return 1
+    if not _confirm(
+        f"Deprovision and hard-delete user {rec.username!r}? "
+        f"This removes all S3 buckets, Postgres databases, and the user JSON file.",
+        args.yes,
+    ):
+        print("aborted", file=sys.stderr)
+        return 1
+
+    # UserRecord preserves unknown top-level config in extras, so the
+    # deprovisioner can consume the same payload shape without reloading
+    # the JSON file through a store-private path helper.
+    user_cfg = rec.to_json()
+
+    # Resolve admin S3 config from the server config file.
+    admin_s3_cfg = _admin_s3_config_file()
+    if not admin_s3_cfg:
+        print(
+            "warning: admin_s3_configuration_file not found in server config; "
+            "S3/MinIO cleanup will be skipped.",
+            file=sys.stderr,
+        )
+
+    from umrs.server.provisioning import deprovision_user
+
+    # RS-0 S-2: end what the account holds while its record still exists.
+    _disable_and_cascade(store, args.username)
+    deprovision_user(user_cfg, admin_s3_cfg or "")
+
+    path = store.delete(args.username)
+    _remove_client_template(store, args.username)
+    _maybe_unregister_from_server_config(args, store, args.username)
+    print(f"deprovisioned and deleted {path}")
+    return 0
+
+
+def _delete_purge(args: argparse.Namespace, store: UserStore, rec: UserRecord) -> int:
+    if not _confirm(
+        f"Hard-delete user {rec.username!r} (JSON file will be removed)?",
+        args.yes,
+    ):
+        print("aborted", file=sys.stderr)
+        return 1
+    # RS-0 S-2: once the file is gone the sweep has no record to act on.
+    _disable_and_cascade(store, args.username)
+    path = store.delete(args.username)
+    _remove_client_template(store, args.username)
+    _maybe_unregister_from_server_config(args, store, args.username)
+    print(f"deleted {path}")
+    return 0
+
+
+def _refuse_last_admin(store: UserStore, username: str) -> bool:
+    """RS-0 S-2: never disable or delete the site's only enabled admin."""
+    from umrs.cli.admin.cascade import is_last_enabled_admin
+
+    if not is_last_enabled_admin(store, username):
+        return False
+    print(
+        f"error: {username} is the only enabled admin; add or enable another "
+        "admin first (umrs-server admin user set-role <name> admin)",
+        file=sys.stderr,
+    )
+    return True
+
+
+def _disable_and_cascade(store: UserStore, username: str) -> int:
+    """Disable, mirror the row, end what the account holds (RS-0 S-2)."""
+    from umrs.cli.admin.cascade import cascade_account, cli_db_pool, mirror_to_pg
+
+    store.set_disabled(username, True)
+    pool = cli_db_pool()
+    mirror_to_pg(pool, store, username)
+    return cascade_account(pool, username)
+
+
 def _cmd_user_disable(args: argparse.Namespace, store: UserStore) -> int:
     try:
-        store.set_disabled(args.username, True)
+        store.get(args.username)
     except UserStoreError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
+    if _refuse_last_admin(store, args.username):
+        return 1
+    rc = _disable_and_cascade(store, args.username)
     print(f"disabled {args.username}")
-    return 0
+    return rc
 
 
 def _cmd_user_enable(args: argparse.Namespace, store: UserStore) -> int:
@@ -940,13 +1002,15 @@ def _cmd_user_add_project(args: argparse.Namespace, store: UserStore) -> int:
 
 
 def _cmd_user_remove_project(args: argparse.Namespace, store: UserStore) -> int:
+    from umrs.cli.admin.cascade import cascade_project_removal, cli_db_pool
+
     try:
         rec = store.remove_project(args.username, args.project_id)
     except UserStoreError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     print(f"projects for {args.username}: {rec.projects}")
-    return 0
+    return cascade_project_removal(cli_db_pool(), store, args.username, args.project_id)
 
 
 def _cmd_user_generate_template(args: argparse.Namespace, _store: UserStore) -> int:
@@ -1167,7 +1231,9 @@ _ZMQ_LOGIN_LEAD = "umrs direct ZMQ — requires CURVE keys if CURVE auth is enab
 # pattern): scheme, host, optional port and path from a shell-inert character
 # set. No userinfo, query, fragment, whitespace or shell metacharacter can
 # reach the token claim or a printed command.
-_GATEWAY_URL_RE = re.compile(r"^https?://[A-Za-z0-9.-]+(:[0-9]+)?(/[A-Za-z0-9._~/-]*)?$")
+_GATEWAY_URL_RE = re.compile(
+    r"^https?://[A-Za-z0-9.-]+(:[0-9]+)?(/[A-Za-z0-9._~/-]*)?$"
+)
 
 
 def _normalize_gateway_url(value: str) -> str | None:
@@ -2737,6 +2803,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     except UserStoreError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
+    _mirror_user_write(args, store)
     if rc == 0:
         _maybe_signal_reload(args)
     return rc

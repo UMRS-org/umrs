@@ -61,7 +61,11 @@ def env(monkeypatch, tmp_path):
     conn = pool.getconn()
     try:
         with conn, conn.cursor() as cur:
-            for mig in ("0085_secret_leases.sql", "0086_user_sources_sealed.sql"):
+            for mig in (
+                "0085_secret_leases.sql",
+                "0086_user_sources_sealed.sql",
+                "0124_secret_leases_venue.sql",
+            ):
                 cur.execute((_MIGRATIONS / mig).read_text())
     finally:
         pool.putconn(conn)

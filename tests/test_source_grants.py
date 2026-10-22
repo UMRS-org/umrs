@@ -56,6 +56,7 @@ def env(monkeypatch):
                 "0085_secret_leases.sql",
                 "0086_user_sources_sealed.sql",
                 "0087_source_grants.sql",
+                "0124_secret_leases_venue.sql",
             ):
                 cur.execute((_MIGRATIONS / mig).read_text())
     finally:
