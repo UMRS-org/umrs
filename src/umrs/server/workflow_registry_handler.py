@@ -866,6 +866,23 @@ def _handle_run_workflow(
     )
 
 
+def _drop_untrusted_identity_claim(payload_str: str, trusted_identity: bool) -> str:
+    """*payload_str* without ``_identity_verified`` unless the caller is the
+    server's own verified path (ADR-097 D-7, 2026-10-22). The status family
+    (``zmq_caller_from_payload``) read the flag from any payload, so a ZMQ
+    client could assert gateway-verified provenance for its project claim."""
+    if trusted_identity or "_identity_verified" not in (payload_str or ""):
+        return payload_str
+    try:
+        payload = json.loads(payload_str)
+    except json.JSONDecodeError:
+        return payload_str
+    if not isinstance(payload, dict):
+        return payload_str
+    payload.pop("_identity_verified", None)
+    return json.dumps(payload)
+
+
 def handle_workflow_command(
     cmd: str,
     client_id: str,
@@ -889,6 +906,7 @@ def handle_workflow_command(
     """
     from umrs.server.correlation import correlation_scope
 
+    payload_str = _drop_untrusted_identity_claim(payload_str, trusted_identity)
     try:
         _payload = json.loads(payload_str) if payload_str else {}
     except json.JSONDecodeError:
