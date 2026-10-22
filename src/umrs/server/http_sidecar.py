@@ -765,6 +765,7 @@ def _create_app():
 
     from umrs.api.a2l import router as a2l_router
     from umrs.api.a2l_ledger import router as a2l_ledger_router
+    from umrs.api.admin_sessions import router as admin_sessions_router
     from umrs.api.artifact_routes import router as artifact_router
     from umrs.api.assets import router as assets_router
     from umrs.api.buckets import router as buckets_router
@@ -912,6 +913,8 @@ def _create_app():
     app.include_router(companion_chat_approvals_router)
     # Wave 2026-09-21 (ADR-046 A2): frontend-venue runtime + worker rail.
     app.include_router(companion_venue_router)
+    # RS-0 C-1: admin session list/show/stop over the same venue service.
+    app.include_router(admin_sessions_router)
     app.include_router(egress_audit_router)
     app.include_router(grants_router)
     app.include_router(endpoints_router)

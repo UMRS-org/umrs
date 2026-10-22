@@ -34,6 +34,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from umrs.jobs.models import Job, JobAttempt, JobType
+from umrs.venues.session_audit import audit_session_stop, audit_venue
 
 from .monitor import AttemptCheckResult, BackendStatusChecker
 from .reindex import _parse_ref
@@ -171,6 +172,14 @@ class FrontendSessionBackend(OrchestratorBackend):
             reason = result.reason or "provision failed"
             self.store.mark_failed(sid, reason)
             project_session_state(self.pool, owner, sid, "error")
+            audit_session_stop(
+                cause="provision_failed",
+                actor="provisioner",
+                session_id=sid,
+                owner=owner,
+                detail=reason,
+                job_id=job_id,
+            )
             raise RuntimeError(f"frontend_session provision failed: {reason}")
         self.store.mark_running(
             sid, lease_id=result.lease_id, egress_ip=result.egress_ip
@@ -181,7 +190,11 @@ class FrontendSessionBackend(OrchestratorBackend):
 
     # ── ending a session (idempotent) ─────────────────────────────────
 
-    def end_session(self, row: Any, *, reason: str, failed: bool = False) -> None:
+    def end_session(
+        self, row: Any, *, reason: str, cause: str, failed: bool = False
+    ) -> None:
+        """Teardown + registry + snapshot, and the one ``venue.session.stop``
+        audit row (``cause``: idle | lease_end | exit | done | cancel)."""
         from umrs.venues.venue_sessions import project_session_state
 
         try:
@@ -196,12 +209,20 @@ class FrontendSessionBackend(OrchestratorBackend):
         else:
             self.store.mark_stopped(row.session_id, reason=reason)
             project_session_state(self.pool, row.user_id, row.session_id, "stopped")
+        audit_session_stop(
+            cause=cause,
+            actor="monitor",
+            session_id=row.session_id,
+            owner=row.user_id,
+            detail=reason,
+            job_id=getattr(row, "job_id", ""),
+        )
 
     def on_cancel(self, job_id: str) -> None:
         """Cancel-bus listener: a durable cancel tears the sandbox down."""
         row = self.store.get_by_job_id(job_id)
         if row is not None and row.is_active:
-            self.end_session(row, reason="cancelled")
+            self.end_session(row, reason="cancelled", cause="cancel")
 
 
 class FrontendSessionStatusChecker(BackendStatusChecker):
@@ -241,12 +262,22 @@ class FrontendSessionStatusChecker(BackendStatusChecker):
         backend = self._backend
         lease = backend.broker.get_lease(row.lease_id) if row.lease_id else None
         if lease is None or not lease.is_valid:
-            backend.end_session(row, reason="lease expired or revoked")
+            backend.end_session(
+                row, reason="lease expired or revoked", cause="lease_end"
+            )
             return AttemptCheckResult.succeeded(metrics={"end": "lease_ended"})
         if self._idle(lease):
             backend.broker.revoke_lease(lease.lease_id, actor="monitor")
+            audit_venue(
+                "lease.revoke",
+                actor="monitor",
+                session_id=row.session_id,
+                owner=row.user_id,
+                lease_id=lease.lease_id,
+                via="idle",
+            )
             backend.end_session(
-                row, reason=f"idle beyond {backend.config.idle_seconds}s"
+                row, reason=f"idle beyond {backend.config.idle_seconds}s", cause="idle"
             )
             return AttemptCheckResult.succeeded(metrics={"end": "idle"})
         phase = str(row.runtime.get("phase") or "")
@@ -260,12 +291,12 @@ class FrontendSessionStatusChecker(BackendStatusChecker):
         """A plan-run worker finished its run (slice 8): its session ends.
         The run's own outcome is on the run's record, not here."""
         detail = str(row.runtime.get("detail") or "plan run finished")
-        self._backend.end_session(row, reason=detail)
+        self._backend.end_session(row, reason=detail, cause="done")
         return AttemptCheckResult.succeeded(metrics={"end": "plan_run_done"})
 
     def _worker_exited(self, row: Any) -> AttemptCheckResult:
         detail = str(row.runtime.get("detail") or "worker exited")
-        self._backend.end_session(row, reason=detail, failed=True)
+        self._backend.end_session(row, reason=detail, cause="exit", failed=True)
         return AttemptCheckResult.failed(f"worker exited: {detail}")
 
 
