@@ -113,7 +113,8 @@ services:
       # 8 workers fork 8 full Python imports (~60-90 s); 1 worker cuts that to ~20-30 s.
       # Set LITELLM_CPU_LIMIT to a higher value only if you need parallelism.
       NUM_WORKERS: ${LITELLM_CPU_LIMIT:-1}
-      DATABASE_URL: ${LITELLM_DATABASE_URL:-} # Set via LITELLM_DATABASE_URL env var; enable 'litellm-db' profile for the ll-postgres container.
+      # DATABASE_URL is set by litellm-db-override.yaml, added only when a URL
+      # is set: LiteLLM exits on an EMPTY one (2026-10-22, bdrt 8218/8219).
       DISABLE_SCHEMA_UPDATE: "${LITELLM_DISABLE_SCHEMA_UPDATE:-false}"  # Set true only when running without litellm-db profile
       # R-FastStart: Disable LiteLLM telemetry — it tries to reach litellm.ai on
       # startup; with egress blocked the connection times out, adding 10-30 s.
