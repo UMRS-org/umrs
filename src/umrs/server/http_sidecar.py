@@ -768,6 +768,54 @@ def _boot_reconcile_enabled() -> bool:
     )
 
 
+#: Seconds the pre-bind boot pass probes each stuck endpoint. Short on
+#: purpose: a row whose job is alive but not ready is deferred, and
+#: _resume_interrupted_provisions finishes it on the server loop with the full
+#: budget. The old 300 s default ran serially before uvicorn bound the port,
+#: so bdrt's API was down 15 min after the 2026-10-22 restart while its four
+#: endpoints answered 502 (UMRS_RECONCILE_TIMEOUT_SEC still overrides).
+_BOOT_RECONCILE_PROBE_SEC = 10
+
+
+def _boot_reconcile_timeout_sec() -> int:
+    raw = os.environ.get("UMRS_RECONCILE_TIMEOUT_SEC", "")
+    return int(raw) if raw.strip() else _BOOT_RECONCILE_PROBE_SEC
+
+
+def _run_boot_reconcile() -> None:
+    """Boot-time reconciler: re-resolve endpoints stuck in PROVISIONING/
+    STARTING after a UMRS restart (Task 6 Gap B), before uvicorn binds.
+
+    Each row gets a short probe (:func:`_boot_reconcile_timeout_sec`): ready
+    rows are promoted, dead ones failed, live-but-loading ones deferred to
+    :func:`_resume_interrupted_provisions`. Non-fatal: the sidecar starts
+    either way. UMRS_BOOT_RECONCILE_ENABLED gates it ("true" by default).
+    """
+    if not _boot_reconcile_enabled():
+        logger.info("Boot-time reconciler disabled by UMRS_BOOT_RECONCILE_ENABLED")
+        return
+    try:
+        from ..orchestrator.service import get_orchestration_service
+
+        service = get_orchestration_service()
+        loop = asyncio.new_event_loop()
+        try:
+            result = loop.run_until_complete(
+                service.reconcile_stale_endpoints(timeout_sec=_boot_reconcile_timeout_sec())
+            )
+            logger.info(
+                "Boot-time reconciler: checked=%d ready=%d failed=%d errors=%d",
+                result["checked"],
+                result["promoted_to_ready"],
+                result["marked_failed"],
+                len(result["errors"]),
+            )
+        finally:
+            loop.close()
+    except Exception:
+        logger.exception("Boot-time reconciler failed (non-fatal — sidecar still starts)")
+
+
 async def _resume_interrupted_provisions() -> None:
     """Finish provisions a restart cut short (the boot reconciler defers rows
     whose backend job is still queued or loading; this runs them to READY or
@@ -1102,39 +1150,7 @@ def start_http_sidecar(
             return
         logger.info("Starting HTTP sidecar on %s:%d", resolved_host, port)
 
-        # Boot-time reconciler: re-resolve endpoints stuck in PROVISIONING/
-        # STARTING after a UMRS restart (Task 6 Gap B).  Runs synchronously
-        # before uvicorn binds, so no requests are served until reconciliation
-        # is complete.  UMRS_RECONCILE_TIMEOUT_SEC controls the per-endpoint
-        # timeout (default 300s).  UMRS_BOOT_RECONCILE_ENABLED gates the
-        # feature ("true" by default; set "false" to disable).
-        if not _boot_reconcile_enabled():
-            logger.info("Boot-time reconciler disabled by UMRS_BOOT_RECONCILE_ENABLED")
-        else:
-            try:
-                from ..orchestrator.service import get_orchestration_service
-
-                service = get_orchestration_service()
-                timeout_sec = int(os.environ.get("UMRS_RECONCILE_TIMEOUT_SEC", "300"))
-                loop = asyncio.new_event_loop()
-                try:
-                    result = loop.run_until_complete(
-                        service.reconcile_stale_endpoints(timeout_sec=timeout_sec)
-                    )
-                    logger.info(
-                        "Boot-time reconciler: checked=%d ready=%d failed=%d errors=%d",
-                        result["checked"],
-                        result["promoted_to_ready"],
-                        result["marked_failed"],
-                        len(result["errors"]),
-                    )
-                finally:
-                    loop.close()
-            except Exception:
-                logger.exception(
-                    "Boot-time reconciler failed (non-fatal — sidecar still starts)"
-                )
-
+        _run_boot_reconcile()
         uvicorn.run(app, host=resolved_host, port=port, log_level="warning")
 
     thread = threading.Thread(

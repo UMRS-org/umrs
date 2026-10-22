@@ -1,0 +1,9 @@
+# LiteLLM's database, passed only when serve-model.slurm resolved a URL
+# (the 'litellm-db' profile's ll-postgres, or LITELLM_DATABASE_URL). The base
+# serve-model.yaml sets no DATABASE_URL: LiteLLM exits at start on an EMPTY
+# one ("unsupported scheme '<missing scheme>'"), so a job without a database
+# must not pass the variable at all (bdrt jobs 8218/8219, 2026-10-21).
+services:
+  litellm:
+    environment:
+      DATABASE_URL: ${LITELLM_DATABASE_URL:?}
