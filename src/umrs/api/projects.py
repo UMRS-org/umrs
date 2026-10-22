@@ -480,7 +480,45 @@ def list_my_projects(
         "status": "ok",
         "projects": [_row_response(r) for r in rows],
         "count": len(rows),
+        "memberships": live_memberships(store, (identity.user_id or "").strip()),
     }
+
+
+def _record_projects(user: str) -> list[str]:
+    """The project list of the venue's user record (what ``umrs admin user
+    add-to-project`` edits); [] for an unknown or disabled user."""
+    from ..admin.user_store import UserStore, UserStoreError
+
+    try:
+        record = UserStore().get(user)
+    except UserStoreError:
+        return []
+    if record.disabled:
+        return []
+    return [p.strip() for p in record.projects if isinstance(p, str) and p.strip()]
+
+
+def live_memberships(store: ProjectStore, user: str) -> list[str] | None:
+    """ADR-097 D-1: the caller's live project ids — the user record's
+    projects plus the active projects they own, a retired row dropped.
+    None when either source is unreadable: the gateway then fails closed
+    instead of reading "no memberships"."""
+    if not user:
+        return []
+    try:
+        owned = [row["project_id"] for row in store.list(owner=user)]
+        listed = [pid for pid in _record_projects(user) if not _retired(store, pid)]
+    except Exception:  # unreadable is not "none"
+        logger.warning("live memberships unreadable for %s", user, exc_info=True)
+        return None
+    return sorted(set(owned) | set(listed))
+
+
+def _retired(store: ProjectStore, project_id: str) -> bool:
+    """A listed project whose row is retired grants nothing; an id with no
+    row (``default``, pre-registry projects) stays a membership."""
+    row = store._row(project_id)
+    return bool(row) and row["status"] == "retired"
 
 
 def _may_read_project(

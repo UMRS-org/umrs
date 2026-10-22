@@ -573,3 +573,64 @@ class TestAskPolicy:
             headers=_headers("mallory"),
         )
         assert bad.status_code == 403
+
+
+class TestLiveMemberships:
+    """ADR-097 D-2: GET /umrs/projects carries the caller's live project ids
+    — the venue user record plus owned projects — so an admin's
+    `add-to-project` takes effect without minting a new token."""
+
+    @pytest.fixture
+    def users(self, tmp_path, monkeypatch):
+        from umrs.admin.user_store import UserStore
+
+        monkeypatch.setenv("UMRS_USER_FILES_DIR", str(tmp_path))
+        return UserStore(tmp_path)
+
+    def test_record_projects_and_owned_projects(self, users) -> None:
+        users.create("ryoshimi2", projects=["default", "opossum"])
+        store = ProjectStore(_Conn())
+        store.create("lab-own", owner_id="ryoshimi2")
+        r = _client(store).get("/umrs/projects", headers=_headers("ryoshimi2"))
+        assert r.status_code == 200
+        assert r.json()["memberships"] == ["default", "lab-own", "opossum"]
+
+    def test_add_to_project_shows_on_the_next_request(self, users) -> None:
+        users.create("alice", projects=["default"])
+        client = _client(ProjectStore(_Conn()))
+        assert client.get("/umrs/projects", headers=_headers("alice")).json()["memberships"] == [
+            "default"
+        ]
+        users.add_project("alice", "opossum")
+        after = client.get("/umrs/projects", headers=_headers("alice")).json()
+        assert after["memberships"] == ["default", "opossum"]
+
+    def test_retired_project_and_disabled_user_grant_nothing(self, users) -> None:
+        users.create("bob", projects=["gone", "kept"])
+        store = ProjectStore(_Conn())
+        store.create("gone", owner_id="carol")
+        store.retire("gone")
+        assert _client(store).get("/umrs/projects", headers=_headers("bob")).json()[
+            "memberships"
+        ] == ["kept"]
+        users.set_disabled("bob", True)
+        assert _client(store).get("/umrs/projects", headers=_headers("bob")).json()[
+            "memberships"
+        ] == []
+
+    @pytest.mark.usefixtures("users")
+    def test_unknown_user_has_no_memberships(self) -> None:
+        r = _client(ProjectStore(_Conn())).get("/umrs/projects", headers=_headers("nobody"))
+        assert r.json()["memberships"] == []
+
+    @pytest.mark.usefixtures("users")
+    def test_unreadable_record_is_null_not_empty(self, monkeypatch) -> None:
+        from umrs.api import projects
+
+        def _boom(user: str) -> list[str]:
+            raise OSError("user files unreadable")
+
+        monkeypatch.setattr(projects, "_record_projects", _boom)
+        r = _client(ProjectStore(_Conn())).get("/umrs/projects", headers=_headers("alice"))
+        assert r.status_code == 200
+        assert r.json()["memberships"] is None
