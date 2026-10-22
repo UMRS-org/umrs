@@ -23,6 +23,14 @@ from umrs.admin.user_store import (
 )
 from umrs.shared.config import default_s3cfg_path
 
+from .http_admin import (
+    ADMIN_JWT_ENV,
+    add_http_admin_args,
+    add_session_parsers,
+    umrs_api,
+    umrs_base_url,
+)
+
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
@@ -2115,62 +2123,25 @@ def _add_zmq_parsers(zmq_sub: argparse._SubParsersAction) -> None:
 
 def _umrs_base_url(args: argparse.Namespace) -> str:
     """Resolve the UMRS HTTP base URL."""
-    import os
-
-    return getattr(args, "umrs_url", None) or os.environ.get(
-        "UMRS_BASE_URL", "http://localhost:8000"
-    )
+    return umrs_base_url(args)
 
 
-def _umrs_api_get(url: str) -> dict:
+# RS-0: every call carries the admin JWT (``http_admin.admin_jwt``); none
+# configured → exit 2 before any request (they sent no credential before).
+def _umrs_api_get(url: str, args: argparse.Namespace) -> dict:
     """GET from UMRS API. Returns parsed JSON."""
-    import urllib.error
-    import urllib.request
-
-    req = urllib.request.Request(url, method="GET")
-    req.add_header("Accept", "application/json")
-    try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            return json.loads(resp.read().decode())
-    except urllib.error.HTTPError as exc:
-        body = exc.read().decode() if exc.fp else ""
-        print(f"error: UMRS API returned {exc.code}: {body}", file=sys.stderr)
-        raise SystemExit(2) from exc
-    except urllib.error.URLError as exc:
-        print(
-            f"error: cannot reach UMRS at {url}: {exc.reason}\n"
-            "hint: is the UMRS server running? Set --umrs-url or $UMRS_BASE_URL.",
-            file=sys.stderr,
-        )
-        raise SystemExit(2) from exc
+    return umrs_api("GET", url, args) or {}
 
 
-def _umrs_api_delete(url: str) -> dict | None:
+def _umrs_api_delete(url: str, args: argparse.Namespace) -> dict | None:
     """DELETE from UMRS API. Returns parsed JSON or None."""
-    import urllib.error
-    import urllib.request
-
-    req = urllib.request.Request(url, method="DELETE")
-    req.add_header("Accept", "application/json")
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            return json.loads(resp.read().decode())
-    except urllib.error.HTTPError as exc:
-        body = exc.read().decode() if exc.fp else ""
-        print(f"error: UMRS API returned {exc.code}: {body}", file=sys.stderr)
-        raise SystemExit(2) from exc
-    except urllib.error.URLError as exc:
-        print(
-            f"error: cannot reach UMRS at {url}: {exc.reason}",
-            file=sys.stderr,
-        )
-        raise SystemExit(2) from exc
+    return umrs_api("DELETE", url, args)
 
 
 def _cmd_endpoint_list(args: argparse.Namespace, _store: UserStore) -> int:
     """List all endpoints across all projects (admin view)."""
     base = _umrs_base_url(args)
-    data = _umrs_api_get(f"{base}/umrs/endpoints")
+    data = _umrs_api_get(f"{base}/umrs/endpoints?all_projects=true", args)
 
     endpoints = data if isinstance(data, list) else data.get("endpoints", [])
 
@@ -2242,7 +2213,7 @@ def _cmd_endpoint_stop(args: argparse.Namespace, _store: UserStore) -> int:
             print("aborted", file=sys.stderr)
             return 1
 
-    result = _umrs_api_delete(f"{base}/umrs/endpoints/{job_id}?force=true")
+    result = _umrs_api_delete(f"{base}/umrs/endpoints/{job_id}?force=true", args)
     if getattr(args, "json", False):
         _print_json(result or {"status": "stopped", "job_id": job_id})
     else:
@@ -2253,7 +2224,7 @@ def _cmd_endpoint_stop(args: argparse.Namespace, _store: UserStore) -> int:
 def _cmd_endpoint_show(args: argparse.Namespace, _store: UserStore) -> int:
     """Show detailed info for a single endpoint."""
     base = _umrs_base_url(args)
-    data = _umrs_api_get(f"{base}/umrs/endpoints/{args.job_id}")
+    data = _umrs_api_get(f"{base}/umrs/endpoints/{args.job_id}", args)
     _print_json(data)
     return 0
 
@@ -2261,34 +2232,16 @@ def _cmd_endpoint_show(args: argparse.Namespace, _store: UserStore) -> int:
 def _cmd_endpoint_stats(args: argparse.Namespace, _store: UserStore) -> int:
     """Show endpoint registry statistics."""
     base = _umrs_base_url(args)
-    data = _umrs_api_get(f"{base}/umrs/endpoints/stats")
+    data = _umrs_api_get(f"{base}/umrs/endpoints/stats", args)
     _print_json(data)
     return 0
 
 
-def _umrs_api_post(url: str, data: dict | None = None) -> dict:
+def _umrs_api_post(
+    url: str, args: argparse.Namespace, data: dict | None = None
+) -> dict:
     """POST to UMRS API. Returns parsed JSON."""
-    import json
-    import urllib.error
-    import urllib.request
-
-    payload = json.dumps(data or {}).encode()
-    req = urllib.request.Request(url, data=payload, method="POST")
-    req.add_header("Content-Type", "application/json")
-    req.add_header("Accept", "application/json")
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            return json.loads(resp.read().decode())
-    except urllib.error.HTTPError as exc:
-        body = exc.read().decode() if exc.fp else ""
-        print(f"error: UMRS API returned {exc.code}: {body}", file=sys.stderr)
-        raise SystemExit(2) from exc
-    except urllib.error.URLError as exc:
-        print(
-            f"error: cannot reach UMRS at {url}: {exc.reason}",
-            file=sys.stderr,
-        )
-        raise SystemExit(2) from exc
+    return umrs_api("POST", url, args, data or {}) or {}
 
 
 def _cmd_endpoint_refresh(args: argparse.Namespace, _store: UserStore) -> int:
@@ -2296,7 +2249,7 @@ def _cmd_endpoint_refresh(args: argparse.Namespace, _store: UserStore) -> int:
     base = _umrs_base_url(args)
     job_id = args.job_id
 
-    result = _umrs_api_post(f"{base}/umrs/endpoints/{job_id}/refresh")
+    result = _umrs_api_post(f"{base}/umrs/endpoints/{job_id}/refresh", args)
     if getattr(args, "json", False):
         _print_json(result)
     else:
@@ -2528,7 +2481,10 @@ def build_parser() -> argparse.ArgumentParser:
             "server to list, inspect, and force-stop endpoints across all "
             "users and projects. Unlike 'r4 endpoint' which is scoped to "
             "the current user's project, these commands see everything.\n\n"
-            "Requires a running UMRS server (set --umrs-url or $UMRS_BASE_URL)."
+            "Requires a running UMRS server (set --umrs-url or $UMRS_BASE_URL) "
+            f"and an admin JWT (${ADMIN_JWT_ENV} or --admin-jwt; mint one with "
+            "'umrs-server admin token generate-jwt --user ADMIN --project PROJECT "
+            "--roles admin')."
         ),
         epilog=(
             "Examples:\n"
@@ -2540,13 +2496,29 @@ def build_parser() -> argparse.ArgumentParser:
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    endpoint_p.add_argument(
-        "--umrs-url",
-        dest="umrs_url",
-        default=None,
-        help="UMRS server URL (default: $UMRS_BASE_URL or http://localhost:8000)",
-    )
+    add_http_admin_args(endpoint_p)
     _add_endpoint_parsers(endpoint_p.add_subparsers(dest="action", required=True))
+
+    session_p = sub.add_parser(
+        "session",
+        help="List, inspect and stop any user's remote sessions (requires running UMRS)",
+        description=(
+            "Admin control of frontend-venue (remote) sessions across users: "
+            "list (filters: --user, --project, --state, --host), show, stop. "
+            "Calls the running UMRS (--umrs-url or $UMRS_BASE_URL) with the "
+            f"admin JWT from ${ADMIN_JWT_ENV} or --admin-jwt."
+        ),
+        epilog=(
+            "Examples:\n"
+            "  umrs-server admin session list --state running\n"
+            "  umrs-server admin session list --user alice --json\n"
+            "  umrs-server admin session show SESSION_ID\n"
+            "  umrs-server admin session stop SESSION_ID --note 'policy' -y"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    add_http_admin_args(session_p)
+    add_session_parsers(session_p.add_subparsers(dest="action", required=True))
 
     config_p = sub.add_parser(
         "config",
