@@ -46,6 +46,15 @@ os.environ.setdefault("UMRS_SAT_KG_QUIET", "1")
 # mode cases opt in per-test via monkeypatch.setenv("UMRS_AUTH_MODE", "strict").
 os.environ.setdefault("UMRS_AUTH_MODE", "mvp")
 
+# RS-0 S-2 (2026-10-22): the admin CLI mirrors account writes into the site
+# database and runs the account cascade there, and the HTTP sidecar starts the
+# account standing sweep. Under a CI-shaped Postgres env both would touch the
+# shared test database from tests that never asked for it (a users row or a
+# revoked lease leaking into later tests). Off by default here; the cascade
+# tests opt in per test.
+os.environ.setdefault("UMRS_ADMIN_CLI_DB", "off")
+os.environ.setdefault("UMRS_ACCOUNT_SWEEP_ENABLED", "false")
+
 # Knowledge-export output root (2026-09-16 dust policy): the export backend's
 # env fallback is Path(cwd)/.kb_exports — under pytest that is the checked-out
 # umrs/ tree, so every full run re-dirtied a tracked fixture

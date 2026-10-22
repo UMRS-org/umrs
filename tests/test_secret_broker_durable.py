@@ -13,7 +13,9 @@ from pathlib import Path
 import pytest
 from umrs.jobs.secret_broker import SecretBroker
 
-_MIGRATION = Path(__file__).resolve().parents[1] / "src/umrs/migrations/0085_secret_leases.sql"
+_MIGRATIONS_DIR = Path(__file__).resolve().parents[1] / "src/umrs/migrations"
+# 0085 creates the tables; 0124 adds the issuing site (RS-0 S-2).
+_MIGRATIONS = ("0085_secret_leases.sql", "0124_secret_leases_venue.sql")
 
 _TABLES = "secret_audit, secret_leases"
 
@@ -29,7 +31,8 @@ def _pg_pool_or_skip():
     conn = pool.getconn()
     try:
         with conn, conn.cursor() as cur:
-            cur.execute(_MIGRATION.read_text())
+            for name in _MIGRATIONS:
+                cur.execute((_MIGRATIONS_DIR / name).read_text())
             cur.execute(f"TRUNCATE {_TABLES}")
     finally:
         pool.putconn(conn)
