@@ -107,7 +107,7 @@ def admin_h(monkeypatch, audit):
         pool.seed(owner, sid)
         r = h.client.post(
             f"/umrs/companion/sessions/{sid}/venue/start",
-            json={"source_refs": ["openai-main"]},
+            json={"source_refs": ["openai-main"], "web_policy": "public"},
             headers={"x-user-id": owner},
         )
         assert r.status_code == 200, r.text

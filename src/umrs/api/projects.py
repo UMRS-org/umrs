@@ -964,4 +964,71 @@ def check_project_storage(
     return {"status": "ok", "storage": binding.redacted(), "probe": report}
 
 
+# -- session policy: the project owner's layer (ADR-099 D-3) ------------------
+
+
+class SessionPolicyBody(BaseModel):
+    """The owner's narrowing rule (a partial ADR-099 policy document)."""
+
+    doc: dict[str, Any] = Field(default_factory=dict)
+    note: str = ""
+
+
+def _policy_project(
+    store: ProjectStore, project_id: str, identity: CallerIdentity
+) -> dict[str, Any]:
+    """The project row for its owner or an admin; a caller who cannot read
+    the project reads "not found" (H-1), a reader who is neither owner nor
+    admin is refused."""
+    refusal = PlatformError.sessionpolicy(
+        "not_found", f"project {project_id} not found"
+    )
+    row = _readable_project(store, project_id, identity, refusal=refusal)
+    if not identity.is_admin and (identity.user_id or "") != row["owner_id"]:
+        raise_typed(
+            PlatformError.sessionpolicy(
+                "forbidden",
+                "only the project owner or an admin may manage its session policy",
+            )
+        )
+    return row
+
+
+@router.get("/{project_id}/session-policy")
+def get_project_session_policy(
+    project_id: str,
+    request: Request,
+    store: ProjectStore = Depends(_store_dep),
+    identity: CallerIdentity = Depends(get_caller_identity),
+) -> dict[str, Any]:
+    """The owner's rule and the caller's effective session limits here
+    (owner or admin).
+    # auth: verified
+    """
+    from .admin_session_policy import owner_policy_view
+
+    _policy_project(store, project_id, identity)
+    return owner_policy_view(request, project_id, caller=(identity.user_id or ""))
+
+
+@router.put("/{project_id}/session-policy")
+def put_project_session_policy(
+    project_id: str,
+    body: SessionPolicyBody,
+    request: Request,
+    store: ProjectStore = Depends(_store_dep),
+    identity: CallerIdentity = Depends(get_caller_identity),
+) -> dict[str, Any]:
+    """Write the owner's narrowing rule (owner or admin); wider than the
+    admin layer is ``sessionpolicy.widening_refused``.
+    # auth: verified
+    """
+    from .admin_session_policy import put_owner_rule
+
+    _policy_project(store, project_id, identity)
+    return put_owner_rule(
+        request, project_id, body.doc, body.note, actor=(identity.user_id or "")
+    )
+
+
 __all__ = ["ProjectNotFound", "ProjectStore", "router"]

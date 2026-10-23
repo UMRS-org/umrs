@@ -30,6 +30,7 @@ from .http_admin import (
     umrs_api,
     umrs_base_url,
 )
+from .http_policy import add_policy_parsers
 
 # ---------------------------------------------------------------------------
 # helpers
@@ -2585,6 +2586,33 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_http_admin_args(session_p)
     add_session_parsers(session_p.add_subparsers(dest="action", required=True))
+
+    policy_p = sub.add_parser(
+        "policy",
+        help="Session policy limit rules: web caps, lifetime, tokens, sessions "
+        "(ADR-099; requires running UMRS)",
+        description=(
+            "Admin limit rules for remote sessions (ADR-099 D-3): per site, "
+            "project or user; the strictest explicit rule wins, a project "
+            "owner may only narrow. Calls the running UMRS (--umrs-url or "
+            f"$UMRS_BASE_URL) with the admin JWT from ${ADMIN_JWT_ENV} or "
+            "--admin-jwt."
+        ),
+        epilog=(
+            "Examples:\n"
+            "  umrs-server admin policy list\n"
+            "  umrs-server admin policy set --scope user --subject alice "
+            "budget.tokens_per_day_user=2000000\n"
+            "  umrs-server admin policy set --scope project --subject opossum "
+            "web.allow=none,allowlist web.domains=.arxiv.org\n"
+            "  umrs-server admin policy set --scope site sessions.concurrent_user=8\n"
+            "  umrs-server admin policy effective --user alice --project opossum\n"
+            "  umrs-server admin policy unset --scope user --subject alice"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    add_http_admin_args(policy_p)
+    add_policy_parsers(policy_p.add_subparsers(dest="action", required=True))
 
     config_p = sub.add_parser(
         "config",

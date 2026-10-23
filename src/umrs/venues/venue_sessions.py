@@ -41,6 +41,7 @@ _COLUMNS = (
     "updated_at",
     "stopped_at",
     "job_id",
+    "policy",
 )
 _SELECT = f"SELECT {', '.join(_COLUMNS)} FROM companion_venue_sessions"
 
@@ -78,6 +79,8 @@ class VenueSessionRow:
     stopped_at: datetime | None = None
     # Durable job carrying the lifecycle (0100; "" for rows older than the link).
     job_id: str = ""
+    # Resolved session policy at start (0125, ADR-099 D-1); {} before 0125.
+    policy: dict[str, Any] = field(default_factory=dict)
 
     @property
     def is_active(self) -> bool:
@@ -100,6 +103,7 @@ class VenueSessionRow:
             "updated_at": _iso(self.updated_at),
             "stopped_at": _iso(self.stopped_at),
             "job_id": self.job_id,
+            "policy": dict(self.policy),
         }
 
 
@@ -141,6 +145,7 @@ def _row_from_tuple(row: Any) -> VenueSessionRow:
         updated_at=data.get("updated_at"),
         stopped_at=data.get("stopped_at"),
         job_id=_s(data, "job_id"),
+        policy=_runtime_dict(data.get("policy")),
     )
 
 
@@ -209,7 +214,11 @@ class VenueSessionStore:
         default_source_name: str,
         web_policy: str,
         job_id: str = "",
+        policy: dict[str, Any] | None = None,
     ) -> VenueSessionRow:
+        """Reserve the row for a (re)start. ``policy`` is the resolved session
+        policy (ADR-099); ``None`` keeps the stored one (the session job's
+        own re-reservation does not resolve it again)."""
         now = _now()
         row = VenueSessionRow(
             session_id=session_id,
@@ -224,18 +233,23 @@ class VenueSessionStore:
             started_at=now,
             updated_at=now,
             job_id=job_id,
+            policy=dict(policy or {}),
         )
         if self._pool is None:
+            if policy is None:
+                row.policy = _kept_policy(self._rows.get(session_id))
             self._rows[session_id] = row
             return row
+        policy_json = json.dumps(policy) if policy is not None else None
         self._execute(
             """
             INSERT INTO companion_venue_sessions
                 (session_id, user_id, venue, state, reason, lease_id, egress_ip, subnet,
                  source_names, source_ids, default_source_id, default_source_name,
-                 web_policy, runtime, started_at, updated_at, stopped_at, job_id)
+                 web_policy, runtime, started_at, updated_at, stopped_at, job_id, policy)
             VALUES (%s, %s, 'frontend', 'provisioning', '', '', '', %s,
-                    %s, %s::uuid[], %s::uuid, %s, %s, '{}'::jsonb, now(), now(), NULL, %s)
+                    %s, %s::uuid[], %s::uuid, %s, %s, '{}'::jsonb, now(), now(), NULL, %s,
+                    COALESCE(%s::jsonb, '{}'::jsonb))
             ON CONFLICT (session_id) DO UPDATE SET
                 user_id = EXCLUDED.user_id,
                 state = 'provisioning', reason = '', lease_id = '', egress_ip = '',
@@ -248,7 +262,8 @@ class VenueSessionStore:
                 runtime = '{}'::jsonb,
                 started_at = now(), updated_at = now(), stopped_at = NULL,
                 job_id = CASE WHEN EXCLUDED.job_id <> '' THEN EXCLUDED.job_id
-                              ELSE companion_venue_sessions.job_id END
+                              ELSE companion_venue_sessions.job_id END,
+                policy = COALESCE(%s::jsonb, companion_venue_sessions.policy)
             """,
             (
                 session_id,
@@ -260,6 +275,8 @@ class VenueSessionStore:
                 default_source_name,
                 web_policy,
                 job_id,
+                policy_json,
+                policy_json,
             ),
         )
         return self.get(session_id) or row
@@ -391,7 +408,14 @@ def project_session_state(pool: Any, owner: str, session_id: str, state: str) ->
     pool is missing.
     """
     # "paused" joins the vocabulary with the D-09 venue verbs (pause/resume).
-    if pool is None or state not in ("ongoing", "paused", "stopped", "completed", "error", ""):
+    if pool is None or state not in (
+        "ongoing",
+        "paused",
+        "stopped",
+        "completed",
+        "error",
+        "",
+    ):
         return False
     conn = pool.getconn()
     try:
@@ -416,6 +440,10 @@ def project_session_state(pool: Any, owner: str, session_id: str, state: str) ->
         return False
     finally:
         pool.putconn(conn)
+
+
+def _kept_policy(previous: VenueSessionRow | None) -> dict[str, Any]:
+    return dict(previous.policy) if previous is not None else {}
 
 
 def _memory_admin_rows(
