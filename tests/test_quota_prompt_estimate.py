@@ -82,7 +82,8 @@ class TestPromptMeter:
         word = b"a" * (BLOB_RUN - 1)
         assert _fed(word) == _text_tokens(word)
         assert _fed(word + b"a") == _text_tokens(word + b"a")  # at the threshold
-        assert _fed(b"a" * 100 * BLOB_RUN) == BLOB_TOKENS
+        uri = b"data:image/png;base64,"
+        assert _fed(uri + b"a" * 100 * BLOB_RUN) == _text_tokens(uri) + BLOB_TOKENS
 
     def test_the_tap_takes_the_meters_prompt(self):
         tap = UsageTap(provider_kind="openai", streaming=True)
@@ -106,3 +107,56 @@ class TestThroughTheProxy:
         assert _post(app, _image_request()).status_code == 200
         row = _one_row(pool)
         assert BLOB_TOKENS <= row[PROMPT] <= BLOB_TOKENS + 1000
+
+
+# ── Amendment 4 (RS-1 round-4 review, R4-1) ─────────────────────────────────
+# ``json.dumps`` escapes every non-ASCII character as ``\uXXXX``, and every
+# character of an escape was in the run alphabet: a Japanese message (no
+# spaces, its punctuation escaped too) read as ONE run, charged at most
+# BLOB_TOKENS (~4-5x under). Words joined by ``_`` or ``-`` did the same, so a
+# cut stream could be under-charged on purpose. Only a data URI's run is a
+# blob now, and an escape ends a run.
+
+JA = "研究データの解析結果について、詳細に説明してください。" * 800  # 21,600 characters
+JOINED = "_".join(["word"] * 40_000)  # 200 KB
+
+
+def _text_request(text: str) -> dict:
+    return {"model": "gpt-x", "stream": True, "messages": [{"role": "user", "content": text}]}
+
+
+class TestAmendment4:
+    def test_escaped_japanese_is_text(self):
+        body = json.dumps(_text_request(JA)).encode()  # ensure_ascii: \uXXXX escapes
+        assert _fed(body) == _text_tokens(body)  # before: 4,126
+        utf8 = json.dumps(_text_request(JA), ensure_ascii=False).encode()
+        assert _fed(utf8) == _text_tokens(utf8)
+
+    @pytest.mark.parametrize("joiner", ["_", "-", "+", "/"])
+    def test_joined_words_are_text(self, joiner):
+        body = json.dumps(_text_request(JOINED.replace("_", joiner))).encode()
+        assert _fed(body) == _text_tokens(body)  # before ("_", "-", ...): 4,126
+
+    def test_base64_looking_text_without_a_data_uri_is_text(self):
+        body = json.dumps(_text_request(PNG[:200_000])).encode()
+        assert _fed(body) == _text_tokens(body)
+
+    @pytest.mark.parametrize("step", [1, 3, 8, 9])
+    def test_the_data_uri_marker_may_span_chunks(self, step):
+        body = json.dumps(_image_request()).encode()[:200_000]
+        assert _fed(body, step) == _fed(body) < _text_tokens(body) // 10
+
+    def test_an_escaped_slash_stays_in_the_run(self):
+        """A client whose JSON writes ``\\/`` still has one image run."""
+        body = json.dumps(_image_request()).encode().replace(b"/", b"\\/")
+        assert _fed(body) < BLOB_TOKENS + _text_tokens(json.dumps(_image_request(0)).encode()) + 64
+
+    def test_a_cut_site_stream_with_a_japanese_prompt(self, monkeypatch):
+        """Through the proxy: the re-encoded body (``include_usage`` added)
+        is ``json.dumps``'d with its escapes."""
+        monkeypatch.setattr(tqp, "_stream_response", _two_chunks(CONTENT % b"A", USAGE))
+        app, pool, _broker, _calls = _app(monkeypatch, content_type="text/event-stream")
+        asyncio.run(_disconnecting_call(app, _text_request(JA)))
+        row = _one_row(pool)
+        assert json.loads(row[EXTRA])["usage"] == "estimated"
+        assert row[PROMPT] >= len(JA)  # before: ~4,100 for ~15-22k real tokens

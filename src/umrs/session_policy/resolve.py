@@ -306,7 +306,25 @@ def effective_limits(
         out[section] = part
     _apply_domain_cap(out["web"], origin)
     out["origin"] = origin
+    out["bounds"] = _default_bounds(layers["project:owner"], origin)
     return out
+
+
+def _default_bounds(owner: PolicyRule | None, origin: dict[str, str]) -> dict[str, Any]:
+    """An owner's number looser than the site default it lost to (ADR-099
+    D-7, Amendment 4; RS-1 round-4 review, R4-2): the value stays the
+    default's, origin ``default``, so a running session follows the
+    operator's live value — but never past the owner's rule. ``{field:
+    owner value}``; a reader takes ``min(live default, bound)``."""
+    bounds: dict[str, Any] = {}
+    for field_name, layer in origin.items():
+        section, key = field_name.split(".", 1)
+        if layer != "default" or RULE_FIELDS[section][key] not in ("count", "seconds"):
+            continue
+        found, raw = _setting(owner, section, key)
+        if found and raw is not None:
+            bounds[field_name] = raw
+    return bounds
 
 
 # ── the owner layer (D-3: may only narrow) ─────────────────────────────────
@@ -477,6 +495,7 @@ def resolve_session_policy(
     origin = {k: v for k, v in limits["origin"].items() if not k.startswith("web.")}
     origin["web.mode"] = origin["web.domains"] = tag
     policy["origin"] = origin
+    policy["bounds"] = dict(limits.get("bounds") or {})
     stamp = now.astimezone(timezone.utc).replace(microsecond=0)
     policy["resolved_at"] = stamp.isoformat().replace("+00:00", "Z")
     return policy

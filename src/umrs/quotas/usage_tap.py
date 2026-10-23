@@ -23,8 +23,8 @@ ended without usage, or any generation call the relay did not see to its
 end: the client left before the final usage chunk) the row carries a
 conservative estimate instead of zero, tagged ``extra.usage = "estimated"``
 (ADR-099 D-4, Amendment 2): the prompt is the request body's bytes / 4
-(:class:`PromptMeter`: a base64 run, an inline image, counts at most
-:data:`BLOB_TOKENS`, Amendment 3), the completion the larger of the streamed
+(:class:`PromptMeter`: a data URI's base64 run, an inline image, counts at
+most :data:`BLOB_TOKENS`, Amendments 3 and 4), the completion the larger of the streamed
 content bytes / 4 and the number of content events (a whole body's bytes / 4
 when it is not an event stream).
 A count the provider did report is kept, and raised to the estimate only
@@ -151,8 +151,8 @@ def _quarter(n: int) -> int:
     return math.ceil(max(0, n) / 4)
 
 
-#: A run of base64 characters this long is binary data (an image, a file),
-#: not text: no prose or code goes 1 KiB without a space or punctuation.
+#: A data URI's base64 run this long is binary data (an image, a file), not
+#: text.
 BLOB_RUN = 1024
 
 #: The estimate's charge for one such run (ADR-099 D-4, Amendment 3): a
@@ -160,19 +160,30 @@ BLOB_RUN = 1024
 #: bytes / 4 (a 1.5 MB PNG would read as ~500k). Shorter runs count / 4.
 BLOB_TOKENS = 4096
 
-#: The base64 alphabet, the URL-safe one, and JSON's escaped ``\/``.
-_RUN_RE = re.compile(rb"[A-Za-z0-9+/=_\\-]+")
+#: The standard base64 alphabet, with JSON's escaped ``\/``. Amendment 4
+#: (RS-1 round-4 review, R4-1): no ``\`` on its own, so a ``\uXXXX`` escape
+#: ends a run (``json.dumps`` escapes every non-ASCII character: a whole
+#: Japanese message read as one run, ~4-5x under), and no ``_`` / ``-``
+#: (words joined by them read as one run too).
+_RUN_RE = re.compile(rb"(?:[A-Za-z0-9+=]|\\?/)+")
+
+#: Only a run right after a data URI's marker is a blob (Amendment 4): text
+#: that merely looks like base64 is charged / 4.
+_DATA_URI = b";base64,"
 
 
 class PromptMeter:
     """The prompt side of an estimate, fed the request body as it is sent:
-    text bytes / 4, plus each base64 run of :data:`BLOB_RUN` or more at most
-    :data:`BLOB_TOKENS` (a run may span chunks; nothing is kept but counts)."""
+    text bytes / 4, plus each data-URI base64 run of :data:`BLOB_RUN` or more
+    at most :data:`BLOB_TOKENS` (a run or its marker may span chunks; nothing
+    is kept but counts and the marker's few bytes)."""
 
     def __init__(self) -> None:
         self._text = 0  # bytes outside long runs
         self._blob_tokens = 0
         self._run = 0  # the open run's length (it may continue in the next chunk)
+        self._inline = False  # the open run follows a data URI's marker
+        self._tail = b""  # the last bytes fed (the marker may span chunks)
 
     def feed(self, chunk: bytes) -> None:
         pos = 0
@@ -180,14 +191,26 @@ class PromptMeter:
             if match.start() > pos:
                 self._close()
                 self._text += match.start() - pos
+            if not self._run:
+                self._inline = self._after_marker(chunk, match.start())
             self._run += match.end() - match.start()
             pos = match.end()
         if pos < len(chunk):
             self._close()
             self._text += len(chunk) - pos
+        self._tail = (self._tail + chunk[-len(_DATA_URI) :])[-len(_DATA_URI) :]
+
+    def _after_marker(self, chunk: bytes, start: int) -> bool:
+        before = chunk[max(0, start - len(_DATA_URI)) : start]
+        if start < len(_DATA_URI):
+            before = (self._tail + before)[-len(_DATA_URI) :]
+        return before == _DATA_URI
+
+    def _blob(self) -> bool:
+        return self._inline and self._run >= BLOB_RUN
 
     def _close(self) -> None:
-        if self._run >= BLOB_RUN:
+        if self._blob():
             self._blob_tokens += _run_tokens(self._run)
         else:
             self._text += self._run
@@ -195,7 +218,7 @@ class PromptMeter:
 
     def tokens(self) -> int:
         """The prompt estimate of what was fed so far."""
-        if self._run >= BLOB_RUN:
+        if self._blob():
             return _quarter(self._text) + self._blob_tokens + _run_tokens(self._run)
         return _quarter(self._text + self._run) + self._blob_tokens
 
