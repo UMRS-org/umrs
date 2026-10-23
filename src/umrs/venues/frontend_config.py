@@ -154,7 +154,10 @@ class FrontendVenueConfig:
         web_allow_domains: tuple[str, ...] = (),
         project: str = "",
         worker_command: tuple[str, ...] = (),
+        max_lifetime_seconds: int | None = None,
     ) -> ProvisionConfig:
+        """``max_lifetime_seconds``: the session policy's wall clock
+        (ADR-099 D-7); the lease cap is the smaller of it and the site's."""
         extra = {"worker_command": tuple(worker_command)} if worker_command else {}
         return ProvisionConfig(
             session_id=session_id,
@@ -173,7 +176,7 @@ class FrontendVenueConfig:
             internal_ca_path=self.internal_ca_path,
             infer_resolve_via=self.infer_resolve_via,
             lease_seconds=self.lease_seconds,
-            max_lifetime_seconds=self.max_lifetime_seconds,
+            max_lifetime_seconds=self._lifetime_cap(max_lifetime_seconds),
             worker_memory=self.worker_memory,
             worker_cpus=self.worker_cpus,
             worker_uid=self.worker_uid,
@@ -184,6 +187,12 @@ class FrontendVenueConfig:
             rail_port=self.rail_port,
             **extra,
         )
+
+    def _lifetime_cap(self, policy_seconds: int | None) -> int:
+        """min(policy wall clock, ``UMRS_VENUE_MAX_LIFETIME_SECONDS``)."""
+        if not isinstance(policy_seconds, int) or policy_seconds <= 0:
+            return self.max_lifetime_seconds
+        return min(policy_seconds, self.max_lifetime_seconds)
 
 
 def allocate_subnet(

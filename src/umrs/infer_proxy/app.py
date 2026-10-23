@@ -18,6 +18,15 @@ Starlette ASGI service. Per request:
 Upstream 3xx never followed; off-host Location → 502 redirect_offhost.
 Audit per request via the broker audit table (no bodies, no headers, no
 tokens). No per-user labels in metrics.
+
+ADR-099 (RS-1 lane Q): after the lease verdict and the per-session limiter,
+the quota enforcer (when wired) refuses a metered call over the lease
+owner's daily token or per-minute request cap with a typed 429
+(``quota.tokens_per_day_exceeded`` / ``quota.rpm_exceeded``), fail closed as
+``quota.unavailable`` (503). Every relayed call writes one
+``llm_usage_log`` row (``origin='infer_proxy'``) after the answer was sent;
+the token counts come from a bounded head/tail copy of the answer, so the
+upstream is asked for an uncompressed (``identity``) answer.
 """
 
 from __future__ import annotations
@@ -28,7 +37,7 @@ import os
 import re
 import time
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx
 from starlette.applications import Starlette
@@ -37,6 +46,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, StreamingResponse
 from starlette.routing import Route
 
+from umrs.quotas.usage_tap import UsageTap, record_proxy_usage
 from umrs.security.provider_url import _is_global_unicast as _ip_is_public
 from umrs.security.seal import SealedBlob, SealError, unseal_credential
 from umrs.security.sealed_sources import SealedSourceStore
@@ -51,6 +61,9 @@ from . import site_models
 from .leases import check_lease, extract_session_token, lease_by_token
 from .policies import allows, inject_credential, policy_for, strip_credential_headers
 from .urljoin import join_provider_url
+
+if TYPE_CHECKING:
+    from umrs.quotas.enforcer import QuotaEnforcer
 
 logger = logging.getLogger("umrs.infer_proxy")
 
@@ -74,6 +87,10 @@ _HOP_BY_HOP = {
     "host",
     "content-length",
 }
+
+# Calls the quotas meter: listing models costs no tokens (and a worker's
+# bootstrap lists them), so reads stay open at the cap.
+_UNMETERED_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
 
 class SecretRedactingFilter(logging.Filter):
@@ -299,6 +316,7 @@ def _upstream_headers(
         headers[decoded] = value.decode("latin-1")
     headers = strip_credential_headers(headers)
     headers = inject_credential(policy, headers, api_key)
+    headers["accept-encoding"] = "identity"  # the usage tap reads plain bytes
     tail = allow_host.split("://", 1)[1]
     headers["host"] = tail if ":" in tail else tail.split(":", 1)[0]
     return headers
@@ -344,6 +362,45 @@ class SessionRateLimiter:
         return True
 
 
+def _quota_refusal(request: Request, lease: Any) -> JSONResponse | None:
+    """ADR-099 D-5: the typed 429 (or fail-closed 503) before unsealing."""
+    enforcer = getattr(request.app.state, "quota_enforcer", None)
+    if enforcer is None or request.method in _UNMETERED_METHODS:
+        return None
+    denial = enforcer.check(lease)
+    if denial is None:
+        return None
+    _denied(request, lease, denial.status, denial.code)
+    return denial.to_response()
+
+
+def _rate_or_quota_refusal(request: Request, lease: Any) -> JSONResponse | None:
+    """The per-session limiter (R2-3), then the owner's quotas (ADR-099 D-5)."""
+    limiter = getattr(request.app.state, "rate_limiter", None)
+    if limiter is not None and not limiter.allow(request.path_params["sid"]):
+        return _denied(request, lease, 429, "rate_denied")
+    return _quota_refusal(request, lease)
+
+
+async def _send_upstream(request: Request, prep: _Prepared, headers: dict) -> Any:
+    """The streamed provider call: pinned IP, original Host + SNI, no redirects."""
+    url = join_provider_url(prep.full.base_url, prep.path)
+    if prep.pin_ip:
+        url = _pin_url(url, prep.pin_ip)
+    client = _http_client(request)
+    return await client.send(
+        client.build_request(
+            request.method,
+            url,
+            headers=headers,
+            content=request.stream(),
+            extensions={"sni_hostname": prep.host} if prep.pin_ip else None,
+        ),
+        stream=True,
+        follow_redirects=False,
+    )
+
+
 async def proxy_request(request: Request) -> Any:
     """ANY /s/{sid}/{path:path} — the credential-injecting forward."""
     if request.path_params.get("path", "").startswith(SITE_PATH_PREFIX):
@@ -353,9 +410,9 @@ async def proxy_request(request: Request) -> Any:
         return prep.error
     lease = prep.lease
 
-    limiter = getattr(request.app.state, "rate_limiter", None)
-    if limiter is not None and not limiter.allow(request.path_params["sid"]):
-        return _denied(request, lease, 429, "rate_denied")
+    refusal = _rate_or_quota_refusal(request, lease)
+    if refusal is not None:
+        return refusal
 
     try:
         api_key = _unseal_api_key(request, prep.full)
@@ -363,22 +420,8 @@ async def proxy_request(request: Request) -> Any:
         return _denied(request, lease, 500, "unseal_failed")
 
     headers = _upstream_headers(request, prep.policy, api_key, prep.full.allow_host)
-    url = join_provider_url(prep.full.base_url, prep.path)
-    if prep.pin_ip:
-        url = _pin_url(url, prep.pin_ip)
-    client = _http_client(request)
     try:
-        upstream = await client.send(
-            client.build_request(
-                request.method,
-                url,
-                headers=headers,
-                content=request.stream(),
-                extensions={"sni_hostname": prep.host} if prep.pin_ip else None,
-            ),
-            stream=True,
-            follow_redirects=False,
-        )
+        upstream = await _send_upstream(request, prep, headers)
     except httpx.HTTPError:
         return _denied(request, lease, 502, "upstream_unreachable")
 
@@ -386,23 +429,50 @@ async def proxy_request(request: Request) -> Any:
         await upstream.aclose()
         return _denied(request, lease, 502, "redirect_offhost")
 
-    return _relayed(request, lease, upstream, str(prep.full.id), prep.started)
+    meta = _RelayMeta(
+        source_label=str(prep.full.id),
+        provider_kind=str(prep.full.provider_kind or ""),
+        started=prep.started,
+    )
+    return _relayed(request, lease, upstream, meta)
+
+
+@dataclass(frozen=True)
+class _RelayMeta:
+    """What the access line and the usage row say about a relayed call."""
+
+    source_label: str
+    provider_kind: str
+    started: float
+    model: str = ""
+    served_model: str = ""
+
+
+def _is_streaming(request: Request, upstream: Any) -> bool:
+    content_type = upstream.headers.get("content-type", "")
+    path = str(request.path_params.get("path", "")).lower()
+    return "event-stream" in content_type or "stream" in path
 
 
 def _relayed(
-    request: Request, lease: Any, upstream: Any, source_label: str, started: float
+    request: Request, lease: Any, upstream: Any, meta: _RelayMeta
 ) -> StreamingResponse:
-    """Stream the upstream answer back; one access line + one audit row."""
+    """Stream the upstream answer back; one access line, one audit row and
+    one usage row (ADR-099 D-4) once it was sent."""
     response_headers = {
         k: v
         for k, v in upstream.headers.items()
         if k.lower() not in _HOP_BY_HOP and k.lower() != "x-accel-buffering"
     }
-    elapsed_ms = int((time.monotonic() - started) * 1000)
+    elapsed_ms = int((time.monotonic() - meta.started) * 1000)
+    tap = UsageTap(
+        provider_kind=meta.provider_kind, streaming=_is_streaming(request, upstream)
+    )
 
     async def _body():
         try:
             async for chunk in upstream.aiter_raw():
+                tap.feed(chunk)
                 yield chunk
         finally:
             await upstream.aclose()
@@ -414,7 +484,7 @@ def _relayed(
             "infer_access ts=%.3f sid=%s source_id=%s method=%s path=%s status=%s ms=%d reason=ok",
             time.time(),
             request.path_params["sid"],
-            source_label,
+            meta.source_label,
             request.method,
             request.url.path,
             upstream.status_code,
@@ -426,6 +496,7 @@ def _relayed(
             "infer",
             f"{request.method} {request.url.path} {upstream.status_code} ms={elapsed_ms}",
         )
+        _record_usage(request, lease, upstream.status_code, tap, meta)
 
     return StreamingResponse(
         _body(),
@@ -433,6 +504,29 @@ def _relayed(
         headers=response_headers,
         background=BackgroundTask(_audit_done),
     )
+
+
+def _record_usage(
+    request: Request, lease: Any, status: int, tap: UsageTap, meta: _RelayMeta
+) -> None:
+    """One ``llm_usage_log`` row for the relayed call (never raises)."""
+    try:
+        model = meta.model or tap.model()
+        record_proxy_usage(
+            getattr(request.app.state, "umrs_db_pool", None),
+            lease=lease,
+            session_id=request.path_params["sid"],
+            model=model,
+            served_model=meta.served_model or tap.model() or model,
+            source_id=meta.source_label,
+            path=request.url.path,
+            status=status,
+            streaming=tap.streaming,
+            duration_ms=(time.monotonic() - meta.started) * 1000.0,
+            usage=tap.usage(),
+        )
+    except Exception:  # accounting never breaks the relay
+        logger.warning("infer usage row not written", exc_info=True)
 
 
 # ── the site source: EndpointRegistry rows (ADR-092 slice 8b, D-63) ───────
@@ -453,9 +547,9 @@ async def _proxy_site(request: Request) -> Any:
     if verdict.deny():
         status = _verbatim_error_status(verdict.reason)
         return _denied(request, verdict.lease, status, verdict.reason)
-    limiter = getattr(request.app.state, "rate_limiter", None)
-    if limiter is not None and not limiter.allow(request.path_params["sid"]):
-        return _denied(request, verdict.lease, 429, "rate_denied")
+    refusal = _rate_or_quota_refusal(request, verdict.lease)
+    if refusal is not None:
+        return refusal
     path = "/" + request.path_params["path"][len(SITE_PATH_PREFIX) :]
     try:
         return await _site_forward(request, pool, verdict.lease, path)
@@ -481,7 +575,14 @@ async def _site_forward(request: Request, pool: Any, lease: Any, path: str) -> A
     _check_site_data_class(pool, project, endpoint)
     payload["model"] = site_models.served_name(endpoint)
     upstream = await _site_send(request, lease, endpoint, path, payload)
-    return _relayed(request, lease, upstream, f"site:{endpoint.job_id}", started)
+    meta = _RelayMeta(
+        source_label=f"site:{endpoint.job_id}",
+        provider_kind="openai",
+        started=started,
+        model=str(model or ""),
+        served_model=str(payload["model"] or ""),
+    )
+    return _relayed(request, lease, upstream, meta)
 
 
 def _check_site_data_class(pool: Any, project: str, endpoint: Any) -> None:
@@ -527,6 +628,7 @@ def _site_headers(request: Request, lease: Any, endpoint: Any) -> dict[str, str]
     headers.pop("x-project-id", None)
     headers.pop("x-user-id", None)
     headers["content-type"] = "application/json"
+    headers["accept-encoding"] = "identity"  # the usage tap reads plain bytes
     headers["host"] = f"{endpoint.host}:{int(endpoint.port)}"
     key = site_models.service_key()
     if key:
@@ -544,8 +646,12 @@ def create_app(
     broker: Any | None = None,
     http_client: httpx.AsyncClient | None = None,
     site_registry: Any | None = None,
+    quota_enforcer: QuotaEnforcer | None = None,
 ) -> Starlette:
-    """App factory (tests inject fakes; production wires the real pool/key)."""
+    """App factory (tests inject fakes; production wires the real pool/key).
+
+    ``quota_enforcer`` None = no quota checks (ADR-099 D-5 is opt-in here;
+    ``__main__`` wires it)."""
     from umrs.jobs.secret_broker import SecretBroker
 
     app = Starlette(
@@ -564,6 +670,7 @@ def create_app(
     app.state.broker = broker or SecretBroker(db_pool=umrs_db_pool)
     # ADR-092 slice 8b: the site source's registry (None = the process one).
     app.state.site_registry = site_registry
+    app.state.quota_enforcer = quota_enforcer
     app.state.http_client = http_client or httpx.AsyncClient(
         timeout=httpx.Timeout(connect=10.0, read=None, write=600.0, pool=10.0),
         http2=_HTTP2_AVAILABLE,  # provider offers h2 else http/1.1 (design §2.2)

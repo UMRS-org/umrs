@@ -252,6 +252,10 @@ ALLOWLIST: dict[str, str] = {
         "ADMIN-ONLY: require_session_admin needs an admin JWT or an HMAC-verified admin identity; project"
         " only filters every user's sessions (RS-0 C-1, 2026-10-22)"
     ),
+    "GET /umrs/admin/usage": (
+        "ADMIN-ONLY: require_session_admin (admin JWT or HMAC-verified admin); project only filters"
+        " every user's inference-proxy usage rows (ADR-099 D-4, RS-1 lane Q, 2026-10-23)"
+    ),
     "GET /umrs/endpoints": (
         "ADMIN-ONLY: all_projects drops the project scope only when _caller_is_admin (admin JWT or"
         " HMAC-verified admin); a non-admin stays on get_project_id_optional's project (RS-0, 2026-10-22)"

@@ -29,11 +29,13 @@ def agent_max_processes() -> int:
 # Job kinds counted as CPU-process units on this venue.
 # JobType VALUES (the 2026-09-21 audit found "companion_worker_job" here, which
 # never matched JobType.COMPANION_WORKER = "companion_worker" — companion units
-# were never counted). frontend_session = a remote companion sandbox (ADR-046 A2).
+# were never counted). ADR-099 D-6 (2026-10-23): ``frontend_session`` (a remote
+# companion sandbox, ADR-046 A2) left this budget; remote sessions have their
+# own cap (``umrs.quotas.session_cap``, 12 per user), which a budget of 4
+# would otherwise undercut.
 AGENT_JOB_KINDS: tuple[str, ...] = (
     "companion_worker",
     "research_loop_job",
-    "frontend_session",
 )
 
 # Live job statuses still consuming a unit (terminal closes the claim).
@@ -43,7 +45,7 @@ LIVE_JOB_STATUSES: tuple[str, ...] = ("planned", "queued", "running")
 # durable record, ``spec.hosting = 'client'``) runs no process here, and a
 # client that dies leaves it RUNNING until a resume or a restart: never a unit.
 # Slice 8: a run its venue worker hosts (``'venue'``) is not a unit either;
-# its worker's ``frontend_session`` job is the one unit it costs.
+# its worker's ``frontend_session`` job counts toward the remote-session cap.
 PLAN_RUN_RECORD_HOSTINGS = sorted(PLAN_RUN_HOSTINGS)
 
 
