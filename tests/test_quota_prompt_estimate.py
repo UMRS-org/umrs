@@ -151,6 +151,53 @@ class TestAmendment4:
         body = json.dumps(_image_request()).encode().replace(b"/", b"\\/")
         assert _fed(body) < BLOB_TOKENS + _text_tokens(json.dumps(_image_request(0)).encode()) + 64
 
+    @pytest.mark.parametrize(
+        "shape",
+        [
+            # Anthropic /v1/messages
+            lambda b64: {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": "image/png",
+                                    "data": b64,
+                                },
+                            }
+                        ],
+                    }
+                ]
+            },
+            # Google generateContent
+            lambda b64: {
+                "contents": [{"parts": [{"inlineData": {"mimeType": "image/png", "data": b64}}]}]
+            },
+            # OpenAI input_audio
+            lambda b64: {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "input_audio", "input_audio": {"format": "wav", "data": b64}}
+                        ],
+                    }
+                ]
+            },
+        ],
+        ids=["anthropic", "google", "input_audio"],
+    )
+    @pytest.mark.parametrize("separators", [(",", ":"), (", ", ": ")], ids=["compact", "spaced"])
+    def test_a_json_data_blob_is_charged_as_one_image(self, shape, separators):
+        """Final review F1 (2026-10-23): formats without a data URI were
+        charged bytes / 4 again (~367k for a 1.1 MB PNG) after Amendment 4."""
+        body = json.dumps(shape(PNG[:400_000]), separators=separators).encode()
+        assert _fed(body) <= BLOB_TOKENS + 256
+        assert _fed(body, 7) == _fed(body)  # the JSON marker may span chunks
+
     def test_a_cut_site_stream_with_a_japanese_prompt(self, monkeypatch):
         """Through the proxy: the re-encoded body (``include_usage`` added)
         is ``json.dumps``'d with its escapes."""

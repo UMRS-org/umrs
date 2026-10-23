@@ -167,14 +167,19 @@ BLOB_TOKENS = 4096
 #: (words joined by them read as one run too).
 _RUN_RE = re.compile(rb"(?:[A-Za-z0-9+=]|\\?/)+")
 
-#: Only a run right after a data URI's marker is a blob (Amendment 4): text
-#: that merely looks like base64 is charged / 4.
-_DATA_URI = b";base64,"
+#: Only a run right after a blob marker is a blob (Amendment 4): text that
+#: merely looks like base64 is charged / 4. The markers: a data URI (OpenAI
+#: ``image_url``) and the JSON ``"data"`` key the other relayed formats carry
+#: base64 under (Anthropic ``source.data``, Google ``inlineData.data``,
+#: OpenAI ``input_audio.data``; final review F1, 2026-10-23). A string's own
+#: content cannot forge the JSON one: its quotes are written ``\"``.
+_MARKERS = (b";base64,", b'"data":"', b'"data": "')
+_MARKER_LEN = max(len(m) for m in _MARKERS)
 
 
 class PromptMeter:
     """The prompt side of an estimate, fed the request body as it is sent:
-    text bytes / 4, plus each data-URI base64 run of :data:`BLOB_RUN` or more
+    text bytes / 4, plus each marked base64 run (data URI or JSON ``data``) of :data:`BLOB_RUN` or more
     at most :data:`BLOB_TOKENS` (a run or its marker may span chunks; nothing
     is kept but counts and the marker's few bytes)."""
 
@@ -198,13 +203,13 @@ class PromptMeter:
         if pos < len(chunk):
             self._close()
             self._text += len(chunk) - pos
-        self._tail = (self._tail + chunk[-len(_DATA_URI) :])[-len(_DATA_URI) :]
+        self._tail = (self._tail + chunk[-_MARKER_LEN:])[-_MARKER_LEN:]
 
     def _after_marker(self, chunk: bytes, start: int) -> bool:
-        before = chunk[max(0, start - len(_DATA_URI)) : start]
-        if start < len(_DATA_URI):
-            before = (self._tail + before)[-len(_DATA_URI) :]
-        return before == _DATA_URI
+        before = chunk[max(0, start - _MARKER_LEN) : start]
+        if start < _MARKER_LEN:
+            before = (self._tail + before)[-_MARKER_LEN:]
+        return before.endswith(_MARKERS)
 
     def _blob(self) -> bool:
         return self._inline and self._run >= BLOB_RUN
