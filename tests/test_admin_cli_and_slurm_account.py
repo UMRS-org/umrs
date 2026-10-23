@@ -498,3 +498,20 @@ class TestUserContextSlurmAccount:
             x_slurm_account="   ",
         )
         assert ctx.slurm_account is None
+
+
+def test_cli_refuses_a_subject_that_is_another_username(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """ADR-097 Amendment D-8 (2026-10-23): one identity may not name two
+    accounts; both CLI paths print the store's refusal and exit 2."""
+    d = tmp_path / "ufiles"
+    assert _run(d, "user", "add", "alice") == 0
+    assert _run(d, "user", "add", "bob") == 0
+    capsys.readouterr()
+    assert _run(d, "user", "set-oidc-subject", "bob", "alice") == 2
+    assert "username of another user" in capsys.readouterr().err
+    assert _run(d, "user", "add", "carol", "--oidc-subject", "alice") == 2
+    assert "username of another user" in capsys.readouterr().err
+    assert not (d / "carol.json").exists()
+    assert UserStore(d).get("bob").oidc_subject == ""
