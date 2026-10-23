@@ -65,9 +65,11 @@ class _Conn:
 class _Pool:
     def __init__(self, *, disk_bytes: int):
         self._conn = _Conn(disk_bytes=disk_bytes)
+        self.taken = 0
         self.returned = 0
 
     def getconn(self):
+        self.taken += 1
         return self._conn
 
     def putconn(self, _conn):
@@ -128,5 +130,7 @@ class TestQuotaUnitsRoute:
         pool = _Pool(disk_bytes=0)
         resp = _client(pool).get("/umrs/quota/units", headers=_VERIFIED)
         assert resp.status_code == 200
-        # two stores (agent jobs + disk ledger), two balanced get/put pairs
-        assert pool.returned == 2
+        # agent jobs + disk ledger, plus the ADR-099 session-policy and
+        # remote-session reads (RS-1): every getconn is balanced by a putconn.
+        assert pool.taken >= 2
+        assert pool.returned == pool.taken

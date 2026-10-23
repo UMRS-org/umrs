@@ -93,7 +93,9 @@ def h():
     )
     pool.seed("alice", "sess-1")
     started = harness.client.post(
-        f"{BASE}/venue/start", json={"source_refs": ["openai-main"]}, headers=H
+        f"{BASE}/venue/start",
+        json={"source_refs": ["openai-main"], "web_policy": "none"},
+        headers=H,
     )
     assert started.status_code == 200, started.text
     assert _run_lane(harness) == [("running", "job-1")]
