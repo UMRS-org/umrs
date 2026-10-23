@@ -607,7 +607,9 @@ _WORKFLOW_DISCOVERY_HINT = (
 )
 
 
-def _registered_workflow_names(owner: str, project: str | None = None) -> list[str]:
+def _registered_workflow_names(
+    owner: str, project: str | None = None, *, shared: bool = True
+) -> list[str]:
     """Names of registered UMRS workflows the loop owner may run.
 
     In-process catalog read through the same scoped listing the REST route
@@ -616,7 +618,7 @@ def _registered_workflow_names(owner: str, project: str | None = None) -> list[s
     loop's verified project — :func:`verified_loop_project`). Until
     2026-10-23 shares were missing here, so a loop start naming a workflow
     shared with the owner was a 400. An ownerless loop (no gateway identity)
-    sees all of them.
+    sees all of them. ``shared=False`` leaves shares out (the auto-pick set).
     """
     import json as _json
 
@@ -625,7 +627,7 @@ def _registered_workflow_names(owner: str, project: str | None = None) -> list[s
 
     data = _json.loads(
         handle_workflow_command(
-            TaskCmd.LIST_WORKFLOWS, owner or "_", _owner_listing(owner, project)
+            TaskCmd.LIST_WORKFLOWS, owner or "_", _owner_listing(owner, project, shared)
         )
     )
     if data.get("status") == "error":
@@ -634,20 +636,17 @@ def _registered_workflow_names(owner: str, project: str | None = None) -> list[s
     return sorted(names - {""})
 
 
-def _owner_listing(owner: str, project: str | None) -> str:
+def _owner_listing(owner: str, project: str | None, shared: bool = True) -> str:
     """The LIST payload for *owner*'s runnable set ("" lists all: ownerless)."""
     if not owner:
         return ""
     import json as _json
 
-    return _json.dumps(
-        {
-            "user_id": owner,
-            "include_shared_for": owner,
-            "include_system": True,
-            "verified_project": project or "",
-        }
-    )
+    payload: dict[str, Any] = {"user_id": owner, "include_system": True}
+    if shared:
+        payload["include_shared_for"] = owner
+        payload["verified_project"] = project or ""
+    return _json.dumps(payload)
 
 
 def _experiment_workflow(experiment: Any) -> str:
@@ -669,9 +668,14 @@ def _plan_workflow(loop: ResearchLoop) -> str | None:
 def _catalog_candidates(
     requested: str, owner: str, project: str | None = None
 ) -> list[str] | None:
-    """Registered names, or None when the catalog is unreachable but a name was given."""
+    """Registered names, or None when the catalog is unreachable but a name was given.
+
+    A named workflow may be a share; with no name the loop auto-picks only
+    from the owner's own and ``system`` workflows (as before 2026-10-23), so
+    another owner's shared code is never picked implicitly.
+    """
     try:
-        return _registered_workflow_names(owner, project)
+        return _registered_workflow_names(owner, project, shared=bool(requested))
     except Exception as exc:  # noqa: BLE001 — reported as 503, never hidden
         if requested:
             logger.warning(
@@ -769,9 +773,13 @@ def _resolve_loop_workflow(
     return name
 
 
-def _runs_no_workflow(request: StartLoopRequest, engine: AutonomousResearchLoop) -> bool:
+def _runs_no_workflow(
+    request: StartLoopRequest, engine: AutonomousResearchLoop
+) -> bool:
     """Simulated engines, agentic loops and plan iterations run no workflow."""
-    return bool(engine.simulated or request.agentic or (request.iteration_plan or "").strip())
+    return bool(
+        engine.simulated or request.agentic or (request.iteration_plan or "").strip()
+    )
 
 
 def _stamp_experiments(loop: ResearchLoop, name: str) -> None:
@@ -849,10 +857,14 @@ def _plan_iteration_problems(request: StartLoopRequest) -> list[str]:
     except ValueError as exc:
         return [str(exc)]
     if not request.plan_sources:
-        return ["plan_sources: a venue source serves the runs' models (a pushed source, or site)"]
+        return [
+            "plan_sources: a venue source serves the runs' models (a pushed source, or site)"
+        ]
     args.update({shape.goal_param: request.research_goal, shape.context_param: ""})
     _program, problems = prepare_plan(
-        request.iteration_plan_doc, args, tool_capabilities=request.plan_tool_capabilities
+        request.iteration_plan_doc,
+        args,
+        tool_capabilities=request.plan_tool_capabilities,
     )
     return [f"{p.path}: {p.message}" for p in problems[:10]]
 

@@ -182,7 +182,7 @@ class TestApiStartWiring:
         # The module engine is real-mode here: since WP-07 (G-P1-3) a phased loop
         # resolves its workflow at start — one registered workflow is the default.
         monkeypatch.setattr(
-            loop_mod, "_registered_workflow_names", lambda _owner, _project=None: ["wf-only"]
+            loop_mod, "_registered_workflow_names", lambda _owner, _project=None, **_kw: ["wf-only"]
         )
         app = FastAPI()
         app.include_router(loop_mod.router)
