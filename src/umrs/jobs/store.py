@@ -70,6 +70,10 @@ class InvalidTransitionError(JobStoreError):
     """Raised when state transition is invalid."""
 
 
+class SiteConfigUnreadableError(JobStoreError, RuntimeError):
+    """``site.yaml`` exists but cannot be loaded: fail closed, never unscoped."""
+
+
 class UnknownVenueError(JobStoreError, ValueError):
     """A bare spec venue names no site this store can resolve (N-3).
 
@@ -200,13 +204,83 @@ def configured_site_name() -> str:
 
     Mirrors what the scheduler claims with: a store that creates and a store
     that claims must agree, so no env-only fallback name is invented here.
+    No site.yaml at all is the pre-venue shared lane (""). A site.yaml that
+    exists but cannot be read or parsed raises (2026-10-24, multi-HPC review):
+    it used to read as "no site", which silently switched off the own-site
+    venue guard (``cross_site_venue_refusal``) and stored venues as given.
     """
-    try:
-        from umrs.orchestrator.site_config import load_site_config
+    from umrs.orchestrator.site_config import load_site_config
 
-        return str(getattr(load_site_config(), "name", "") or "").strip()
-    except Exception:  # noqa: BLE001 — no site config: the shared lane
+    try:
+        site = load_site_config()
+    except FileNotFoundError:
         return ""
+    except Exception as exc:
+        logger.error("site.yaml is present but unreadable: %s", exc)
+        raise SiteConfigUnreadableError(
+            f"site.yaml is present but unreadable ({exc}); refusing to run as "
+            "an unscoped site"
+        ) from exc
+    return str(getattr(site, "name", "") or "").strip()
+
+
+#: Parent spec keys a fan-out child inherits when it does not set them.
+_FAN_OUT_INHERITED_KEYS = ("data_source", "source", "source_uri", "input_uri", "inputs")
+
+
+def _fan_out_names(children: list[dict[str, Any]]) -> list[str]:
+    """Each child's name (its index when unnamed); names must be unique."""
+    names = [str(child.get("name") or index) for index, child in enumerate(children)]
+    if len(set(names)) != len(names):
+        raise ValueError("fan_out_jobs child names must be unique")
+    return names
+
+
+def _fan_out_dependency_graph(
+    names: list[str], children: list[dict[str, Any]]
+) -> dict[str, list[str]]:
+    """``name -> [dependency names]``; unknown names and cycles raise."""
+    graph = {
+        name: [str(value) for value in child.get("depends_on", [])]
+        for name, child in zip(names, children, strict=True)
+    }
+    for name, dependencies in graph.items():
+        unknown = [dependency for dependency in dependencies if dependency not in graph]
+        if unknown:
+            raise ValueError(f"Unknown fan-out dependencies for {name}: {unknown}")
+    _refuse_fan_out_cycle(graph)
+    return graph
+
+
+def _refuse_fan_out_cycle(graph: dict[str, list[str]]) -> None:
+    visiting: set[str] = set()
+    visited: set[str] = set()
+
+    def visit(name: str) -> None:
+        if name in visiting:
+            raise ValueError("fan_out_jobs dependencies contain a cycle")
+        if name in visited:
+            return
+        visiting.add(name)
+        for dependency in graph[name]:
+            visit(dependency)
+        visiting.remove(name)
+        visited.add(name)
+
+    for name in graph:
+        visit(name)
+
+
+def _fan_out_child_spec(
+    child: dict[str, Any], parent_spec: dict[str, Any], fan_out: dict[str, Any]
+) -> dict[str, Any]:
+    """The child's spec, with the parent's data keys it leaves unset."""
+    spec = dict(child.get("spec") or {})
+    for key in _FAN_OUT_INHERITED_KEYS:
+        if key in parent_spec and key not in spec:
+            spec[key] = parent_spec[key]
+    spec["_fan_out"] = fan_out
+    return spec
 
 
 class JobStore:
@@ -469,129 +543,108 @@ class JobStore:
         restart_policy: RestartPolicy = RestartPolicy.ON_CRASH,
         ttl_seconds: int | None = None,
     ) -> str:
-        """Create a durable parent and dependency-aware child jobs."""
+        """Create a durable parent and dependency-aware child jobs.
+
+        Every row carries its venue (N-1, 2026-10-24): before, the parent and
+        child rows were inserted without one, so they defaulted to ``''`` and
+        any umrs-front sharing the jobs table could claim a QUEUED child and
+        run it with no ``--account`` under its own service connection. Each
+        row now resolves its venue like ``create_job`` (``_resolve_venue``):
+        this site unless the spec names ``cluster:<site>``.
+        """
         parent_id = generate_job_id()
+        names = _fan_out_names(children)
+        graph = _fan_out_dependency_graph(names, children)
         child_ids = [generate_job_id() for _ in children]
-        names = [
-            str(child.get("name") or index) for index, child in enumerate(children)
-        ]
-        if len(set(names)) != len(names):
-            raise ValueError("fan_out_jobs child names must be unique")
         name_to_id = dict(zip(names, child_ids, strict=True))
-        dependency_graph = {
-            name: [str(value) for value in child.get("depends_on", [])]
-            for name, child in zip(names, children, strict=True)
-        }
-        for name, dependencies in dependency_graph.items():
-            unknown = [
-                dependency
-                for dependency in dependencies
-                if dependency not in name_to_id
-            ]
-            if unknown:
-                raise ValueError(f"Unknown fan-out dependencies for {name}: {unknown}")
-
-        visiting: set[str] = set()
-        visited: set[str] = set()
-
-        def visit(name: str) -> None:
-            if name in visiting:
-                raise ValueError("fan_out_jobs dependencies contain a cycle")
-            if name in visited:
-                return
-            visiting.add(name)
-            for dependency in dependency_graph[name]:
-                visit(dependency)
-            visiting.remove(name)
-            visited.add(name)
-
-        for name in names:
-            visit(name)
         now = datetime.now(timezone.utc).replace(tzinfo=None)
-
-        child_rows: list[tuple[Any, ...]] = []
-        for index, (child, child_id) in enumerate(
-            zip(children, child_ids, strict=True)
-        ):
-            child_type = JobType(child["job_type"])
-            child_spec = dict(child.get("spec") or {})
-            for key in ("data_source", "source", "source_uri", "input_uri", "inputs"):
-                if key in parent_spec and key not in child_spec:
-                    child_spec[key] = parent_spec[key]
-            dependency_names = dependency_graph[names[index]]
-            dependency_ids = [name_to_id[name] for name in dependency_names]
-            child_spec["_fan_out"] = {
-                "parent_job_id": parent_id,
-                "name": names[index],
-                "depends_on": dependency_ids,
-            }
-            child_rows.append(
-                (
-                    child_id,
-                    project_id,
-                    user_id,
-                    child_type.value,
-                    json.dumps(child_spec),
-                    compute_idempotency_key(
-                        project_id, user_id, child_type, child_spec
-                    ),
-                    JobStatus.PLANNED.value
-                    if dependency_ids
-                    else JobStatus.QUEUED.value,
-                    priority,
-                    max_attempts,
-                    restart_policy.value,
-                    ttl_seconds,
-                    now if not dependency_ids else None,
-                    now,
-                    now,
-                )
+        opts = (priority, max_attempts, restart_policy.value, ttl_seconds)
+        child_rows = [
+            self._fan_out_child_row(
+                (project_id, user_id, child_id, now, opts),
+                child,
+                _fan_out_child_spec(
+                    child,
+                    parent_spec,
+                    {
+                        "parent_job_id": parent_id,
+                        "name": name,
+                        "depends_on": [name_to_id[dep] for dep in graph[name]],
+                    },
+                ),
             )
-
+            for name, child, child_id in zip(names, children, child_ids, strict=True)
+        ]
         parent_graph_spec = dict(parent_spec)
         parent_graph_spec["_fan_out"] = {"children": child_ids}
+        parent_row = (
+            parent_id,
+            project_id,
+            user_id,
+            parent_job_type.value,
+            json.dumps(parent_graph_spec),
+            compute_idempotency_key(
+                project_id, user_id, parent_job_type, parent_graph_spec
+            ),
+            JobStatus.RUNNING.value,
+            *opts,
+            child_ids,
+            self._resolve_venue(parent_spec),
+            now,
+            now,
+            now,
+        )
+        self._insert_fan_out_rows(parent_row, child_rows)
+        return parent_id
+
+    def _fan_out_child_row(
+        self, ctx: tuple[Any, ...], child: dict[str, Any], child_spec: dict[str, Any]
+    ) -> tuple[Any, ...]:
+        """One child row; QUEUED now unless it waits on siblings (PLANNED)."""
+        project_id, user_id, child_id, now, opts = ctx
+        child_type = JobType(child["job_type"])
+        waits = bool(child_spec["_fan_out"]["depends_on"])
+        return (
+            child_id,
+            project_id,
+            user_id,
+            child_type.value,
+            json.dumps(child_spec),
+            compute_idempotency_key(project_id, user_id, child_type, child_spec),
+            JobStatus.PLANNED.value if waits else JobStatus.QUEUED.value,
+            *opts,
+            None if waits else now,
+            self._resolve_venue(child_spec),
+            now,
+            now,
+        )
+
+    def _insert_fan_out_rows(
+        self, parent_row: tuple[Any, ...], child_rows: list[tuple[Any, ...]]
+    ) -> None:
         with self._get_conn() as conn, conn.cursor() as cur:
             cur.execute(
                 """
                 INSERT INTO jobs (
                     job_id, project_id, user_id, job_type, spec, idempotency_key,
                     status, priority, desired_max_attempts, restart_policy,
-                    ttl_seconds, fan_out_child_job_ids, created_at, updated_at,
-                    last_state_change_at
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ttl_seconds, fan_out_child_job_ids, venue, created_at,
+                    updated_at, last_state_change_at
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
-                (
-                    parent_id,
-                    project_id,
-                    user_id,
-                    parent_job_type.value,
-                    json.dumps(parent_graph_spec),
-                    compute_idempotency_key(
-                        project_id, user_id, parent_job_type, parent_graph_spec
-                    ),
-                    JobStatus.RUNNING.value,
-                    priority,
-                    max_attempts,
-                    restart_policy.value,
-                    ttl_seconds,
-                    child_ids,
-                    now,
-                    now,
-                    now,
-                ),
+                parent_row,
             )
             cur.executemany(
                 """
                 INSERT INTO jobs (
                     job_id, project_id, user_id, job_type, spec, idempotency_key,
                     status, priority, desired_max_attempts, restart_policy,
-                    ttl_seconds, next_run_at, created_at, updated_at
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ttl_seconds, next_run_at, venue, created_at, updated_at
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 child_rows,
             )
             conn.commit()
-        return parent_id
 
     def _reconcile_fan_out_parent(self, conn: Any, child_job_id: str) -> None:
         """Unblock dependants and aggregate a fan-out parent after child completion."""
