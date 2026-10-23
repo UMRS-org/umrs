@@ -229,19 +229,16 @@ def _project_budget_caps(project_id: str) -> dict[str, float]:
 
     Empty dict when the store is not PG-backed or the read fails — an
     unreadable budget row never blocks a loop start (fail-open is logged;
-    an over-budget loop is stoppable by hand).
+    an over-budget loop is stoppable by hand). The read goes through the
+    store (``read_row``): a dead session is replaced and the read retried
+    once, and its transaction never stays open (ops-watch #532).
     """
-    conn = getattr(_loop_store, "_sync_pool", None)
-    if conn is None:
-        return {}
     try:
-        cur = conn.cursor()
-        cur.execute(
+        row = _loop_store.read_row(
             "SELECT max_gpu_hours, max_wall_clock_hours"
             " FROM project_budgets WHERE project_id = %s",
             (project_id,),
         )
-        row = cur.fetchone()
     except Exception as exc:  # noqa: BLE001 — budget read is best-effort
         logger.warning("project budget read failed for %s: %s", project_id, exc)
         return {}
@@ -750,9 +747,13 @@ def _resolve_loop_workflow(
     return name
 
 
-def _runs_no_workflow(request: StartLoopRequest, engine: AutonomousResearchLoop) -> bool:
+def _runs_no_workflow(
+    request: StartLoopRequest, engine: AutonomousResearchLoop
+) -> bool:
     """Simulated engines, agentic loops and plan iterations run no workflow."""
-    return bool(engine.simulated or request.agentic or (request.iteration_plan or "").strip())
+    return bool(
+        engine.simulated or request.agentic or (request.iteration_plan or "").strip()
+    )
 
 
 def _stamp_experiments(loop: ResearchLoop, name: str) -> None:
@@ -830,10 +831,14 @@ def _plan_iteration_problems(request: StartLoopRequest) -> list[str]:
     except ValueError as exc:
         return [str(exc)]
     if not request.plan_sources:
-        return ["plan_sources: a venue source serves the runs' models (a pushed source, or site)"]
+        return [
+            "plan_sources: a venue source serves the runs' models (a pushed source, or site)"
+        ]
     args.update({shape.goal_param: request.research_goal, shape.context_param: ""})
     _program, problems = prepare_plan(
-        request.iteration_plan_doc, args, tool_capabilities=request.plan_tool_capabilities
+        request.iteration_plan_doc,
+        args,
+        tool_capabilities=request.plan_tool_capabilities,
     )
     return [f"{p.path}: {p.message}" for p in problems[:10]]
 

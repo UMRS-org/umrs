@@ -515,6 +515,27 @@ class LoopStore:
             cur.execute("DELETE FROM research_loops")
         self._sync_pool.commit()
 
+    def _read_row_sync(self, sql: str, params: tuple[Any, ...]) -> Any:
+        with self._sync_pool.cursor() as cur:
+            cur.execute(sql, params)
+            return cur.fetchone()
+
+    def read_row(self, sql: str, params: tuple[Any, ...]) -> Any:
+        """First row of a read-only query on the store's psycopg2 session.
+
+        The one door for a caller that reads beside the loop tables (the
+        ADR-067 budget row): it runs like every store op — under the store
+        lock, on a live connection, retried once after a lost session, and
+        with its read transaction ended. ai4s 2026-10-21/22 (ops-watch #532):
+        the budget read used the raw connection, a loop start refused after
+        it left the SELECT's transaction open, the idle-in-transaction reaper
+        killed the session, and every later budget read failed "connection
+        already closed". ``None`` when the store is not psycopg2-backed.
+        """
+        if self._sync_pool is None:
+            return None
+        return self._sync_call(self._read_row_sync, sql, params)
+
     # -- public sync facades ------------------------------------------------ #
 
     def save(self, loop: ResearchLoop) -> None:
