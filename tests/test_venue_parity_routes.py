@@ -290,6 +290,24 @@ class TestSettings:
             == "auto"
         )
 
+    def test_the_same_document_again_keeps_its_rev_and_writes_no_audit(self, h, monkeypatch):
+        """RS-1 round 3, N4: every attach sends the client's settings; an
+        unchanged document is not a new rev nor a ``settings.set`` row."""
+        from umrs.venues import session_audit
+
+        audited: list[str] = []
+        monkeypatch.setattr(
+            session_audit, "audit_venue", lambda event, **_kw: audited.append(event)
+        )
+        assert h.client.put(f"{BASE}/venue/settings", json=self.DOC, headers=H).json()["rev"] == 1
+        again = h.client.put(f"{BASE}/venue/settings", json=self.DOC, headers=H)
+        assert again.status_code == 200 and again.json()["rev"] == 1
+        assert audited == ["settings.set"]
+        assert h.settings.get("sess-1", user_id="alice")[0] == 1
+        changed = {**self.DOC, "ask_user_mode": "auto"}
+        assert h.client.put(f"{BASE}/venue/settings", json=changed, headers=H).json()["rev"] == 2
+        assert audited == ["settings.set", "settings.set"]
+
     def test_invalid_values_are_400_with_the_field(self, h):
         r = h.client.put(f"{BASE}/venue/settings", json={"permission_mode": "yolo"}, headers=H)
         assert r.status_code == 400
