@@ -23,11 +23,12 @@ from __future__ import annotations
 
 import logging
 import uuid
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Any, Protocol
 
+from umrs.companion_trust.chat_turn_questions import cancel_session_questions
 from umrs.session_policy import (
     PolicyError,
     PolicyRuleStore,
@@ -108,6 +109,7 @@ class FrontendVenueService:
         quota_check: StartCheckFn | None = None,
         policy_store: PolicyRuleStore | None = None,
         policy_env: Mapping[str, str] | None = None,
+        questions_factory: Callable[[Any], Any] | None = None,
     ) -> None:
         self.config = config
         self.broker = broker
@@ -128,6 +130,9 @@ class FrontendVenueService:
             policy_store if policy_store is not None else PolicyRuleStore()
         )
         self._policy_env = policy_env
+        # ADR-099 D-8: the ask_user questions store on a pooled connection
+        # (None = ChatTurnQuestionsStore; tests inject the sqlite one).
+        self.questions_factory = questions_factory
 
     # ── helpers ───────────────────────────────────────────────────────
 
@@ -163,6 +168,16 @@ class FrontendVenueService:
     def _project_registry(self, owner: str, session_id: str, *, state: str) -> None:
         """Best-effort projection onto the 0084 venue/state columns."""
         project_session_state(self.pool, owner, session_id, state)
+
+    def _cancel_questions(self, owner: str, session_id: str) -> None:
+        """A new worker or a stop: no worker polls the old pending questions
+        any more (ADR-099 D-8). Best effort."""
+        cancel_session_questions(
+            self.pool,
+            session_id=session_id,
+            user_id=owner,
+            factory=self.questions_factory,
+        )
 
     def _job_view(self, job_id: str) -> dict[str, Any] | None:
         """Status + last-attempt detail of the session job (None when unlinked)."""
@@ -343,6 +358,7 @@ class FrontendVenueService:
             job_id=job_id,
             policy=policy,
         )
+        self._cancel_questions(owner, session_id)
         self._enqueue(job_id, session_id)
         audit_venue(
             "session.start",
@@ -639,6 +655,7 @@ class FrontendVenueService:
             logger.warning("venue teardown raised for %s: %s", session_id, exc)
         stopped = self.store.mark_stopped(session_id, reason=f"stopped by {actor}")
         self._project_registry(owner, session_id, state="stopped")
+        self._cancel_questions(owner, session_id)
         audit_session_stop(
             cause=cause,
             actor=actor_id or owner,
@@ -797,6 +814,9 @@ SESSION_HOST = "local"
 # Worker-reported runtime fields an admin view leaves out: the live
 # assistant text and tool lines are the user's conversation, not control data.
 _ADMIN_HIDDEN_RUNTIME = ("partial", "tool_activity")
+# Phases whose ``detail`` may carry conversation content (an ask_user
+# question; ADR-099 D-8): an admin sees the phase, never the detail.
+_ADMIN_HIDDEN_DETAIL_PHASES = ("awaiting_user",)
 
 
 def admin_view(out: dict[str, Any]) -> dict[str, Any]:
@@ -806,6 +826,8 @@ def admin_view(out: dict[str, Any]) -> dict[str, Any]:
         for k, v in (out.get("runtime") or {}).items()
         if k not in _ADMIN_HIDDEN_RUNTIME
     }
+    if runtime.get("phase") in _ADMIN_HIDDEN_DETAIL_PHASES and "detail" in runtime:
+        runtime["detail"] = ""
     return {**out, "runtime": runtime, "host": SESSION_HOST}
 
 

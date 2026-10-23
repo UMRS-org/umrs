@@ -38,6 +38,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from umrs.companion_trust.chat_turn_questions import cancel_session_questions
 from umrs.jobs.models import Job, JobAttempt, JobType
 from umrs.venues.session_audit import audit_session_stop, audit_venue
 
@@ -248,6 +249,10 @@ class FrontendSessionBackend(OrchestratorBackend):
             logger.warning(
                 "frontend_session teardown raised for %s", row.session_id, exc_info=True
             )
+        # ADR-099 D-8: no worker polls this session's questions any more.
+        cancel_session_questions(
+            self.pool, session_id=row.session_id, user_id=row.user_id
+        )
         if failed:
             self.store.mark_failed(row.session_id, reason)
             project_session_state(self.pool, row.user_id, row.session_id, "error")

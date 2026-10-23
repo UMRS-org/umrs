@@ -62,6 +62,7 @@ def h():
     provisioner = FrontendPodmanProvisioner(
         broker, podman=podman, session_root=Path(tempfile.mkdtemp(prefix="venue-parity-"))
     )
+    questions = ChatTurnQuestionsStore()
     service = FrontendVenueService(
         config=FrontendVenueConfig.from_env(READY_ENV),
         broker=broker,
@@ -71,8 +72,8 @@ def h():
         sealed_store=FakeSealed({("alice", "openai-main"): _meta("openai-main")}),
         job_store=FakeJobStore(),
         site_name="rccs",
+        questions_factory=lambda _conn: questions,
     )
-    questions = ChatTurnQuestionsStore()
     settings = VenueAgentSettingsStore()
     app = FastAPI()
     app.include_router(venue_router)
@@ -189,6 +190,60 @@ class TestQuestions:
         assert r.status_code == 409
         assert "private" not in r.text
 
+    def test_stop_cancels_the_pending_questions(self, h):
+        # A3: nobody polls a stopped session's question; it must not reopen.
+        qid = _ask(h).json()["question"]["question_id"]
+        stopped = h.client.post(f"{BASE}/venue/stop", headers=H)
+        assert stopped.status_code == 200, stopped.text
+        assert h.questions.get(qid)["status"] == "cancelled"
+        assert h.client.get(f"{BASE}/questions", headers=H).json()["questions"] == []
+        late = h.client.post(f"{BASE}/questions/{qid}/answer", json={"answer": "x"}, headers=H)
+        assert late.status_code == 409
+
+    def test_a_new_start_cancels_the_last_workers_questions(self, h):
+        # A3: a worker that died with a question pending (lease end, crash)
+        # leaves it pending; the next start closes it before the new worker.
+        qid = _ask(h).json()["question"]["question_id"]
+        h.service.store.mark_failed("sess-1", "worker died")
+        again = h.client.post(
+            f"{BASE}/venue/start",
+            json={"source_refs": ["openai-main"], "web_policy": "none"},
+            headers=H,
+        )
+        assert again.status_code == 200, again.text
+        assert h.questions.get(qid)["status"] == "cancelled"
+
+    def test_lease_end_cancels_the_pending_questions(self, h):
+        from umrs.jobs.frontend_session_backend import FrontendSessionBackend
+
+        qid = _ask(h).json()["question"]["question_id"]
+        backend = FrontendSessionBackend(
+            config=h.service.config,
+            provisioner=h.service.provisioner,
+            store=h.service.store,
+            broker=h.broker,
+            pool=h.pool,
+        )
+        cancelled: list[tuple[str, str]] = []
+
+        def cancel(_pool, *, session_id, user_id, factory=None):
+            del factory
+            cancelled.append((session_id, user_id))
+            return h.questions.cancel_pending(session_id=session_id, user_id=user_id)
+
+        import umrs.jobs.frontend_session_backend as backend_mod
+
+        original = backend_mod.cancel_session_questions
+        backend_mod.cancel_session_questions = cancel
+        try:
+            backend.end_session(
+                h.service.store.get("sess-1"), reason="lease expired", cause="lease_end"
+            )
+        finally:
+            backend_mod.cancel_session_questions = original
+        assert cancelled == [("sess-1", "alice")]
+        assert h.questions.get(qid)["status"] == "cancelled"
+
     def test_bounds(self, h):
         assert _ask(h, question="x" * 4001).status_code == 422
         qid = _ask(h).json()["question"]["question_id"]
@@ -244,7 +299,22 @@ class TestSettings:
     def test_non_owner_cannot_push(self, h):
         r = h.client.put(f"{BASE}/venue/settings", json=self.DOC, headers={"x-user-id": "mallory"})
         assert r.status_code == 404
-        assert h.settings.get("sess-1") == (0, {})
+        assert h.settings.get("sess-1", user_id="mallory") == (0, {})
+
+    def test_another_users_row_for_the_same_id_never_blocks_the_owner(self, h):
+        # A7: bob's own session with the same client-chosen id wrote first.
+        h.pool.seed("bob", "sess-1")
+        bob = h.client.put(
+            f"{BASE}/venue/settings",
+            json={"ask_user_mode": "auto"},
+            headers={"x-user-id": "bob"},
+        )
+        assert bob.status_code == 200 and bob.json()["rev"] == 1
+        mine = h.client.put(f"{BASE}/venue/settings", json=self.DOC, headers=H)
+        assert mine.status_code == 200, mine.text
+        assert mine.json()["rev"] == 1
+        seen = h.client.get(f"{BASE}/rail/settings", headers=h.rail).json()
+        assert (seen["rev"], seen["settings"]["ask_user_mode"]) == (1, "ask")
 
     def test_rail_never_reads_another_users_row(self, h):
         h.settings.put(session_id="sess-1", user_id="bob", settings={"ask_user_mode": "auto"})
@@ -257,3 +327,33 @@ def test_owner_routes_answer_a_typed_503_without_a_pool(h):
     r = h.client.get(f"{BASE}/questions", headers=H)
     assert r.status_code == 503
     assert r.headers["x-platform-error-code"] == "companionvenue.unavailable"
+
+
+class TestAdminNeverSeesTheQuestion:
+    """A1: an ask_user question is conversation content; the admin view
+    shows the phase, never the text (old worker: detail=question[:400])."""
+
+    QUESTION = "Which patient cohort should I drop?"
+
+    def test_old_worker_detail_is_hidden_from_admins(self, h):
+        hb = h.client.post(
+            f"{BASE}/rail/heartbeat",
+            json={"phase": "awaiting_user", "detail": self.QUESTION},
+            headers=h.rail,
+        )
+        assert hb.status_code == 200, hb.text
+        admin = h.service.admin_status("sess-1")
+        assert admin["runtime"]["phase"] == "awaiting_user"
+        assert self.QUESTION not in repr(admin)
+        listed = h.service.admin_list()
+        assert self.QUESTION not in repr(listed)
+        owner = h.client.get(f"{BASE}/venue", headers=H)
+        assert owner.json()["runtime"]["detail"] == self.QUESTION
+
+    def test_other_phases_keep_their_control_detail(self, h):
+        h.client.post(
+            f"{BASE}/rail/heartbeat",
+            json={"phase": "running", "detail": "turn accepted"},
+            headers=h.rail,
+        )
+        assert h.service.admin_status("sess-1")["runtime"]["detail"] == "turn accepted"
