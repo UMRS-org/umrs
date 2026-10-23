@@ -82,12 +82,12 @@ def _site_name() -> str:
 
 
 def _quota_check(pool: Any) -> Any:
-    from .agent_quota import enforce_spawn_budget
+    """The start's quota check (ADR-099 D-6): the live remote-session cap of
+    the start's resolved policy. ``frontend_session`` left the ADR-051
+    agent-process budget, which the other spawn points keep enforcing."""
+    from umrs.quotas.session_cap import check_concurrent_sessions
 
-    def check(user_id: str) -> None:
-        enforce_spawn_budget(pool, user_id=user_id)
-
-    return check
+    return lambda check: check_concurrent_sessions(pool, check)
 
 
 def get_venue_service(request: Request) -> FrontendVenueService:
@@ -470,7 +470,9 @@ _RAIL_GW_DROP_HEADERS = frozenset(
 # ADR-092 slice 8: a plan-run worker reaches the traces family for its own
 # run only, and only the record verbs (the run, its attempts, its records,
 # finishing an attempt); never another run, never start, resume or cancel.
-_PLAN_RUN_TAILS = re.compile(r"^(|/attempts|/records|/attempts/[A-Za-z0-9_.:-]+/finish)$")
+_PLAN_RUN_TAILS = re.compile(
+    r"^(|/attempts|/records|/attempts/[A-Za-z0-9_.:-]+/finish)$"
+)
 
 
 def _lease_project(principal: RailPrincipal) -> str:
@@ -627,8 +629,10 @@ def _own_plan_run_path(request: Request, principal: RailPrincipal, path: str) ->
     started for (the record UMRS wrote), never one the sandbox names."""
     run_id, _job_id = get_venue_service(request).plan_run_binding(principal.session_id)
     prefix = f"traces/plan-runs/{run_id}"
-    if not run_id or not path.startswith(prefix) or not _PLAN_RUN_TAILS.match(
-        path[len(prefix) :]
+    if (
+        not run_id
+        or not path.startswith(prefix)
+        or not _PLAN_RUN_TAILS.match(path[len(prefix) :])
     ):
         raise_typed(
             PlatformError.companionvenue(
@@ -801,14 +805,17 @@ def _bound_run_job(request: Request, principal: RailPrincipal) -> tuple[str, Any
     if not run_id or not job_id or service.job_store is None:
         raise_typed(
             PlatformError.companionvenue(
-                "forbidden", "plan gates: this session hosts no plan run (ADR-092 slice 8)"
+                "forbidden",
+                "plan gates: this session hosts no plan run (ADR-092 slice 8)",
             )
         )
     try:
         return run_id, service.job_store.get_job(job_id)
     except Exception as exc:  # noqa: BLE001 — a missing record is named
         raise_typed(
-            PlatformError.companionvenue("not_found", f"plan run record {job_id} not found"),
+            PlatformError.companionvenue(
+                "not_found", f"plan run record {job_id} not found"
+            ),
             cause=exc,
         )
 
@@ -872,7 +879,9 @@ async def rail_request_plan_gate(
     return {"session_id": session_id, "run_id": run_id, "approval": _gate_view(record)}
 
 
-@router.get("/{session_id}/rail/plan-gates/{approval_id}", response_model=dict[str, Any])
+@router.get(
+    "/{session_id}/rail/plan-gates/{approval_id}", response_model=dict[str, Any]
+)
 async def rail_get_plan_gate(
     session_id: str,
     approval_id: str,

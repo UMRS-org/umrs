@@ -5,10 +5,19 @@ poles — CPU-process units (live agent jobs) and disk bytes (catalog-attributed
 unique content). Read-only, no accounting decisions here; caps come straight
 from the same env knobs the enforcement edges read, so the number shown is
 exactly the number enforced.
+
+ADR-099 (RS-1) adds two remote-session poles from the caller's effective
+session policy at this site: ``sessions`` (live remote sessions against
+``sessions.concurrent_user``) and ``tokens_today`` (the inference proxy's
+tokens today against ``budget.tokens_per_day_user``). ``limit`` 0 means no
+limit. A pole whose numbers cannot be read is ``null``, never invented.
 """
 
 from __future__ import annotations
 
+import logging
+import os
+import time
 from typing import Any
 
 from fastapi import APIRouter, Request
@@ -29,6 +38,15 @@ class QuotaUnitsResponse(BaseModel):
     user_id: str
     cpu_process: PoleRow
     disk_bytes: PoleRow
+    sessions: PoleRow | None = Field(
+        None, description="Live remote sessions at this site (ADR-099 D-6)"
+    )
+    tokens_today: PoleRow | None = Field(
+        None, description="Inference-proxy tokens today at this site (ADR-099 D-5)"
+    )
+
+
+logger = logging.getLogger(__name__)
 
 
 router = APIRouter(prefix="/umrs/quota", tags=["quota"])
@@ -68,11 +86,66 @@ def quota_units(request: Request) -> QuotaUnitsResponse:
         disk_usage = DiskLedger(conn).usage(caller.user_id)
     finally:
         pool.putconn(conn)
+    sessions, tokens_today = _remote_session_poles(pool, caller.user_id)
     return QuotaUnitsResponse(
         user_id=caller.user_id,
         cpu_process=PoleRow(current=cpu_current, limit=agent_max_processes()),
         disk_bytes=PoleRow(current=disk_usage, limit=disk_bytes_max()),
+        sessions=sessions,
+        tokens_today=tokens_today,
     )
+
+
+def _remote_session_poles(
+    pool: Any, user_id: str
+) -> tuple[PoleRow | None, PoleRow | None]:
+    """(sessions, tokens_today) from the caller's effective session policy."""
+    from umrs.jobs.store import configured_site_name
+    from umrs.quotas.enforcer import policy_limits
+
+    venue = configured_site_name()
+    try:
+        limits = policy_limits(pool, venue=venue, user_id=user_id)
+    except Exception:  # the poles stay null, never invented
+        logger.warning("session policy unreadable for quota units", exc_info=True)
+        return None, None
+    return (
+        _sessions_pole(pool, venue, user_id, limits),
+        _tokens_pole(pool, venue, user_id, limits),
+    )
+
+
+def _sessions_pole(
+    pool: Any, venue: str, user_id: str, limits: dict[str, Any]
+) -> PoleRow | None:
+    from umrs.quotas.session_cap import count_live_sessions, session_limits
+
+    try:
+        current = count_live_sessions(pool, venue=venue, user_id=user_id)
+    except Exception:
+        logger.warning("live sessions unreadable for quota units", exc_info=True)
+        return None
+    return PoleRow(
+        current=current, limit=session_limits(limits)["concurrent_user"] or 0
+    )
+
+
+def _tokens_pole(
+    pool: Any, venue: str, user_id: str, limits: dict[str, Any]
+) -> PoleRow | None:
+    from umrs.quotas.enforcer import day_window, day_zone, sum_tokens
+
+    zone = day_zone(os.environ.get("UMRS_QUOTA_DAY_TZ", "UTC"))
+    start, _end = day_window(time.time(), zone)
+    try:
+        current = sum_tokens(
+            pool, venue=venue, scope="user", subject=user_id, since=start
+        )
+    except Exception:
+        logger.warning("token usage unreadable for quota units", exc_info=True)
+        return None
+    limit = ((limits or {}).get("budget") or {}).get("tokens_per_day_user")
+    return PoleRow(current=current, limit=limit if isinstance(limit, int) else 0)
 
 
 __all__ = ["router"]

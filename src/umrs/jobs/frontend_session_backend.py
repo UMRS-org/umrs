@@ -12,13 +12,18 @@ of a private sweeper:
                    ``restart_policy=never`` keeps it terminal (the user
                    starts again deliberately).
     check_status → the lease is the liveness authority: revoked/expired →
-                   teardown + succeeded(end=lease_ended); idle beyond
-                   ``UMRS_VENUE_IDLE_SECONDS`` → revoke + teardown +
+                   teardown + succeeded(end=lease_ended); idle beyond the
+                   policy's ``lifetime.idle_s`` (ADR-099 D-7; else
+                   ``UMRS_VENUE_IDLE_SECONDS``) → revoke + teardown +
                    succeeded(end=idle); worker reported ``exited`` →
                    teardown + failed; otherwise running(phase, turn_seq).
     cancel       → the in-process cancel bus (``POST /umrs/jobs/{id}/cancel``)
                    tears the sandbox down; the owner's stop route does the
                    same directly, then cancels the job.
+
+The lease's hard cap is the smaller of the policy's ``lifetime.wall_clock_s``
+and ``UMRS_VENUE_MAX_LIFETIME_SECONDS`` (ADR-099 D-7). The spec's ``policy``
+(the start's resolved session policy) passes through validation unchanged.
 
 The job's ``venue`` column carries the SITE that must claim it (the API
 container that received the start; every umrs-front container holds the
@@ -90,7 +95,24 @@ def validate_frontend_session_spec(spec: Any) -> dict[str, Any]:
         "web_allow_domains": _clean_list(spec.get("web_allow_domains")),
         "project": str(spec.get("project") or ""),
         "plan_run_id": _plan_run_id(spec),
+        "policy": _spec_policy(spec),
     }
+
+
+def _spec_policy(spec: dict[str, Any]) -> dict[str, Any]:
+    """The start's resolved session policy (ADR-099), passed through as is."""
+    policy = spec.get("policy")
+    return policy if isinstance(policy, dict) else {}
+
+
+def policy_seconds(policy: Any, key: str) -> int | None:
+    """``policy.lifetime.<key>`` when set to a positive integer, else None
+    (a missing key is the site default; ADR-099 contract §3)."""
+    lifetime = policy.get("lifetime") if isinstance(policy, dict) else None
+    value = lifetime.get(key) if isinstance(lifetime, dict) else None
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        return None
+    return value
 
 
 def _plan_run_id(spec: dict[str, Any]) -> str:
@@ -109,6 +131,12 @@ def worker_command_for(spec: dict[str, Any]) -> tuple[str, ...]:
     run's headless worker (slice 8). Never anything else."""
     run_id = spec.get("plan_run_id") or ""
     return ("venue", "worker", "--plan-run", run_id) if run_id else ("venue", "worker")
+
+
+def _policy_kwarg(spec: dict[str, Any]) -> dict[str, Any]:
+    """``policy=`` for the registry row when the spec carries one (an empty
+    policy keeps the row's stored value, as ``policy=None`` does)."""
+    return {"policy": spec["policy"]} if spec.get("policy") else {}
 
 
 class FrontendSessionBackend(OrchestratorBackend):
@@ -156,6 +184,7 @@ class FrontendSessionBackend(OrchestratorBackend):
                 default_source_name=spec["default_source_name"],
                 web_policy=spec["web_policy"],
                 job_id=job_id,
+                **_policy_kwarg(spec),
             )
         cfg = self.config.provision_config(
             session_id=sid,
@@ -167,6 +196,7 @@ class FrontendSessionBackend(OrchestratorBackend):
             web_allow_domains=tuple(spec["web_allow_domains"]),
             project=spec["project"],
             worker_command=worker_command_for(spec),
+            max_lifetime_seconds=policy_seconds(spec["policy"], "wall_clock_s"),
         )
         result = self.provisioner.provision(cfg)
         if result.state != "running":
@@ -250,14 +280,19 @@ class FrontendSessionStatusChecker(BackendStatusChecker):
     def job_type(self) -> JobType:
         return JobType.FRONTEND_SESSION
 
-    def _idle(self, lease: Any) -> bool:
+    def _idle_seconds(self, job: Job | None) -> int:
+        """The session's idle limit: ``spec.policy.lifetime.idle_s``, else the
+        site's ``UMRS_VENUE_IDLE_SECONDS`` (ADR-099 D-7)."""
+        spec = getattr(job, "spec", None) or {}
+        configured = int(self._backend.config.idle_seconds)
+        return policy_seconds(spec.get("policy"), "idle_s") or configured
+
+    @staticmethod
+    def _idle(lease: Any, idle_seconds: int) -> bool:
         last = lease.last_accessed_at or lease.issued_at
-        return datetime.now(timezone.utc) - last >= timedelta(
-            seconds=int(self._backend.config.idle_seconds)
-        )
+        return datetime.now(timezone.utc) - last >= timedelta(seconds=idle_seconds)
 
     async def check_status(self, attempt: JobAttempt, job: Job) -> AttemptCheckResult:
-        del job
         ref = attempt.backend_ref or ""
         if not ref.startswith(REF_PREFIX):
             return AttemptCheckResult.failed("Unexpected backend reference")
@@ -271,9 +306,9 @@ class FrontendSessionStatusChecker(BackendStatusChecker):
             return AttemptCheckResult.succeeded(
                 metrics={"end": row.reason or "stopped"}
             )
-        return await asyncio.to_thread(self._check_live, row)
+        return await asyncio.to_thread(self._check_live, row, self._idle_seconds(job))
 
-    def _check_live(self, row: Any) -> AttemptCheckResult:
+    def _check_live(self, row: Any, idle_seconds: int) -> AttemptCheckResult:
         backend = self._backend
         lease = backend.broker.get_lease(row.lease_id) if row.lease_id else None
         if lease is None or not lease.is_valid:
@@ -281,7 +316,7 @@ class FrontendSessionStatusChecker(BackendStatusChecker):
                 row, reason="lease expired or revoked", cause="lease_end"
             )
             return AttemptCheckResult.succeeded(metrics={"end": "lease_ended"})
-        if self._idle(lease):
+        if self._idle(lease, idle_seconds):
             backend.broker.revoke_lease(lease.lease_id, actor="monitor")
             audit_venue(
                 "lease.revoke",
@@ -292,7 +327,7 @@ class FrontendSessionStatusChecker(BackendStatusChecker):
                 via="idle",
             )
             backend.end_session(
-                row, reason=f"idle beyond {backend.config.idle_seconds}s", cause="idle"
+                row, reason=f"idle beyond {idle_seconds}s", cause="idle"
             )
             return AttemptCheckResult.succeeded(metrics={"end": "idle"})
         phase = str(row.runtime.get("phase") or "")
