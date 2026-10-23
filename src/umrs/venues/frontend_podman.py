@@ -316,6 +316,18 @@ def _resource_limits(
     return tuple(out)
 
 
+def worker_web_access(cfg: ProvisionConfig) -> str:
+    """``R4_WEB_ACCESS`` for the worker: ``MODE[:d1,d2]``, the r4 grammar.
+
+    The same choice squid enforces (``web_policy``, and for an allowlist its
+    domains), so the worker's own web guard never claims more or less than
+    the proxy allows (ADR-099 D-9, RS-1 fix W1).
+    """
+    if cfg.web_policy == "allowlist" and cfg.web_allow_domains:
+        return f"allowlist:{','.join(cfg.web_allow_domains)}"
+    return cfg.web_policy
+
+
 def worker_run_args(
     cfg: ProvisionConfig, *, controllers: frozenset[str] | None = None
 ) -> WorkerRunArgs:
@@ -363,6 +375,10 @@ def worker_run_args(
         f"R4_VENUE_RAIL_URL=http://egress:{cfg.rail_port}",
         "--env",
         "R4_ENDPOINT_URL=http://egress:8080",
+        # ADR-099 D-9: the web access the sandbox was started with; the
+        # worker's web tools follow it when the restored copy has no choice.
+        "--env",
+        f"R4_WEB_ACCESS={worker_web_access(cfg)}",
         # Read-only rootfs: every writable path the r4 runtime needs lives on /tmp.
         "--env",
         "HOME=/tmp/home",
