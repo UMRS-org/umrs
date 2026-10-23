@@ -125,6 +125,16 @@ def _site_default(policy: Any, field_name: str) -> bool:
     return isinstance(origin, dict) and origin.get(field_name) == "default"
 
 
+def _bound(policy: Any, field_name: str) -> int | None:
+    """``policy.bounds[field_name]`` (an owner's rule a site default beat;
+    ADR-099 D-7, Amendment 4) when a positive integer, else None."""
+    bounds = policy.get("bounds") if isinstance(policy, dict) else None
+    value = bounds.get(field_name) if isinstance(bounds, dict) else None
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        return None
+    return value
+
+
 def _plan_run_id(spec: dict[str, Any]) -> str:
     """ADR-092 slice 8: the team plan run this session's worker hosts ("" =
     a chat session). Validated as a run id: it rides the worker's argv."""
@@ -299,12 +309,13 @@ class FrontendSessionStatusChecker(BackendStatusChecker):
         rule set it, else the site's live ``UMRS_VENUE_IDLE_SECONDS`` (ADR-099
         D-7, Amendment 2). A value the policy copied from the site default
         (origin ``default``) does not freeze it: an operator's new idle value
-        reaches running sessions, as before the policy existed."""
+        reaches running sessions, as before the policy existed — up to an
+        owner's looser rule it lost to (``bounds``, Amendment 4)."""
         spec = getattr(job, "spec", None) or {}
         configured = int(self._backend.config.idle_seconds)
         policy = spec.get("policy")
         if _site_default(policy, "lifetime.idle_s"):
-            return configured
+            return min(configured, _bound(policy, "lifetime.idle_s") or configured)
         return policy_seconds(policy, "idle_s") or configured
 
     @staticmethod
