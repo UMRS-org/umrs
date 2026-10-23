@@ -181,6 +181,22 @@ def _reset_skill_store_between_tests() -> Generator:
 
 
 @pytest.fixture(autouse=True)
+def _reset_user_store_pg_lane_between_tests() -> Generator:
+    """The user-store PG lane (``user_store._PG_POOL``) is module-global: a
+    test that builds the real app with a database configured (the CI Postgres
+    leg; the sidecar boot calls ``configure_user_store_pg``) or wires a fake
+    pool left it set, and later ``UserStore`` writes went to the shared test
+    database. A ``set_disabled("root", True)`` there then made every later
+    admin-``root`` test read a disabled account (2026-10-23, #553/#555 CI).
+    Clear it after every test; no-op when the module was never imported."""
+    yield
+    module = sys.modules.get("umrs.admin.user_store")
+    if module is not None:
+        module._PG_POOL = None
+        module._PG_VENUE = ""
+
+
+@pytest.fixture(autouse=True)
 def _reset_knowledge_pool_between_tests() -> Generator:
     """The global knowledge pool is loop-bound at build time; with a
     knowledge DSN configured (self-hosted CI) surviving it kills the next
