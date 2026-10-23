@@ -475,6 +475,9 @@ class JobResponse(BaseModel):
     ttl_seconds: int | None = None
     remaining_alive_seconds: int | None = None
     fan_out_child_job_ids: list[str] = Field(default_factory=list)
+    # Multi-HPC plan S3 (2026-10-24): the site that claims this row (the
+    # jobs table is shared by every umrs-front; "" = pre-venue/shared row).
+    venue: str = ""
     next_run_at: str | None
     active_attempt_id: str | None
     commit_attempt_id: str | None
@@ -572,6 +575,7 @@ def _job_to_response(job: Job, include_attempts: bool = False) -> JobResponse:
             else None
         ),
         fan_out_child_job_ids=job.fan_out_child_job_ids,
+        venue=job.venue,
         next_run_at=job.next_run_at.isoformat() if job.next_run_at else None,
         active_attempt_id=job.active_attempt_id,
         commit_attempt_id=job.commit_attempt_id,

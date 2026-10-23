@@ -1087,6 +1087,12 @@ def _create_app():
 
     app.include_router(quota_status_router)
 
+    # Multi-HPC plan S2 (2026-10-24): the caller's own access/account view of
+    # this site, behind verified identity (never in the open /health).
+    from umrs.api.sites import router as sites_router
+
+    app.include_router(sites_router)
+
     # ADR-086 (2026-10-05): circles — project-scoped context/audience cells
     # (supersedes the ADR-050 §3 groups authority).
     from umrs.api.circles import router as circles_router

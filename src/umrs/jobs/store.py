@@ -1780,6 +1780,7 @@ class JobStore:
             updated_at=row["updated_at"],
             last_state_change_at=row.get("last_state_change_at"),
             last_heartbeat_at=row.get("last_heartbeat_at"),
+            venue=str(row.get("venue") or ""),
         )
 
     def _row_to_attempt(self, row: dict) -> JobAttempt:
