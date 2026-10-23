@@ -713,6 +713,7 @@ async def delete_session_snapshot(session_id: str, request: Request) -> dict[str
                 "DELETE FROM chat_turn_approvals WHERE session_id = %s AND user_id = %s",
                 (session_id, uid),
             )
+            _delete_parity_rows(cur, uid, session_id)
             if deleted:
                 conn.commit()
             else:
@@ -722,6 +723,25 @@ async def delete_session_snapshot(session_id: str, request: Request) -> dict[str
     if not deleted:
         raise_typed(PlatformError.companionsessions("not_found", "snapshot not found"))
     return {"status": "ok", "session_id": session_id, "deleted": True}
+
+
+# ADR-099 D-8 tables (0127, 0128) that hold one owner's rows of a session.
+_PARITY_TABLES = ("chat_turn_questions", "companion_venue_agent_settings")
+
+
+def _delete_parity_rows(cur: Any, uid: str, session_id: str) -> None:
+    """The session's remote questions and agent settings die with it, in the
+    caller's transaction. A venue without the migrations skips a table
+    (``to_regclass`` is NULL there) instead of failing the delete."""
+    for table in _PARITY_TABLES:
+        cur.execute("SELECT to_regclass(%s)", (table,))
+        row = cur.fetchone()
+        if not row or row[0] is None:
+            continue
+        cur.execute(
+            f"DELETE FROM {table} WHERE session_id = %s AND user_id = %s",
+            (session_id, uid),
+        )
 
 
 def _list_where(

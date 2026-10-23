@@ -16,10 +16,10 @@ from tests.fake_pg_pool import FakePool
 from umrs.companion_trust.chat_turn_questions import (
     ChatTurnQuestionsStore,
     QuestionClosed,
+    cancel_session_questions,
 )
 from umrs.venues.agent_settings import (
     SettingsInvalid,
-    SettingsOwnerConflict,
     VenueAgentSettingsStore,
     validate_agent_settings,
 )
@@ -94,6 +94,78 @@ class TestQuestionsStore:
         with pytest.raises(ValueError):
             store.by_status(session_id="s1", status="bogus")
 
+    def test_cancel_pending_closes_one_owners_pending_questions(self):
+        # A3: a new worker, a stop or the lease end leaves no stale question.
+        store = ChatTurnQuestionsStore()
+        stale = _ask(store)["question_id"]
+        answered = _ask(store)["question_id"]
+        store.answer(answered, "x", answered_by="alice")
+        other_session = _ask(store, session_id="s2")["question_id"]
+        other_owner = _ask(store, user_id="bob")["question_id"]
+        assert store.cancel_pending(session_id="s1", user_id="alice") == 1
+        assert store.get(stale)["status"] == "cancelled"
+        assert store.get(answered)["status"] == "answered"
+        assert store.get(other_session)["status"] == "pending"
+        assert store.get(other_owner)["status"] == "pending"
+        with pytest.raises(QuestionClosed):
+            store.answer(stale, "late", answered_by="alice")
+
+
+class _ConnPool:
+    def __init__(self, conn=None, *, fail: bool = False):
+        self.conn = conn
+        self.fail = fail
+        self.returned = 0
+        self.rolled_back = False
+
+    def getconn(self):
+        if self.fail:
+            return self
+        return self.conn
+
+    def putconn(self, _conn):
+        self.returned += 1
+
+    # a broken connection: every cursor fails
+    def cursor(self):
+        raise RuntimeError("connection lost")
+
+    def rollback(self):
+        self.rolled_back = True
+
+
+class TestCancelSessionQuestions:
+    def test_cancels_through_the_factory_and_returns_the_connection(self):
+        store = ChatTurnQuestionsStore()
+        qid = _ask(store)["question_id"]
+        pool = _ConnPool(object())
+        n = cancel_session_questions(
+            pool, session_id="s1", user_id="alice", factory=lambda _conn: store
+        )
+        assert n == 1 and store.get(qid)["status"] == "cancelled"
+        assert pool.returned == 1
+
+    def test_no_pool_and_errors_cancel_nothing_and_never_raise(self):
+        assert cancel_session_questions(None, session_id="s1", user_id="alice") == 0
+        pool = _ConnPool(fail=True)
+        assert cancel_session_questions(pool, session_id="s1", user_id="alice") == 0
+        assert pool.rolled_back is True and pool.returned == 1
+
+    def test_postgres_without_the_table_skips(self):
+        pool = FakePool([[(False,)]])
+        assert cancel_session_questions(pool, session_id="s1", user_id="alice") == 0
+        assert [sql for sql, _ in pool.record] == [
+            "SELECT to_regclass('chat_turn_questions') IS NOT NULL"
+        ]
+
+    def test_postgres_shape(self):
+        pool = FakePool([[(True,)], None])
+        pool.conn.commit = lambda: None
+        cancel_session_questions(pool, session_id="s1", user_id="alice")
+        sql, params = pool.record[1]
+        assert sql.startswith("UPDATE chat_turn_questions SET status = 'cancelled'")
+        assert "status = 'pending'" in sql and params == ("s1", "alice")
+
 
 class TestSettingsValidation:
     def test_known_keys_are_checked_unknown_kept(self):
@@ -128,31 +200,34 @@ class TestSettingsValidation:
 
 
 class TestSettingsStore:
-    def test_memory_rev_grows_and_owner_is_kept(self):
+    def test_memory_rev_grows_per_user_and_session(self):
+        # A7: a row is (user_id, session_id): another user's write for the
+        # same session id is their own row and never claims or blocks this one.
         store = VenueAgentSettingsStore()
-        assert store.get("s1") == (0, {})
+        assert store.get("s1", user_id="alice") == (0, {})
+        assert store.put(session_id="s1", user_id="bob", settings={"b": 1}) == 1
         assert store.put(session_id="s1", user_id="alice", settings={"a": 1}) == 1
         assert store.put(session_id="s1", user_id="alice", settings={"a": 2}) == 2
         assert store.get("s1", user_id="alice") == (2, {"a": 2})
-        assert store.get("s1", user_id="bob") == (0, {})
-        with pytest.raises(SettingsOwnerConflict):
-            store.put(session_id="s1", user_id="bob", settings={})
+        assert store.get("s1", user_id="bob") == (1, {"b": 1})
+        assert store.get("s1", user_id="carol") == (0, {})
 
     def test_pg_shape(self):
         pool = FakePool([[(3,)], [(3, {"ask_user_mode": "auto"})]])
         store = VenueAgentSettingsStore(pool)
         assert store.put(session_id="s1", user_id="alice", settings={"ask_user_mode": "auto"}) == 3
         sql, params = pool.record[0]
-        assert "ON CONFLICT (session_id) DO UPDATE" in sql
-        assert "WHERE companion_venue_agent_settings.user_id = EXCLUDED.user_id" in sql
+        assert "ON CONFLICT (user_id, session_id) DO UPDATE" in sql
+        assert "WHERE" not in sql
         assert params[:2] == ("s1", "alice") and json.loads(params[2]) == {"ask_user_mode": "auto"}
         assert store.get("s1", user_id="alice") == (3, {"ask_user_mode": "auto"})
         assert pool.record[1][1] == ("s1", "alice")
+        assert "AND user_id = %s" in pool.record[1][0]
 
-    def test_pg_owner_conflict_returns_no_row(self):
-        store = VenueAgentSettingsStore(FakePool([None]))
-        with pytest.raises(SettingsOwnerConflict):
-            store.put(session_id="s1", user_id="bob", settings={})
+    def test_migration_keys_the_row_by_user_and_session(self):
+        ddl = (_MIGRATIONS / "0128_companion_venue_agent_settings.sql").read_text()
+        assert "PRIMARY KEY (user_id, session_id)" in ddl
+        assert "session_id TEXT        PRIMARY KEY" not in ddl
 
 
 def _pg_pool_or_skip():
@@ -178,24 +253,46 @@ class TestPostgres:
         pool = _pg_pool_or_skip()
         sid = f"parity-{uuid4().hex[:8]}"
         try:
-            settings = VenueAgentSettingsStore(pool)
-            assert settings.put(session_id=sid, user_id="alice", settings={"a": 1}) == 1
-            assert settings.put(session_id=sid, user_id="alice", settings={"a": 2}) == 2
-            with pytest.raises(SettingsOwnerConflict):
-                settings.put(session_id=sid, user_id="bob", settings={})
-            assert settings.get(sid, user_id="alice") == (2, {"a": 2})
-            conn = pool.getconn()
-            try:
-                store = ChatTurnQuestionsStore(conn)
-                qid = _ask(store, session_id=sid)["question_id"]
-                assert store.answer(qid, "b", answered_by="alice")["status"] == "answered"
-                with pytest.raises(QuestionClosed):
-                    store.answer(qid, "c", answered_by="alice")
-            finally:
-                pool.putconn(conn)
+            _pg_settings_leg(pool, sid)
+            stale = _pg_questions_leg(pool, sid)
+            assert cancel_session_questions(pool, session_id=sid, user_id="alice") == 1
+            assert _on_conn(pool, lambda store: store.get(stale))["status"] == "cancelled"
         finally:
             _cleanup(pool, sid)
             pool.closeall()
+
+
+def _on_conn(pool, fn):
+    conn = pool.getconn()
+    try:
+        return fn(ChatTurnQuestionsStore(conn))
+    finally:
+        pool.putconn(conn)
+
+
+def _pg_settings_leg(pool, sid: str) -> None:
+    """0128 keyed (user_id, session_id): bob's row never blocks alice's."""
+    settings = VenueAgentSettingsStore(pool)
+    assert settings.put(session_id=sid, user_id="alice", settings={"a": 1}) == 1
+    assert settings.put(session_id=sid, user_id="alice", settings={"a": 2}) == 2
+    assert settings.put(session_id=sid, user_id="bob", settings={"b": 1}) == 1
+    assert settings.get(sid, user_id="alice") == (2, {"a": 2})
+    assert settings.get(sid, user_id="bob") == (1, {"b": 1})
+
+
+def _pg_questions_leg(pool, sid: str) -> str:
+    """Terminal transitions on 0127; returns a still-pending question id."""
+
+    def leg(store: ChatTurnQuestionsStore) -> str:
+        assert store.table_present() is True
+        qid = _ask(store, session_id=sid)["question_id"]
+        assert store.answer(qid, "b", answered_by="alice")["status"] == "answered"
+        with pytest.raises(QuestionClosed):
+            store.answer(qid, "c", answered_by="alice")
+        assert store.expire(qid)["status"] == "answered"  # expiry keeps an answer
+        return _ask(store, session_id=sid)["question_id"]
+
+    return _on_conn(pool, leg)
 
 
 def _cleanup(pool, sid: str) -> None:
