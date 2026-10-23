@@ -13,6 +13,10 @@ Rule document (every key optional; ``null`` = no limit at this layer)::
                 "rpm_user": int},
      "sessions": {"concurrent_user": int, "concurrent_project": int}}
 
+Counts and token budgets are integers >= 1 or ``null`` (no limit): ``0`` is
+refused (``sessionpolicy.invalid``) rather than read as either "no limit" or
+"block", and every enforcer reads a value through :func:`limit_value`.
+
 ``web.domains`` is a domain CAP (squid ``dstdomain`` entries); an empty
 list is the same as no cap. ``web.suggested_domains`` is a hint for the
 session-open question, never a limit.
@@ -32,6 +36,9 @@ LAYERS: tuple[str, ...] = ("admin", "owner")
 
 MAX_DOMAINS = 64
 MIN_LIFETIME_S = 60
+# Counts and token budgets: null = no limit, so 0 would only mean "block
+# everything", which RS-1 does not offer (a disabled account is the block).
+MIN_COUNT = 1
 _DOMAIN_RE = re.compile(r"^\.?[a-z0-9-]+(\.[a-z0-9-]+)+$")
 
 # section -> field -> kind ("modes" | "domains" | "count" | "seconds")
@@ -152,7 +159,10 @@ def _integer(raw: Any, field_name: str, minimum: int) -> int:
     if isinstance(raw, bool) or not isinstance(raw, int):
         raise _invalid(field_name, f"{field_name} must be an integer or null")
     if raw < minimum:
-        raise _invalid(field_name, f"{field_name} must be at least {minimum}")
+        raise _invalid(
+            field_name,
+            f"{field_name} must be at least {minimum} (null = no limit at this layer)",
+        )
     return raw
 
 
@@ -163,8 +173,19 @@ def _field_value(kind: str, raw: Any, field_name: str) -> Any:
         return _modes(raw, field_name)
     if kind == "domains":
         return normalize_domains(raw, field_name)
-    minimum = MIN_LIFETIME_S if kind == "seconds" else 0
+    minimum = MIN_LIFETIME_S if kind == "seconds" else MIN_COUNT
     return _integer(raw, field_name, minimum)
+
+
+def limit_value(value: Any) -> int | None:
+    """A count limit as every enforcer reads it (ADR-099 D-1, one rule):
+    ``null`` (or absent) is no limit, a positive integer is the limit. ``0``
+    and negatives are refused at validation (:func:`validate_rule_doc`), so
+    they never come from a rule; one that reaches a reader anyway (a row
+    edited by hand) reads as no limit, never as a block."""
+    if isinstance(value, bool) or not isinstance(value, int) or value < MIN_COUNT:
+        return None
+    return value
 
 
 def _section(name: str, raw: Any, scope: str) -> dict[str, Any]:

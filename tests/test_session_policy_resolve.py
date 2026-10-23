@@ -241,6 +241,34 @@ class TestChoice:
         assert policy["web"] == {"mode": "allowlist", "domains": [".arxiv.org"]}
         assert policy["origin"]["web.mode"] == "default"
 
+    def test_the_legacy_allowlist_keeps_the_domains_the_client_sent(self):
+        """P5: an old client sends domains without a mode; with the flag off
+        the legacy allowlist uses those inside the cap (old code: dropped,
+        the whole cap applied instead)."""
+        capped = _limits(_rule("project", "opossum", {"web": {"domains": [".arxiv.org"]}}))
+        policy = _choose(capped, "", "export.arxiv.org", "pypi.org", required=False)
+        assert policy["web"] == {"mode": "allowlist", "domains": ["export.arxiv.org"]}
+        outside_only = _choose(capped, "", "pypi.org", required=False)
+        assert outside_only["web"] == {"mode": "allowlist", "domains": [".arxiv.org"]}
+        uncapped = _choose(_limits(), "", "pypi.org", required=False, legacy="allowlist")
+        assert uncapped["web"] == {"mode": "allowlist", "domains": ["pypi.org"]}
+
+    def test_the_choice_required_message_stands_alone(self):
+        """P3: the typed detail never reaches a client (only the message
+        does), so the message names the choices, the cap and the hints."""
+        limits = _limits(
+            _rule(
+                "project",
+                "opossum",
+                {"web": {"domains": [".arxiv.org"], "suggested_domains": [".arxiv.org"]}},
+            )
+        )
+        with pytest.raises(PolicyError) as err:
+            _choose(limits, "")
+        message = err.value.message
+        assert "none | allowlist" in message and "within: .arxiv.org" in message
+        assert "suggested: .arxiv.org" in message and "--web" in message
+
     def test_allowlist_without_domains_is_invalid(self):
         with pytest.raises(PolicyError) as err:
             _choose(_limits(), "allowlist")

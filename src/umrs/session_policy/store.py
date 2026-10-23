@@ -12,6 +12,7 @@ bounded, read-only (``umrs_infer`` holds SELECT on the table).
 from __future__ import annotations
 
 import json
+import logging
 import threading
 import time
 from collections import OrderedDict
@@ -23,6 +24,8 @@ from typing import Any
 
 from .model import PolicyRule, check_rule_key
 from .resolve import effective_limits, site_defaults
+
+logger = logging.getLogger(__name__)
 
 _COLUMNS = "venue, scope, subject, layer, doc, set_by, note, updated_at"
 _SELECT = f"SELECT {_COLUMNS} FROM session_policy_rules"
@@ -200,7 +203,14 @@ def effective_limits_for(
 
 class LimitsCache:
     """Effective limits per ``(venue, user, project)`` for ``ttl_s`` seconds;
-    at most ``max_keys`` entries (the oldest goes first)."""
+    at most ``max_keys`` entries (the oldest goes first).
+
+    A key whose rules cannot be re-read serves its last good limits (stale)
+    instead of failing (ADR-099 D-5): a database blip must not turn every
+    proxied call into a 503 while the limits it would read are unchanged.
+    Only a key never read before fails (the caller fails closed). Both
+    events are logged and counted in :attr:`stats` (``stale_served``,
+    ``unavailable``)."""
 
     def __init__(
         self,
@@ -220,27 +230,58 @@ class LimitsCache:
         self._entries: OrderedDict[tuple[str, str, str], tuple[float, dict]] = (
             OrderedDict()
         )
+        self.stats: dict[str, int] = {"stale_served": 0, "unavailable": 0}
 
     def get(self, *, venue: str, user_id: str, project_id: str) -> dict[str, Any]:
         key = (venue, user_id, project_id)
         now = self._clock()
         with self._lock:
             hit = self._entries.get(key)
-            if hit is not None and hit[0] > now:
-                return hit[1]
-        limits = effective_limits_for(
-            self._store,
-            venue=venue,
-            user_id=user_id,
-            project_id=project_id,
-            env=self._env,
+        if hit is not None and hit[0] > now:
+            return hit[1]
+        try:
+            limits = effective_limits_for(
+                self._store,
+                venue=venue,
+                user_id=user_id,
+                project_id=project_id,
+                env=self._env,
+            )
+        except Exception as exc:  # noqa: BLE001 — any read failure: last good, else re-raised
+            return self._last_good(key, hit, exc)
+        self._remember(key, now, limits)
+        return limits
+
+    def _last_good(
+        self,
+        key: tuple[str, str, str],
+        hit: tuple[float, dict] | None,
+        exc: Exception,
+    ) -> dict[str, Any]:
+        """The stale entry of ``key`` after a failed read, else re-raise."""
+        name = "unavailable" if hit is None else "stale_served"
+        with self._lock:
+            self.stats[name] += 1
+        logger.warning(
+            "session policy rules unreadable for %s; %s",
+            "/".join(key),
+            "no cached limits (fail closed)"
+            if hit is None
+            else "serving last good limits",
+            exc_info=exc,
         )
+        if hit is None:
+            raise exc
+        return hit[1]
+
+    def _remember(
+        self, key: tuple[str, str, str], now: float, limits: dict[str, Any]
+    ) -> None:
         with self._lock:
             self._entries[key] = (now + self._ttl, limits)
             self._entries.move_to_end(key)
             while len(self._entries) > self._max:
                 self._entries.popitem(last=False)
-        return limits
 
 
 def effective_limits_cached(pool: Any) -> Callable[[str, str, str], dict[str, Any]]:

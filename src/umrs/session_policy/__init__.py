@@ -19,6 +19,7 @@ from .model import (
     PolicyRule,
     WebChoice,
     domain_within,
+    limit_value,
     validate_rule_doc,
 )
 from .resolve import (
@@ -51,6 +52,7 @@ __all__ = [
     "effective_limits_cached",
     "effective_limits_for",
     "legacy_web_default",
+    "limit_value",
     "resolve_session_policy",
     "site_defaults",
     "validate_rule_doc",

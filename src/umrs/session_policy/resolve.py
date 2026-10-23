@@ -23,6 +23,7 @@ intersection of domain caps removes ``allowlist`` too.
 from __future__ import annotations
 
 import copy
+import logging
 import os
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
@@ -35,8 +36,11 @@ from .model import (
     PolicyRule,
     WebChoice,
     domain_within,
+    limit_value,
     normalize_domains,
 )
+
+logger = logging.getLogger(__name__)
 
 SCHEMA = 1
 _NO_CAP = object()  # domain cap "absent" while folding (None is "no limit")
@@ -48,12 +52,41 @@ ENV_CHOICE_REQUIRED = "UMRS_SESSION_WEB_CHOICE_REQUIRED"
 ENV_LEGACY_WEB = "UMRS_VENUE_WEB_POLICY_DEFAULT"
 
 
+DEFAULT_CONCURRENT_PER_USER = 12
+_UNLIMITED_WORDS = frozenset({"none", "null", "unlimited"})
+
+
 def _env_int(env: Mapping[str, str], name: str, default: int) -> int:
     raw = (env.get(name) or "").strip()
     try:
         return int(raw) if raw else default
     except ValueError:
         return default
+
+
+def concurrent_per_user(env: Mapping[str, str]) -> int | None:
+    """``UMRS_SESSION_CONCURRENT_PER_USER``, the one place it is parsed.
+
+    Empty: 12. A positive integer: that cap. ``none`` / ``unlimited`` /
+    ``null``: no cap (null, the policy's "no limit"). Anything else (``0``,
+    a negative number, a typo) is a misconfiguration: logged, and the
+    default 12 applies, so the env never means "block every start" nor
+    silently "no cap" (ADR-099 D-1: null = no limit, 0 is refused)."""
+    raw = (env.get(ENV_CONCURRENT) or "").strip()
+    if not raw:
+        return DEFAULT_CONCURRENT_PER_USER
+    if raw.lower() in _UNLIMITED_WORDS:
+        return None
+    value = limit_value(int(raw)) if raw.lstrip("-").isdigit() else None
+    if value is None:
+        logger.warning(
+            "%s=%r is not a positive integer or 'unlimited'; using %d",
+            ENV_CONCURRENT,
+            raw,
+            DEFAULT_CONCURRENT_PER_USER,
+        )
+        return DEFAULT_CONCURRENT_PER_USER
+    return value
 
 
 def site_defaults(env: Mapping[str, str] | None = None) -> dict[str, Any]:
@@ -71,7 +104,7 @@ def site_defaults(env: Mapping[str, str] | None = None) -> dict[str, Any]:
             "rpm_user": None,
         },
         "sessions": {
-            "concurrent_user": _env_int(env, ENV_CONCURRENT, 12),
+            "concurrent_user": concurrent_per_user(env),
             "concurrent_project": None,
         },
     }
@@ -332,24 +365,40 @@ def check_owner_rule(doc: dict[str, Any], admin_limits: dict[str, Any]) -> None:
 
 
 def _choice_required(web: dict[str, Any]) -> PolicyError:
+    """The refusal of a start without a web choice. The message alone says
+    everything a client needs (the typed detail stays server-side; clients
+    read the structured caps from ``GET …/venue/policy``, ADR-099 §4)."""
     domains = ", ".join(web["domains"]) or "any"
+    suggested = ", ".join(web["suggested_domains"]) or "none"
     return PolicyError(
         "web_choice_required",
         "choose the agent's web access for this session: web_policy "
-        f"{' | '.join(web['allow'])} (allowlist domains within: {domains})",
+        f"{' | '.join(web['allow'])} (allowlist domains within: {domains}; "
+        f"suggested: {suggested}); r4: --web off|allowlist|public "
+        "or R4_WEB_ACCESS",
         choices=list(web["allow"]),
         domains_cap=list(web["domains"]),
         suggested_domains=list(web["suggested_domains"]),
     )
 
 
-def _legacy_choice(web: dict[str, Any], legacy_default: str) -> tuple[str, list[str]]:
+def _legacy_domains(web: dict[str, Any], sent: list[str]) -> list[str]:
+    """The allowlist a legacy start gets: the domains the client sent that
+    fall inside the cap, else the cap itself, else the suggested domains."""
+    cap = web["domains"]
+    inside = [d for d in sent if not cap or domain_within(d, cap)]
+    return inside or list(cap or web["suggested_domains"])
+
+
+def _legacy_choice(
+    web: dict[str, Any], legacy_default: str, sent: list[str]
+) -> tuple[str, list[str]]:
     """``UMRS_VENUE_WEB_POLICY_DEFAULT`` clipped to the caps: the widest
     allowed mode at or below it (allowlist only with domains to use)."""
     order = ["public", "allowlist", "none"]
     start = order.index(legacy_default) if legacy_default in order else 0
+    domains = _legacy_domains(web, sent)
     for mode in order[start:]:
-        domains = list(web["domains"] or web["suggested_domains"])
         if mode in web["allow"] and (mode != "allowlist" or domains):
             return mode, domains if mode == "allowlist" else []
     return "none", []
@@ -390,7 +439,8 @@ def _chosen(
         return mode, normalize_domains(list(choice.domains), "web.domains"), "choice"
     if require_choice:
         raise _choice_required(limits["web"])
-    legacy_mode, legacy_domains = _legacy_choice(limits["web"], legacy_default)
+    sent = normalize_domains(list(choice.domains), "web.domains")
+    legacy_mode, legacy_domains = _legacy_choice(limits["web"], legacy_default, sent)
     return legacy_mode, legacy_domains, "default"
 
 
