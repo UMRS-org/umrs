@@ -18,6 +18,7 @@ import logging
 import os
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field, is_dataclass, replace
+from datetime import datetime, timezone
 from enum import Enum
 from functools import partial
 from typing import Any
@@ -176,6 +177,26 @@ def _record_attempt(
     record_attempt(
         key, job_id=job_id, ok=ok, error=error, actor=request.requesting_user or ""
     )
+
+
+# Registry marks of an endpoint someone is taking down (review F5, 2026-10-23).
+_DEPROVISION_MARKS = ("deprovision_requested_at", "cleanup_status")
+
+
+def _failure_is_the_models(endpoint: RegisteredEndpoint | None) -> bool:
+    """Whether a failed attempt counts toward the failing re-provision cap.
+
+    Only a failure the model caused does: not an endpoint that was being
+    deprovisioned (the cancel ends the job), nor one whose registry row is
+    gone or already expired/terminated (deprovisioned or a stale registry).
+    The caller checks that the job reached a node first; a queue or
+    assignment timeout says nothing about the model.
+    """
+    if endpoint is None:
+        return False
+    if endpoint.status in (EndpointStatus.TERMINATED, EndpointStatus.EXPIRED):
+        return False
+    return not any(mark in endpoint.metadata for mark in _DEPROVISION_MARKS)
 
 
 def _readiness_probe(request: ProvisionRequest) -> dict[str, str | None]:
@@ -806,6 +827,7 @@ class OrchestrationService:
         start_time: float,
     ) -> ProvisionResult:
         """Resolve backend assignment and readiness for a submitted job."""
+        reached_node = False
         try:
             actual_host, actual_port = await self._await_assignment(
                 job_id,
@@ -815,6 +837,7 @@ class OrchestrationService:
                 progress,
                 queue_patient=request.ttl_sec <= 0,
             )
+            reached_node = True
 
             self.registry.update_status(job_id, EndpointStatus.STARTING)
             self.registry.update_metadata(
@@ -860,8 +883,8 @@ class OrchestrationService:
                 readiness_result.error
                 or f"Readiness check failed: {readiness_result.state.value}"
             )
+            self._record_failed_attempt(request, job_id, error, reached_node=True)
             self.registry.mark_failed(job_id, error)
-            _record_attempt(request, job_id, ok=False, error=error)
             if progress:
                 progress("failed", {"error": error})
             await self._cleanup_failed_job(
@@ -878,8 +901,10 @@ class OrchestrationService:
             )
         except Exception as e:
             logger.exception(f"Provision finalize failed: {e}")
+            self._record_failed_attempt(
+                request, job_id, str(e), reached_node=reached_node
+            )
             self.registry.mark_failed(job_id, str(e))
-            _record_attempt(request, job_id, ok=False, error=str(e))
             await self._cleanup_failed_job(
                 job_id,
                 actual_host,
@@ -891,6 +916,21 @@ class OrchestrationService:
                 job_id=job_id,
                 error=str(e),
                 provisioning_time_sec=asyncio.get_event_loop().time() - start_time,
+            )
+
+    def _record_failed_attempt(
+        self, request: ProvisionRequest, job_id: str, error: str, *, reached_node: bool
+    ) -> None:
+        """Record a failed attempt for the failure cap, if the model caused it."""
+        if reached_node and _failure_is_the_models(self.registry.get_by_job_id(job_id)):
+            _record_attempt(request, job_id, ok=False, error=error)
+        else:
+            logger.info(
+                "provision attempt %s failed without counting toward the failure "
+                "cap (reached node: %s): %s",
+                job_id,
+                reached_node,
+                error,
             )
 
     async def _await_assignment(
@@ -970,6 +1010,11 @@ class OrchestrationService:
         if not endpoint:
             logger.warning(f"Endpoint not found for deprovision: {job_id}")
             return DeprovisionOutcome.NOT_FOUND
+        # A provision still finalizing this job must not count the failure the
+        # cancel causes toward the failing re-provision cap (review F5).
+        self.registry.update_metadata(
+            job_id, {"deprovision_requested_at": datetime.now(timezone.utc).isoformat()}
+        )
 
         backend_identity = endpoint.backend_job_id
         cancel_target = backend_identity or job_id

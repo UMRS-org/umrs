@@ -561,17 +561,29 @@ if [[ "${_bv_port}" != "${_bv_base}" ]]; then
 fi
 export BENTOML_VISION_DOCKER_PORT="${_bv_port}"
 
-# LiteLLM image, pinned by digest (2026-10-23). The floating main-stable tag
-# meant two nodes could run two different proxies under one name. This digest
-# is the multi-arch index (arm64 + amd64) of the main-stable image the bdrt
-# nodes ran on 2026-10-22 (created 2026-08-11). LITELLM_IMAGE overrides the
-# whole reference; LITELLM_DOCKER_TAG still selects a tag (main-stable = the
-# old floating behaviour). Compose reads it from env.${uuid} below.
-LITELLM_PINNED_IMAGE="ghcr.io/berriai/litellm-non_root@sha256:f106967e9b4d8f43c97c1cc8b4d5ad31cd95f7d37ab5b20a48ff4a609e82da73"
-if [[ -z "${LITELLM_IMAGE:-}" && -n "${LITELLM_DOCKER_TAG:-}" ]]; then
-    LITELLM_IMAGE="ghcr.io/berriai/litellm-non_root:${LITELLM_DOCKER_TAG}"
+# LiteLLM image. Default: the floating main-stable tag every venue's GPU nodes
+# already pull or stage. A venue that wants a fixed proxy pins it by digest in
+# its site.yaml partition profile (litellm_image; bdrt pins the multi-arch
+# index its nodes ran on 2026-10-22), which arrives here as LITELLM_IMAGE.
+# Review F4 (2026-10-23): a digest default was verified only on bdrt, and a
+# GPU node without that digest or registry access would not start LiteLLM.
+# LITELLM_IMAGE (profile, roster or request) wins; LITELLM_DOCKER_TAG picks
+# another tag of the default repository. Compose reads it from env.${uuid}.
+if [[ -z "${LITELLM_IMAGE:-}" ]]; then
+    LITELLM_IMAGE="ghcr.io/berriai/litellm-non_root:${LITELLM_DOCKER_TAG:-main-stable}"
 fi
-LITELLM_IMAGE="${LITELLM_IMAGE:-${LITELLM_PINNED_IMAGE}}"
+# MAX_REQUESTS_BEFORE_RESTART recycles a uvicorn worker after N requests. With
+# one worker (NUM_WORKERS=1, the default) there is no supervisor to recycle it:
+# the proxy itself exits ("Maximum request limit", exit 0) and nothing brings
+# it back but the monitor (review F1, 2026-10-23). So the default is no limit
+# for one worker and 10000 for several; an explicit value is kept.
+if [[ -z "${LITELLM_MAX_REQUESTS_BEFORE_RESTART+set}" ]]; then
+    if [[ "${LITELLM_CPU_LIMIT:-1}" =~ ^[0-9]+$ && "${LITELLM_CPU_LIMIT:-1}" -gt 1 ]]; then
+        LITELLM_MAX_REQUESTS_BEFORE_RESTART=10000
+    else
+        LITELLM_MAX_REQUESTS_BEFORE_RESTART=""
+    fi
+fi
 
 # Owner-only from the start (2026-09-26): it carries the LiteLLM/vLLM keys, and
 # the job dir sits on shared Lustre. Every reader is host-side (grep/sed,
@@ -681,8 +693,10 @@ VLLM_RCCL_MEM_LIMIT=8G
 # LiteLLM worker processes (system tier with concurrent users: set 4-8;
 # user/project tier single-user: keep at 1 for fast startup)
 LITELLM_CPU_LIMIT=${LITELLM_CPU_LIMIT:-1}
-# LiteLLM image reference (digest pin unless overridden; see above)
+# LiteLLM image reference (floating tag unless a profile pins it; see above)
 LITELLM_IMAGE=${LITELLM_IMAGE}
+# Requests before a LiteLLM worker restarts; empty = never (see above)
+LITELLM_MAX_REQUESTS_BEFORE_RESTART=${LITELLM_MAX_REQUESTS_BEFORE_RESTART}
 
 # ─── 3. Vision Models (BentoML service) ──────────────────────────────────────
 # SAM3 (Segment Anything Model 2) — HuggingFace repo ID and local path
@@ -2407,13 +2421,17 @@ fi
 # the same per-job budget; see stack_health.sh for the two signals.
 _RIV_HEALTH_LIB="$(dirname "$_RIV_BUDGET_LIB")/stack_health.sh"
 _STACK_HEALTH=false
+# The front is probed about once a minute, not every tick (review F1: every
+# 5 s was 17,280 requests a day, each one counted by MAX_REQUESTS_BEFORE_RESTART).
+export RIVAULT_FRONT_PROBE_EVERY_TICKS="${RIVAULT_FRONT_PROBE_EVERY_TICKS:-$(( INTERVAL > 0 ? (60 + INTERVAL - 1) / INTERVAL : 12 ))}"
 if [[ -f "$_RIV_HEALTH_LIB" ]]; then
     # shellcheck disable=SC1090
     source "$_RIV_HEALTH_LIB"
     stack_health_init
     _STACK_HEALTH=true
     echo "[rivault] stack health: watching ${RIVAULT_ESSENTIAL_SIDECARS:-litellm nginx}" \
-        "and the front on 127.0.0.1:${NGINX_LITELLM_DOCKER_PORT:-}${RIVAULT_FRONT_PROBE_PATH:-/health/liveliness}"
+        "and the front on 127.0.0.1:${NGINX_LITELLM_DOCKER_PORT:-}${RIVAULT_FRONT_PROBE_PATH:-/health/liveliness}" \
+        "every ${RIVAULT_FRONT_PROBE_EVERY_TICKS} ticks"
 else
     echo "[rivault] stack health: WARNING ${_RIV_HEALTH_LIB} missing; only the engine is watched"
 fi
@@ -2446,18 +2464,36 @@ _compose_recreate_service() {
         ${_profile_flags} \
         up --detach --no-deps "$1"
 }
-# Respawn the sidecars stack_health_tick named, in order, after the claim.
-_sidecars_respawn() {
-    local svc ctr
+# Claim the respawn, or take it free when every exited sidecar ended by plan
+# (uvicorn's max-requests exit; stack_restart_is_free bounds those per hour).
+_sidecars_charge() {
+    if stack_restart_is_free; then
+        echo "[rivault] Sidecar planned restart (${STACK_HEALTH_REASON});" \
+            "not charged to the respawn budget: ${STACK_HEALTH_RESPAWN}"
+        return 0
+    fi
     _respawn_claim_or_exit "sidecars (${STACK_HEALTH_REASON})"
     echo "[rivault] Sidecar unhealthy (${STACK_HEALTH_REASON}); respawn " \
         "${_ENGINE_RESPAWNS}/${RIVAULT_ENGINE_RESPAWN_MAX}: ${STACK_HEALTH_RESPAWN}"
+}
+# Respawn the sidecars stack_health_tick named. podman refuses to remove a
+# container another one --requires (compose depends_on: nginx on litellm), so
+# the dependents go first and come back last (stack_removal_order).
+_sidecars_respawn() {
+    local svc ctr out order="" recreate=""
+    _sidecars_charge
     sleep "$RIVAULT_SIDECAR_RESPAWN_SLEEP_SEC"
-    for svc in $STACK_HEALTH_RESPAWN; do
+    order="$(stack_removal_order "${RIVAULT_COMPOSE_PROJECT}" "${STACK_HEALTH_RESPAWN}")"
+    for svc in $order; do
         ctr="${RIVAULT_COMPOSE_PROJECT}_${svc}_1"
         echo "[rivault] post-mortem for ${ctr}:"
         podman logs --tail 50 "$ctr" 2>&1 | sed 's/^/[rivault]   /' || true
-        podman rm -f "$ctr" >/dev/null 2>&1 || true
+        if ! out="$(podman rm -f "$ctr" 2>&1)"; then
+            echo "[rivault] could not remove ${ctr}: ${out}"
+        fi
+        recreate="${svc}${recreate:+ $recreate}"
+    done
+    for svc in $recreate; do
         if _compose_recreate_service "$svc" 2>&1; then
             echo "[rivault] Sidecar respawn OK (${svc})"
         else

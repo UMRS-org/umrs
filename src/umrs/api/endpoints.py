@@ -3036,13 +3036,24 @@ async def _try_shared_warm_reuse(registry, service, caller, request):
     )
 
 
+# A job of these is in flight: queued, submitted, or on a node loading the
+# model. STARTING was missing (2026-10-23): a job RUNNING but not yet ready
+# (bdrt 8218) did not block a second request for the same model, and each
+# such request submitted another job onto the busy node (49 FAILED jobs).
+_IN_FLIGHT_STATUSES = (
+    EndpointStatus.PENDING,
+    EndpointStatus.PROVISIONING,
+    EndpointStatus.STARTING,
+)
+
+
 def _dedupe_in_flight(registry, project_id: str, request):
-    """202 + Retry-After when the same (model, variant) is already provisioning."""
+    """202 + Retry-After when the same (model, variant) is already in flight."""
     from fastapi.responses import JSONResponse
 
     provisioning = registry.list_all(
         project_id=project_id,
-        status_filter=[EndpointStatus.PENDING, EndpointStatus.PROVISIONING],
+        status_filter=list(_IN_FLIGHT_STATUSES),
     )
     for ep in provisioning:
         if ep.model == request.model and ep.variant == request.variant:
@@ -3094,16 +3105,15 @@ def _record_cap_override(refusal, requesting_user: str | None) -> None:
 
 
 def _raise_provision_capped(refusal) -> None:
+    """The typed 429. The body carries the failed jobs and the retry time as
+    fields beside the message (review F7: kwargs on PlatformError never reach
+    the client, to_http_parts sends only the message)."""
     import time
 
     now = time.time()
-    error = PlatformError.endpoints(
-        "provision_capped",
-        refusal.message(now),
-        failed_jobs=[f.job_id for f in refusal.failures],
-        retry_at=refusal.retry_at,
-    )
+    error = PlatformError.endpoints("provision_capped", refusal.message(now))
     parts = error.to_http_parts()
+    parts["detail"] = refusal.body(now) | {"code": error.code}
     parts["headers"]["Retry-After"] = str(refusal.retry_after_sec(now))
     raise HTTPException(**parts)
 

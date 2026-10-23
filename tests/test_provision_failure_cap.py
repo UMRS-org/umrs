@@ -21,7 +21,11 @@ from umrs.api import audit_events
 from umrs.api import endpoints as endpoints_api
 from umrs.api.endpoints import router
 from umrs.orchestrator import provision_failure_cap as cap
-from umrs.orchestrator.endpoint_registry import EndpointRegistry, get_registry
+from umrs.orchestrator.endpoint_registry import (
+    EndpointRegistry,
+    EndpointStatus,
+    get_registry,
+)
 from umrs.orchestrator.readiness import ReadinessResult, ReadinessState
 from umrs.orchestrator.service import (
     OrchestrationService,
@@ -179,14 +183,14 @@ def _service(state: ReadinessState) -> OrchestrationService:
     return service
 
 
-def _finalize(service: OrchestrationService) -> ProvisionResult:
+def _finalize(service: OrchestrationService, host: str = "n") -> ProvisionResult:
     async def run():
         now = asyncio.get_running_loop().time()
         return await service._finalize_provision(
             request=ProvisionRequest("default", KEY.model, requesting_user="mnagaso"),
             job_id="8300",
             target_host="n",
-            actual_host="n",
+            actual_host=host,
             actual_port=1,
             deadline=now + 60,
             progress=None,
@@ -213,6 +217,47 @@ def test_a_ready_attempt_is_recorded_as_a_success() -> None:
     assert _finalize(_service(ReadinessState.READY)).success is True
     (event,) = _attempt_events()
     assert event["outcome"] == "success"
+
+
+# Review F5: only failures the model caused count toward the cap.
+
+
+def test_a_job_that_never_reached_a_node_is_not_counted() -> None:
+    service = _service(ReadinessState.FAILED)
+
+    async def no_assignment(*_args, **_kwargs):
+        raise TimeoutError("job 8300 still queued at the provision deadline")
+
+    service._await_assignment = no_assignment
+    assert _finalize(service, host="pending").success is False
+    assert _attempt_events() == []
+
+
+def test_a_failure_while_the_endpoint_is_deprovisioned_is_not_counted() -> None:
+    service = _service(ReadinessState.FAILED)
+    service.registry.update_metadata("8300", {"deprovision_requested_at": "now"})
+    assert _finalize(service).success is False
+    assert _attempt_events() == []
+
+
+def test_a_failure_of_an_endpoint_gone_from_the_registry_is_not_counted() -> None:
+    service = _service(ReadinessState.FAILED)
+    service.registry.remove("8300")
+    assert _finalize(service).success is False
+    assert _attempt_events() == []
+
+
+def test_deprovision_marks_the_endpoint_before_the_cancel() -> None:
+    service = _service(ReadinessState.FAILED)
+    marks = []
+
+    async def cleanup(job_id, **_kwargs):
+        marks.append(service.registry.get_by_job_id(job_id).metadata.copy())
+        raise RuntimeError("scancel unreachable")
+
+    service.backend.cleanup = cleanup
+    asyncio.run(service.deprovision("8300"))
+    assert "deprovision_requested_at" in marks[0]
 
 
 # ── POST /provision ─────────────────────────────────────────────────────────
@@ -251,8 +296,20 @@ def test_a_capped_provision_gets_a_typed_429_and_submits_nothing(monkeypatch) ->
     assert response.status_code == 429
     assert response.headers["x-platform-error-code"] == "endpoints.provision_capped"
     assert 1 <= int(response.headers["Retry-After"]) <= 1800
-    assert "job 8290" in response.json()["detail"]
+    assert "job 8290" in response.json()["detail"]["message"]
     assert service.requests == []
+
+
+def test_the_429_body_carries_the_failed_jobs_and_the_retry_time(monkeypatch) -> None:
+    """Review F7: kwargs on PlatformError never reached the client."""
+    _record_failures("8290", "8291", "8292")
+    response, _ = _post(monkeypatch, admin=False)
+    body = response.json()["detail"]
+    assert body["code"] == "endpoints.provision_capped"
+    assert body["failed_jobs"] == ["8292", "8291", "8290"]
+    assert body["retry_at"].endswith("Z")
+    assert body["retry_after_sec"] == int(response.headers["Retry-After"])
+    assert (body["model"], body["venue"]) == (KEY.model, VENUE)
 
 
 def test_a_non_admin_override_is_ignored(monkeypatch) -> None:
@@ -282,3 +339,74 @@ def test_an_uncapped_provision_goes_ahead(monkeypatch) -> None:
     response, service = _post(monkeypatch, admin=False)
     assert response.status_code == 202
     assert len(service.requests) == 1
+
+
+# ── a request for a model already starting is in flight ─────────────────────
+
+
+def _post_with(monkeypatch, registry: EndpointRegistry, *, variant: str | None = None):
+    service = _Service()
+    monkeypatch.setattr(
+        endpoints_api,
+        "_resolve_registered_model_entry",
+        lambda _name: {"storage_ref": "/models/qwen", "model_type": "llm"},
+    )
+    monkeypatch.setattr("umrs.orchestrator.service.get_orchestration_service", lambda: service)
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[get_registry] = lambda: registry
+    app.dependency_overrides[endpoints_api._caller_is_admin] = lambda: False
+    body = {"project_id": "default", "model": KEY.model, "variant": variant}
+    with TestClient(app) as client:
+        response = client.post("/umrs/endpoints/provision", json=body)
+    return response, service
+
+
+def _registry_with(status: EndpointStatus) -> EndpointRegistry:
+    registry = EndpointRegistry()
+    registry.register(
+        project_id="default",
+        model=KEY.model,
+        job_id="8218",
+        host="dgx-spark-0",
+        port=13001,
+        backend="slurm-remote",
+    )
+    registry.update_status("8218", status)
+    return registry
+
+
+@pytest.mark.parametrize(
+    "status", [EndpointStatus.PENDING, EndpointStatus.PROVISIONING, EndpointStatus.STARTING]
+)
+def test_a_model_in_flight_answers_202_with_its_job_and_submits_nothing(
+    monkeypatch, status
+) -> None:
+    """bdrt 8218 was RUNNING but not ready (STARTING): it did not block a new
+    request for the same model, and every request submitted another job."""
+    response, service = _post_with(monkeypatch, _registry_with(status))
+    assert response.status_code == 202
+    assert response.json()["job_id"] == "8218"
+    assert response.headers["Retry-After"] == "30"
+    assert service.requests == []
+
+
+def test_a_starting_endpoint_of_another_variant_does_not_block(monkeypatch) -> None:
+    response, service = _post_with(
+        monkeypatch, _registry_with(EndpointStatus.STARTING), variant="128k"
+    )
+    assert response.status_code == 202
+    assert len(service.requests) == 1
+
+
+def test_the_wait_and_the_override_survive_a_client_cutting_the_message() -> None:
+    """r4 keeps the first 400 characters of a server's explanation."""
+    rows = [
+        {**_row(job, NOW - age), "details": {**_row(job, NOW - age)["details"], "error": "x" * 300}}
+        for job, age in (("8290", 1500), ("8291", 1000), ("8292", 500))
+    ]
+    refusal = cap.evaluate(rows, KEY, cap.CapPolicy(), NOW)
+    assert refusal is not None
+    head = refusal.message(NOW)[:400]
+    for part in ("paused until", "in 300 s", "override_failure_cap"):
+        assert part in head
