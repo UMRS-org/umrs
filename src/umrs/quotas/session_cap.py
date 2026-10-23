@@ -10,13 +10,21 @@ only), and the project's likewise when
 (429).
 
 Only remote sessions count: the cap protects shared server capacity, and a
-local session is neither on the server nor observable by it. Two starts
-racing can overshoot by one; accepted (ADR-099 D-6).
+local session is neither on the server nor observable by it.
+
+Starts at one venue are serialised from the count to the job insert
+(:func:`start_lock`: a Postgres advisory lock, so across uvicorn workers and
+containers on one database), so parallel starts never overshoot the cap
+(ADR-099 D-6, Amendment 2; before, N racing starts could overshoot by N-1).
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+import hashlib
+import threading
+import time
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any
 
 from fastapi import HTTPException
@@ -28,6 +36,16 @@ if TYPE_CHECKING:  # lane P's start hook (umrs.venues.start_checks)
     from umrs.venues.start_checks import StartCheck
 
 SESSION_JOB_TYPE = "frontend_session"
+
+#: Advisory-lock class (two-key form, its own key space) of venue starts.
+START_LOCK_CLASS = 0x5343
+START_LOCK_WAIT_S = 15.0
+_START_LOCK_POLL_S = 0.05
+
+
+class StartLockTimeout(RuntimeError):
+    """Another start at this venue held the start lock past the wait."""
+
 
 _SCOPES = (
     ("user", "concurrent_user", "owner", "user_id"),
@@ -112,9 +130,94 @@ def check_concurrent_sessions(pool: Any, check: StartCheck) -> None:
             raise _refusal(scope, subject, check.venue, limit, used)
 
 
+def start_lock_key(venue: str) -> int:
+    """The venue's 31-bit key inside :data:`START_LOCK_CLASS`."""
+    digest = hashlib.sha256(f"venue-start:{venue}".encode()).digest()
+    return int.from_bytes(digest[:4], byteorder="big") & 0x7FFFFFFF
+
+
+def _try_lock(conn: Any, key: int) -> bool:
+    with conn.cursor() as cur:
+        cur.execute("SELECT pg_try_advisory_lock(%s, %s)", (START_LOCK_CLASS, key))
+        row = cur.fetchone()
+    conn.commit()  # a session lock: no transaction stays open while held
+    return bool(row and row[0])
+
+
+def _acquire(conn: Any, key: int, wait_s: float) -> None:
+    deadline = time.monotonic() + wait_s
+    while not _try_lock(conn, key):
+        if time.monotonic() >= deadline:
+            raise StartLockTimeout(f"venue start lock busy for {wait_s:g}s")
+        time.sleep(_START_LOCK_POLL_S)
+
+
+def _release(conn: Any, key: int) -> bool:
+    """Unlock; False when the connection must not go back to the pool."""
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT pg_advisory_unlock(%s, %s)", (START_LOCK_CLASS, key))
+        conn.commit()
+        return True
+    except Exception:  # noqa: BLE001 — a broken connection drops its locks when closed
+        return False
+
+
+@contextmanager
+def start_lock(
+    pool: Any, venue: str, *, wait_s: float = START_LOCK_WAIT_S
+) -> Iterator[None]:
+    """Hold the venue's start lock (count → job insert, ADR-099 D-6).
+
+    A session-level advisory lock on its own pooled connection, polled with
+    ``pg_try_advisory_lock`` up to ``wait_s`` (then :class:`StartLockTimeout`).
+    The job store commits the new job on its own connection before this
+    unlocks, so the next start's count sees it."""
+    key = start_lock_key(venue)
+    conn = pool.getconn()
+    reusable = False
+    try:
+        _acquire(conn, key, wait_s)
+        try:
+            yield
+        finally:
+            reusable = _release(conn, key)
+    finally:
+        _put_back(pool, conn, reusable)
+
+
+def _put_back(pool: Any, conn: Any, reusable: bool) -> None:
+    if reusable:
+        pool.putconn(conn)
+        return
+    try:
+        pool.putconn(conn, close=True)
+    except TypeError:  # a pool without ``close``
+        conn.close()
+        pool.putconn(conn)
+
+
+_LOCAL_LOCKS: dict[str, threading.Lock] = {}
+_LOCAL_GUARD = threading.Lock()
+
+
+@contextmanager
+def local_start_lock(venue: str) -> Iterator[None]:
+    """The in-process start lock (no database pool: tests, one process)."""
+    with _LOCAL_GUARD:
+        lock = _LOCAL_LOCKS.setdefault(venue, threading.Lock())
+    with lock:
+        yield
+
+
 __all__ = [
     "SESSION_JOB_TYPE",
+    "START_LOCK_CLASS",
+    "StartLockTimeout",
     "check_concurrent_sessions",
     "count_live_sessions",
+    "local_start_lock",
     "session_limits",
+    "start_lock",
+    "start_lock_key",
 ]

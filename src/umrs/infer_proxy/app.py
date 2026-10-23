@@ -38,7 +38,7 @@ import os
 import re
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 import httpx
@@ -387,19 +387,37 @@ def _rate_or_quota_refusal(request: Request, lease: Any) -> JSONResponse | None:
     return _quota_refusal(request, lease)
 
 
+_FALSE_WORDS = frozenset({"", "0", "false", "f", "no", "n", "off"})
+
+
+def _lax_bool(value: Any) -> bool:
+    """``stream`` as a lenient server reads it (vLLM's pydantic takes ``1``
+    and ``"true"`` as true): a false word, zero or null is false, anything
+    else true, so an odd spelling never streams unmetered."""
+    if isinstance(value, str):
+        return value.strip().lower() not in _FALSE_WORDS
+    return bool(value)
+
+
 def with_stream_usage(payload: Any) -> bool:
     """Ask a streamed OpenAI-style completion for its usage chunk (ADR-099
     D-4): ``stream_options.include_usage = true`` when ``stream`` is true.
 
     Without it an OpenAI or vLLM stream carries no usage, the row records
-    zero tokens and the daily token cap never binds. True when ``payload``
-    was changed."""
-    if not isinstance(payload, dict) or payload.get("stream") is not True:
+    zero tokens and the daily token cap never binds. A ``stream`` that is
+    not a JSON boolean (``1``, ``"true"``) is sent as the boolean it reads
+    as (Amendment 2). True when ``payload`` was changed."""
+    if not isinstance(payload, dict) or "stream" not in payload:
         return False
+    raw = payload["stream"]
+    payload["stream"] = _lax_bool(raw)
+    changed = raw is not payload["stream"]
+    if not payload["stream"]:
+        return changed
     options = payload.get("stream_options")
     options = dict(options) if isinstance(options, dict) else {}
     if options.get("include_usage") is True:
-        return False
+        return changed
     options["include_usage"] = True
     payload["stream_options"] = options
     return True
@@ -416,25 +434,44 @@ def _metered_completion(request: Request, prep: _Prepared) -> bool:
     )
 
 
-async def _upstream_content(request: Request, prep: _Prepared) -> Any:
+class _Sent:
+    """Request bytes sent upstream: the prompt side of a usage estimate."""
+
+    def __init__(self, size: int = 0) -> None:
+        self.size = size
+
+    async def counted(self, stream: Any) -> Any:
+        async for chunk in stream:
+            self.size += len(chunk)
+            yield chunk
+
+    def body(self, raw: bytes) -> bytes:
+        self.size = len(raw)
+        return raw
+
+
+async def _upstream_content(request: Request, prep: _Prepared, sent: _Sent) -> Any:
     """The body sent upstream: streamed through unchanged, except a streamed
     OpenAI-style completion, which is re-encoded with ``include_usage``."""
     if not _metered_completion(request, prep):
-        return request.stream()
+        return sent.counted(request.stream())
     raw = await request.body()
     try:
         payload = json.loads(raw)
     except ValueError:
-        return raw
-    return json.dumps(payload).encode() if with_stream_usage(payload) else raw
+        return sent.body(raw)
+    changed = with_stream_usage(payload)
+    return sent.body(json.dumps(payload).encode() if changed else raw)
 
 
-async def _send_upstream(request: Request, prep: _Prepared, headers: dict) -> Any:
+async def _send_upstream(
+    request: Request, prep: _Prepared, headers: dict, sent: _Sent
+) -> Any:
     """The streamed provider call: pinned IP, original Host + SNI, no redirects."""
     url = join_provider_url(prep.full.base_url, prep.path)
     if prep.pin_ip:
         url = _pin_url(url, prep.pin_ip)
-    content = await _upstream_content(request, prep)
+    content = await _upstream_content(request, prep, sent)
     client = _http_client(request)
     return await client.send(
         client.build_request(
@@ -468,8 +505,9 @@ async def proxy_request(request: Request) -> Any:
         return _denied(request, lease, 500, "unseal_failed")
 
     headers = _upstream_headers(request, prep.policy, api_key, prep.full.allow_host)
+    sent = _Sent()
     try:
-        upstream = await _send_upstream(request, prep, headers)
+        upstream = await _send_upstream(request, prep, headers, sent)
     except httpx.HTTPError:
         return _denied(request, lease, 502, "upstream_unreachable")
 
@@ -481,6 +519,7 @@ async def proxy_request(request: Request) -> Any:
         source_label=str(prep.full.id),
         provider_kind=str(prep.full.provider_kind or ""),
         started=prep.started,
+        sent=sent,
     )
     return _relayed(request, lease, upstream, meta)
 
@@ -494,6 +533,7 @@ class _RelayMeta:
     started: float
     model: str = ""
     served_model: str = ""
+    sent: _Sent = field(default_factory=_Sent)
 
 
 def _is_streaming(request: Request, upstream: Any) -> bool:
@@ -523,6 +563,7 @@ def _relayed(
             async for chunk in upstream.aiter_raw():
                 tap.feed(chunk)
                 yield chunk
+            tap.ended = True
         finally:
             await upstream.aclose()
 
@@ -600,6 +641,10 @@ def _record_usage(
     """One ``llm_usage_log`` row for the relayed call (never raises)."""
     try:
         model = meta.model or tap.model()
+        usage, estimated = tap.metered(
+            request_bytes=meta.sent.size,
+            generation=request.method not in _UNMETERED_METHODS,
+        )
         record_proxy_usage(
             getattr(request.app.state, "umrs_db_pool", None),
             lease=lease,
@@ -611,7 +656,8 @@ def _record_usage(
             status=status,
             streaming=tap.streaming,
             duration_ms=(time.monotonic() - meta.started) * 1000.0,
-            usage=tap.usage(),
+            usage=usage,
+            estimated=estimated,
         )
     except Exception:  # accounting never breaks the relay
         logger.warning("infer usage row not written", exc_info=True)
@@ -670,6 +716,7 @@ async def _site_forward(request: Request, pool: Any, lease: Any, path: str) -> A
         started=started,
         model=str(model or ""),
         served_model=str(payload["model"] or ""),
+        sent=_Sent(len(json.dumps(payload).encode())),
     )
     return _relayed(request, lease, upstream, meta)
 

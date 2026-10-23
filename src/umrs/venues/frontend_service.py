@@ -29,6 +29,7 @@ from datetime import datetime, timezone
 from typing import Any, Protocol
 
 from umrs.companion_trust.chat_turn_questions import cancel_session_questions
+from umrs.quotas.session_cap import StartLockTimeout, local_start_lock
 from umrs.session_policy import (
     PolicyError,
     PolicyRuleStore,
@@ -50,7 +51,7 @@ from .frontend_config import (
     allocate_subnet,
 )
 from .session_audit import audit_session_stop, audit_venue
-from .start_checks import StartCheck, StartCheckFn
+from .start_checks import StartCheck, StartCheckFn, StartLockFn
 from .venue_sessions import VenueSessionRow, VenueSessionStore, project_session_state
 
 logger = logging.getLogger(__name__)
@@ -107,6 +108,7 @@ class FrontendVenueService:
         job_store: JobSubmitter | None = None,
         site_name: str = "",
         quota_check: StartCheckFn | None = None,
+        start_lock: StartLockFn | None = None,
         policy_store: PolicyRuleStore | None = None,
         policy_env: Mapping[str, str] | None = None,
         questions_factory: Callable[[Any], Any] | None = None,
@@ -124,6 +126,9 @@ class FrontendVenueService:
         # matters). "" would let ANY site claim it — never submit that.
         self.site_name = site_name
         self._quota_check = quota_check
+        # ADR-099 D-6: starts at this venue serialised from the cap's count
+        # to the job insert (the routes wire the Postgres advisory lock).
+        self._start_lock = start_lock or local_start_lock
         # ADR-099: the limit rules (in memory = no rules when none is given)
         # and the env the site defaults read (None = the process env).
         self.policy_store = (
@@ -328,6 +333,54 @@ class FrontendVenueService:
     ) -> dict[str, Any]:
         names, ids, default_id = self._resolve_default(owner, refs, default_name)
         policy = self._resolve_policy(owner, project, choice)
+        try:
+            with self._start_lock(self.site_name):
+                job_id = self._reserve_and_submit(
+                    owner=owner,
+                    session_id=session_id,
+                    sources=(names, ids, default_id, default_name),
+                    policy=policy,
+                    project=project,
+                    plan_run=plan_run,
+                )
+        except StartLockTimeout as exc:
+            raise VenueError(
+                "unavailable", f"another session start is in progress: {exc}"
+            ) from exc
+        self._cancel_questions(owner, session_id)
+        self._enqueue(job_id, session_id)
+        audit_venue(
+            "session.start",
+            actor=owner,
+            session_id=session_id,
+            owner=owner,
+            project=project,
+            job_id=job_id,
+            web_policy=policy["web"]["mode"],
+            policy_web=policy["web"],
+            policy_origin=_shaped_by(policy),
+            sources=list(names),
+            plan_run_id=plan_run[0] if plan_run else "",
+        )
+        row = self.store.get(session_id)
+        assert row is not None
+        return self._describe(row)
+
+    def _reserve_and_submit(
+        self,
+        *,
+        owner: str,
+        session_id: str,
+        sources: tuple[tuple[str, ...], tuple[str, ...], str, str],
+        policy: dict[str, Any],
+        project: str,
+        plan_run: tuple[str, str] | None,
+    ) -> str:
+        """Under the venue's start lock (ADR-099 D-6): the running check, the
+        cap, the data-class gate, the subnet, the job and the row, so a
+        parallel start counts this one and never takes its subnet."""
+        names, ids, default_id, default_name = sources
+        self._require_not_running(owner, session_id)
         self._run_start_check(owner, project, session_id, policy)
         self._enforce_data_class_gate(owner, project, names)
         subnet = self._reserve_subnet()
@@ -358,24 +411,7 @@ class FrontendVenueService:
             job_id=job_id,
             policy=policy,
         )
-        self._cancel_questions(owner, session_id)
-        self._enqueue(job_id, session_id)
-        audit_venue(
-            "session.start",
-            actor=owner,
-            session_id=session_id,
-            owner=owner,
-            project=project,
-            job_id=job_id,
-            web_policy=policy["web"]["mode"],
-            policy_web=policy["web"],
-            policy_origin=_shaped_by(policy),
-            sources=list(names),
-            plan_run_id=plan_run[0] if plan_run else "",
-        )
-        row = self.store.get(session_id)
-        assert row is not None
-        return self._describe(row)
+        return job_id
 
     def _require_configured(self) -> None:
         blocked = self.config.missing()

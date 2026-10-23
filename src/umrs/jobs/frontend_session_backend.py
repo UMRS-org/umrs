@@ -13,8 +13,9 @@ of a private sweeper:
                    starts again deliberately).
     check_status → the lease is the liveness authority: revoked/expired →
                    teardown + succeeded(end=lease_ended); idle beyond the
-                   policy's ``lifetime.idle_s`` (ADR-099 D-7; else
-                   ``UMRS_VENUE_IDLE_SECONDS``) → revoke + teardown +
+                   policy's ``lifetime.idle_s`` when a rule set it
+                   (ADR-099 D-7; else the live ``UMRS_VENUE_IDLE_SECONDS``)
+                   → revoke + teardown +
                    succeeded(end=idle); worker reported ``exited`` →
                    teardown + failed; otherwise running(phase, turn_seq).
     cancel       → the in-process cancel bus (``POST /umrs/jobs/{id}/cancel``)
@@ -114,6 +115,14 @@ def policy_seconds(policy: Any, key: str) -> int | None:
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         return None
     return value
+
+
+def _site_default(policy: Any, field_name: str) -> bool:
+    """True when the resolved policy says ``field_name`` is the site default
+    (``origin[field_name] == "default"``); a policy without an origin map is
+    read as set by a rule."""
+    origin = policy.get("origin") if isinstance(policy, dict) else None
+    return isinstance(origin, dict) and origin.get(field_name) == "default"
 
 
 def _plan_run_id(spec: dict[str, Any]) -> str:
@@ -286,11 +295,17 @@ class FrontendSessionStatusChecker(BackendStatusChecker):
         return JobType.FRONTEND_SESSION
 
     def _idle_seconds(self, job: Job | None) -> int:
-        """The session's idle limit: ``spec.policy.lifetime.idle_s``, else the
-        site's ``UMRS_VENUE_IDLE_SECONDS`` (ADR-099 D-7)."""
+        """The session's idle limit: ``spec.policy.lifetime.idle_s`` when a
+        rule set it, else the site's live ``UMRS_VENUE_IDLE_SECONDS`` (ADR-099
+        D-7, Amendment 2). A value the policy copied from the site default
+        (origin ``default``) does not freeze it: an operator's new idle value
+        reaches running sessions, as before the policy existed."""
         spec = getattr(job, "spec", None) or {}
         configured = int(self._backend.config.idle_seconds)
-        return policy_seconds(spec.get("policy"), "idle_s") or configured
+        policy = spec.get("policy")
+        if _site_default(policy, "lifetime.idle_s"):
+            return configured
+        return policy_seconds(policy, "idle_s") or configured
 
     @staticmethod
     def _idle(lease: Any, idle_seconds: int) -> bool:

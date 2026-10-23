@@ -16,19 +16,33 @@ where providers put the counts:
 
 ``record_proxy_usage`` writes one ``llm_usage_log`` row per relayed call
 (``origin='infer_proxy'``) through ``api.llm_usage.record_usage``, after the
-response was relayed. Bodies, headers and tokens are never recorded; a
-response without usage records zero tokens and ``extra.usage = "absent"``.
+response was relayed. Bodies, headers and tokens are never recorded.
+
+When the provider's counts cannot be trusted to be whole (a stream that
+ended without usage, or any generation call the relay did not see to its
+end: the client left before the final usage chunk) the row carries a
+conservative estimate instead of zero, tagged ``extra.usage = "estimated"``
+(ADR-099 D-4, Amendment 2): the prompt is the request body's bytes / 4, the
+completion the larger of the streamed content bytes / 4 and the number of
+content events (a whole body's bytes / 4 when it is not an event stream).
+A count the provider did report is kept, and raised to the estimate only
+where the estimate is larger. Any other answer without usage (a one-shot
+body, a listing) records zero tokens and ``extra.usage = "absent"``.
 """
 
 from __future__ import annotations
 
 import json
+import math
 import re
 import uuid
 from typing import Any
 
 HEAD_BYTES = 16 * 1024
 TAIL_BYTES = 64 * 1024
+
+#: An event-stream line longer than this is counted whole as content.
+LINE_BYTES = 256 * 1024
 
 ORIGIN = "infer_proxy"
 SITE_LABEL_PREFIX = "site:"
@@ -86,15 +100,88 @@ def _message_start_usage(head: str) -> dict[str, Any] | None:
     return None
 
 
+#: Subtrees and keys of a stream event that are not generated text.
+_NOT_CONTENT = frozenset(
+    {
+        "id",
+        "object",
+        "created",
+        "model",
+        "modelVersion",
+        "responseId",
+        "system_fingerprint",
+        "role",
+        "type",
+        "index",
+        "finish_reason",
+        "stop_reason",
+        "finishReason",
+        "logprobs",
+        "signature",
+        "usage",
+        "usageMetadata",
+        "safetyRatings",
+        "citationMetadata",
+    }
+)
+
+
+def _text_bytes(node: Any) -> int:
+    """UTF-8 bytes of the generated text in one decoded stream event."""
+    if isinstance(node, str):
+        return len(node.encode("utf-8", errors="replace"))
+    if isinstance(node, dict):
+        return sum(_text_bytes(v) for k, v in node.items() if k not in _NOT_CONTENT)
+    if isinstance(node, list):
+        return sum(_text_bytes(v) for v in node)
+    return 0
+
+
+def _event_bytes(data: bytes) -> int:
+    """Content bytes of one ``data:`` payload; an undecodable one counts whole."""
+    try:
+        return _text_bytes(json.loads(data))
+    except (ValueError, RecursionError):
+        return len(data)
+
+
+def _quarter(n: int) -> int:
+    return math.ceil(max(0, n) / 4)
+
+
+def _merged(
+    reported: dict[str, int] | None, estimate: dict[str, int]
+) -> tuple[dict[str, int], bool]:
+    """``reported`` raised to ``estimate`` where it is smaller (True when it
+    was): a reported prompt count stands, the completion takes the larger."""
+    if not reported:
+        return dict(estimate), True
+    merged = dict(reported)
+    if not merged.get("prompt_tokens"):
+        merged["prompt_tokens"] = estimate["prompt_tokens"]
+    if estimate["completion_tokens"] > merged.get("completion_tokens", 0):
+        merged["completion_tokens"] = estimate["completion_tokens"]
+    whole = merged["prompt_tokens"] + merged["completion_tokens"]
+    raised = merged != reported
+    merged["total_tokens"] = max(int(merged.get("total_tokens") or 0), whole)
+    return merged, raised
+
+
 class UsageTap:
-    """Bounded observer of a relayed response: head 16 KiB + tail 64 KiB."""
+    """Bounded observer of a relayed response: head 16 KiB + tail 64 KiB,
+    plus a running count of an event stream's generated text."""
 
     def __init__(self, *, provider_kind: str, streaming: bool) -> None:
         self.provider_kind = provider_kind or ""
         self.streaming = streaming
+        self.ended = False  # the relay read the upstream answer to its end
         self._head = bytearray()
         self._tail = bytearray()
         self._total = 0
+        self._line = bytearray()
+        self._events = 0  # data events
+        self._content_events = 0  # data events that carried text
+        self._content_bytes = 0
 
     def feed(self, chunk: bytes) -> None:
         if not chunk:
@@ -106,6 +193,66 @@ class UsageTap:
         self._tail += chunk[-TAIL_BYTES:]
         if len(self._tail) > TAIL_BYTES:
             del self._tail[: len(self._tail) - TAIL_BYTES]
+        if self.streaming:
+            self._scan(chunk)
+
+    def _scan(self, chunk: bytes) -> None:
+        """Count the complete event-stream lines of ``chunk`` (bounded carry)."""
+        self._line += chunk
+        if b"\n" not in chunk:
+            if len(self._line) > LINE_BYTES:
+                self._count_data(bytes(self._line))
+                self._line.clear()
+            return
+        *lines, rest = bytes(self._line).split(b"\n")
+        self._line = bytearray(rest)
+        for line in lines:
+            self._count_line(line)
+
+    def _count_line(self, line: bytes) -> None:
+        line = line.strip()
+        if not line.startswith(b"data:"):
+            return
+        data = line[5:].strip()
+        if data and data != b"[DONE]":
+            self._count_data(data)
+
+    def _count_data(self, data: bytes) -> None:
+        self._events += 1
+        size = _event_bytes(data)
+        self._content_bytes += size
+        self._content_events += 1 if size else 0
+
+    def estimate(self, request_bytes: int) -> dict[str, int]:
+        """The conservative token estimate of this call (ADR-099 D-4)."""
+        if self._line:
+            self._count_line(bytes(self._line))
+            self._line.clear()
+        if self._events:
+            completion = max(self._content_events, _quarter(self._content_bytes))
+        else:
+            completion = _quarter(self._total)
+        prompt = _quarter(request_bytes)
+        return {
+            "prompt_tokens": prompt,
+            "completion_tokens": completion,
+            "total_tokens": prompt + completion,
+        }
+
+    def metered(
+        self, *, request_bytes: int, generation: bool
+    ) -> tuple[dict[str, int] | None, bool]:
+        """``(usage, estimated)`` for the call's row.
+
+        The provider's counts when they are whole; the estimate (merged into
+        what was reported) for a generation call (``generation``: a POST)
+        that streamed without usage or that the relay did not see to its end.
+        """
+        reported = self.usage()
+        whole = self.ended and (reported is not None or not self.streaming)
+        if whole or not generation:
+            return reported, False
+        return _merged(reported, self.estimate(request_bytes))
 
     def _text(self, buf: bytearray) -> str:
         return bytes(buf).decode("utf-8", errors="replace")
@@ -183,9 +330,10 @@ def build_usage_record(
     streaming: bool,
     duration_ms: float,
     usage: dict[str, int] | None,
+    estimated: bool = False,
 ) -> Any:
     """The ``UsageRecord`` of one relayed call (no body, header or token)."""
-    from umrs.api.llm_usage import UsageRecord, fill_usage
+    from umrs.api.llm_usage import UsageRecord
 
     job_id, tier = _endpoint(source_id)
     record = UsageRecord(
@@ -209,11 +357,21 @@ def build_usage_record(
         origin=ORIGIN,
         emit_metrics=False,
     )
+    _fill(record, usage, estimated)
+    return record
+
+
+def _fill(record: Any, usage: dict[str, int] | None, estimated: bool) -> None:
+    """The token columns, and ``extra.usage`` when the provider gave no whole
+    count: ``absent`` (zero) or ``estimated`` (ADR-099 D-4)."""
+    from umrs.api.llm_usage import fill_usage
+
     if usage is None:
         record.extra["usage"] = "absent"
-    else:
-        fill_usage(record, usage)
-    return record
+        return
+    fill_usage(record, usage)
+    if estimated:
+        record.extra["usage"] = "estimated"
 
 
 def record_proxy_usage(
@@ -229,6 +387,7 @@ def record_proxy_usage(
     streaming: bool,
     duration_ms: float,
     usage: dict[str, int] | None,
+    estimated: bool = False,
 ) -> None:
     """One llm_usage_log row, origin='infer_proxy' (via api.llm_usage.record_usage)."""
     from umrs.api.llm_usage import record_usage
@@ -244,6 +403,7 @@ def record_proxy_usage(
         streaming=streaming,
         duration_ms=duration_ms,
         usage=usage,
+        estimated=estimated,
     )
     record_usage(pool, record)
 
