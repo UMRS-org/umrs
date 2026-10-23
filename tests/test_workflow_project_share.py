@@ -214,6 +214,40 @@ def test_loop_start_lists_workflows_shared_with_the_owner(tmp_path, shared):  # 
     assert "private" in _registered_workflow_names("", None)  # ownerless (mvp): all
 
 
+def test_default_is_never_a_verified_loop_project():
+    # review 2026-10-23: the trigger and durable rules already refuse it.
+    from umrs.knowledge.loop import verified_loop_project
+
+    loop = SimpleNamespace(
+        project_id="default",
+        metadata={"owner_user_id": "u", "owner_verified_project": "default"},
+    )
+    assert verified_loop_project(loop) is None
+
+
+def test_a_loop_without_a_name_auto_picks_only_its_owners_own_workflows(tmp_path, shared):  # noqa: ARG001 — registers the share
+    # review 2026-10-23: shares are listed for a NAMED start; an unnamed start
+    # never auto-picks another owner's code, nor is refused for it.
+    from umrs.api.loop import _catalog_candidates
+
+    _register(tmp_path, "ryoshimi2", [], name="mine")
+    assert _catalog_candidates("", "ryoshimi2", "opossum") == ["mine"]
+    assert _catalog_candidates("cnn-track", "ryoshimi2", "opossum") == ["cnn-track", "mine"]
+
+
+def test_a_fork_never_inherits_or_sets_the_verified_project():
+    from umrs.jobs.workflow_fork import WorkflowForker
+    from umrs.shared.workflow_execution_access import VERIFIED_PROJECT_SPEC_KEY
+
+    source = SimpleNamespace(
+        job_id="j1", spec={"workflow_name": "w", VERIFIED_PROJECT_SPEC_KEY: "opossum"}
+    )
+    forker = WorkflowForker.__new__(WorkflowForker)
+    spec = forker._build_forked_spec(source, {VERIFIED_PROJECT_SPEC_KEY: "other"}, "")
+    assert VERIFIED_PROJECT_SPEC_KEY not in spec
+    assert spec["workflow_name"] == "w"
+
+
 class TestLoopStartStamp:
     @pytest.fixture(autouse=True)
     def _mvp_loop_api(self, monkeypatch):

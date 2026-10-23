@@ -243,7 +243,9 @@ def verified_loop_project(loop: Any) -> str | None:
     metadata = getattr(loop, "metadata", None) or {}
     stamped = str(metadata.get(OWNER_PROJECT_KEY) or "").strip()
     project = str(getattr(loop, "project_id", "") or "").strip()
-    if not stamped or not metadata.get(OWNER_USER_KEY):
+    if not stamped or not metadata.get(OWNER_USER_KEY) or project == "default":
+        # "default" is never a verified project (as in the trigger and
+        # durable-job rules), so a project:default share is not admitted here.
         return None
     return project if stamped == project else None
 

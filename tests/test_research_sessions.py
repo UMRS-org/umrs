@@ -326,7 +326,7 @@ class TestLoopAutoRegister:
         import umrs.api.loop as loop_mod
 
         monkeypatch.setattr(
-            loop_mod, "_registered_workflow_names", lambda _owner, _project=None: ["wf-only"]
+            loop_mod, "_registered_workflow_names", lambda _owner, _project=None, **_kw: ["wf-only"]
         )
 
     def test_start_loop_registers_under_session(self):
