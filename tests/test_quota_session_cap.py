@@ -25,9 +25,14 @@ from umrs.api.agent_quota import (
 from umrs.api.companion_venue import _quota_check
 from umrs.quotas.session_cap import (
     check_concurrent_sessions,
-    concurrent_per_user_default,
     count_live_sessions,
     session_limits,
+)
+from umrs.session_policy import (
+    PolicyError,
+    effective_limits,
+    site_defaults,
+    validate_rule_doc,
 )
 
 
@@ -179,10 +184,50 @@ class TestSessionCap:
             check_concurrent_sessions(_JobsPool(_sessions(2)), _check({}))
 
     @pytest.mark.parametrize(
-        ("raw", "want"), [("", 12), ("x", 12), ("-3", 12), ("0", None), ("20", 20)]
+        ("raw", "want"),
+        [("", 12), ("x", 12), ("-3", 12), ("0", 12), ("20", 20), ("unlimited", None)],
     )
-    def test_env_default(self, raw, want):
-        assert concurrent_per_user_default({"UMRS_SESSION_CONCURRENT_PER_USER": raw}) == want
+    def test_env_default_is_parsed_once_by_site_defaults(self, raw, want):
+        """ADR-099 D-1 one rule: null = no limit; ``0`` is a misconfiguration
+        (the default applies), never "no cap" here and "block" there."""
+        env = {"UMRS_SESSION_CONCURRENT_PER_USER": raw}
+        assert site_defaults(env)["sessions"]["concurrent_user"] == want
+
+    @pytest.mark.parametrize("raw", ["0", "-3"])
+    def test_site_defaults_through_session_limits_never_block_every_start(self, raw):
+        """P's site_defaults output read by Q's session_limits (old code: env
+        0 became ``concurrent_user: 0`` in the limits and ``_cap(0) = 0``
+        refused every start; -3 was "no cap" in one reader, 12 in the other)."""
+        limits = effective_limits(
+            [],
+            venue="rccs",
+            user_id="alice",
+            project_id="",
+            defaults=site_defaults({"UMRS_SESSION_CONCURRENT_PER_USER": raw}),
+        )
+        assert session_limits(limits)["concurrent_user"] == 12
+        check_concurrent_sessions(_JobsPool(_sessions(1)), _check(limits))
+        with pytest.raises(HTTPException):
+            check_concurrent_sessions(_JobsPool(_sessions(12)), _check(limits))
+
+    @pytest.mark.parametrize(
+        "doc",
+        [
+            {"sessions": {"concurrent_user": 0}},
+            {"budget": {"tokens_per_day_user": 0}},
+            {"budget": {"rpm_user": 0}},
+        ],
+    )
+    def test_a_zero_limit_is_refused_at_validation(self, doc):
+        """0 would mean "no limit" to one reader and "block" to another; it is
+        refused with a typed error naming null as the way to lift a limit."""
+        with pytest.raises(PolicyError) as exc:
+            validate_rule_doc(doc, scope="site", layer="admin")
+        assert exc.value.code == "invalid" and "null = no limit" in exc.value.message
+
+    def test_a_hand_edited_zero_reads_as_no_limit_everywhere(self):
+        policy = {"sessions": {"concurrent_user": 0, "concurrent_project": -1}}
+        assert session_limits(policy) == {"concurrent_user": None, "concurrent_project": None}
 
     def test_start_wiring_uses_the_session_cap(self):
         hook = _quota_check(_JobsPool(_sessions(12)))

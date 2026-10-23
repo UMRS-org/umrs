@@ -491,7 +491,19 @@ class StartLoopRequest(BaseModel):
         description="Venue sources for the runs' models: pushed sources and/or 'site'.",
     )
     plan_default_source: str = ""
-    plan_web_policy: str = ""
+    plan_web_policy: str = Field(
+        "",
+        description=(
+            "ADR-099 D-2: the user's web access for the loop's runs (none | "
+            "allowlist | public). Required with iteration_plan while the site "
+            "requires a web choice (sessionpolicy.web_choice_required at loop "
+            "start); checked against the caps up front."
+        ),
+    )
+    plan_web_allow_domains: list[str] = Field(
+        default_factory=list,
+        description="The allowlist of plan_web_policy=allowlist (squid dstdomain entries).",
+    )
     plan_default_model: str = ""
     plan_tool_capabilities: dict[str, Any] = Field(default_factory=dict)
 
@@ -750,9 +762,13 @@ def _resolve_loop_workflow(
     return name
 
 
-def _runs_no_workflow(request: StartLoopRequest, engine: AutonomousResearchLoop) -> bool:
+def _runs_no_workflow(
+    request: StartLoopRequest, engine: AutonomousResearchLoop
+) -> bool:
     """Simulated engines, agentic loops and plan iterations run no workflow."""
-    return bool(engine.simulated or request.agentic or (request.iteration_plan or "").strip())
+    return bool(
+        engine.simulated or request.agentic or (request.iteration_plan or "").strip()
+    )
 
 
 def _stamp_experiments(loop: ResearchLoop, name: str) -> None:
@@ -830,10 +846,14 @@ def _plan_iteration_problems(request: StartLoopRequest) -> list[str]:
     except ValueError as exc:
         return [str(exc)]
     if not request.plan_sources:
-        return ["plan_sources: a venue source serves the runs' models (a pushed source, or site)"]
+        return [
+            "plan_sources: a venue source serves the runs' models (a pushed source, or site)"
+        ]
     args.update({shape.goal_param: request.research_goal, shape.context_param: ""})
     _program, problems = prepare_plan(
-        request.iteration_plan_doc, args, tool_capabilities=request.plan_tool_capabilities
+        request.iteration_plan_doc,
+        args,
+        tool_capabilities=request.plan_tool_capabilities,
     )
     return [f"{p.path}: {p.message}" for p in problems[:10]]
 
@@ -850,11 +870,37 @@ def _attach_iteration_plan(loop: Any, request: StartLoopRequest) -> None:
         "sources": list(request.plan_sources),
         "default_source": request.plan_default_source,
         "web_policy": request.plan_web_policy,
+        "web_allow_domains": list(request.plan_web_allow_domains),
         "default_model": request.plan_default_model,
         "tool_capabilities": dict(request.plan_tool_capabilities),
     }
     if not (request.mode or "").strip() or "mode" not in request.model_fields_set:
         loop.metadata["mode"] = "ask"
+
+
+def _check_plan_web_choice(
+    request: StartLoopRequest, http_request: Request, owner: str
+) -> None:
+    """ADR-099 D-2: a server-hosted plan loop is a non-interactive start; its
+    runs' web choice is resolved against the caps at loop start, so a missing
+    or too-wide choice is refused up front (typed ``sessionpolicy.*``), never
+    as a refused run at iteration 1."""
+    if not (request.iteration_plan or "").strip():
+        return
+    from umrs.session_policy import PolicyError
+
+    from .companion_venue import get_venue_service, policy_typed
+
+    try:
+        get_venue_service(http_request).check_web_choice(
+            owner=owner,
+            project=request.project_id,
+            web_policy=request.plan_web_policy,
+            web_allow_domains=request.plan_web_allow_domains,
+        )
+    except PolicyError as exc:
+        message = f"research loop runs (plan_web_policy): {exc.message}"
+        policy_typed(PolicyError(exc.code, message, **exc.detail))
 
 
 def _validate_loop_venue(request: StartLoopRequest) -> str:
@@ -1029,6 +1075,7 @@ async def start_loop(
     """
     _enforce_loop_project(request, http_request, owner)
     _refuse_plan_iteration(request)
+    _check_plan_web_choice(request, http_request, owner)
     _enforce_readiness_approval(request)
     # D-33 tail: the project's persisted ask-policy default fills the
     # request when the caller left mode unset; an explicit mode always

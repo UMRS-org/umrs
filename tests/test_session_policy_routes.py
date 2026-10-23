@@ -207,3 +207,43 @@ class TestOwnerLayer:
             OWNER, json={"doc": {"budget": {"rpm_user": 5}}}, headers=_as("root", admin=True)
         )
         assert r.status_code == 200 and r.json()["set_by"] == "root"
+
+
+class TestUnknownSite:
+    """P2: with the site config unreadable ``this_site()`` is ``""``, the
+    all-sites key (sites share umrs_db). Old code wrote every site's rule
+    for a PUT without a venue, an owner PUT, and deleted the all-sites row."""
+
+    @pytest.fixture
+    def nameless(self, h):
+        h.client.app.state.companion_venue_service = SimpleNamespace(site_name="")
+        return h
+
+    def test_an_admin_write_without_a_venue_is_refused(self, nameless):
+        doc = {"sessions": {"concurrent_user": 1}}
+        r = nameless.client.put(f"{ADMIN}/site/_", json={"doc": doc}, headers=_bearer())
+        assert (r.status_code, r.headers[CODE]) == (503, "sessionpolicy.unavailable"), r.text
+        assert "--all-sites" in r.json()["detail"] and "--venue" in r.json()["detail"]
+        assert nameless.store.list() == []
+
+    def test_an_explicit_venue_or_all_sites_still_works(self, nameless):
+        doc = {"sessions": {"concurrent_user": 8}}
+        for venue in ("rccs", ""):
+            body = {"doc": doc, "venue": venue}
+            r = nameless.client.put(f"{ADMIN}/site/_", json=body, headers=_bearer())
+            assert r.status_code == 200 and r.json()["venue"] == venue, r.text
+
+    def test_delete_and_effective_without_a_venue_are_refused(self, nameless):
+        nameless.store.put(PolicyRule("", "site", "", "admin", {"budget": {"rpm_user": 6}}))
+        gone = nameless.client.delete(f"{ADMIN}/site/_", headers=_bearer())
+        assert gone.status_code == 503 and len(nameless.store.list()) == 1
+        eff = nameless.client.get(f"{ADMIN}/effective?user=alice", headers=_bearer())
+        assert eff.status_code == 503
+
+    def test_the_owner_layer_is_refused_always(self, nameless):
+        put = nameless.client.put(
+            OWNER, json={"doc": {"budget": {"rpm_user": 5}}}, headers=_as("olive")
+        )
+        assert (put.status_code, put.headers[CODE]) == (503, "sessionpolicy.unavailable")
+        assert nameless.store.list() == []
+        assert nameless.client.get(OWNER, headers=_as("olive")).status_code == 503

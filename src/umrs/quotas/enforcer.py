@@ -15,8 +15,9 @@ the call's lease. The lease owner's effective limits (ADR-099 D-3; cached
 All three answer 429 with ``x-platform-error-code`` and ``Retry-After``.
 "Today" is the calendar day in ``UMRS_QUOTA_DAY_TZ`` (default UTC). With no
 limit set (the default) nothing is queried. A limit that is set but whose
-usage (or the limits themselves) cannot be read refuses as
-``quota.unavailable`` (503): fail closed. The check runs before a call; a
+usage cannot be read refuses as ``quota.unavailable`` (503): fail closed.
+The limits come from the session-policy cache, which serves a key's last
+good limits when a re-read fails; only a key it never read fails closed. The check runs before a call; a
 call already in flight can end above the limit.
 """
 
@@ -104,10 +105,11 @@ class _Caller:
 
 
 def _limit(value: Any) -> int | None:
-    """A set limit (int >= 0), else None (``null`` or absent = no limit)."""
-    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-        return None
-    return value
+    """A set limit (a positive int), else None (``null`` or absent = no
+    limit): the session policy's one reading (``limit_value``)."""
+    from umrs.session_policy import limit_value
+
+    return limit_value(value)
 
 
 def _iso(moment: datetime) -> str:

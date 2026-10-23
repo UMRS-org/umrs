@@ -3,8 +3,9 @@
 Contracts locked:
 
 - count_active_agent_units reads the jobs table only (JobType VALUES:
-  companion_worker + research_loop_job + frontend_session, LIVE statuses);
-  nothing fabricated, pool-absent = 0.
+  companion_worker + research_loop_job, LIVE statuses); nothing fabricated,
+  pool-absent = 0. (frontend_session left this budget in ADR-099 D-6: remote
+  sessions have their own cap, ``sessions.concurrent_user``, 12 by default.)
 - enforce_spawn_budget refuses when current >= limit with typed
   quota.cpu_process_exceeded.
 - DiskLedger charges byte_size exactly ONCE per (user, content_hash) —
@@ -139,9 +140,7 @@ class TestStagedBytesCleanupOnRefusal:
         from umrs.api.disk_ledger import DiskLedger
 
         deleted: list[tuple[str, str]] = []
-        client = SimpleNamespace(
-            delete_object=lambda *, Bucket, Key: deleted.append((Bucket, Key))
-        )
+        client = SimpleNamespace(delete_object=lambda *, Bucket, Key: deleted.append((Bucket, Key)))
         config = SimpleNamespace(bucket="bucket-x", get_client=lambda: client)
 
         monkeypatch.setattr(
@@ -154,9 +153,7 @@ class TestStagedBytesCleanupOnRefusal:
 
         with pytest.raises(HTTPException) as exc_info:
             try:
-                DiskLedger(MagicMock()).charge(
-                    "u", content_hash="h", byte_size=200
-                )
+                DiskLedger(MagicMock()).charge("u", content_hash="h", byte_size=200)
             except Exception:
                 knowledge_upload._cleanup_staged_bytes(
                     client=client, bucket=config.bucket, staged_key="staging/p/u/h.bin"
@@ -173,9 +170,7 @@ class TestStagedBytesCleanupOnRefusal:
         monkeypatch.setattr(
             knowledge_upload,
             "_cleanup_staged_bytes",
-            lambda *, client, bucket, staged_key: calls.append(
-                (bucket, staged_key)
-            ),
+            lambda *, client, bucket, staged_key: calls.append((bucket, staged_key)),
         )
 
         class _FailingLedger:
@@ -187,9 +182,7 @@ class TestStagedBytesCleanupOnRefusal:
 
                 raise HTTPException(status_code=503, detail="quota")
 
-        monkeypatch.setattr(
-            "umrs.api.disk_ledger.DiskLedger", _FailingLedger
-        )
+        monkeypatch.setattr("umrs.api.disk_ledger.DiskLedger", _FailingLedger)
 
         # Simulate the exact block from knowledge_upload's route (base256 pre-step:
         # pool-present + user_id set).

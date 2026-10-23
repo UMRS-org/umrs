@@ -96,13 +96,22 @@ def test_set_from_a_file_replaces(tmp_path, calls, jwt):
 
 
 @pytest.mark.parametrize(
-    "pair", ["budget.usd=3", "budget.rpm_user=sixty", "no-equals-sign", "web=public"]
+    ("pair", "why"),
+    [
+        ("budget.usd=3", "unknown policy field 'budget.usd'"),
+        ("budget.rpm_user=sixty", "budget.rpm_user takes an integer"),
+        ("no-equals-sign", "expected KEY=VALUE, got 'no-equals-sign'"),
+        ("web=public", "unknown policy field 'web'"),
+    ],
 )
-def test_bad_pairs_exit_2_before_any_write(tmp_path, calls, jwt, capsys, pair):
+def test_bad_pairs_exit_2_before_any_write(tmp_path, calls, jwt, capsys, pair, why):
+    # The reason is asserted: argparse also exits 2 (for an unknown command),
+    # so the exit code alone passes without the policy CLI.
     seen, _ = calls
     with pytest.raises(SystemExit) as exc:
         _run(tmp_path, "policy", "set", "--scope", "user", "--subject", "a", "--replace", pair)
     assert exc.value.code == 2
+    assert why in capsys.readouterr().err
     assert [r for r in seen if r.get_method() == "PUT"] == []
 
 
@@ -136,8 +145,10 @@ def test_effective_and_list(tmp_path, calls, jwt, capsys):
 
 def test_policy_commands_refuse_without_a_credential(tmp_path, calls, capsys):
     seen, _ = calls
-    with pytest.raises(SystemExit):
+    with pytest.raises(SystemExit) as exc:
         _run(tmp_path, "policy", "list")
+    assert exc.value.code == 2
+    assert "no admin credential: set $UMRS_ADMIN_JWT" in capsys.readouterr().err
     assert seen == []
 
 
