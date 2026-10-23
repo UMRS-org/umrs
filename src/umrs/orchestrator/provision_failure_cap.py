@@ -125,18 +125,32 @@ class CapRefusal:
     def retry_after_sec(self, now: float) -> int:
         return max(1, math.ceil(self.retry_at - now))
 
+    def body(self, now: float) -> dict[str, Any]:
+        """The 429 response body: the message and its parts as fields."""
+        return {
+            "message": self.message(now),
+            "model": self.key.model,
+            "variant": self.key.variant,
+            "venue": self.key.venue,
+            "failed_jobs": [f.job_id for f in self.failures],
+            "retry_at": _utc(self.retry_at),
+            "retry_after_sec": self.retry_after_sec(now),
+        }
+
     def message(self, now: float) -> str:
         variant = f" (variant {self.key.variant})" if self.key.variant else ""
         jobs = "; ".join(
             f"job {f.job_id} at {_utc(f.ts)}: {f.error[:120] or 'no error recorded'}"
             for f in self.failures
         )
+        # The wait and the way out come first: clients cut long messages
+        # (r4 keeps 400 characters), and the job list is the longest part.
         return (
             f"Provisioning '{self.key.model}'{variant} on {self.key.venue} for project "
-            f"'{self.key.project_id}' is paused: the last {len(self.failures)} attempts "
-            f"failed within {self.window_sec // 60} min ({jobs}). Retry after "
-            f"{_utc(self.retry_at)} (in {self.retry_after_sec(now)} s), after fixing the "
-            "cause; an admin may provision now with override_failure_cap=true."
+            f"'{self.key.project_id}' is paused until {_utc(self.retry_at)} (in "
+            f"{self.retry_after_sec(now)} s): the last {len(self.failures)} attempts "
+            f"failed within {self.window_sec // 60} min. Fix the cause and retry then; "
+            f"an admin may provision now with override_failure_cap=true. Failed: {jobs}."
         )
 
 

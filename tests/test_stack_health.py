@@ -26,28 +26,74 @@ LIB = MINI_RIVAULT / "stack_health.sh"
 SERVE_MODEL_SLURM = MINI_RIVAULT / "serve-model.slurm"
 PROJECT = "rivault-77"
 
+# State files under STUB_DIR, per container name:
+#   state.<ctr>     its status (running/exited ...); absent = no such container
+#   requires.<ctr>  the containers it --requires (compose depends_on)
+#   exitcode.<ctr>  its exit code (default 1)     logs.<ctr>  its log
+# Like real podman, rm refuses a container another container requires.
 _PODMAN = r"""#!/bin/bash
 echo "podman $*" >> "$STUB_DIR/calls.log"
 state_of() { cat "$STUB_DIR/state.$1" 2>/dev/null; }
+last="${@: -1}"
+inspect() {
+  [ -f "$STUB_DIR/state.$1" ] || exit 125
+  case "$2" in
+    *ExitCode*) cat "$STUB_DIR/exitcode.$1" 2>/dev/null || echo 1 ;;
+    *.Id*) echo "id-$1" ;;
+    *Dependencies*) printf '['; for d in $(cat "$STUB_DIR/requires.$1" 2>/dev/null); do printf 'id-%s ' "$d"; done; echo ']' ;;
+    *) state_of "$1" ;;
+  esac
+  exit 0
+}
+remove() {
+  local f
+  for f in "$STUB_DIR"/requires.*; do
+    [ -f "$f" ] || continue
+    if grep -qx "$1" "$f"; then
+      echo "Error: container $1 has dependent containers which must be removed before it: ${f##*/requires.}" >&2
+      exit 125
+    fi
+  done
+  rm -f "$STUB_DIR/state.$1" "$STUB_DIR/requires.$1" "$STUB_DIR/exitcode.$1" "$STUB_DIR/logs.$1"
+  echo "$1"; exit 0
+}
 case "$1 $2" in
   "ps -q") ls "$STUB_DIR" | grep -c '^state\.' ; exit 0 ;;
+  "ps -a") case "$*" in *name=*) ls "$STUB_DIR" | sed -n 's/^state\.//p' ;; esac; exit 0 ;;
   "container exists") [ -f "$STUB_DIR/state.$3" ]; exit $? ;;
-  "container inspect")
-      [ -f "$STUB_DIR/state.$3" ] || exit 125
-      case "$5" in *ExitCode*) echo 1 ;; *) state_of "$3" ;; esac
-      exit 0 ;;
+  "container inspect") inspect "$3" "$5" ;;
+  "logs --tail") cat "$STUB_DIR/logs.$last" 2>/dev/null; exit 0 ;;
+  "rm -f") remove "$last" ;;
 esac
 exit 0
 """
 
-# Recreate = the container comes back in the state STUB_RECREATE_STATE names.
+# Recreate = the container comes back in the next state recreate.<svc> lists
+# (one line per recreate), else STUB_RECREATE_STATE; with STUB_RECREATE_EXIT
+# as its exit code. A name still in use fails, like podman create does; nginx
+# comes back requiring litellm (depends_on).
 _COMPOSE = r"""#!/bin/bash
 echo "podman-compose $*" >> "$STUB_DIR/calls.log"
 svc="${@: -1}"
-echo "${STUB_RECREATE_STATE:-exited}" > "$STUB_DIR/state.rivault-77_${svc}_1"
+ctr="rivault-77_${svc}_1"
+if [ -f "$STUB_DIR/state.$ctr" ]; then
+  echo "Error: the container name \"$ctr\" is already in use" >&2
+  exit 125
+fi
+state="${STUB_RECREATE_STATE:-exited}"
+queue="$STUB_DIR/recreate.$svc"
+if [ -s "$queue" ]; then
+  state="$(head -n 1 "$queue")"
+  sed -i 1d "$queue"
+fi
+echo "$state" > "$STUB_DIR/state.$ctr"
+echo "${STUB_RECREATE_EXIT:-1}" > "$STUB_DIR/exitcode.$ctr"
+[ "$svc" = nginx ] && echo "rivault-77_litellm_1" > "$STUB_DIR/requires.$ctr"
+exit 0
 """
 
 _CURL = r"""#!/bin/bash
+echo "curl $*" >> "$STUB_DIR/calls.log"
 printf '%s' "${STUB_HTTP_CODE:-200}"
 """
 
@@ -74,6 +120,8 @@ def stub(tmp_path: Path) -> Path:
     (tmp_path / "info").mkdir()
     for svc, state in (("vllm", "running"), ("litellm", "running"), ("nginx", "running")):
         (tmp_path / f"state.{PROJECT}_{svc}_1").write_text(state + "\n")
+    # compose created nginx with --requires on litellm (depends_on)
+    (tmp_path / f"requires.{PROJECT}_nginx_1").write_text(f"{PROJECT}_litellm_1\n")
     return tmp_path
 
 
@@ -91,6 +139,8 @@ def _env(stub: Path, **extra: str) -> dict[str, str]:
 
 
 def _lib(stub: Path, script: str, **extra: str) -> subprocess.CompletedProcess:
+    """Run ``script`` with the library; the front is probed on every tick."""
+    extra.setdefault("RIVAULT_FRONT_PROBE_EVERY_TICKS", "1")
     return subprocess.run(
         ["bash", "-c", f"source {LIB} && {script}"],
         env=_env(stub, **extra),
@@ -108,6 +158,14 @@ def _set_state(stub: Path, svc: str, state: str) -> None:
 def _calls(stub: Path) -> str:
     log = stub / "calls.log"
     return log.read_text() if log.exists() else ""
+
+
+def _write(stub: Path, kind: str, svc: str, text: str) -> None:
+    (stub / f"{kind}.{PROJECT}_{svc}_1").write_text(text + "\n")
+
+
+def _queue_recreates(stub: Path, svc: str, *states: str) -> None:
+    (stub / f"recreate.{svc}").write_text("".join(f"{state}\n" for state in states))
 
 
 # ── stack_health.sh ─────────────────────────────────────────────────────────
@@ -175,6 +233,95 @@ def test_the_probe_is_skipped_when_litellm_is_not_part_of_the_stack(stub: Path) 
         RIVAULT_FRONT_FAIL_STREAK="1",
     )
     assert r.stdout.strip() == "healthy"
+
+
+def test_an_unplanned_exit_is_not_marked_planned(stub: Path) -> None:
+    _set_state(stub, "litellm", "exited")
+    r = _lib(
+        stub, f'stack_health_init; stack_health_tick {PROJECT} 4000; echo "p=$STACK_HEALTH_PLANNED"'
+    )
+    assert "p=0" in r.stdout, r.stderr
+
+
+@pytest.mark.parametrize(
+    ("exit_code", "log", "planned"),
+    [
+        ("0", "", True),
+        ("1", "INFO: Maximum request limit of 10000 exceeded. Terminating process.", True),
+        ("1", "ERROR: DATABASE_URL is empty", False),
+        ("137", "", False),
+    ],
+)
+def test_a_planned_exit_is_exit_0_or_the_max_request_limit(
+    stub: Path, exit_code: str, log: str, planned: bool
+) -> None:
+    """Review F1: uvicorn ends a one-worker LiteLLM after N requests on plan."""
+    _set_state(stub, "litellm", "exited")
+    _write(stub, "exitcode", "litellm", exit_code)
+    _write(stub, "logs", "litellm", log)
+    r = _lib(
+        stub, f'stack_health_init; stack_health_tick {PROJECT} 4000; echo "p=$STACK_HEALTH_PLANNED"'
+    )
+    assert f"p={int(planned)}" in r.stdout, r.stderr
+
+
+def test_planned_restarts_are_free_only_while_the_window_has_room(stub: Path) -> None:
+    script = (
+        "stack_health_init; STACK_HEALTH_PLANNED=1; for i in 1 2 3 4; do "
+        "stack_restart_is_free && echo -n F || echo -n C; done; "
+        "STACK_HEALTH_PLANNED=0; stack_restart_is_free && echo -n F || echo -n C"
+    )
+    r = _lib(stub, script, RIVAULT_SIDECAR_PLANNED_RESTARTS="2")
+    assert r.stdout == "FFCCC", r.stderr
+
+
+@pytest.mark.parametrize(
+    ("respawn", "vision", "order"),
+    [
+        ("litellm", False, "nginx litellm"),
+        ("litellm nginx", False, "nginx litellm"),
+        ("nginx", False, "nginx"),
+        ("litellm", True, "bentoml-vision nginx litellm"),
+        ("litellm nginx", True, "bentoml-vision nginx litellm"),
+    ],
+)
+def test_dependents_are_removed_before_what_they_require(
+    stub: Path, respawn: str, vision: bool, order: str
+) -> None:
+    """Review F2: podman refuses rm of a container another one --requires."""
+    if vision:  # bentoml-vision depends_on nginx
+        _set_state(stub, "bentoml-vision", "running")
+        _write(stub, "requires", "bentoml-vision", f"{PROJECT}_nginx_1")
+    r = _lib(stub, f'stack_removal_order {PROJECT} "{respawn}"')
+    assert r.stdout == order, r.stderr
+
+
+def test_a_respawn_keeps_the_answered_once_state_and_uses_a_short_grace(stub: Path) -> None:
+    """Review F6: a respawn restarted the 900 s start grace, so a front that
+    stayed down after it was never respawned again inside that grace."""
+    script = (
+        f"stack_health_init; stack_health_tick {PROJECT} 4000; "
+        "export STUB_HTTP_CODE=502; for i in 1 2 3 4 5 6; do "
+        f'stack_health_tick {PROJECT} 4000 && echo -n "respawn@$i "; done'
+    )
+    r = _lib(stub, script, RIVAULT_FRONT_FAIL_STREAK="3", RIVAULT_FRONT_RESPAWN_GRACE_SEC="0")
+    assert r.stdout.strip() == "respawn@3 respawn@6", r.stderr
+
+
+def test_after_a_respawn_failures_inside_the_respawn_grace_do_not_count(stub: Path) -> None:
+    script = (
+        f"stack_health_init; stack_health_tick {PROJECT} 4000; "
+        "export STUB_HTTP_CODE=502; for i in 1 2 3 4 5 6; do "
+        f'stack_health_tick {PROJECT} 4000 && echo -n "respawn@$i "; done'
+    )
+    r = _lib(stub, script, RIVAULT_FRONT_FAIL_STREAK="3", RIVAULT_FRONT_RESPAWN_GRACE_SEC="600")
+    assert r.stdout.strip() == "respawn@3", r.stderr
+
+
+def test_the_front_is_probed_every_nth_tick(stub: Path) -> None:
+    script = f"stack_health_init; for i in $(seq 1 24); do stack_health_tick {PROJECT} 4000; done"
+    r = _lib(stub, script, RIVAULT_FRONT_PROBE_EVERY_TICKS="12")
+    assert _calls(stub).count("curl ") == 2, r.stderr
 
 
 # ── the monitor section of serve-model.slurm against the stubs ──────────────
@@ -245,7 +392,9 @@ def test_a_front_stuck_on_502_fails_the_job_after_the_budget(stub: Path) -> None
         stub,
         STUB_HTTP_CODE="502",
         STUB_RECREATE_STATE="running",
+        RIVAULT_FRONT_PROBE_EVERY_TICKS="1",
         RIVAULT_FRONT_STARTUP_GRACE_SEC="0",
+        RIVAULT_FRONT_RESPAWN_GRACE_SEC="0",
         RIVAULT_FRONT_FAIL_STREAK="3",
     )
     assert r.returncode == 125, r.stdout[-2000:]
@@ -260,3 +409,52 @@ def test_a_dead_engine_still_respawns_through_the_shared_claim(stub: Path) -> No
     assert r.returncode == 125, r.stdout[-2000:]
     assert _calls(stub).count("up --detach --no-deps vllm") == 3
     assert "Respawn budget exhausted" in r.stdout
+
+
+def test_a_respawn_removes_nginx_first_and_recreates_it_last(stub: Path) -> None:
+    """Review F2: with nginx --requires litellm, ``podman rm -f litellm`` failed
+    (hidden by ``|| true``), the recreate hit the name in use, and LiteLLM
+    never came back while the budget was spent."""
+    _set_state(stub, "litellm", "exited")
+    r = _run_monitor(stub, STUB_RECREATE_STATE="running")
+    assert r.returncode == 124, r.stdout[-2000:]
+    calls = [line for line in _calls(stub).splitlines() if "rm -f" in line or " up " in line]
+    assert calls[:4] == [
+        f"podman rm -f {PROJECT}_nginx_1",
+        f"podman rm -f {PROJECT}_litellm_1",
+        calls[2],
+        calls[3],
+    ]
+    assert calls[2].endswith("up --detach --no-deps litellm")
+    assert calls[3].endswith("up --detach --no-deps nginx")
+    assert "could not remove" not in r.stdout
+
+
+def test_a_litellm_that_exits_on_plan_four_times_keeps_the_job(stub: Path) -> None:
+    """Review F1: uvicorn's max-requests exit (exit 0) used to be charged to
+    the never-refilling job budget; the fourth one tore a healthy endpoint
+    down with exit 125."""
+    _set_state(stub, "litellm", "exited")
+    _write(stub, "exitcode", "litellm", "0")
+    _queue_recreates(stub, "litellm", "exited", "exited", "exited", "running")
+    r = _run_monitor(stub, STUB_RECREATE_STATE="running", STUB_RECREATE_EXIT="0")
+    assert r.returncode == 124, r.stdout[-2000:]
+    assert _calls(stub).count("up --detach --no-deps litellm") == 4
+    assert r.stdout.count("not charged to the respawn budget") == 4
+    assert not (stub / "info" / "rivault-job-77.info").read_text().count("budget_exhausted")
+
+
+def test_a_sidecar_exiting_0_in_a_loop_still_ends_the_job(stub: Path) -> None:
+    _set_state(stub, "litellm", "exited")
+    _write(stub, "exitcode", "litellm", "0")
+    r = _run_monitor(stub, STUB_RECREATE_STATE="exited", STUB_RECREATE_EXIT="0")
+    assert r.returncode == 125, r.stdout[-2000:]
+    assert r.stdout.count("not charged to the respawn budget") == 6
+    assert "Respawn budget exhausted" in r.stdout
+
+
+def test_the_monitor_probes_the_front_about_once_a_minute(stub: Path) -> None:
+    """Review F1: a probe every 5 s tick was 17,280 requests a day."""
+    r = _run_monitor(stub)  # 300 s at 5 s ticks
+    assert r.returncode == 124, r.stdout[-2000:]
+    assert _calls(stub).count("curl ") == 5

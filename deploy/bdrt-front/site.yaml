@@ -168,6 +168,9 @@ partition_profiles:
     userns_mode: host
     network_backend: netavark
     vllm_docker_tag: cu130-nightly-aarch64
+    # LiteLLM pinned by digest (2026-10-23): the multi-arch index (arm64 +
+    # amd64) of main-stable these GB10 nodes ran on 2026-10-22 (job 8218).
+    litellm_image: ghcr.io/berriai/litellm-non_root@sha256:f106967e9b4d8f43c97c1cc8b4d5ad31cd95f7d37ab5b20a48ff4a609e82da73
     gpus: 0                    # single GB10 per node; allocate implicitly
     needs_netavark_switch: false
   spark-double:
@@ -178,6 +181,9 @@ partition_profiles:
     userns_mode: host
     network_backend: netavark
     vllm_docker_tag: cu130-nightly-aarch64
+    # LiteLLM pinned by digest (2026-10-23): the multi-arch index (arm64 +
+    # amd64) of main-stable these GB10 nodes ran on 2026-10-22 (job 8218).
+    litellm_image: ghcr.io/berriai/litellm-non_root@sha256:f106967e9b4d8f43c97c1cc8b4d5ad31cd95f7d37ab5b20a48ff4a609e82da73
     gpus: 0
     needs_netavark_switch: false
   # edge-double is in scheduler.partition and carries serving; aarch64 GB10
@@ -190,5 +196,8 @@ partition_profiles:
     userns_mode: host
     network_backend: netavark
     vllm_docker_tag: cu130-nightly-aarch64
+    # LiteLLM pinned by digest (2026-10-23): the multi-arch index (arm64 +
+    # amd64) of main-stable these GB10 nodes ran on 2026-10-22 (job 8218).
+    litellm_image: ghcr.io/berriai/litellm-non_root@sha256:f106967e9b4d8f43c97c1cc8b4d5ad31cd95f7d37ab5b20a48ff4a609e82da73
     gpus: 0
     needs_netavark_switch: false
