@@ -291,6 +291,8 @@ class TestLaunch:
             "R4_VENUE_SESSION_ID",
             "R4_VENUE_RAIL_URL",
             "R4_ENDPOINT_URL",
+            # ADR-099 D-9 (RS-1 fix W1): the started web policy, a reference.
+            "R4_WEB_ACCESS",
             "HOME",
             "XDG_CONFIG_HOME",
             "XDG_DATA_HOME",
