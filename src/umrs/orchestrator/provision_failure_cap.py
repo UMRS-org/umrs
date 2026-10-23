@@ -32,6 +32,12 @@ STARTING endpoint the janitor reaped as stuck (:func:`record_reaped_stuck`).
 A job still queued at the deadline, a job that stopped (cancelled), and an
 endpoint being deprovisioned (row marked, gone, TERMINATED or EXPIRED) do not.
 
+Clocks (re-review round 3, 2026-10-23): queue time never counts against the
+model. The location wait gives a job that leaves the queue its own bring-up
+window (``service._LocationClock``), the janitor ages a STARTING row from its
+``starting_at`` stamp, and a row the janitor marked as reaped stuck is the
+janitor's to count, not the provision path's (:func:`provision_path_counts`).
+
 Tunables: ``UMRS_PROVISION_FAILURE_CAP`` (failures, default 3; 0 disables)
 and ``UMRS_PROVISION_FAILURE_WINDOW_SEC`` (default 1800).
 """
@@ -222,18 +228,60 @@ def failure_is_the_models(endpoint: RegisteredEndpoint | None) -> bool:
     return not any(mark in endpoint.metadata for mark in DEPROVISION_MARKS)
 
 
-def record_reaped_stuck(endpoint: RegisteredEndpoint, error: str) -> bool:
+def provision_path_counts(endpoint: RegisteredEndpoint | None) -> bool:
+    """Whether the provision path may record this row's failure.
+
+    Not a row the janitor marked as reaped stuck (re-review N6, 2026-10-23):
+    the janitor decides whether that one counts (:func:`record_reaped_stuck`),
+    and the provision path seeing the row before its removal must not count
+    it a second time, nor count one the janitor chose not to.
+    """
+    if endpoint is None or not failure_is_the_models(endpoint):
+        return False
+    return REAPED_STUCK_MARK not in endpoint.metadata
+
+
+def _starting_for(endpoint: RegisteredEndpoint, now: datetime) -> float | None:
+    """Seconds the row has been STARTING, or None if it did not record when."""
+    starting_at = endpoint.starting_at
+    if starting_at is None:
+        return None
+    return (now - starting_at).total_seconds()
+
+
+def record_reaped_stuck(
+    endpoint: RegisteredEndpoint,
+    error: str,
+    *,
+    min_starting_sec: float,
+    now: datetime | None = None,
+) -> bool:
     """A STARTING endpoint the janitor reaps as stuck, as a failed attempt.
 
     Its job reached a node and the engine never became ready inside the
     janitor's stuck timeout. Without this the row was removed unmarked, the
     provision still waiting on it saw no row and did not count the failure,
-    and a hanging engine was re-provisioned every ~10 min, uncapped. Returns
-    whether the attempt was recorded.
+    and a hanging engine was re-provisioned every ~10 min, uncapped.
+
+    Counted only when the row has been STARTING for ``min_starting_sec``
+    (the stuck timeout) by its own ``starting_at`` stamp (re-review N4,
+    2026-10-23): ``created_at`` includes the queue wait, so a job that
+    queued past the timeout and had just turned STARTING was counted. A row
+    without the stamp is not counted. Returns whether it was recorded.
     """
     if endpoint.status != EndpointStatus.STARTING:
         return False
     if not failure_is_the_models(endpoint):
+        return False
+    now = now or datetime.now(timezone.utc).replace(tzinfo=None)
+    starting_for = _starting_for(endpoint, now)
+    if starting_for is None or starting_for < min_starting_sec:
+        logger.info(
+            "stuck reap of %s not counted: STARTING for %s s (needs %s s)",
+            endpoint.job_id,
+            "an unknown time" if starting_for is None else int(starting_for),
+            int(min_starting_sec),
+        )
         return False
     key = AttemptKey(
         endpoint.project_id, endpoint.model, endpoint.variant, current_venue()
