@@ -22,8 +22,10 @@ from umrs.api import audit_events
 from umrs.api import endpoints as endpoints_api
 from umrs.api.endpoints import router
 from umrs.orchestrator import provision_failure_cap as cap
-from umrs.orchestrator.base import JobInfo, JobStatus
+from umrs.orchestrator.base import EndpointInfo, JobInfo, JobStatus
 from umrs.orchestrator.endpoint_registry import (
+    LEFT_QUEUE_AT_KEY,
+    STARTING_AT_KEY,
     EndpointRegistry,
     EndpointStatus,
     get_registry,
@@ -458,10 +460,12 @@ def _service_on(backend: _Backend) -> OrchestrationService:
     )
 
 
-async def _finalize_pending(service: OrchestrationService, budget: float) -> ProvisionResult:
+async def _finalize_pending(
+    service: OrchestrationService, budget: float, ttl_sec: int = 3600
+) -> ProvisionResult:
     now = asyncio.get_running_loop().time()
     return await service._finalize_provision(
-        request=ProvisionRequest("default", KEY.model, requesting_user="mnagaso"),
+        request=ProvisionRequest("default", KEY.model, requesting_user="mnagaso", ttl_sec=ttl_sec),
         job_id="8300",
         target_host="n",
         actual_host="pending",
@@ -521,7 +525,15 @@ def test_a_queued_job_deprovisioned_before_publishing_is_not_counted() -> None:
 # ── re-review N2b: the janitor reaps a STARTING endpoint as stuck ───────────
 
 
-def _stuck_janitor(status: EndpointStatus, job_id: str = "8300", **metadata: str):
+def _stuck_janitor(
+    status: EndpointStatus,
+    job_id: str = "8300",
+    *,
+    queued_for: timedelta = timedelta(0),
+    starting_for: timedelta = timedelta(hours=1),
+    **metadata: str,
+):
+    """A row ``queued_for`` in the queue, then ``starting_for`` in ``status``."""
     registry = EndpointRegistry()
     registry.register(
         project_id="default",
@@ -533,7 +545,11 @@ def _stuck_janitor(status: EndpointStatus, job_id: str = "8300", **metadata: str
         metadata={"requesting_user": "mnagaso", **metadata},
     )
     registry.update_status(job_id, status)
-    registry.get_by_job_id(job_id).created_at = datetime.utcnow() - timedelta(hours=1)
+    row = registry.get_by_job_id(job_id)
+    now = datetime.utcnow()
+    row.created_at = now - queued_for - starting_for
+    if status == EndpointStatus.STARTING:
+        row.metadata[STARTING_AT_KEY] = (now - starting_for).isoformat()
     config = JanitorConfig(
         enable_ttl_cleanup=False,
         enable_orphan_cleanup=False,
@@ -581,4 +597,148 @@ def test_three_stuck_reaps_trip_the_cap() -> None:
 def test_a_reap_before_a_node_or_during_a_deprovision_is_not_counted(status, metadata) -> None:
     janitor, _ = _stuck_janitor(status, **metadata)
     assert asyncio.run(janitor._cleanup_stuck()) == 1
+    assert _attempt_events() == []
+
+
+# ── re-review round 3: queue time is not the model's failure ────────────────
+# N4: the janitor aged a STARTING row from created_at, which includes the
+# queue wait: a job queued past the 600 s stuck timeout was reaped seconds
+# after it turned STARTING and counted. It now ages from starting_at.
+
+
+def test_the_registry_stamps_when_a_row_turns_starting() -> None:
+    registry = EndpointRegistry()
+    registry.register(project_id="default", model=KEY.model, job_id="8300", host="n", port=1)
+    before = datetime.utcnow()
+    registry.update_status("8300", EndpointStatus.STARTING)
+    stamped = registry.get_by_job_id("8300").starting_at
+    assert stamped is not None and stamped >= before
+    registry.update_status("8300", EndpointStatus.STARTING)  # adapter re-sync
+    assert registry.get_by_job_id("8300").starting_at == stamped
+
+
+def test_a_row_that_just_left_a_long_queue_is_neither_reaped_nor_counted() -> None:
+    janitor, registry = _stuck_janitor(
+        EndpointStatus.STARTING,
+        queued_for=timedelta(minutes=11),
+        starting_for=timedelta(seconds=5),
+    )
+    assert asyncio.run(janitor._cleanup_stuck()) == 0
+    assert registry.get_by_job_id("8300") is not None
+    assert _attempt_events() == []
+
+
+def test_a_provisioning_row_in_bring_up_ages_from_leaving_the_queue() -> None:
+    """Remote Slurm: out of the queue, location not yet published."""
+    janitor, registry = _stuck_janitor(EndpointStatus.PROVISIONING)
+    left = datetime.utcnow() - timedelta(seconds=5)
+    registry.update_metadata("8300", {LEFT_QUEUE_AT_KEY: left.isoformat()})
+    assert asyncio.run(janitor._cleanup_stuck()) == 0
+    assert registry.get_by_job_id("8300") is not None
+
+
+def test_a_starting_row_without_the_stamp_is_reaped_but_not_counted() -> None:
+    """A row from before the stamp: how long it was STARTING is unknown."""
+    janitor, registry = _stuck_janitor(EndpointStatus.STARTING)
+    del registry.get_by_job_id("8300").metadata[STARTING_AT_KEY]
+    assert asyncio.run(janitor._cleanup_stuck()) == 1
+    assert _attempt_events() == []
+
+
+def test_a_reap_counts_only_after_the_stuck_timeout_in_starting() -> None:
+    janitor, registry = _stuck_janitor(EndpointStatus.STARTING, starting_for=timedelta(seconds=30))
+    row = registry.get_by_job_id("8300")
+    assert cap.record_reaped_stuck(row, "stuck", min_starting_sec=600) is False
+    assert cap.record_reaped_stuck(row, "stuck", min_starting_sec=30) is True
+    assert len(_attempt_events()) == 1
+
+
+# N5: the provision deadline covered queue and bring-up (remote Slurm writes
+# the location at the end of bring-up). A job that left the queue gets its own
+# bring-up window; only a timeout after a whole window outside the queue counts.
+
+PUBLISHED = None  # a RUNNING poll that publishes the location
+
+
+class _BringUpBackend(_ScriptedBackend):
+    async def get_job_status(self, job_id):
+        step = self.statuses[0]
+        if len(self.statuses) > 1:
+            self.statuses.pop(0)
+        if self.cancelled:
+            return JobInfo(job_id=job_id, status=JobStatus.FAILED)
+        if step is PUBLISHED:
+            node = EndpointInfo(node="dgx-spark-0", litellm_port=13001)
+            return JobInfo(job_id=job_id, status=JobStatus.RUNNING, endpoint=node)
+        return JobInfo(job_id=job_id, status=step)
+
+
+def _ready_service_on(backend: _Backend) -> OrchestrationService:
+    service = _service_on(backend)
+
+    async def readiness(**kw):
+        return ReadinessResult(
+            state=ReadinessState.READY, job_id="8300", host=kw["host"], port=kw["port"]
+        )
+
+    service._wait_for_ready_with_budget = readiness
+    return service
+
+
+def _errors() -> list[dict]:
+    return [e for e in _attempt_events() if e["outcome"] == "error"]
+
+
+def test_a_job_queued_for_most_of_the_budget_gets_its_bring_up_window() -> None:
+    """Out of the queue 1.5 s into a 1.5 s budget, published 1.5 s later."""
+    backend = _BringUpBackend(
+        JobStatus.PENDING,
+        JobStatus.PENDING,
+        JobStatus.RUNNING,
+        JobStatus.RUNNING,
+        PUBLISHED,
+    )
+    service = _ready_service_on(backend)
+    result = asyncio.run(_finalize_pending(service, budget=1.5))
+    assert result.success is True, result.error
+    assert backend.cancelled is False
+    assert _errors() == []
+    row = service.registry.get_by_job_id("8300")
+    assert row.left_queue_at is not None  # the janitor's clock restarts there
+    assert row.starting_at is not None
+
+
+def test_a_queue_patient_job_leaving_the_queue_late_is_not_killed() -> None:
+    """ttl 0 (relay successor, system pool): queued past the deadline."""
+    backend = _BringUpBackend(JobStatus.PENDING, JobStatus.PENDING, JobStatus.RUNNING, PUBLISHED)
+    service = _ready_service_on(backend)
+    result = asyncio.run(_finalize_pending(service, budget=1.0, ttl_sec=0))
+    assert result.success is True, result.error
+    assert backend.cancelled is False
+    assert _errors() == []
+
+
+def test_a_bring_up_timeout_after_a_whole_window_counts() -> None:
+    backend = _BringUpBackend(JobStatus.PENDING, JobStatus.RUNNING)
+
+    async def run():
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        result = await _finalize_pending(_ready_service_on(backend), budget=1.0)
+        return result, loop.time() - started
+
+    result, elapsed = asyncio.run(run())
+    assert "Timed out waiting for backend endpoint location" in (result.error or "")
+    assert elapsed >= 1.9  # 1 s queued, then the whole 1 s bring-up window
+    assert backend.cancelled is True
+    assert len(_errors()) == 1
+
+
+# N6: a row the janitor marked as reaped stuck is the janitor's to count.
+
+
+def test_the_provision_path_leaves_a_reaped_row_to_the_janitor() -> None:
+    service = _service(ReadinessState.FAILED)
+    service.registry.update_metadata("8300", {cap.REAPED_STUCK_MARK: "now"})
+    assert _finalize(service).success is False
     assert _attempt_events() == []

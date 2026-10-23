@@ -27,6 +27,7 @@ from .base import JobStatus, OrchestratorBackend
 from .detection import BackendType, detect_backend
 from .endpoint_mounts import build_mount_environment
 from .endpoint_registry import (
+    LEFT_QUEUE_AT_KEY,
     EndpointRegistry,
     EndpointStatus,
     RegisteredEndpoint,
@@ -37,7 +38,7 @@ from .ports import PortManager, get_port_manager
 from .provision_failure_cap import (
     AttemptKey,
     current_venue,
-    failure_is_the_models,
+    provision_path_counts,
     record_attempt,
 )
 from .readiness import (
@@ -186,6 +187,40 @@ def _location_pause(
     )
 
 
+@dataclass
+class _LocationClock:
+    """The location wait's deadline (re-review N5, 2026-10-23).
+
+    While the job is queued: the provision deadline. From the first poll that
+    finds it out of the queue: ``bringup_sec`` more, on its own clock (as
+    readiness has), because remote Slurm publishes the location only at the
+    end of the wrapper's bring-up. Queue time no longer eats the bring-up
+    window (a job queued for most of the budget was killed during a normal
+    image pull and counted as the model's failure), and a queue-patient job
+    that leaves the queue past the deadline gets a full window instead of
+    being cancelled on its first out-of-queue poll. ``bringup_sec`` None keeps
+    the single deadline (``refresh_endpoint``).
+    """
+
+    deadline: float
+    bringup_sec: float | None = None
+    on_leave: Callable[[], None] | None = None
+    left_queue_at: float | None = None
+
+    def observe(self, job: Any, now: float) -> None:
+        """Note the first poll that finds the job out of the queue."""
+        if self.left_queue_at is not None or _still_queued(job):
+            return
+        self.left_queue_at = now
+        if self.on_leave is not None:
+            self.on_leave()
+
+    def remaining(self, now: float) -> float:
+        if self.bringup_sec is None or self.left_queue_at is None:
+            return self.deadline - now
+        return self.left_queue_at + self.bringup_sec - now
+
+
 def _counts_before_assignment(error: Exception) -> bool:
     """Whether a provision that failed before its location was known counts
     toward the failing re-provision cap (re-review N1, 2026-10-23).
@@ -194,6 +229,9 @@ def _counts_before_assignment(error: Exception) -> bool:
     bring-up, so a missing model, an unpullable image or a compose failure end
     the job FAILED before it: those count. A job still queued at the
     deadline, a stopped (cancelled) job and a backend status error do not.
+    A timeout out of the queue counts: with the bring-up clock
+    (``_LocationClock``) it means the job spent the whole bring-up window
+    outside the queue without publishing a location.
     """
     if isinstance(error, JobEndedBeforePublishing):
         return error.status == JobStatus.FAILED
@@ -402,6 +440,7 @@ class OrchestrationService:
         deadline: float,
         *,
         queue_patient: bool = False,
+        bringup_sec: float | None = None,
     ) -> tuple[str, int]:
         """Wait for the backend to publish a concrete endpoint host.
 
@@ -411,6 +450,8 @@ class OrchestrationService:
         partition a relay successor queues until the old job frees a node;
         cancelling it at 600 s made the relay resubmit every 10 minutes).
         The janitor still reaps a job held for an unsatisfiable allocation.
+        ``bringup_sec``: once the job leaves the queue it has this long to
+        publish its location, whatever is left of ``deadline`` (_LocationClock).
         """
         if host and host != "pending":
             return host, port
@@ -420,6 +461,9 @@ class OrchestrationService:
             max(1, int(getattr(self.backend.config, "readiness_poll_interval_sec", 5)))
         )
 
+        clock = _LocationClock(
+            deadline, bringup_sec, on_leave=partial(self._note_left_queue, job_id)
+        )
         consecutive_errors = 0
         while True:
             job, consecutive_errors = await self._location_job_status(
@@ -431,11 +475,19 @@ class OrchestrationService:
             if location is not None:
                 return location
 
+            now = loop.time()
+            clock.observe(job, now)
             await asyncio.sleep(
                 _location_pause(
-                    job_id, job, deadline - loop.time(), poll_interval, queue_patient
+                    job_id, job, clock.remaining(now), poll_interval, queue_patient
                 )
             )
+
+    def _note_left_queue(self, job_id: str) -> None:
+        """Stamp the row: the janitor's stuck clock restarts here (N4)."""
+        self.registry.update_metadata(
+            job_id, {LEFT_QUEUE_AT_KEY: datetime.now(timezone.utc).isoformat()}
+        )
 
     async def _location_job_status(
         self, job_id: str, consecutive_errors: int
@@ -862,6 +914,7 @@ class OrchestrationService:
                 deadline,
                 progress,
                 queue_patient=request.ttl_sec <= 0,
+                bringup_sec=max(0.0, deadline - start_time),
             )
             reached_node = True
 
@@ -952,10 +1005,12 @@ class OrchestrationService:
     ) -> None:
         """Record a failed attempt for the failure cap, if the model caused it.
 
-        ``got_far``: the job reached a node, or ended FAILED or outran the
-        budget after it left the queue (``_counts_before_assignment``).
+        ``got_far``: the job reached a node, or ended FAILED or outran its
+        bring-up window after it left the queue (``_counts_before_assignment``).
+        A row the janitor marked as reaped stuck is the janitor's to count
+        (``provision_path_counts``, re-review N6).
         """
-        if got_far and failure_is_the_models(self.registry.get_by_job_id(job_id)):
+        if got_far and provision_path_counts(self.registry.get_by_job_id(job_id)):
             _record_attempt(request, job_id, ok=False, error=error)
         else:
             logger.info(
@@ -975,6 +1030,7 @@ class OrchestrationService:
         progress: Callable[[str, Any], None] | None,
         *,
         queue_patient: bool = False,
+        bringup_sec: float | None = None,
     ) -> tuple[str, int]:
         """Resolve a "pending" (Slurm-style) host and record the location."""
         if host != "pending":
@@ -982,7 +1038,12 @@ class OrchestrationService:
         if progress:
             progress("waiting_for_assignment", {"job_id": job_id})
         host, port = await self._resolve_endpoint_location(
-            job_id, host, port, deadline, queue_patient=queue_patient
+            job_id,
+            host,
+            port,
+            deadline,
+            queue_patient=queue_patient,
+            bringup_sec=bringup_sec,
         )
         self.registry.update_location(
             job_id,

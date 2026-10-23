@@ -33,6 +33,27 @@ def _has_idle_ttl(endpoint: Any) -> bool:
         return False
 
 
+def _stamp(endpoint: Any, name: str) -> datetime | None:
+    value = getattr(endpoint, name, None)
+    return value if isinstance(value, datetime) else None
+
+
+def _stuck_since(endpoint: Any) -> datetime:
+    """Where the stuck clock of a PROVISIONING/STARTING row starts.
+
+    Re-review N4 (2026-10-23): queue time is not stuck time. A STARTING row
+    ages from when it turned STARTING, a PROVISIONING row whose job left the
+    queue (remote Slurm's bring-up, location not yet published) from when it
+    left, so a job that queued past the stuck timeout gets its full window
+    (it used to be reaped within seconds, and counted as the model's
+    failure). A row without the stamps (older ones) ages from ``created_at``.
+    """
+    starting_at = _stamp(endpoint, "starting_at")
+    if endpoint.status == EndpointStatus.STARTING and starting_at is not None:
+        return starting_at
+    return _stamp(endpoint, "left_queue_at") or endpoint.created_at
+
+
 def _cancel_durable_lineage(endpoint: Any) -> None:
     """ADR-058 D-4: tombstone the durable lineage behind a reaped row.
 
@@ -676,7 +697,7 @@ class Janitor:
                     endpoint.job_id, {"detail": f"queued: {reason}"}
                 )
 
-            age = now - endpoint.created_at
+            age = now - _stuck_since(endpoint)
             if age <= stuck_threshold:
                 continue  # Not stuck yet — leave it to keep provisioning
 
@@ -728,7 +749,9 @@ class Janitor:
         self.registry.update_metadata(
             endpoint.job_id, {REAPED_STUCK_MARK: datetime.now(timezone.utc).isoformat()}
         )
-        record_reaped_stuck(endpoint, error)
+        record_reaped_stuck(
+            endpoint, error, min_starting_sec=self.config.stuck_timeout_sec
+        )
         # ADR-058 D-4: a reaped provisioning row must also tombstone its
         # durable lineage, else a still-QUEUED durable attempt can fire
         # against a row the registry already declared dead (the exact
