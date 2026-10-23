@@ -740,3 +740,175 @@ class TestPostgresEndToEnd:
         assert (user, "p1") in ai4s.active_owner_projects()
         rccs.revoke_by_owner(user)
         ai4s.revoke_by_owner(user)
+
+
+def test_an_unreadable_standing_warns_once_a_minute(monkeypatch, caplog):
+    """2026-10-23 review fix (ADR-097 Amendment D-8): an admin's every
+    request reads its standing; a user-store outage logged a traceback per
+    request."""
+    import logging
+
+    def _boom(_name):
+        raise RuntimeError("users table unreachable")
+
+    monkeypatch.setattr(ac, "load_record", _boom)
+    monkeypatch.setattr(ac, "_unreadable_warned_at", {}, raising=False)
+    with caplog.at_level(logging.DEBUG, logger=ac.__name__):
+        for _ in range(5):
+            assert ac.account_disabled("root") is False
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert warnings[0].exc_info is not None
+
+
+def test_read_record_resolves_an_idp_subject(tmp_path, monkeypatch):
+    monkeypatch.setenv("UMRS_USER_FILES_DIR", str(tmp_path))
+    users = UserStore(tmp_path)
+    users.create("alice", oidc_subject="241723")
+    assert ac.read_record("241723").username == "alice"
+    users.set_disabled("alice", True)
+    assert ac.account_disabled("241723") is True
+
+
+# ── ADR-097 Amendment D-8 re-review (2026-10-23) ─────────────────────────
+
+
+class TestIdpSubjectOwnership:
+    """A project created through the gateway is owned by the token ``sub``;
+    under JWKS/SAML that is the IdP subject, not the record's username. The
+    standing check read ``owner_id = username`` only, so under ``enforce``
+    the account's own project read as a lost membership."""
+
+    @staticmethod
+    def _tanaka(**kw):
+        return UserRecord(username="tanaka", oidc_subject="241723", projects=[], **kw)
+
+    def test_owner_ids_cover_username_subject_and_identity(self):
+        assert ac.owner_ids(self._tanaka(), "241723", "") == ["241723", "tanaka"]
+        assert ac.owner_ids(_rec(), "alice") == ["alice"]
+
+    def test_a_project_owned_by_the_subject_is_a_live_project(self):
+        conn = _Conn(projects=[("p-own", "241723", "active"), ("p-name", "tanaka", "active")])
+        assert ac.live_project_ids(conn, self._tanaka()) == {"p-own", "p-name"}
+        _sql, params = conn.executed[0]
+        assert params[0] == ["241723", "tanaka"]
+
+    def test_the_sweep_keeps_an_idp_owners_own_project(self, monkeypatch):
+        monkeypatch.setenv("UMRS_PROJECT_MEMBERSHIP", "enforce")
+        broker = _broker()
+        _lease(broker, "241723", project="p-own")
+        sweep, _conn = _sweep(
+            broker, {"241723": self._tanaka()}, projects=[("p-own", "241723", "active")]
+        )
+        assert sweep.run_once() == []
+        assert broker.active_owner_projects() == {("241723", "p-own")}
+
+    def test_the_session_guard_admits_an_idp_owners_own_project(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("UMRS_USER_FILES_DIR", str(tmp_path))
+        monkeypatch.setenv("UMRS_PROJECT_MEMBERSHIP", "enforce")
+        UserStore(tmp_path).create("tanaka", oidc_subject="241723")
+        pool = _Pool(_Conn(projects=[("p-own", "241723", "active")]))
+        assert ac.refusal_for("241723", "p-own", pool=pool) is None
+        assert ac.refusal_for("241723", "elsewhere", pool=pool) == ac.MEMBERSHIP_REVOKED
+
+
+class TestResolutionPrecedence:
+    """``read_record`` resolves like ``UserStore.resolve_user``: a username
+    (row, then file) outranks another account's ``oidc_subject``."""
+
+    @pytest.fixture
+    def users(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("UMRS_USER_FILES_DIR", str(tmp_path))
+        return UserStore(tmp_path)
+
+    @staticmethod
+    def _rows(monkeypatch, rows):
+        from umrs.admin import user_store
+
+        monkeypatch.setattr(user_store, "_PG_POOL", object())
+        monkeypatch.setattr(user_store, "pg_get", rows.get)
+
+    def test_a_disabled_row_outranks_another_accounts_subject(self, users, monkeypatch):
+        users.create("bob", oidc_subject="alice", projects=["bob-lab"])
+        self._rows(monkeypatch, {"alice": UserRecord(username="alice", disabled=True)})
+        record = ac.read_record("alice")
+        assert (record.username, record.disabled) == ("alice", True)
+        assert ac.account_disabled("alice") is True
+
+    def test_another_accounts_disable_does_not_reach_a_username(self, users, monkeypatch):
+        users.create("bob", oidc_subject="alice")
+        users.set_disabled("bob", True)
+        self._rows(monkeypatch, {"alice": UserRecord(username="alice")})
+        record = ac.read_record("alice")
+        assert (record.username, record.disabled) == ("alice", False)
+
+    def test_a_subject_mapped_json_disable_holds_while_postgres_is_down(self, users, monkeypatch):
+        from unittest.mock import MagicMock
+
+        from umrs.admin import user_store
+
+        users.create("tanaka", oidc_subject="241723")
+        users.set_disabled("tanaka", True)
+        pool = MagicMock()
+        pool.getconn.side_effect = RuntimeError("users table unreachable")
+        monkeypatch.setattr(user_store, "_PG_POOL", pool)
+        assert ac.account_disabled("241723") is True
+
+    def test_an_unknown_identity_scans_the_directory_once(self, users, monkeypatch):
+        users.create("alice", oidc_subject="241723")
+        scans: list[int] = []
+        listing = UserStore.list
+
+        def _spy(self):
+            scans.append(1)
+            return listing(self)
+
+        monkeypatch.setattr(UserStore, "list", _spy)
+        assert ac.read_record("ghost") is None
+        assert len(scans) == 1
+        scans.clear()
+        assert ac.read_record("241723").username == "alice"
+        assert len(scans) == 1
+
+
+class TestSubjectNamingAnotherAccount:
+    """2026-10-23, round 3 (ADR-097 Amendment D-8): ``owner_ids`` took the
+    record's ``oidc_subject`` as one of its ids even when that subject was
+    ANOTHER account's username, so ``bob.oidc_subject == "alice"`` made the
+    projects alice owns bob's live memberships. ``UserStore`` now refuses
+    such a subject; a record written before is the case left here."""
+
+    @pytest.fixture
+    def users(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("UMRS_USER_FILES_DIR", str(tmp_path))
+        users = UserStore(tmp_path)
+        users.create("alice")
+        bob = UserRecord(username="bob", oidc_subject="alice", projects=[])
+        (tmp_path / "bob.json").write_text(json.dumps(bob.to_json()))
+        return users
+
+    def test_owner_ids_leave_out_another_accounts_username(self, users):
+        assert ac.owner_ids(users.get("bob"), "bob") == ["bob"]
+        assert ac.owner_ids(users.get("alice"), "alice") == ["alice"]
+
+    def test_a_row_only_account_is_another_account_too(self, tmp_path, monkeypatch):
+        from umrs.admin import user_store
+
+        monkeypatch.setenv("UMRS_USER_FILES_DIR", str(tmp_path))
+        monkeypatch.setattr(user_store, "_PG_POOL", object())
+        monkeypatch.setattr(user_store, "pg_get", {"alice": _rec()}.get)
+        bob = UserRecord(username="bob", oidc_subject="alice")
+        assert ac.owner_ids(bob, "bob") == ["bob"]
+
+    def test_a_subject_no_account_carries_still_owns(self, tmp_path, monkeypatch):
+        # no account "alice": the projects owned by bob's IdP name are bob's
+        monkeypatch.setenv("UMRS_USER_FILES_DIR", str(tmp_path))
+        bob = UserRecord(username="bob", oidc_subject="alice")
+        assert ac.owner_ids(bob, "bob") == ["alice", "bob"]
+
+    def test_the_session_guard_refuses_another_accounts_project(self, users, monkeypatch):
+        monkeypatch.setenv("UMRS_PROJECT_MEMBERSHIP", "enforce")
+        assert users.get("bob").oidc_subject == "alice"
+        pool = _Pool(_Conn(projects=[("p-alice", "alice", "active")]))
+        assert ac.refusal_for("bob", "p-alice", pool=pool) == ac.MEMBERSHIP_REVOKED
+        assert ac.refusal_for("alice", "p-alice", pool=pool) is None

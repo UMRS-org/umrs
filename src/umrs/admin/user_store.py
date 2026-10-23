@@ -275,6 +275,23 @@ class UserStore:
         except (OSError, ValueError, UserStoreError):
             return False
 
+    def json_lookup(self, identity: str) -> tuple[UserRecord | None, bool]:
+        """``resolve_user`` over the JSON lane alone (username, then OIDC
+        subject), never raising: ``(record or None, scanned)``. ``scanned``
+        is False only when the subject scan could not read the directory,
+        so ``(None, True)`` means no file maps ``identity`` and a caller
+        need not scan again. The disable check reads it before the Postgres
+        row (ADR-097 Amendment D-8, 2026-10-23), so a disable written to
+        JSON holds while PG is down."""
+        try:
+            return UserRecord.from_json(self._read(self._path(identity))), True
+        except (OSError, ValueError, TypeError, AttributeError, UserStoreError):
+            pass
+        try:
+            return self.lookup_by_oidc_subject(identity), True
+        except (OSError, ValueError, TypeError, AttributeError):
+            return None, False
+
     def list(self) -> builtins.list[UserRecord]:
         if not self._dir.is_dir():
             return []
@@ -319,6 +336,7 @@ class UserStore:
                     f"OIDC subject {oidc_subject!r} is already mapped to "
                     f"user {existing.username!r}"
                 )
+        self._refuse_subject_collision(username, oidc_subject)
         now = _now_iso()
         record = UserRecord(
             username=username,
@@ -379,7 +397,44 @@ class UserStore:
                     f"OIDC subject {oidc_subject!r} is already mapped to "
                     f"user {existing.username!r}"
                 )
+            self._refuse_subject_naming_other(username, oidc_subject)
         return self.update(username, oidc_subject=oidc_subject)
+
+    def _refuse_subject_collision(self, username: str, oidc_subject: str) -> None:
+        """A new account: its subject may not be another account's username,
+        nor its username another account's subject. Either way one identity
+        would name two accounts: ``resolve_user`` hands the username's
+        account the other's tokens, and the other account would own the
+        username's projects (ADR-097 Amendment D-8, 2026-10-23, round 3)."""
+        if oidc_subject:
+            self._refuse_subject_naming_other(username, oidc_subject)
+        holder = self.lookup_by_oidc_subject(username)
+        if holder is not None and holder.username != username:
+            raise UserStoreError(
+                f"Username {username!r} is the OIDC subject of user "
+                f"{holder.username!r}; clear that mapping first"
+            )
+
+    def _refuse_subject_naming_other(self, username: str, oidc_subject: str) -> None:
+        """Refuse ``oidc_subject`` when it is another existing account's
+        username (its JSON file or its ``users`` row)."""
+        if oidc_subject != username and self.names_account(oidc_subject):
+            raise UserStoreError(
+                f"OIDC subject {oidc_subject!r} is the username of another "
+                f"user; a subject may not name a different account"
+            )
+
+    def names_account(self, name: str) -> bool:
+        """True when ``name`` is a valid username with an account: its JSON
+        file, then its ``users`` row. False for a name no account can carry
+        (e.g. a numeric IdP subject). A row read error propagates."""
+        try:
+            validate_username(name)
+        except UserStoreError:
+            return False
+        if self.exists(name):
+            return True
+        return pg_lane_active() and pg_get(name) is not None
 
     def lookup_by_oidc_subject(self, subject: str) -> UserRecord | None:
         """Return the user whose ``oidc_subject`` matches *subject*, or None."""

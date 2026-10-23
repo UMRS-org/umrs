@@ -614,9 +614,10 @@ class TestLiveMemberships:
             "memberships"
         ] == ["kept"]
         users.set_disabled("bob", True)
-        assert _client(store).get("/umrs/projects", headers=_headers("bob")).json()[
-            "memberships"
-        ] == []
+        assert (
+            _client(store).get("/umrs/projects", headers=_headers("bob")).json()["memberships"]
+            == []
+        )
 
     @pytest.mark.usefixtures("users")
     def test_unknown_user_has_no_memberships(self) -> None:
@@ -634,3 +635,178 @@ class TestLiveMemberships:
         r = _client(ProjectStore(_Conn())).get("/umrs/projects", headers=_headers("alice"))
         assert r.status_code == 200
         assert r.json()["memberships"] is None
+
+
+class TestDisabledStanding:
+    """ADR-097 Amendment D-8 (2026-10-23): GET /umrs/projects reports the
+    caller's standing, so the gateway refuses a disabled account's tokens
+    within its membership cache window instead of at token expiry."""
+
+    @pytest.fixture
+    def users(self, tmp_path, monkeypatch):
+        from umrs.admin.user_store import UserStore
+
+        monkeypatch.setenv("UMRS_USER_FILES_DIR", str(tmp_path))
+        return UserStore(tmp_path)
+
+    def test_an_enabled_caller_is_not_disabled(self, users) -> None:
+        users.create("alice", projects=["default"])
+        body = _client(ProjectStore(_Conn())).get("/umrs/projects", headers=_headers("alice"))
+        assert body.json()["disabled"] is False
+        assert body.json()["memberships"] == ["default"]
+
+    def test_a_disabled_caller_is_reported_and_owns_nothing(self, users) -> None:
+        users.create("bob", projects=["default"])
+        store = ProjectStore(_Conn())
+        store.create("bob-lab", owner_id="bob")
+        users.set_disabled("bob", True)
+        body = _client(store).get("/umrs/projects", headers=_headers("bob")).json()
+        assert body["disabled"] is True
+        # an owned project no longer counts: an older gateway reading only
+        # `memberships` then refuses every project but the token's own
+        assert body["memberships"] == []
+
+    def test_re_enabling_restores_the_standing(self, users) -> None:
+        users.create("carol", projects=["default"])
+        client = _client(ProjectStore(_Conn()))
+        users.set_disabled("carol", True)
+        assert client.get("/umrs/projects", headers=_headers("carol")).json()["disabled"]
+        users.set_disabled("carol", False)
+        assert client.get("/umrs/projects", headers=_headers("carol")).json()["disabled"] is False
+
+    @pytest.mark.usefixtures("users")
+    def test_an_unknown_caller_is_not_disabled(self) -> None:
+        body = _client(ProjectStore(_Conn())).get("/umrs/projects", headers=_headers("nobody"))
+        assert body.json()["disabled"] is False
+
+    @pytest.mark.usefixtures("users")
+    def test_an_unreadable_record_is_null_not_false(self, monkeypatch) -> None:
+        from umrs.admin import account_cascade
+
+        def _boom(user: str) -> None:
+            raise OSError("user files unreadable")
+
+        monkeypatch.setattr(account_cascade, "read_record", _boom)
+        body = _client(ProjectStore(_Conn())).get("/umrs/projects", headers=_headers("alice"))
+        assert body.json()["disabled"] is None
+        assert body.json()["memberships"] is None
+
+
+class TestDisabledStandingReviewFixes:
+    """ADR-097 Amendment D-8 review fixes (2026-10-23): an IdP subject
+    resolves through ``oidc_subject``, a JSON-lane disable holds while the
+    ``users`` row cannot be read, and the gateway's lookup can skip the
+    project listing."""
+
+    @pytest.fixture
+    def users(self, tmp_path, monkeypatch):
+        from umrs.admin.user_store import UserStore
+
+        monkeypatch.setenv("UMRS_USER_FILES_DIR", str(tmp_path))
+        return UserStore(tmp_path)
+
+    @staticmethod
+    def _postgres_down(monkeypatch) -> None:
+        from umrs.admin import user_store
+
+        pool = MagicMock()
+        pool.getconn.side_effect = RuntimeError("users table unreachable")
+        monkeypatch.setattr(user_store, "_PG_POOL", pool)
+
+    def test_an_idp_subject_is_resolved_through_oidc_subject(self, users) -> None:
+        # under JWKS/SAML the token sub is the IdP's id (a numeric RIKEN ID),
+        # which is no valid username: it read as "unknown, not disabled"
+        users.create("alice", projects=["default"], oidc_subject="241723")
+        client = _client(ProjectStore(_Conn()))
+        body = client.get("/umrs/projects", headers=_headers("241723")).json()
+        assert body["disabled"] is False
+        assert body["memberships"] == ["default"]
+        users.set_disabled("alice", True)
+        body = client.get("/umrs/projects", headers=_headers("241723")).json()
+        assert body["disabled"] is True
+        assert body["memberships"] == []
+
+    def test_a_mixed_case_subject_is_resolved_too(self, users) -> None:
+        users.create("bob", oidc_subject="Bob.Tanaka")
+        users.set_disabled("bob", True)
+        body = _client(ProjectStore(_Conn())).get("/umrs/projects", headers=_headers("Bob.Tanaka"))
+        assert body.json()["disabled"] is True
+
+    def test_a_json_disable_holds_while_postgres_is_down(self, users, monkeypatch) -> None:
+        users.create("carol", projects=["default"])
+        users.set_disabled("carol", True)
+        self._postgres_down(monkeypatch)
+        body = _client(ProjectStore(_Conn())).get("/umrs/projects", headers=_headers("carol"))
+        assert body.json()["disabled"] is True
+        assert body.json()["memberships"] == []
+
+    def test_postgres_down_without_a_json_disable_is_unknown(self, users, monkeypatch) -> None:
+        users.create("dave", projects=["default"])
+        self._postgres_down(monkeypatch)
+        body = _client(ProjectStore(_Conn())).get("/umrs/projects", headers=_headers("dave"))
+        assert body.json()["disabled"] is None
+        assert body.json()["memberships"] is None
+
+    def test_standing_only_skips_the_listing(self, users) -> None:
+        users.create("root", role="admin", projects=["ops"])
+        store = ProjectStore(_Conn())
+        store.create("lab", owner_id="zed")
+        owners: list[object] = []
+        listing = store.list
+
+        def _spy(owner=None, **kwargs):
+            owners.append(owner)
+            return listing(owner=owner, **kwargs)
+
+        store.list = _spy  # type: ignore[method-assign]
+        r = _client(store).get(
+            "/umrs/projects?standing_only=true", headers=_headers("root", admin=True)
+        )
+        body = r.json()
+        assert r.status_code == 200
+        assert body["standing_only"] is True
+        assert body["disabled"] is False
+        assert body["memberships"] == ["ops"]
+        assert "projects" not in body
+        # the admin's every-row listing (owner=None) is never run
+        assert None not in owners
+
+    def test_projects_owned_under_any_of_the_accounts_ids_count(self, users) -> None:
+        # ADR-097 Amendment D-8 re-review (2026-10-23): a gateway-created
+        # project is owned by the token sub (the IdP subject), a CLI-made
+        # one by the username; either id is the same account
+        users.create("tanaka", oidc_subject="241723")
+        store = ProjectStore(_Conn())
+        store.create("by-name", owner_id="tanaka")
+        store.create("by-sub", owner_id="241723")
+        client = _client(store)
+        for caller in ("241723", "tanaka"):
+            body = client.get("/umrs/projects?standing_only=true", headers=_headers(caller))
+            assert body.json()["memberships"] == ["by-name", "by-sub"], caller
+
+    def test_another_accounts_username_as_subject_owns_nothing(self, users, tmp_path) -> None:
+        # 2026-10-23, round 3: bob.oidc_subject == "alice" (a record written
+        # before UserStore refused it) made alice's project bob's membership
+        import json
+
+        from umrs.admin.user_store import UserRecord
+
+        users.create("alice")
+        bob = UserRecord(username="bob", oidc_subject="alice")
+        (tmp_path / "bob.json").write_text(json.dumps(bob.to_json()))
+        store = ProjectStore(_Conn())
+        store.create("p-alice", owner_id="alice")
+        client = _client(store)
+        body = client.get("/umrs/projects?standing_only=true", headers=_headers("bob"))
+        assert body.json()["memberships"] == []
+        body = client.get("/umrs/projects?standing_only=true", headers=_headers("alice"))
+        assert body.json()["memberships"] == ["p-alice"]
+
+    def test_without_standing_only_the_listing_is_unchanged(self, users) -> None:
+        users.create("root", role="admin")
+        store = ProjectStore(_Conn())
+        store.create("lab", owner_id="zed")
+        body = _client(store).get("/umrs/projects", headers=_headers("root", admin=True)).json()
+        assert [p["project_id"] for p in body["projects"]] == ["lab"]
+        assert body["count"] == 1
+        assert body["disabled"] is False

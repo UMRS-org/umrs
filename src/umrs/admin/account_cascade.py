@@ -86,20 +86,48 @@ def membership_enforced() -> bool:
     return raw.strip().lower() == "enforce"
 
 
-def live_project_ids(conn: Any, record: Any) -> set[str]:
+def owner_ids(record: Any, *identities: str) -> list[str]:
+    """Every id a ``projects.owner_id`` of this account can carry: the
+    record's username, its ``oidc_subject`` and the identity it was read
+    by. A project created through the gateway is owned by the token ``sub``,
+    which under JWKS/SAML is the IdP subject, not the username (ADR-097
+    Amendment D-8, 2026-10-23).
+
+    An id other than the username that is ANOTHER existing account's
+    username is left out: ``bob.oidc_subject == "alice"`` must not hand bob
+    the projects ``alice`` owns (2026-10-23, round 3; ``UserStore`` now
+    refuses such a subject, this guards records written before)."""
+    username = str(getattr(record, "username", "") or "").strip()
+    ids = [username, getattr(record, "oidc_subject", ""), *identities]
+    found = {i.strip() for i in ids if isinstance(i, str) and i.strip()}
+    return sorted(i for i in found if i == username or not _another_account(i))
+
+
+def _another_account(identity: str) -> bool:
+    """``UserStore.names_account``. A lookup error propagates: the callers
+    already treat an unreadable store as "unknown" (fail open in the guard,
+    a skipped user in the sweep, ``null`` memberships for the gateway)."""
+    from .user_store import UserStore
+
+    return UserStore().names_account(identity)
+
+
+def live_project_ids(conn: Any, record: Any, *identities: str) -> set[str]:
     """ADR-097 D-1 memberships (``umrs.api.projects.live_memberships``,
     restated below the api layer): the record's projects minus retired rows,
-    plus the active projects the user owns."""
+    plus the active projects the account owns under any of its ids
+    (``owner_ids``)."""
     listed = [p.strip() for p in record.projects if isinstance(p, str) and p.strip()]
+    owners = owner_ids(record, *identities)
     cur = conn.cursor()
     cur.execute(
         "SELECT project_id, owner_id, status FROM projects"
-        " WHERE owner_id = %s OR project_id = ANY(%s)",
-        (record.username, listed),
+        " WHERE owner_id = ANY(%s) OR project_id = ANY(%s)",
+        (owners, listed),
     )
     rows = cur.fetchall()
     retired = {r[0] for r in rows if r[2] == "retired"}
-    owned = {r[0] for r in rows if r[1] == record.username and r[2] != "retired"}
+    owned = {r[0] for r in rows if r[1] in owners and r[2] != "retired"}
     return (set(listed) - retired) | owned
 
 
@@ -124,20 +152,110 @@ def standing_loss(
     return None if project in member_of() else MEMBERSHIP_REVOKED
 
 
-def load_record(username: str) -> Any:
-    """The live account record (the ``users`` row first, then JSON); None
-    when absent or unreadable. A disable in either lane wins: the JSON file
-    is the admin CLI's first write, the row its mirror."""
-    from .user_store import UserStore, UserStoreError
+def read_record(identity: str) -> Any:
+    """The live account record for ``identity`` (a username, or an IdP
+    subject mapped by ``oidc_subject``: under JWKS/SAML the token ``sub`` is
+    e.g. a numeric RIKEN ID); None when there is no such account.
+
+    The account is the one ``UserStore.resolve_user`` names: a username
+    (the ``users`` row, then the JSON file) before any ``oidc_subject``
+    mapping. A disable in either lane wins: the JSON file is the admin
+    CLI's first write, the ``users`` row its mirror. The JSON lane is read
+    FIRST and never raises, so a disable there holds while Postgres is down
+    (ADR-097 Amendment D-8, 2026-10-23). Past that, raises when the row
+    cannot be read, so a caller can tell "unknown" from "unreadable".
+    """
+    from .user_store import UserStore
+
+    store = UserStore()
+    on_file, scanned = store.json_lookup(identity)
+    if on_file is not None and on_file.disabled and on_file.username == identity:
+        return on_file  # the identity's own file: no row can outrank it
+    try:
+        record = _resolve(store, identity, on_file, scanned=scanned)
+    except Exception:
+        # a subject-mapped JSON disable is still evidence while the row
+        # that could outrank it (a users row named ``identity``) is unreadable
+        if on_file is not None and on_file.disabled:
+            return on_file
+        raise
+    if record is not None and not record.disabled:
+        record.disabled = store.json_disabled(record.username)
+    return record
+
+
+def _resolve(store: Any, identity: str, on_file: Any, *, scanned: bool) -> Any:
+    """``resolve_user`` reusing the JSON lookup ``read_record`` already
+    made: the username lanes first (a name that is no valid username, e.g.
+    a numeric IdP subject, has neither), then the file's subject match;
+    ``scanned`` with no match skips a second directory scan. None when no
+    account maps ``identity``."""
+    from .user_store import UserStoreError, validate_username
 
     try:
-        store = UserStore()
-        record = store.get(username)
+        validate_username(identity)
+        return store.get(identity)
+    except UserStoreError:
+        pass
+    if on_file is not None:
+        try:
+            return store.get(on_file.username)  # the mapped account's row
+        except UserStoreError:
+            return on_file
+    if scanned:
+        return None
+    try:
+        return store.resolve_user(identity)
+    except UserStoreError:
+        return None
+
+
+def load_record(username: str) -> Any:
+    """``read_record``, with an unreadable record read as None."""
+    from .user_store import UserStoreError
+
+    try:
+        return read_record(username)
     except (UserStoreError, OSError, ValueError):
         return None
-    if not record.disabled and store.json_disabled(username):
-        record.disabled = True
-    return record
+
+
+_UNREADABLE_WARN_SEC = 60.0
+_unreadable_warned_at: dict[str, float] = {}
+
+
+def warn_unreadable(
+    log: logging.Logger, exc: BaseException, message: str, *args: Any
+) -> None:
+    """One traceback per ``message`` a minute at most, the rest at debug: an
+    admin's every request reads its standing, and a user-store outage would
+    otherwise log a traceback per request (2026-10-23)."""
+    now = time.monotonic()
+    if now - _unreadable_warned_at.get(message, float("-inf")) < _UNREADABLE_WARN_SEC:
+        log.debug(message, *args)
+        return
+    _unreadable_warned_at[message] = now
+    log.warning(message, *args, exc_info=exc)
+
+
+def account_disabled(username: str) -> bool:
+    """True only on evidence that ``username``'s account is disabled.
+
+    The admin-credential check (2026-10-23, ADR-097 Amendment D-8): an admin
+    JWT outlived its owner's disable. An absent or unreadable record is not
+    evidence, so a user-store outage never locks the operator out of the
+    admin routes (the sweep's rule: act on evidence only). A disable in the
+    JSON lane is evidence even while the row is unreadable (``read_record``
+    reads it first).
+    """
+    if not (username or "").strip():
+        return False
+    try:
+        record = load_record(username.strip())
+    except Exception as exc:  # noqa: BLE001 — e.g. a Postgres error: no evidence
+        warn_unreadable(logger, exc, "standing of %s unreadable", username)
+        return False
+    return bool(record is not None and record.disabled)
 
 
 def refusal_for(owner: str, project: str, *, pool: Any) -> str | None:
@@ -148,7 +266,7 @@ def refusal_for(owner: str, project: str, *, pool: Any) -> str | None:
         return standing_loss(
             record,
             project,
-            member_of=lambda: _member_of(pool, record),
+            member_of=lambda: _member_of(pool, record, owner),
             enforce=membership_enforced(),
         )
     except Exception:
@@ -156,10 +274,10 @@ def refusal_for(owner: str, project: str, *, pool: Any) -> str | None:
         return None
 
 
-def _member_of(pool: Any, record: Any) -> set[str]:
+def _member_of(pool: Any, record: Any, identity: str) -> set[str]:
     conn = pool.getconn()
     try:
-        return live_project_ids(conn, record)
+        return live_project_ids(conn, record, identity)
     finally:
         pool.putconn(conn)
 
@@ -404,7 +522,7 @@ class AccountStandingSweep:
         record = self._lookup(user)
         if record is not None and record.disabled:
             return {(user, None): ACCOUNT_DISABLED}
-        members = _Memo(lambda: _member_of(self._pool, record))
+        members = _Memo(lambda: _member_of(self._pool, record, user))
         out: dict[tuple[str, str | None], str] = {}
         for project in projects:
             reason = standing_loss(
@@ -471,13 +589,17 @@ __all__ = [
     "MEMBERSHIP_REVOKED",
     "AccountStandingSweep",
     "CascadeResult",
+    "account_disabled",
     "cancel_owner_jobs",
     "live_project_ids",
     "load_record",
     "membership_enforced",
+    "owner_ids",
     "project_exempt",
+    "read_record",
     "refusal_for",
     "run_cascade",
     "standing_loss",
+    "warn_unreadable",
     "write_cascade_audit",
 ]
