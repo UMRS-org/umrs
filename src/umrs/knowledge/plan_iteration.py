@@ -61,7 +61,7 @@ class PlanRunHost:
     """The venue verbs and the proposal lane, bound by the REST layer.
 
     ``start(owner=, project=, run_id=, definition=, caps=, source_refs=,
-    default_source=, web_policy=)``, ``view(owner=, project=, run_id=)``,
+    default_source=, web_policy=, web_allow_domains=)``, ``view(owner=, project=, run_id=)``,
     ``cancel(owner=, project=, run_id=)``, ``propose(project=, owner=,
     reason=, source_artifacts=, operation=)`` and ``venue_missing()``.
     """
@@ -108,7 +108,9 @@ def round_definition(
     args = {
         **loop_plan.caller_args(shape, meta.get("args")),
         shape.goal_param: loop.research_goal,
-        shape.context_param: loop_plan.context_text(loop.metadata.get(ROUNDS_KEY) or []),
+        shape.context_param: loop_plan.context_text(
+            loop.metadata.get(ROUNDS_KEY) or []
+        ),
     }
     raw = loop_plan.plan_within_wallclock(meta.get("doc"), remaining_sec)
     capabilities = dict(meta.get("tool_capabilities") or {})
@@ -170,7 +172,10 @@ def _reported(last: dict[str, Any]) -> dict[str, Any]:
 
 def _worker_ended(venue: dict[str, Any], last: dict[str, Any]) -> dict[str, Any] | None:
     """A failed run when the worker's session ended with no attempt running."""
-    if venue.get("state") not in ("failed", "stopped") or last.get("status") == "running":
+    if (
+        venue.get("state") not in ("failed", "stopped")
+        or last.get("status") == "running"
+    ):
         return None
     why = venue.get("reason") or venue["state"]
     return {"status": "failed", "error": f"worker_ended: {why}"}
@@ -204,7 +209,7 @@ class PlanRunIteration:
         cancel_check: Callable[[], bool],
     ) -> dict[str, Any]:
         host = self.host()
-        refused = _refusal(host, remaining_sec)
+        refused = _refusal(host, remaining_sec) or _web_refusal(loop)
         if refused:
             return _not_run(iteration, refused)
         run_id, definition, problems = round_definition(loop, iteration, remaining_sec)
@@ -212,7 +217,12 @@ class PlanRunIteration:
             return _not_run(iteration, "plan_invalid: " + "; ".join(problems))
         scope = _scope(loop, run_id)
         try:
-            host.start(**scope, definition=definition, caps=_caps(remaining_sec), **_venue(loop))
+            host.start(
+                **scope,
+                definition=definition,
+                caps=_caps(remaining_sec),
+                **_venue(loop),
+            )
         except Exception as exc:  # noqa: BLE001 — a refused start stops the loop, named
             return _not_run(iteration, f"plan_refused: {type(exc).__name__}: {exc}")
         outcome = self._wait(host, scope, cancel_check)
@@ -241,7 +251,9 @@ class PlanRunIteration:
         shape = loop_plan.loop_template(loop.metadata[META_KEY].get("template"))
         summary = outcome.get("summary") or {}
         review = loop_plan.review_of(summary.get("output"), shape)
-        decision = loop_plan.loop_decision(outcome.get("status"), review, outcome.get("error"))
+        decision = loop_plan.loop_decision(
+            outcome.get("status"), review, outcome.get("error")
+        )
         result: dict[str, Any] = {
             "iteration": iteration,
             "phase": "plan_iteration",
@@ -250,7 +262,8 @@ class PlanRunIteration:
                 "run_id": run_id,
                 "status": outcome.get("status"),
                 "venue": "server",
-                "error": str(outcome.get("error") or "")[: loop_plan.MAX_REASON] or None,
+                "error": str(outcome.get("error") or "")[: loop_plan.MAX_REASON]
+                or None,
                 "spent_tokens": summary.get("spent_tokens"),
             },
             "review": loop_plan.review_record(review),
@@ -285,6 +298,27 @@ def _refusal(host: PlanRunHost | None, remaining_sec: float | None) -> str:
     return ""
 
 
+WEB_CHOICE_REFUSAL = (
+    "sessionpolicy.web_choice_required: this loop was started without a web "
+    "access choice for its runs (before ADR-099, or by an r4 that did not send "
+    "one) and this site requires one; nothing ran. Start the loop again with a "
+    "choice: r4 --web off|allowlist|public (or R4_WEB_ACCESS), or "
+    "plan_web_policy (+ plan_web_allow_domains) in POST /umrs/loops"
+)
+
+
+def _web_refusal(loop: ResearchLoop) -> str:
+    """ADR-099 D-2: a run needs the user's web choice. A loop stored without
+    one (older than the loop-start check) stops before its round with the
+    reason and the way out, never mid-run with a start refusal; with the
+    choice not required the site's legacy default applies as for any start."""
+    from umrs.session_policy import web_choice_required
+
+    if str(loop.metadata[META_KEY].get("web_policy") or "").strip():
+        return ""
+    return WEB_CHOICE_REFUSAL if web_choice_required() else ""
+
+
 def _scope(loop: ResearchLoop, run_id: str) -> dict[str, str]:
     return {
         "owner": str(loop.metadata.get("owner_user_id") or ""),
@@ -299,6 +333,7 @@ def _venue(loop: ResearchLoop) -> dict[str, Any]:
         "source_refs": list(meta.get("sources") or []),
         "default_source": str(meta.get("default_source") or ""),
         "web_policy": str(meta.get("web_policy") or ""),
+        "web_allow_domains": [str(d) for d in meta.get("web_allow_domains") or ()],
     }
 
 
@@ -307,7 +342,11 @@ def _caps(remaining_sec: float | None) -> dict[str, Any]:
 
 
 def _propose(
-    host: PlanRunHost, loop: ResearchLoop, iteration: int, run_id: str, winner: dict[str, Any]
+    host: PlanRunHost,
+    loop: ResearchLoop,
+    iteration: int,
+    run_id: str,
+    winner: dict[str, Any],
 ) -> dict[str, Any]:
     """The pick as a PROPOSED finding (pending; a person decides it)."""
     operation = loop_plan.finding_operation(
@@ -385,7 +424,9 @@ class PlanIterationEngine:
         }
         verdict = self._approval_gate(action)
         if verdict == "deferred":
-            return _record(loop, number, {"deferred_gate": PLAN_RUN}, "awaiting_decision")
+            return _record(
+                loop, number, {"deferred_gate": PLAN_RUN}, "awaiting_decision"
+            )
         if verdict is not True:
             summary = _not_run(number, f"approval_rejected:{PLAN_RUN}")
             return _record(loop, number, summary, "rejected")
@@ -399,7 +440,10 @@ class PlanIterationEngine:
         rounds = list(loop.metadata.get(ROUNDS_KEY) or [])
         if "review" in iteration.results:
             rounds.append(
-                {"iteration": iteration.iteration_number, "review": iteration.results["review"]}
+                {
+                    "iteration": iteration.iteration_number,
+                    "review": iteration.results["review"],
+                }
             )
             loop.metadata[ROUNDS_KEY] = rounds[-loop_plan.CONTEXT_ROUNDS :]
         if kind == loop_plan.DECISION_PUBLISH:
@@ -424,7 +468,9 @@ def remaining_wallclock_sec(loop: ResearchLoop) -> float | None:
     return max(0.0, (cap - _elapsed_hours(loop)) * 3600.0)
 
 
-def _record(loop: ResearchLoop, number: int, summary: dict[str, Any], status: str) -> LoopIteration:
+def _record(
+    loop: ResearchLoop, number: int, summary: dict[str, Any], status: str
+) -> LoopIteration:
     now = datetime.now(timezone.utc).isoformat()
     iteration = LoopIteration(
         iteration_id=f"it-{loop.loop_id}-{number}",
@@ -434,7 +480,9 @@ def _record(loop: ResearchLoop, number: int, summary: dict[str, Any], status: st
         started_at=now,
         completed_at=now,
         results=dict(summary),
-        evaluation=str((summary.get(loop_plan.LOOP_DECISION_KEY) or {}).get("reason") or ""),
+        evaluation=str(
+            (summary.get(loop_plan.LOOP_DECISION_KEY) or {}).get("reason") or ""
+        ),
         findings=[],
         status=status,
     )

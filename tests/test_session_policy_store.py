@@ -139,6 +139,42 @@ class TestLimitsCache:
         with pytest.raises(ConnectionError):
             effective_limits_for(Broken(), venue="rccs", user_id="a", project_id="")
 
+    def test_a_failed_reread_serves_the_last_good_limits(self, caplog):
+        """ADR-099 D-5 (Q4): a blip after the TTL keeps the proxy on the last
+        limits read (old code: the error propagated and every proxied call
+        answered 503 quota.unavailable)."""
+        store = _Flaky()
+        clock = [100.0]
+        cache = LimitsCache(store, ttl_s=30, clock=lambda: clock[0], env={})
+        store.put(PolicyRule("rccs", "user", "alice", "admin", {"budget": {"rpm_user": 6}}))
+        assert cache.get(venue="rccs", user_id="alice", project_id="p")["budget"]["rpm_user"] == 6
+        store.down = True
+        clock[0] = 200.0
+        limits = cache.get(venue="rccs", user_id="alice", project_id="p")
+        assert limits["budget"]["rpm_user"] == 6
+        assert cache.stats == {"stale_served": 1, "unavailable": 0}
+        assert "serving last good limits" in caplog.text
+        store.down = False
+        store.put(PolicyRule("rccs", "user", "alice", "admin", {"budget": {"rpm_user": 9}}))
+        assert cache.get(venue="rccs", user_id="alice", project_id="p")["budget"]["rpm_user"] == 9
+
+    def test_a_key_never_read_still_fails_closed(self):
+        store = _Flaky()
+        store.down = True
+        cache = LimitsCache(store, env={})
+        with pytest.raises(ConnectionError):
+            cache.get(venue="rccs", user_id="bob", project_id="")
+        assert cache.stats == {"stale_served": 0, "unavailable": 1}
+
+
+class _Flaky(PolicyRuleStore):
+    down = False
+
+    def applicable(self, **kw):
+        if self.down:
+            raise ConnectionError("down")
+        return super().applicable(**kw)
+
 
 # ── migration 0125 ────────────────────────────────────────────────────────
 

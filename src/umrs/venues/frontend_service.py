@@ -415,6 +415,21 @@ class FrontendVenueService:
             )
         )
 
+    def check_web_choice(
+        self,
+        *,
+        owner: str,
+        project: str,
+        web_policy: str,
+        web_allow_domains: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """The policy a start with this web choice would get, or the typed
+        :class:`PolicyError` it would raise; nothing is reserved (a loop
+        checks its runs' choice at loop start, ADR-099 D-2)."""
+        return self._resolve_policy(
+            owner, project, _web_choice(web_policy, web_allow_domains)
+        )
+
     def policy_preview(
         self, *, owner: str, session_id: str, project: str
     ) -> dict[str, Any]:

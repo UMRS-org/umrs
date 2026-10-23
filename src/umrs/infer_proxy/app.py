@@ -31,10 +31,12 @@ upstream is asked for an uncompressed (``identity``) answer.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
 import re
+import threading
 import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -91,6 +93,9 @@ _HOP_BY_HOP = {
 # Calls the quotas meter: listing models costs no tokens (and a worker's
 # bootstrap lists them), so reads stay open at the cap.
 _UNMETERED_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+
+# Providers whose streams report usage only when asked (stream_options).
+_OPENAI_STYLE_KINDS = frozenset({"openai", "openai_compat", "azure_openai"})
 
 
 class SecretRedactingFilter(logging.Filter):
@@ -382,18 +387,61 @@ def _rate_or_quota_refusal(request: Request, lease: Any) -> JSONResponse | None:
     return _quota_refusal(request, lease)
 
 
+def with_stream_usage(payload: Any) -> bool:
+    """Ask a streamed OpenAI-style completion for its usage chunk (ADR-099
+    D-4): ``stream_options.include_usage = true`` when ``stream`` is true.
+
+    Without it an OpenAI or vLLM stream carries no usage, the row records
+    zero tokens and the daily token cap never binds. True when ``payload``
+    was changed."""
+    if not isinstance(payload, dict) or payload.get("stream") is not True:
+        return False
+    options = payload.get("stream_options")
+    options = dict(options) if isinstance(options, dict) else {}
+    if options.get("include_usage") is True:
+        return False
+    options["include_usage"] = True
+    payload["stream_options"] = options
+    return True
+
+
+def _metered_completion(request: Request, prep: _Prepared) -> bool:
+    """A POST to an OpenAI-style completions path (where ``stream`` lives)."""
+    kind = str(getattr(prep.full, "provider_kind", "") or "")
+    path = str(prep.path or "").split("?", 1)[0].rstrip("/")
+    return (
+        request.method == "POST"
+        and kind in _OPENAI_STYLE_KINDS
+        and path.endswith("completions")
+    )
+
+
+async def _upstream_content(request: Request, prep: _Prepared) -> Any:
+    """The body sent upstream: streamed through unchanged, except a streamed
+    OpenAI-style completion, which is re-encoded with ``include_usage``."""
+    if not _metered_completion(request, prep):
+        return request.stream()
+    raw = await request.body()
+    try:
+        payload = json.loads(raw)
+    except ValueError:
+        return raw
+    return json.dumps(payload).encode() if with_stream_usage(payload) else raw
+
+
 async def _send_upstream(request: Request, prep: _Prepared, headers: dict) -> Any:
     """The streamed provider call: pinned IP, original Host + SNI, no redirects."""
     url = join_provider_url(prep.full.base_url, prep.path)
     if prep.pin_ip:
         url = _pin_url(url, prep.pin_ip)
+    content = await _upstream_content(request, prep)
     client = _http_client(request)
     return await client.send(
         client.build_request(
             request.method,
             url,
             headers=headers,
-            content=request.stream(),
+            content=content,
             extensions={"sni_hostname": prep.host} if prep.pin_ip else None,
         ),
         stream=True,
@@ -468,6 +516,7 @@ def _relayed(
     tap = UsageTap(
         provider_kind=meta.provider_kind, streaming=_is_streaming(request, upstream)
     )
+    once = threading.Lock()
 
     async def _body():
         try:
@@ -476,6 +525,15 @@ def _relayed(
                 yield chunk
         finally:
             await upstream.aclose()
+
+    def _finish() -> None:
+        """The access line, audit row and usage row: once per call."""
+        if once.acquire(blocking=False):
+            _audit_done()
+
+    def _abort() -> None:
+        if not once.locked():  # the background task did not run
+            _record_off_loop(_finish)
 
     def _audit_done() -> None:
         # Access log contract §3.3.4 via logger.warning (uvicorn default
@@ -498,12 +556,42 @@ def _relayed(
         )
         _record_usage(request, lease, upstream.status_code, tap, meta)
 
-    return StreamingResponse(
+    return _RelayedResponse(
         _body(),
         status_code=upstream.status_code,
         headers=response_headers,
-        background=BackgroundTask(_audit_done),
+        background=BackgroundTask(_finish),
+        on_abort=_abort,
     )
+
+
+class _RelayedResponse(StreamingResponse):
+    """A relayed stream whose rows are written even when it never completes.
+
+    Starlette runs the background task only after the last byte was sent: a
+    client that disconnects mid-stream (or a cancelled relay) would skip the
+    usage row and dodge the token cap (ADR-099 D-4). ``on_abort`` runs when
+    the response ends without its background task having run."""
+
+    def __init__(self, *args: Any, on_abort: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._on_abort = on_abort
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            self._on_abort()
+
+
+def _record_off_loop(fn: Any) -> None:
+    """Run ``fn`` in a worker thread without awaiting it: called from a
+    ``finally`` that may be cancelled (a client disconnect), where an
+    ``await`` would be cancelled again and the usage row lost."""
+    try:
+        asyncio.get_running_loop().run_in_executor(None, fn)
+    except RuntimeError:  # no running loop
+        fn()
 
 
 def _record_usage(
@@ -574,6 +662,7 @@ async def _site_forward(request: Request, pool: Any, lease: Any, path: str) -> A
     endpoint = site_models.resolve(registry, project, model)
     _check_site_data_class(pool, project, endpoint)
     payload["model"] = site_models.served_name(endpoint)
+    with_stream_usage(payload)  # a vLLM stream reports usage only when asked
     upstream = await _site_send(request, lease, endpoint, path, payload)
     meta = _RelayMeta(
         source_label=f"site:{endpoint.job_id}",

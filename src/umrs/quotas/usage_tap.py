@@ -7,9 +7,11 @@ where providers put the counts:
 - OpenAI-style (``openai``, ``openai_compat``, ``azure_openai``, the site
   source): the last ``usage`` object (the final chunk of a stream asked with
   ``stream_options.include_usage``, or the one-shot body's);
-- Anthropic: ``message_start``'s ``usage`` (input and cache) merged with the
-  last ``message_delta`` ``usage`` (output, cumulative), or the one-shot
-  body's single ``usage``;
+- Anthropic: ``message_start``'s ``usage`` (input and cache; that event
+  only) merged with the last ``message_delta`` ``usage`` (output,
+  cumulative), or the one-shot body's top-level ``usage`` (parsed as JSON
+  when the tail holds the whole body, so a ``usage`` key inside content or
+  tool input never counts);
 - Google: the last ``usageMetadata``.
 
 ``record_proxy_usage`` writes one ``llm_usage_log`` row per relayed call
@@ -62,6 +64,28 @@ def _last(text: str, pattern: re.Pattern[str]) -> dict[str, Any] | None:
     return objects[-1] if objects else None
 
 
+def _sse_event(line: str) -> dict[str, Any] | None:
+    """One SSE ``data:`` line as a JSON object, else None."""
+    if not line.startswith("data:"):
+        return None
+    try:
+        event = json.loads(line[5:])
+    except ValueError:
+        return None
+    return event if isinstance(event, dict) else None
+
+
+def _message_start_usage(head: str) -> dict[str, Any] | None:
+    """The ``usage`` of an Anthropic stream's ``message_start`` event only
+    (never a ``usage`` key that happens to sit in content or tool input)."""
+    for line in head.splitlines():
+        event = _sse_event(line.strip())
+        if event is not None and event.get("type") == "message_start":
+            usage = (event.get("message") or {}).get("usage")
+            return dict(usage) if isinstance(usage, dict) else None
+    return None
+
+
 class UsageTap:
     """Bounded observer of a relayed response: head 16 KiB + tail 64 KiB."""
 
@@ -70,10 +94,12 @@ class UsageTap:
         self.streaming = streaming
         self._head = bytearray()
         self._tail = bytearray()
+        self._total = 0
 
     def feed(self, chunk: bytes) -> None:
         if not chunk:
             return
+        self._total += len(chunk)
         room = HEAD_BYTES - len(self._head)
         if room > 0:
             self._head += chunk[:room]
@@ -85,19 +111,37 @@ class UsageTap:
         return bytes(buf).decode("utf-8", errors="replace")
 
     def raw_usage(self) -> dict[str, Any] | None:
-        """The provider's own usage object (merged for Anthropic streams)."""
+        """The provider's own usage object (merged for Anthropic streams).
+
+        A one-shot body held whole is parsed as JSON and only its top-level
+        usage counts; the key search is the fallback for a body larger than
+        the tail and for streams."""
         tail = self._text(self._tail)
         if self.provider_kind == "google":
-            return _last(tail, _GOOGLE_RE)
+            return self._top_level("usageMetadata") or _last(tail, _GOOGLE_RE)
         if self.provider_kind == "anthropic":
             return self._anthropic(tail)
-        return _last(tail, _USAGE_RE) or _last(tail, _GOOGLE_RE)
+        found = self._top_level("usage") or self._top_level("usageMetadata")
+        return found or _last(tail, _USAGE_RE) or _last(tail, _GOOGLE_RE)
+
+    def _top_level(self, key: str) -> dict[str, Any] | None:
+        """``body[key]`` of a one-shot body the tail holds whole, else None."""
+        if self.streaming or self._total > TAIL_BYTES:
+            return None
+        try:
+            body = json.loads(bytes(self._tail))
+        except ValueError:
+            return None
+        found = body.get(key) if isinstance(body, dict) else None
+        return dict(found) if isinstance(found, dict) else None
 
     def _anthropic(self, tail: str) -> dict[str, Any] | None:
-        first = _objects(self._text(self._head), _USAGE_RE)
-        last = _last(tail, _USAGE_RE)
-        merged: dict[str, Any] = dict(first[0]) if first else {}
-        merged.update(last or {})
+        """One-shot: the body's top-level ``usage``. Stream: ``message_start``'s
+        usage (input, cache) merged with the last ``message_delta`` usage."""
+        if not self.streaming:
+            return self._top_level("usage") or _last(tail, _USAGE_RE)
+        merged = _message_start_usage(self._text(self._head)) or {}
+        merged.update(_last(tail, _USAGE_RE) or {})
         return merged or None
 
     def usage(self) -> dict[str, int] | None:
