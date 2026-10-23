@@ -60,3 +60,17 @@ def test_creation_paths_build_plain_stores():
         "api/vision_durable.py",
     ):
         assert "JobStore(" in (root / rel).read_text(), rel
+
+
+def test_an_unreadable_site_config_fails_closed(monkeypatch, tmp_path):
+    """A site.yaml that exists but does not parse used to read as "no site"
+    (""), which switched off the own-site venue guard and stored venues as
+    given (multi-HPC review, 2026-10-24). It now raises; only a missing file
+    is the shared lane."""
+    broken = tmp_path / "site.yaml"
+    broken.write_text("name: [unclosed\n")
+    monkeypatch.setenv("UMRS_SITE_CONFIG", str(broken))
+    with pytest.raises(RuntimeError, match="unreadable"):
+        configured_site_name()
+    with pytest.raises(RuntimeError, match="unreadable"):
+        JobStore(MagicMock(), "i")

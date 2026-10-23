@@ -910,6 +910,25 @@ def _enforce_own_site_venue(
         _deny_unless(refusal is None, refusal or "")
 
 
+def _enforce_own_site_row(job: Job, store: Any) -> None:
+    """409 ``cross_site_venue_refused`` when retry/reproduce would requeue a
+    row another site claims (multi-HPC review, 2026-10-24): the requeued row
+    is run by that site's server without its own gateway being asked. Rows
+    with no venue (shared) and this site's own rows stay retryable; with no
+    site name configured nothing changes. Route the retry through the
+    gateway of the row's site (``r4 hpc retry`` does)."""
+    own = str(getattr(store, "site_name", "") or "")
+    venue = str(getattr(job, "venue", "") or "")
+    if own and venue and venue != own:
+        raise_typed(
+            PlatformError.jobs(
+                "conflict",
+                f"cross_site_venue_refused: job {job.job_id} runs at {venue!r}, "
+                f"not this site ({own!r}); retry it through that site's gateway",
+            )
+        )
+
+
 def _parse_job_type_filter(job_type: str | None) -> JobType | None:
     """Parse and validate a job type filter value."""
     if not job_type:
@@ -1396,6 +1415,7 @@ async def reproduce_job(
     except JobNotFoundError:
         raise_typed(PlatformError.jobs("not_found", f"Job not found: {job_id}"))
     _enforce_job_access(caller, job, action="reproduce")
+    _enforce_own_site_row(job, store)
     drift = _drift_window(store, job_id)
     try:
         store.retry_job(job_id)
@@ -1431,6 +1451,7 @@ async def retry_job(
         raise_typed(PlatformError.jobs("forbidden", "Retry is an admin-only operation"))
 
     try:
+        _enforce_own_site_row(store.get_job(job_id), store)
         store.retry_job(job_id)
         return JobActionResponse(
             job_id=job_id,

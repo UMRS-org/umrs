@@ -113,3 +113,47 @@ def test_no_site_name_stores_the_bare_venue_unchanged(pool):
     store = _store(pool, "")
     job = _create(store, "bdrt")
     assert _venue_of(pool, job) == "bdrt"
+
+
+def _fan_out(store, child_spec: dict) -> str:
+    return store.create_fan_out_graph(
+        project_id="proj-v",
+        user_id="alice",
+        parent_job_type=JobType.CLEANUP,
+        parent_spec={},
+        children=[{"name": "c", "job_type": "cleanup", "spec": child_spec}],
+    )
+
+
+def _children(pool: Any, parent_id: str) -> list[tuple[str, str]]:
+    conn = pool.getconn()
+    try:
+        with conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT job_id, venue FROM jobs WHERE spec->'_fan_out'->>'parent_job_id' = %s",
+                (parent_id,),
+            )
+            return [(row[0], row[1]) for row in cur.fetchall()]
+    finally:
+        pool.putconn(conn)
+
+
+def test_fan_out_rows_carry_their_venue_and_no_other_site_claims_them(pool):
+    """N-1: parent and child rows were inserted without a venue (''), so any
+    umrs-front sharing the jobs table claimed a QUEUED child and ran it with
+    no --account under its own service connection."""
+    rccs, bdrt = _store(pool, "rccs-front"), _store(pool, "bdrt-front")
+    parent = _fan_out(rccs, {})
+    [(child, venue)] = _children(pool, parent)
+    assert venue == "rccs-front"
+    assert _venue_of(pool, parent) == "rccs-front"
+    assert bdrt.claim_next_jobs(limit=10) == []
+    assert rccs.claim_next_jobs(limit=10) == [child]
+
+
+def test_fan_out_child_keeps_a_cluster_venue_and_refuses_a_typo(pool):
+    rccs = _store(pool, "rccs-front")
+    parent = _fan_out(rccs, {"venue": "cluster:rccs-front"})
+    assert [v for _id, v in _children(pool, parent)] == ["rccs-front"]
+    with pytest.raises(ValueError, match="unknown_venue"):
+        _fan_out(rccs, {"venue": "bdrt"})

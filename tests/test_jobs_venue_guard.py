@@ -165,3 +165,56 @@ def test_zmq_accepts_own_site_and_empty_venue(venue):
     out = json.loads(backend.submit("alice", _zmq_payload(venue)))
     assert out["status"] == "ok", out
     store.create_job.assert_called_once()
+
+
+# ── retry / reproduce: a row another site claims is not requeued here ───────
+
+
+def _row(venue: str):
+    from umrs.jobs.models import Job, JobStatus
+
+    return Job(
+        job_id="job-9",
+        project_id="proj-a",
+        user_id="alice",
+        job_type=JobType.CLEANUP,
+        spec={},
+        idempotency_key="k",
+        status=JobStatus.FAILED,
+        venue=venue,
+    )
+
+
+def _requeue_client(monkeypatch, venue: str):
+    client, store = _client(monkeypatch)
+    store.retried = []
+    store.get_job = lambda _job_id: _row(venue)
+    store.retry_job = store.retried.append
+    store.get_latest_attempt_manifest = lambda _job_id: None
+    return client, store
+
+
+@pytest.mark.parametrize(
+    ("path", "headers"),
+    [("/umrs/jobs/job-9/reproduce", ALICE), ("/umrs/jobs/job-9/retry", ADMIN)],
+    ids=["reproduce", "retry"],
+)
+def test_requeue_refuses_a_row_another_site_claims(monkeypatch, path, headers):
+    client, store = _requeue_client(monkeypatch, "bdrt-front")
+    r = client.post(path, headers=headers)
+    assert r.status_code == 409, r.text
+    assert "cross_site_venue_refused" in r.text
+    assert store.retried == []
+
+
+@pytest.mark.parametrize("venue", ["", OWN])
+@pytest.mark.parametrize(
+    ("path", "headers"),
+    [("/umrs/jobs/job-9/reproduce", ALICE), ("/umrs/jobs/job-9/retry", ADMIN)],
+    ids=["reproduce", "retry"],
+)
+def test_requeue_keeps_own_and_shared_rows(monkeypatch, path, headers, venue):
+    client, store = _requeue_client(monkeypatch, venue)
+    r = client.post(path, headers=headers)
+    assert r.status_code == 200, r.text
+    assert store.retried == ["job-9"]
