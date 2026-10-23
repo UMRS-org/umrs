@@ -32,6 +32,8 @@ CLASSIFIED_FIXED: dict[str, SurfaceLane] = {
     "buckets": SurfaceLane.BETA,  # ADR-079 personal buckets (2026-10-02)
     # ADR-051 read model (2026-09-16): caller-attributed quota gauge — BETA.
     "quota": SurfaceLane.BETA,
+    # Multi-HPC plan S2 (2026-10-24): the caller's own view of this site — BETA.
+    "sites": SurfaceLane.BETA,
     # ADR-086 (2026-10-05): circles, superseding the ADR-050 §3 groups authority — BETA.
     "circles": SurfaceLane.BETA,  # "groups" until umrs 696ed281
     # D-39 (2026-09-22): Scientific Catalog registry — BETA like projects.

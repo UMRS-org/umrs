@@ -172,6 +172,8 @@ def test_lane_assignments_match_record(app):
         "buckets": "v1beta",  # ADR-079 personal buckets (2026-10-02)
         # ADR-051 read model (2026-09-16): caller-attributed quota gauge — BETA.
         "quota": "v1beta",
+        # Multi-HPC plan S2 (2026-10-24): the caller's own view of this site — BETA.
+        "sites": "v1beta",
         # ADR-086 (2026-10-05): circles — project-scoped membership, BETA.
         "circles": "v1beta",
         # D-39 (2026-09-22): Scientific Catalog registry — v1beta like projects.
