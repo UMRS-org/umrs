@@ -183,6 +183,10 @@ class PartitionProfile:
     network_backend: str = "netavark"  # netavark | cni
     vllm_docker_tag: str = ""  # override per partition (empty → use site default)
     vllm_docker_image: str = ""  # full image override (repo+tag); wins over tag
+    # LiteLLM image for this partition, e.g. a digest pin (2026-10-23); empty
+    # keeps the wrapper's floating default. Pin only where the GPU nodes have
+    # that digest or can pull it.
+    litellm_image: str = ""
     gpus: int = 1  # Slurm --gpus count
     needs_netavark_switch: bool = True  # force netavark backend file on startup
     # Ceiling on a model server's --gpu-memory-utilization on this partition
@@ -321,6 +325,8 @@ class SiteConfig:
             env["VLLM_DOCKER_TAG"] = pp.vllm_docker_tag
         if pp.vllm_docker_image:
             env["VLLM_DOCKER_IMAGE"] = pp.vllm_docker_image
+        if pp.litellm_image:
+            env["LITELLM_IMAGE"] = pp.litellm_image
         return env
 
     def to_env(self) -> dict[str, str]:
