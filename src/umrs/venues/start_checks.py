@@ -10,6 +10,7 @@ cap, ``quota.concurrent_sessions_exceeded``).
 from __future__ import annotations
 
 from collections.abc import Callable
+from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -25,4 +26,8 @@ class StartCheck:
 
 StartCheckFn = Callable[[StartCheck], None]
 
-__all__ = ["StartCheck", "StartCheckFn"]
+#: The venue's start lock (site name -> held while entered; ADR-099 D-6):
+#: the check, the job and the row of one start before the next start counts.
+StartLockFn = Callable[[str], AbstractContextManager[None]]
+
+__all__ = ["StartCheck", "StartCheckFn", "StartLockFn"]
