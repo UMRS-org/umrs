@@ -112,3 +112,24 @@ def test_a_disabled_admins_jwt_cannot_ask_for_a_foreign_project(client, tmp_path
     assert _jobs(client.get("/umrs/endpoints", headers=foreign)) == ["job-b"]
     users.set_disabled("root", True)
     assert client.get("/umrs/endpoints", headers=foreign).status_code == 403
+
+
+def test_an_admin_in_its_own_claimed_project_reads_no_account(monkeypatch):
+    """ADR-097 Amendment D-8 re-review (2026-10-23): the direct-JWT project
+    check read the account before the claims, so an admin request that also
+    ran ``_caller_is_admin`` read the user store twice. The claims answer
+    first; only a foreign project needs the lookup."""
+    from umrs.admin import account_cascade
+
+    calls: list[str] = []
+
+    def _spy(user: str) -> bool:
+        calls.append(user)
+        return False
+
+    monkeypatch.setattr(account_cascade, "account_disabled", _spy)
+    claims = {"sub": "root", "roles": ["admin"], "project_id": "ops"}
+    assert endpoints_api._claim_can_access_project(claims, "ops") is True
+    assert calls == []
+    assert endpoints_api._claim_can_access_project(claims, "proj-b") is True
+    assert calls == ["root"]

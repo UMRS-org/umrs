@@ -771,6 +771,19 @@ class TestDisabledStandingReviewFixes:
         # the admin's every-row listing (owner=None) is never run
         assert None not in owners
 
+    def test_projects_owned_under_any_of_the_accounts_ids_count(self, users) -> None:
+        # ADR-097 Amendment D-8 re-review (2026-10-23): a gateway-created
+        # project is owned by the token sub (the IdP subject), a CLI-made
+        # one by the username; either id is the same account
+        users.create("tanaka", oidc_subject="241723")
+        store = ProjectStore(_Conn())
+        store.create("by-name", owner_id="tanaka")
+        store.create("by-sub", owner_id="241723")
+        client = _client(store)
+        for caller in ("241723", "tanaka"):
+            body = client.get("/umrs/projects?standing_only=true", headers=_headers(caller))
+            assert body.json()["memberships"] == ["by-name", "by-sub"], caller
+
     def test_without_standing_only_the_listing_is_unchanged(self, users) -> None:
         users.create("root", role="admin")
         store = ProjectStore(_Conn())
