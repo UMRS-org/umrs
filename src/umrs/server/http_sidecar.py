@@ -874,6 +874,7 @@ def _create_app():
     )
     from umrs.api.companion_sessions import router as companion_sessions_router
     from umrs.api.companion_venue import router as companion_venue_router
+    from umrs.api.companion_venue_parity import router as companion_venue_parity_router
     from umrs.api.egress_audit import router as egress_audit_router
     from umrs.api.endpoints import router as endpoints_router
     from umrs.api.evidence import router as evidence_router
@@ -1013,6 +1014,8 @@ def _create_app():
     app.include_router(companion_chat_approvals_router)
     # Wave 2026-09-21 (ADR-046 A2): frontend-venue runtime + worker rail.
     app.include_router(companion_venue_router)
+    # ADR-099 D-8 (RS-1 lane A): remote ask_user questions + agent settings.
+    app.include_router(companion_venue_parity_router)
     # RS-0 C-1: admin session list/show/stop over the same venue service.
     app.include_router(admin_sessions_router)
     app.include_router(admin_session_policy_router)  # ADR-099 session policy rules
