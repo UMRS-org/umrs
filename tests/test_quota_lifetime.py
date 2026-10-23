@@ -144,3 +144,38 @@ class TestRegistryRow:
         backend, _prov, _broker = _backend(store=store)
         _submit(backend, _job())
         assert store.policies == [None]
+
+
+class TestIdleFollowsTheSiteDefault:
+    """Amendment 2 (RS-1 round-2 review, finding 3): a policy whose idle
+    limit is the site default follows a changed ``UMRS_VENUE_IDLE_SECONDS``;
+    before, the value copied at start froze it for the session's lifetime."""
+
+    @staticmethod
+    def _policy(origin: str) -> dict:
+        return {**POLICY, "lifetime": {"idle_s": 1800}, "origin": {"lifetime.idle_s": origin}}
+
+    def test_a_lowered_site_idle_reaches_a_running_session(self):
+        backend, prov, broker = _backend(idle=600)  # the operator lowered 1800 -> 600
+        job = _job(spec=_spec(policy=self._policy("default")))
+        ref = _submit(backend, job)
+        broker.add("lease-1", last=NOW - timedelta(seconds=900))
+        res = _check(FrontendSessionStatusChecker(backend), ref, job)
+        assert res.status == "succeeded" and res.metrics["end"] == "idle"
+        assert prov.torn == ["sess-1"]
+
+    def test_a_raised_site_idle_keeps_a_session_alive(self):
+        backend, prov, broker = _backend(idle=4 * 3600)
+        job = _job(spec=_spec(policy=self._policy("default")))
+        ref = _submit(backend, job)
+        broker.add("lease-1", last=NOW - timedelta(seconds=2 * 3600))
+        res = _check(FrontendSessionStatusChecker(backend), ref, job)
+        assert res.status == "running" and prov.torn == []
+
+    def test_a_rule_set_idle_still_wins(self):
+        backend, prov, broker = _backend(idle=600)
+        job = _job(spec=_spec(policy=self._policy("user:admin")))
+        ref = _submit(backend, job)
+        broker.add("lease-1", last=NOW - timedelta(seconds=900))
+        res = _check(FrontendSessionStatusChecker(backend), ref, job)
+        assert res.status == "running" and prov.torn == []
