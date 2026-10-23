@@ -2457,12 +2457,45 @@ _respawn_claim_or_exit() {
     exit 125
 }
 # podman-compose recreate of one service of this stack, nothing else.
+# _profile_flags is a flag string ("--profile a --profile b"), split on purpose.
 _compose_recreate_service() {
+    # shellcheck disable=SC2086
     podman-compose --project-name "${RIVAULT_COMPOSE_PROJECT}" --in-pod false \
         --env-file "./env.${uuid}" \
-        --file "./serve-model.yaml" ${GPUoverride[@]} ${DbOverride[@]} \
+        --file "./serve-model.yaml" "${GPUoverride[@]}" "${DbOverride[@]}" \
         ${_profile_flags} \
         up --detach --no-deps "$1"
+}
+# The services to remove for a respawn of $1, dependents first (podman refuses
+# to remove a container another one --requires: nginx on litellm, rag on vllm,
+# bentoml-vision on nginx). Without stack_health.sh, just $1.
+_compose_removal_order() {
+    if declare -F stack_removal_order >/dev/null; then
+        stack_removal_order "${RIVAULT_COMPOSE_PROJECT}" "$1"
+    else
+        printf '%s' "$1"
+    fi
+}
+# Remove the services $1 names, dependents first, then recreate them in the
+# reverse order. $2 labels the log lines. rc 1 when a recreate failed.
+_compose_respawn_services() {
+    local label="$2" svc ctr out recreate="" rc=0
+    for svc in $(_compose_removal_order "$1"); do
+        ctr="${RIVAULT_COMPOSE_PROJECT}_${svc}_1"
+        if ! out="$(podman rm -f "$ctr" 2>&1)"; then
+            echo "[rivault] could not remove ${ctr}: ${out}"
+        fi
+        recreate="${svc}${recreate:+ $recreate}"
+    done
+    for svc in $recreate; do
+        if _compose_recreate_service "$svc" 2>&1; then
+            echo "[rivault] ${label} respawn OK (${svc})"
+        else
+            echo "[rivault] ${label} respawn FAILED (${svc}); counting anyway"
+            rc=1
+        fi
+    done
+    return "$rc"
 }
 # Claim the respawn, or take it free when every exited sidecar ended by plan
 # (uvicorn's max-requests exit; stack_restart_is_free bounds those per hour).
@@ -2480,26 +2513,15 @@ _sidecars_charge() {
 # container another one --requires (compose depends_on: nginx on litellm), so
 # the dependents go first and come back last (stack_removal_order).
 _sidecars_respawn() {
-    local svc ctr out order="" recreate=""
+    local svc ctr
     _sidecars_charge
     sleep "$RIVAULT_SIDECAR_RESPAWN_SLEEP_SEC"
-    order="$(stack_removal_order "${RIVAULT_COMPOSE_PROJECT}" "${STACK_HEALTH_RESPAWN}")"
-    for svc in $order; do
+    for svc in $(_compose_removal_order "${STACK_HEALTH_RESPAWN}"); do
         ctr="${RIVAULT_COMPOSE_PROJECT}_${svc}_1"
         echo "[rivault] post-mortem for ${ctr}:"
         podman logs --tail 50 "$ctr" 2>&1 | sed 's/^/[rivault]   /' || true
-        if ! out="$(podman rm -f "$ctr" 2>&1)"; then
-            echo "[rivault] could not remove ${ctr}: ${out}"
-        fi
-        recreate="${svc}${recreate:+ $recreate}"
     done
-    for svc in $recreate; do
-        if _compose_recreate_service "$svc" 2>&1; then
-            echo "[rivault] Sidecar respawn OK (${svc})"
-        else
-            echo "[rivault] Sidecar respawn FAILED (${svc}); counting anyway"
-        fi
-    done
+    _compose_respawn_services "${STACK_HEALTH_RESPAWN}" Sidecar || true
 }
 _engine_container_name() {
     if podman container exists rivault-vllm-mn 2>/dev/null; then
@@ -2519,14 +2541,16 @@ _engine_is_dead() {
 # same launch path as the initial stack bring-up, so the image/binds/env are
 # identical; sibling sidecars (postgres/litellm/nginx/coredns) stay up and
 # reconnect. Multi-node: rerun the functionized head launch; single-node: ask
-# podman-compose to recreate only the vllm service.
+# podman-compose to recreate the vllm service and what --requires it (the rag
+# profile: rag depends_on vllm, so `podman rm -f` of vllm alone is refused
+# and the recreate then hits the name in use), dependents removed first.
 _engine_recreate() {
     local name="$1"
-    podman rm -f "$name" >/dev/null 2>&1 || true
     if [ "$name" = "rivault-vllm-mn" ]; then
+        podman rm -f "$name" >/dev/null 2>&1 || true
         _launch_engine_mn
     else
-        _compose_recreate_service vllm
+        _compose_respawn_services vllm Engine
     fi
 }
 _ENG_STOP_STREAK=${RIVAULT_ENGINE_ZERO_STREAK_TOLERANCE:-3}

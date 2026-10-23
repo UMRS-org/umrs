@@ -1,6 +1,7 @@
 """Static guards for mini-RiVault EgressGuard wiring."""
 
 import os
+import re
 import socket
 import subprocess
 from pathlib import Path
@@ -281,6 +282,7 @@ def test_slurm_wrapper_refuses_egress_profile_without_present_image():
 
 # ── 2026-09-17 localhost-image preflight guard (bdrt 5191/5195/5196 session) ─
 
+
 def _guard_block() -> str:
     text = SERVE_MODEL_SLURM.read_text()
     start = text.index("Preflight: vLLM image")
@@ -309,11 +311,12 @@ def test_remote_variants_keep_the_only_substitution_path():
     block = _guard_block()
     # fallthrough case (any non-localhost scheme) retains exactly one legal
     # fallback — pull-then-cu130-nightly, marked WARN, never silent.
-    assert 'attempting fallback tag...' in block
+    assert "attempting fallback tag..." in block
     assert block.count("cu130-nightly-aarch64") >= 2
 
 
 # ── 2026-09-17 --profile capability test correctness (rccs m0 discovery) ────
+
 
 def test_profile_capability_probes_root_help_not_subcommand_help():
     """The wrapper's `--profile` check must read the GLOBAL `podman-compose -h`
@@ -327,6 +330,7 @@ def test_profile_capability_probes_root_help_not_subcommand_help():
 
 
 # ── WP-12 venue leg: first-ready marker inside the info drop ────────────────
+
 
 def test_wrapper_writes_first_ready_marker_into_info():
     """WP-12 venue leg: RIVAULT_FIRST_READY_AT must be written once into the
@@ -370,6 +374,9 @@ def test_the_wrapper_adds_the_db_override_only_when_a_url_is_set():
 
 
 def test_every_compose_call_carries_the_db_override():
+    # Quoted ("${GPUoverride[@]}", SC2068) or not, the DB override follows.
     text = SERVE_MODEL_SLURM.read_text()
-    assert text.count("${GPUoverride[@]}") == text.count("${GPUoverride[@]} ${DbOverride[@]}") >= 4
+    gpu = len(re.findall(r'"?\$\{GPUoverride\[@\]\}"?', text))
+    both = len(re.findall(r'("?)\$\{GPUoverride\[@\]\}\1 \1\$\{DbOverride\[@\]\}\1', text))
+    assert gpu == both >= 4
     assert "LITELLM_DATABASE_URL=${_litellm_database_url}" in text

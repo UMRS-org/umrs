@@ -34,7 +34,12 @@ from .endpoint_registry import (
 )
 from .factory import get_orchestrator, resolve_configured_backend_name
 from .ports import PortManager, get_port_manager
-from .provision_failure_cap import AttemptKey, current_venue, record_attempt
+from .provision_failure_cap import (
+    AttemptKey,
+    current_venue,
+    failure_is_the_models,
+    record_attempt,
+)
 from .readiness import (
     ReadinessPoller,
     get_readiness_poller,
@@ -123,16 +128,38 @@ def _friendly_probe_detail(error: str | None, state: str) -> str:
     return short
 
 
+class JobEndedBeforePublishing(RuntimeError):
+    """The backend job ended before it published a location; ``status`` says how."""
+
+    def __init__(self, message: str, *, status: JobStatus) -> None:
+        super().__init__(message)
+        self.status = status
+
+
+class AssignmentTimeout(TimeoutError):
+    """The provision budget ran out before the job published a location.
+
+    ``queued``: the scheduler still held the job in its queue (or its status
+    was unknown) at the last poll.
+    """
+
+    def __init__(self, message: str, *, queued: bool) -> None:
+        super().__init__(message)
+        self.queued = queued
+
+
 def _published_location(job: Any, job_id: str, port: int) -> tuple[str, int] | None:
     """The job's concrete host/port once published; raises if it ended first."""
     if job.status == JobStatus.FAILED:
-        raise RuntimeError(
+        raise JobEndedBeforePublishing(
             f"Backend job {job_id} failed before publishing an endpoint: "
-            f"{job.error_message or 'unknown failure'}"
+            f"{job.error_message or 'unknown failure'}",
+            status=JobStatus.FAILED,
         )
     if job.status == JobStatus.STOPPED:
-        raise RuntimeError(
-            f"Backend job {job_id} stopped before publishing an endpoint"
+        raise JobEndedBeforePublishing(
+            f"Backend job {job_id} stopped before publishing an endpoint",
+            status=JobStatus.STOPPED,
         )
     if job.endpoint and job.endpoint.node and job.endpoint.node != "pending":
         return job.endpoint.node, job.endpoint.litellm_port or port
@@ -151,9 +178,28 @@ def _location_pause(
     """Seconds until the next location poll; raises once the wait is over."""
     if remaining > 0:
         return min(poll_interval, remaining)
-    if queue_patient and _still_queued(job):
+    queued = _still_queued(job)
+    if queue_patient and queued:
         return poll_interval
-    raise TimeoutError(f"Timed out waiting for backend endpoint location for {job_id}")
+    raise AssignmentTimeout(
+        f"Timed out waiting for backend endpoint location for {job_id}", queued=queued
+    )
+
+
+def _counts_before_assignment(error: Exception) -> bool:
+    """Whether a provision that failed before its location was known counts
+    toward the failing re-provision cap (re-review N1, 2026-10-23).
+
+    Remote Slurm publishes the location only at the end of the wrapper's
+    bring-up, so a missing model, an unpullable image or a compose failure end
+    the job FAILED before it: those count. A job still queued at the
+    deadline, a stopped (cancelled) job and a backend status error do not.
+    """
+    if isinstance(error, JobEndedBeforePublishing):
+        return error.status == JobStatus.FAILED
+    if isinstance(error, AssignmentTimeout):
+        return not error.queued
+    return False
 
 
 def _resumed_request(endpoint: RegisteredEndpoint) -> ProvisionRequest:
@@ -177,26 +223,6 @@ def _record_attempt(
     record_attempt(
         key, job_id=job_id, ok=ok, error=error, actor=request.requesting_user or ""
     )
-
-
-# Registry marks of an endpoint someone is taking down (review F5, 2026-10-23).
-_DEPROVISION_MARKS = ("deprovision_requested_at", "cleanup_status")
-
-
-def _failure_is_the_models(endpoint: RegisteredEndpoint | None) -> bool:
-    """Whether a failed attempt counts toward the failing re-provision cap.
-
-    Only a failure the model caused does: not an endpoint that was being
-    deprovisioned (the cancel ends the job), nor one whose registry row is
-    gone or already expired/terminated (deprovisioned or a stale registry).
-    The caller checks that the job reached a node first; a queue or
-    assignment timeout says nothing about the model.
-    """
-    if endpoint is None:
-        return False
-    if endpoint.status in (EndpointStatus.TERMINATED, EndpointStatus.EXPIRED):
-        return False
-    return not any(mark in endpoint.metadata for mark in _DEPROVISION_MARKS)
 
 
 def _readiness_probe(request: ProvisionRequest) -> dict[str, str | None]:
@@ -883,7 +909,7 @@ class OrchestrationService:
                 readiness_result.error
                 or f"Readiness check failed: {readiness_result.state.value}"
             )
-            self._record_failed_attempt(request, job_id, error, reached_node=True)
+            self._record_failed_attempt(request, job_id, error, got_far=True)
             self.registry.mark_failed(job_id, error)
             if progress:
                 progress("failed", {"error": error})
@@ -902,7 +928,10 @@ class OrchestrationService:
         except Exception as e:
             logger.exception(f"Provision finalize failed: {e}")
             self._record_failed_attempt(
-                request, job_id, str(e), reached_node=reached_node
+                request,
+                job_id,
+                str(e),
+                got_far=reached_node or _counts_before_assignment(e),
             )
             self.registry.mark_failed(job_id, str(e))
             await self._cleanup_failed_job(
@@ -919,17 +948,21 @@ class OrchestrationService:
             )
 
     def _record_failed_attempt(
-        self, request: ProvisionRequest, job_id: str, error: str, *, reached_node: bool
+        self, request: ProvisionRequest, job_id: str, error: str, *, got_far: bool
     ) -> None:
-        """Record a failed attempt for the failure cap, if the model caused it."""
-        if reached_node and _failure_is_the_models(self.registry.get_by_job_id(job_id)):
+        """Record a failed attempt for the failure cap, if the model caused it.
+
+        ``got_far``: the job reached a node, or ended FAILED or outran the
+        budget after it left the queue (``_counts_before_assignment``).
+        """
+        if got_far and failure_is_the_models(self.registry.get_by_job_id(job_id)):
             _record_attempt(request, job_id, ok=False, error=error)
         else:
             logger.info(
                 "provision attempt %s failed without counting toward the failure "
-                "cap (reached node: %s): %s",
+                "cap (got past the queue: %s): %s",
                 job_id,
-                reached_node,
+                got_far,
                 error,
             )
 

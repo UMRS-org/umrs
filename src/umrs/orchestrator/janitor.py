@@ -14,13 +14,14 @@ import asyncio
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from .base import OrchestratorBackend
 from .detection import detect_backend
 from .endpoint_registry import EndpointRegistry, EndpointStatus, get_registry
 from .factory import get_orchestrator, resolve_configured_backend_name
+from .provision_failure_cap import REAPED_STUCK_MARK, record_reaped_stuck
 
 logger = logging.getLogger(__name__)
 
@@ -701,12 +702,7 @@ class Janitor:
                 self.config.stuck_timeout_sec,
                 reason or "unknown",
             )
-            # ADR-058 D-4: a reaped provisioning row must also tombstone its
-            # durable lineage, else a still-QUEUED durable attempt can fire
-            # against a row the registry already declared dead (the exact
-            # 5434-descendant class).
-            _cancel_durable_lineage(endpoint)
-            success = await self._cleanup_endpoint(endpoint.job_id)
+            success = await self._reap_stuck(endpoint, reason)
             if success:
                 cleaned += 1
 
@@ -714,6 +710,31 @@ class Janitor:
                 break
 
         return cleaned
+
+    async def _reap_stuck(self, endpoint: Any, reason: str | None) -> bool:
+        """Remove a stuck endpoint; a STARTING one counts as a failed attempt.
+
+        Re-review N2b (2026-10-23): the row used to go without a mark, and the
+        failing re-provision cap treats a missing row as not the model's
+        failure, so a hanging engine was reaped and re-provisioned every
+        ``stuck_timeout_sec``, uncapped. The row is now marked and the attempt
+        recorded before the removal.
+        """
+        error = (
+            f"stuck in {endpoint.status.value} for more than "
+            f"{self.config.stuck_timeout_sec} s (reason: {reason or 'unknown'}); "
+            "reaped by the janitor"
+        )
+        self.registry.update_metadata(
+            endpoint.job_id, {REAPED_STUCK_MARK: datetime.now(timezone.utc).isoformat()}
+        )
+        record_reaped_stuck(endpoint, error)
+        # ADR-058 D-4: a reaped provisioning row must also tombstone its
+        # durable lineage, else a still-QUEUED durable attempt can fire
+        # against a row the registry already declared dead (the exact
+        # 5434-descendant class).
+        _cancel_durable_lineage(endpoint)
+        return await self._cleanup_endpoint(endpoint.job_id)
 
     async def _cleanup_orphans(self) -> int:
         """

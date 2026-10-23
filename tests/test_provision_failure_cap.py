@@ -12,6 +12,7 @@ time and submits nothing; a success ends the run; an admin may override.
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -21,11 +22,13 @@ from umrs.api import audit_events
 from umrs.api import endpoints as endpoints_api
 from umrs.api.endpoints import router
 from umrs.orchestrator import provision_failure_cap as cap
+from umrs.orchestrator.base import JobInfo, JobStatus
 from umrs.orchestrator.endpoint_registry import (
     EndpointRegistry,
     EndpointStatus,
     get_registry,
 )
+from umrs.orchestrator.janitor import Janitor, JanitorConfig
 from umrs.orchestrator.readiness import ReadinessResult, ReadinessState
 from umrs.orchestrator.service import (
     OrchestrationService,
@@ -410,3 +413,172 @@ def test_the_wait_and_the_override_survive_a_client_cutting_the_message() -> Non
     head = refusal.message(NOW)[:400]
     for part in ("paused until", "in 300 s", "override_failure_cap"):
         assert part in head
+
+
+# ── re-review N1: a job that fails before publishing a location ─────────────
+#
+# Remote Slurm publishes the location (rivault-job-<id>.info) only at the end
+# of the wrapper's bring-up, so a missing model, an unpullable image or a
+# compose failure end the job FAILED before it. Those are the deterministic
+# request-caused failures the cap is for; only a job still queued at the
+# deadline, a cancelled job and a deprovision are left out.
+
+
+class _ScriptedBackend(_Backend):
+    """Answers get_job_status from ``statuses`` (the last one repeats)."""
+
+    def __init__(self, *statuses: JobStatus) -> None:
+        self.statuses = list(statuses)
+        self.cancelled = False
+
+    async def get_job_status(self, job_id):
+        status = JobStatus.FAILED if self.cancelled else self.statuses[0]
+        if len(self.statuses) > 1:
+            self.statuses.pop(0)
+        return JobInfo(job_id=job_id, status=status, error_message="exit 1")
+
+    async def cleanup(self, *_args, **_kwargs):
+        self.cancelled = True  # sacct maps CANCELLED to FAILED
+
+
+def _service_on(backend: _Backend) -> OrchestrationService:
+    registry = EndpointRegistry()
+    registry.register(
+        project_id="default",
+        model=KEY.model,
+        job_id="8300",
+        host="pending",
+        port=1,
+        backend="slurm-remote",
+    )
+    return OrchestrationService(
+        registry=registry,
+        port_manager=SimpleNamespace(release=lambda *_args: None),
+        backend=backend,
+    )
+
+
+async def _finalize_pending(service: OrchestrationService, budget: float) -> ProvisionResult:
+    now = asyncio.get_running_loop().time()
+    return await service._finalize_provision(
+        request=ProvisionRequest("default", KEY.model, requesting_user="mnagaso"),
+        job_id="8300",
+        target_host="n",
+        actual_host="pending",
+        actual_port=1,
+        deadline=now + budget,
+        progress=None,
+        start_time=now,
+    )
+
+
+def test_a_job_that_fails_before_publishing_its_location_is_counted() -> None:
+    """PENDING -> FAILED with no info file: the 8218-class bring-up failure."""
+    service = _service_on(_ScriptedBackend(JobStatus.PENDING, JobStatus.FAILED))
+    result = asyncio.run(_finalize_pending(service, budget=60))
+    assert result.success is False
+    assert "failed before publishing an endpoint" in (result.error or "")
+    (event,) = _attempt_events()
+    assert event["outcome"] == "error"
+    assert event["details"]["job_id"] == "8300"
+
+
+def test_a_job_that_left_the_queue_and_outran_the_budget_is_counted() -> None:
+    service = _service_on(_ScriptedBackend(JobStatus.RUNNING))
+    assert asyncio.run(_finalize_pending(service, budget=0)).success is False
+    assert len(_attempt_events()) == 1
+
+
+def test_a_job_still_queued_at_the_deadline_is_not_counted() -> None:
+    service = _service_on(_ScriptedBackend(JobStatus.PENDING))
+    result = asyncio.run(_finalize_pending(service, budget=0))
+    assert "Timed out waiting for backend endpoint location" in (result.error or "")
+    assert _attempt_events() == []
+
+
+def test_a_job_stopped_before_publishing_is_not_counted() -> None:
+    service = _service_on(_ScriptedBackend(JobStatus.PENDING, JobStatus.STOPPED))
+    assert asyncio.run(_finalize_pending(service, budget=60)).success is False
+    assert _attempt_events() == []
+
+
+def test_a_queued_job_deprovisioned_before_publishing_is_not_counted() -> None:
+    """The cancel shows up as FAILED (sacct maps CANCELLED to FAILED)."""
+    backend = _ScriptedBackend(JobStatus.PENDING)
+    service = _service_on(backend)
+
+    async def run():
+        provision = asyncio.create_task(_finalize_pending(service, budget=60))
+        await asyncio.sleep(0.1)  # the provision is waiting for its location
+        await service.deprovision("8300")
+        return await provision
+
+    assert asyncio.run(run()).success is False
+    assert backend.cancelled
+    assert _attempt_events() == []
+
+
+# ── re-review N2b: the janitor reaps a STARTING endpoint as stuck ───────────
+
+
+def _stuck_janitor(status: EndpointStatus, job_id: str = "8300", **metadata: str):
+    registry = EndpointRegistry()
+    registry.register(
+        project_id="default",
+        model=KEY.model,
+        job_id=job_id,
+        host="dgx-spark-0",
+        port=13001,
+        backend="slurm-remote",
+        metadata={"requesting_user": "mnagaso", **metadata},
+    )
+    registry.update_status(job_id, status)
+    registry.get_by_job_id(job_id).created_at = datetime.utcnow() - timedelta(hours=1)
+    config = JanitorConfig(
+        enable_ttl_cleanup=False,
+        enable_orphan_cleanup=False,
+        enable_stuck_cleanup=True,
+        enable_liveness_cleanup=False,
+    )
+    backend = _ScriptedBackend(JobStatus.RUNNING)
+    return Janitor(config=config, registry=registry, backend=backend), registry
+
+
+def test_a_starting_endpoint_reaped_as_stuck_counts_toward_the_cap() -> None:
+    """A hanging engine was reaped without a mark and re-provisioned every
+    ~10 min, uncapped: the provision then found no row and did not count."""
+    janitor, registry = _stuck_janitor(EndpointStatus.STARTING)
+    marks = []
+    registry.remove = lambda job_id: marks.append(  # type: ignore[method-assign]
+        dict(registry.get_by_job_id(job_id).metadata)
+    )
+    assert asyncio.run(janitor._cleanup_stuck()) == 1
+    assert cap.REAPED_STUCK_MARK in marks[0]
+    (event,) = _attempt_events()
+    assert event["outcome"] == "error"
+    assert event["actor"] == "mnagaso"
+    assert event["details"]["job_id"] == "8300"
+    assert "reaped by the janitor" in event["details"]["error"]
+    assert KEY.matches(event["details"])
+
+
+def test_three_stuck_reaps_trip_the_cap() -> None:
+    for job_id in ("8301", "8302", "8303"):
+        janitor, _ = _stuck_janitor(EndpointStatus.STARTING, job_id)
+        assert asyncio.run(janitor._cleanup_stuck()) == 1
+    refusal = cap.check(KEY)
+    assert refusal is not None
+    assert [f.job_id for f in refusal.failures] == ["8303", "8302", "8301"]
+
+
+@pytest.mark.parametrize(
+    ("status", "metadata"),
+    [
+        (EndpointStatus.PROVISIONING, {}),
+        (EndpointStatus.STARTING, {"deprovision_requested_at": "now"}),
+    ],
+)
+def test_a_reap_before_a_node_or_during_a_deprovision_is_not_counted(status, metadata) -> None:
+    janitor, _ = _stuck_janitor(status, **metadata)
+    assert asyncio.run(janitor._cleanup_stuck()) == 1
+    assert _attempt_events() == []
