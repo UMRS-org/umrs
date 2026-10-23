@@ -21,8 +21,23 @@ from umrs.jobs.session_gc import SessionGcBackend
 from umrs.orchestrator import durable
 
 
-def _start_capturing_wiring() -> dict:
-    captured: dict = {}
+class _Pool:
+    """The umrs_db pool's shape and nothing more (a MagicMock answers every
+    ``hasattr``, so it would pass for any store, pool or not)."""
+
+    def __init__(self):
+        self.taken = 0
+
+    def getconn(self):
+        self.taken += 1
+        return MagicMock()  # startup's schema/model-store connections
+
+    def putconn(self, _conn):
+        pass
+
+
+def _start_capturing_wiring(pool: _Pool | None = None) -> dict:
+    captured: dict = {"pool": pool or _Pool()}
 
     def _factory(**kwargs):
         captured["factory"] = kwargs
@@ -45,7 +60,7 @@ def _start_capturing_wiring() -> dict:
         patch("umrs.jobs.service.set_job_service"),
     ):
         service = durable.DurableOrchestrationService(
-            MagicMock(), orchestration_service=MagicMock()
+            captured["pool"], orchestration_service=MagicMock()
         )
         asyncio.run(service.startup())
     return captured
@@ -59,6 +74,17 @@ def test_startup_shares_one_session_gc_backend_backed_by_the_session_store():
     assert captured["factory"]["session_gc_backend"] is backend
     assert captured["factory"]["session_store"] is backend.session_store
     assert captured["checker"]["session_store"] is backend.session_store
+
+
+def test_the_session_store_is_bound_to_the_umrs_db_pool_without_side_effects():
+    pool = _Pool()
+    captured = _start_capturing_wiring(pool)
+    store = captured["checker"]["session_gc_backend"].session_store
+    assert store._pool is pool  # the shared umrs_db pool, not a sqlite fallback
+    lane_pool = _Pool()
+    session_store, backend = durable._session_gc_lane(lane_pool)
+    assert backend.session_store is session_store
+    assert lane_pool.taken == 0  # wiring takes no connection; only a job does
 
 
 def test_the_factory_dispatches_session_gc_to_the_shared_backend():

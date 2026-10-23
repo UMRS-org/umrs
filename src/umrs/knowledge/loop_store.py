@@ -160,13 +160,24 @@ def _row_to_iteration(row: Any) -> LoopIteration:
 logger = logging.getLogger(__name__)
 
 
-def _is_connection_loss(exc: Exception) -> bool:
-    """psycopg2 InterfaceError / OperationalError = the session is gone."""
+def _is_connection_loss(exc: Exception, conn: Any) -> bool:
+    """The session is gone: a psycopg2 InterfaceError, or an OperationalError
+    that left *conn* closed. A statement timeout (QueryCanceledError, an
+    OperationalError subclass) or another OperationalError on a still-open
+    connection is a failed statement, not a lost session: it surfaces, and
+    the connection is kept (review 2026-10-23)."""
     try:
         import psycopg2
+        from psycopg2.extensions import QueryCanceledError
     except ImportError:  # pragma: no cover - psycopg2 is a server dependency
         return False
-    return isinstance(exc, (psycopg2.InterfaceError, psycopg2.OperationalError))
+    if isinstance(exc, psycopg2.InterfaceError):
+        return True
+    if not isinstance(exc, psycopg2.OperationalError):
+        return False
+    if isinstance(exc, QueryCanceledError):
+        return False
+    return bool(getattr(conn, "closed", 0))
 
 
 class LoopStore:
@@ -213,15 +224,27 @@ class LoopStore:
             try:
                 return self._run_and_end(fn, *args)
             except Exception as exc:
-                if self._reconnect is None or not _is_connection_loss(exc):
+                if self._reconnect is None or not _is_connection_loss(
+                    exc, self._sync_pool
+                ):
                     raise
                 logger.warning("loop store connection lost (%s); reconnecting", exc)
-                self._sync_pool = self._reconnect()
+                self._replace_connection()
                 return self._run_and_end(fn, *args)
 
     def _ensure_live(self) -> None:
         if self._reconnect is not None and getattr(self._sync_pool, "closed", 0):
-            self._sync_pool = self._reconnect()
+            self._replace_connection()
+
+    def _replace_connection(self) -> None:
+        """Close the old connection (never leak its socket), then reconnect."""
+        close = getattr(self._sync_pool, "close", None)
+        if close is not None:
+            try:
+                close()
+            except Exception as exc:  # noqa: BLE001 — a dead conn may refuse close
+                logger.debug("loop store: closing the old connection failed: %s", exc)
+        self._sync_pool = self._reconnect()
 
     def _run_and_end(self, fn: Any, *args: Any) -> Any:
         try:
