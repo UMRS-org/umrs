@@ -275,6 +275,20 @@ class UserStore:
         except (OSError, ValueError, UserStoreError):
             return False
 
+    def json_resolve(self, identity: str) -> UserRecord | None:
+        """``resolve_user`` over the JSON lane alone (username, then OIDC
+        subject); None when absent or unreadable, never raises. The disable
+        check reads it before the Postgres row (ADR-097 Amendment D-8,
+        2026-10-23), so a disable written to JSON holds while PG is down."""
+        try:
+            return UserRecord.from_json(self._read(self._path(identity)))
+        except (OSError, ValueError, TypeError, AttributeError, UserStoreError):
+            pass
+        try:
+            return self.lookup_by_oidc_subject(identity)
+        except (OSError, ValueError, TypeError, AttributeError):
+            return None
+
     def list(self) -> builtins.list[UserRecord]:
         if not self._dir.is_dir():
             return []

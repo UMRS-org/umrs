@@ -740,3 +740,31 @@ class TestPostgresEndToEnd:
         assert (user, "p1") in ai4s.active_owner_projects()
         rccs.revoke_by_owner(user)
         ai4s.revoke_by_owner(user)
+
+
+def test_an_unreadable_standing_warns_once_a_minute(monkeypatch, caplog):
+    """2026-10-23 review fix (ADR-097 Amendment D-8): an admin's every
+    request reads its standing; a user-store outage logged a traceback per
+    request."""
+    import logging
+
+    def _boom(_name):
+        raise RuntimeError("users table unreachable")
+
+    monkeypatch.setattr(ac, "load_record", _boom)
+    monkeypatch.setattr(ac, "_unreadable_warned_at", {}, raising=False)
+    with caplog.at_level(logging.DEBUG, logger=ac.__name__):
+        for _ in range(5):
+            assert ac.account_disabled("root") is False
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert warnings[0].exc_info is not None
+
+
+def test_read_record_resolves_an_idp_subject(tmp_path, monkeypatch):
+    monkeypatch.setenv("UMRS_USER_FILES_DIR", str(tmp_path))
+    users = UserStore(tmp_path)
+    users.create("alice", oidc_subject="241723")
+    assert ac.read_record("241723").username == "alice"
+    users.set_disabled("alice", True)
+    assert ac.account_disabled("241723") is True

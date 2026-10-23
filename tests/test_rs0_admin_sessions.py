@@ -270,6 +270,51 @@ class TestDisabledAdmin:
         assert admin_h.client.get(ADMIN_URL, headers=_bearer("root")).status_code == 200
 
 
+class TestDisabledAdminReviewFixes:
+    """ADR-097 Amendment D-8 review fixes (2026-10-23): an admin whose JWT
+    ``sub`` is an IdP subject, and a JSON-lane disable while the ``users``
+    row cannot be read, are refused too."""
+
+    @pytest.fixture
+    def users(self, tmp_path, monkeypatch):
+        from umrs.admin.user_store import UserStore
+
+        monkeypatch.setenv("UMRS_USER_FILES_DIR", str(tmp_path))
+        store = UserStore(tmp_path)
+        store.create("root", role="admin")
+        store.create("ops-lead", role="admin", oidc_subject="241723")
+        return store
+
+    def test_a_disabled_idp_subject_admin_is_403(self, admin_h, users):
+        assert admin_h.client.get(ADMIN_URL, headers=_bearer("241723")).status_code == 200
+        users.set_disabled("ops-lead", True)
+        r = admin_h.client.get(ADMIN_URL, headers=_bearer("241723"))
+        assert r.status_code == 403
+        assert "disabled" in r.json()["detail"]
+
+    def test_a_json_disable_holds_while_postgres_is_down(self, admin_h, users, monkeypatch):
+        from unittest.mock import MagicMock
+
+        from umrs.admin import user_store
+
+        users.set_disabled("root", True)
+        pool = MagicMock()
+        pool.getconn.side_effect = RuntimeError("users table unreachable")
+        monkeypatch.setattr(user_store, "_PG_POOL", pool)
+        assert admin_h.client.get(ADMIN_URL, headers=_bearer("root")).status_code == 403
+
+    @pytest.mark.usefixtures("users")
+    def test_postgres_down_without_a_json_disable_keeps_the_admin(self, admin_h, monkeypatch):
+        from unittest.mock import MagicMock
+
+        from umrs.admin import user_store
+
+        pool = MagicMock()
+        pool.getconn.side_effect = RuntimeError("users table unreachable")
+        monkeypatch.setattr(user_store, "_PG_POOL", pool)
+        assert admin_h.client.get(ADMIN_URL, headers=_bearer("root")).status_code == 200
+
+
 class TestAdminShowAndStop:
     def test_show_any_owner_with_project_and_lease(self, admin_h):
         r = admin_h.client.get(f"{ADMIN_URL}/sess-b", headers=_bearer())

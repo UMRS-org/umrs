@@ -690,3 +690,92 @@ class TestDisabledStanding:
         body = _client(ProjectStore(_Conn())).get("/umrs/projects", headers=_headers("alice"))
         assert body.json()["disabled"] is None
         assert body.json()["memberships"] is None
+
+
+class TestDisabledStandingReviewFixes:
+    """ADR-097 Amendment D-8 review fixes (2026-10-23): an IdP subject
+    resolves through ``oidc_subject``, a JSON-lane disable holds while the
+    ``users`` row cannot be read, and the gateway's lookup can skip the
+    project listing."""
+
+    @pytest.fixture
+    def users(self, tmp_path, monkeypatch):
+        from umrs.admin.user_store import UserStore
+
+        monkeypatch.setenv("UMRS_USER_FILES_DIR", str(tmp_path))
+        return UserStore(tmp_path)
+
+    @staticmethod
+    def _postgres_down(monkeypatch) -> None:
+        from umrs.admin import user_store
+
+        pool = MagicMock()
+        pool.getconn.side_effect = RuntimeError("users table unreachable")
+        monkeypatch.setattr(user_store, "_PG_POOL", pool)
+
+    def test_an_idp_subject_is_resolved_through_oidc_subject(self, users) -> None:
+        # under JWKS/SAML the token sub is the IdP's id (a numeric RIKEN ID),
+        # which is no valid username: it read as "unknown, not disabled"
+        users.create("alice", projects=["default"], oidc_subject="241723")
+        client = _client(ProjectStore(_Conn()))
+        body = client.get("/umrs/projects", headers=_headers("241723")).json()
+        assert body["disabled"] is False
+        assert body["memberships"] == ["default"]
+        users.set_disabled("alice", True)
+        body = client.get("/umrs/projects", headers=_headers("241723")).json()
+        assert body["disabled"] is True
+        assert body["memberships"] == []
+
+    def test_a_mixed_case_subject_is_resolved_too(self, users) -> None:
+        users.create("bob", oidc_subject="Bob.Tanaka")
+        users.set_disabled("bob", True)
+        body = _client(ProjectStore(_Conn())).get("/umrs/projects", headers=_headers("Bob.Tanaka"))
+        assert body.json()["disabled"] is True
+
+    def test_a_json_disable_holds_while_postgres_is_down(self, users, monkeypatch) -> None:
+        users.create("carol", projects=["default"])
+        users.set_disabled("carol", True)
+        self._postgres_down(monkeypatch)
+        body = _client(ProjectStore(_Conn())).get("/umrs/projects", headers=_headers("carol"))
+        assert body.json()["disabled"] is True
+        assert body.json()["memberships"] == []
+
+    def test_postgres_down_without_a_json_disable_is_unknown(self, users, monkeypatch) -> None:
+        users.create("dave", projects=["default"])
+        self._postgres_down(monkeypatch)
+        body = _client(ProjectStore(_Conn())).get("/umrs/projects", headers=_headers("dave"))
+        assert body.json()["disabled"] is None
+        assert body.json()["memberships"] is None
+
+    def test_standing_only_skips_the_listing(self, users) -> None:
+        users.create("root", role="admin", projects=["ops"])
+        store = ProjectStore(_Conn())
+        store.create("lab", owner_id="zed")
+        owners: list[object] = []
+        listing = store.list
+
+        def _spy(owner=None, **kwargs):
+            owners.append(owner)
+            return listing(owner=owner, **kwargs)
+
+        store.list = _spy  # type: ignore[method-assign]
+        r = _client(store).get(
+            "/umrs/projects?standing_only=true", headers=_headers("root", admin=True)
+        )
+        body = r.json()
+        assert r.status_code == 200
+        assert body["standing_only"] is True
+        assert body["disabled"] is False
+        assert body["memberships"] == ["ops"]
+        assert "projects" not in body
+        # the admin's every-row listing (owner=None) is never run
+        assert None not in owners
+
+    def test_without_standing_only_the_listing_is_unchanged(self, users) -> None:
+        users.create("root", role="admin")
+        store = ProjectStore(_Conn())
+        store.create("lab", owner_id="zed")
+        body = _client(store).get("/umrs/projects", headers=_headers("root", admin=True)).json()
+        assert [p["project_id"] for p in body["projects"]] == ["lab"]
+        assert body["count"] == 1
+        assert body["disabled"] is False

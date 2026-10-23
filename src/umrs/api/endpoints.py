@@ -319,7 +319,9 @@ def _claim_is_admin(claims: dict[str, Any] | None) -> bool:
 
 
 def _claim_can_access_project(claims: dict[str, Any], project_id: str) -> bool:
-    if _claim_is_admin(claims):
+    # ADR-097 Amendment D-8 (2026-10-23): a disabled account's admin JWT
+    # scopes like any other token, to its own claimed projects.
+    if _claim_is_admin(claims) and not _admin_disabled(claims.get("sub")):
         return True
     memberships = _claim_project_memberships(claims)
     return "*" in memberships or project_id in memberships
