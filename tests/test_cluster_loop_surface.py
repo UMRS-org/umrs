@@ -18,7 +18,9 @@ def _mvp_auth_and_engine(monkeypatch):
 
     loop_api._loop_engine = AutonomousResearchLoop(simulated=True)
     monkeypatch.setattr(
-        loop_api, "_registered_workflow_names", lambda _owner: ["demo08_yield_eval"]
+        loop_api,
+        "_registered_workflow_names",
+        lambda _owner, _project=None, **_kw: ["demo08_yield_eval"],
     )
     monkeypatch.setattr(engine_loop_runner, "register", lambda *_args, **_kwargs: None)
     loop_api._configure_hosting()

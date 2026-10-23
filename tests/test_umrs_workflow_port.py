@@ -71,7 +71,7 @@ def catalog(monkeypatch):
     system one; never another owner's)."""
     from umrs.server import workflow_registry_handler as handler
 
-    def resolve(name, owner, *, is_admin=False):
+    def resolve(name, owner, *, is_admin=False, caller_project=None):
         path = CATALOG.get((owner, name)) or CATALOG.get(("*", name))
         return {"source_path": path} if path else None
 
