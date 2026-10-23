@@ -222,6 +222,34 @@ class ResearchLoop:
         }
 
 
+#: Loop metadata the server stamps at loop start from the gateway-verified
+#: identity (``umrs.api.loop.start_loop``): the starter and the project their
+#: signed token names. A driver's state write never replaces them
+#: (``PUT /loops/{id}/state``), so the loop's runs keep the starter's rights.
+OWNER_USER_KEY = "owner_user_id"
+OWNER_PROJECT_KEY = "owner_verified_project"
+SERVER_OWNED_METADATA = frozenset({OWNER_USER_KEY, OWNER_PROJECT_KEY})
+
+
+def verified_loop_project(loop: Any) -> str | None:
+    """The loop's project when it is the one its owner's verified token named
+    at loop start (ADR-080 ``project:`` shares), else None.
+
+    Both halves are needed: ``loop.project_id`` is where the loop's runs act,
+    and the stamp proves the starter was verified in that project. A loop
+    started before the stamp existed, or by an admin in another project,
+    gets None (owner/system/user/circle shares still resolve).
+    """
+    metadata = getattr(loop, "metadata", None) or {}
+    stamped = str(metadata.get(OWNER_PROJECT_KEY) or "").strip()
+    project = str(getattr(loop, "project_id", "") or "").strip()
+    if not stamped or not metadata.get(OWNER_USER_KEY) or project == "default":
+        # "default" is never a verified project (as in the trigger and
+        # durable-job rules), so a project:default share is not admitted here.
+        return None
+    return project if stamped == project else None
+
+
 # ── Autonomous Research Loop Engine ───────────────────────────────────────
 
 
@@ -864,7 +892,12 @@ class AutonomousResearchLoop:
         port = self._workflow_port
         if callable(getattr(type(port), "trigger_as", None)):
             owner = str(loop.metadata.get("owner_user_id") or "")
-            return port.trigger_as(workflow_name, params, owner=owner)
+            return port.trigger_as(
+                workflow_name,
+                params,
+                owner=owner,
+                owner_project=verified_loop_project(loop),
+            )
         return port.trigger(workflow_name, params)
 
     def _execute_experiment(
