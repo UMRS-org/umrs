@@ -70,6 +70,38 @@ class InvalidTransitionError(JobStoreError):
     """Raised when state transition is invalid."""
 
 
+class UnknownVenueError(JobStoreError, ValueError):
+    """A bare spec venue names no site this store can resolve (N-3).
+
+    A ValueError too, so the ZMQ submit and the fan-out route map it to
+    their existing client-error answers.
+    """
+
+
+#: Spec venues meaning "this site" (S1a): the default and the research-loop
+#: in-process ``frontend`` venue (``research_loop_backend._venue_fields``).
+OWN_SITE_VENUE_ALIASES = frozenset({"", "frontend"})
+
+
+def cross_site_venue_refusal(venue: Any, site_name: str) -> str | None:
+    """Why a submitted spec venue may not enter this site's door, or None (Y-1).
+
+    Allowed: empty, ``frontend``, this site's name and ``cluster:<this site>``.
+    Any other venue would be claimed by another site's server off the shared
+    jobs table without that site's gateway or user gate being consulted.
+    With no site name configured (no site.yaml: the pre-venue shared lane,
+    dev/mvp) nothing changes, matching ``JobStore._resolve_venue``.
+    """
+    name = str(venue or "").strip()
+    own = (site_name or "").strip()
+    if not own or name in OWN_SITE_VENUE_ALIASES or name in (own, f"cluster:{own}"):
+        return None
+    return (
+        f"cross_site_venue_refused: venue {name!r} is not this site ({own!r}); "
+        "submit work for another site through that site's own gateway"
+    )
+
+
 #: A cancel waits out another lifecycle call's hold on the job's advisory
 #: lock (create_attempt, enqueue_job and retry_job commit in milliseconds)
 #: for at most this many tries, instead of failing the user's cancel.
@@ -231,7 +263,25 @@ class JobStore:
             from .research_loop_backend import split_cluster_venue_name
 
             return split_cluster_venue_name(venue)
-        return venue or self.site_name
+        return self._resolve_bare_venue(venue)
+
+    def _resolve_bare_venue(self, venue: str) -> str:
+        """A bare venue (no ``cluster:`` prefix) → the stored venue (N-3).
+
+        With a site name configured only this site resolves: ``""`` and
+        ``frontend`` mean this site, its own name stays; anything else (a
+        typo such as ``bdrt`` for ``bdrt-front``) would be stored as written
+        and never claimed, so it raises ``unknown_venue``. With no site name
+        the venue is stored as written (pre-S1a behaviour).
+        """
+        if not self.site_name:
+            return venue
+        if venue in OWN_SITE_VENUE_ALIASES or venue == self.site_name:
+            return self.site_name
+        raise UnknownVenueError(
+            f"unknown_venue: {venue!r} is not this site ({self.site_name!r}); "
+            f"use '' or 'cluster:{self.site_name}'"
+        )
 
     def set_post_completion_callbacks(
         self,

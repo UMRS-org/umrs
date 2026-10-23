@@ -88,7 +88,10 @@ class TestVenueClaimScoping:
     def test_spec_declared_venue_outranks_site_default(self, pool):
         rccs = _make_store(pool, "rccs-front")
         bdrt = _make_store(pool, "bdrt")
-        job = _create(bdrt, spec={"venue": "rccs-front"})
+        # S1a (2026-10-24): a store resolves only its own bare name (N-3), so
+        # the declared foreign venue is the cluster form; the bare
+        # 'rccs-front' at bdrt is now unknown_venue (tests/test_store_venue.py).
+        job = _create(bdrt, spec={"venue": "cluster:rccs-front"})
         bdrt.enqueue_job(job)  # enqueue is lifecycle; claim is venue-scoped
         assert rccs.claim_next_jobs(limit=10) == [job]
         assert bdrt.claim_next_jobs(limit=10) == []

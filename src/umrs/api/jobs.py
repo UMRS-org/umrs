@@ -36,6 +36,7 @@ from ..jobs.store import (
     InvalidTransitionError,
     JobNotFoundError,
     JobStore,
+    cross_site_venue_refusal,
 )
 from .typed_errors import PlatformError, raise_typed
 
@@ -699,6 +700,9 @@ async def create_job(
             job_type, spec, (user_id, project_id, is_admin), request.fan_out_jobs
         )
         _enforce_export_release(job_type, spec, request.fan_out_jobs)
+        _enforce_own_site_venue(
+            job_type, spec, request.fan_out_jobs, getattr(store, "site_name", "")
+        )
 
         create_method = (
             store.create_fan_out_graph if request.fan_out_jobs else store.create_job
@@ -882,6 +886,24 @@ def _enforce_export_release(
                 "POST /knowledge/export, which gates and audits the release",
             )
         )
+
+
+def _enforce_own_site_venue(
+    job_type: JobType,
+    spec: dict[str, Any],
+    fan_out_jobs: list[dict[str, Any]] | None,
+    site_name: str,
+) -> None:
+    """403 ``cross_site_venue_refused`` for a spec (parent or any fan-out
+    child) whose ``venue`` names another site (S1a, Y-1): ``JobSpec`` keeps
+    extra fields, and a ``cluster:<other site>`` row in the shared jobs table
+    is claimed and run by that site's server without its own gateway or user
+    gate. Allowed: empty, ``frontend``, this site's name and
+    ``cluster:<this site>``; no site name configured, nothing is refused."""
+    for _target_type, target_spec in _spec_targets(job_type, spec, fan_out_jobs):
+        venue = target_spec.get("venue") if isinstance(target_spec, dict) else None
+        refusal = cross_site_venue_refusal(venue, site_name)
+        _deny_unless(refusal is None, refusal or "")
 
 
 def _parse_job_type_filter(job_type: str | None) -> JobType | None:
