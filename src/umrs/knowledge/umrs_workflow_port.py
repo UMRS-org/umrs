@@ -30,6 +30,7 @@ from uuid import uuid4
 
 from umrs.jobs.models import JobType
 from umrs.knowledge.execution_port import WorkflowExecutionPort
+from umrs.shared.workflow_execution_access import VERIFIED_PROJECT_SPEC_KEY
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +43,25 @@ def _first(*values, default):
         if value:
             return value
     return default
+
+
+def _owner_source_path(workflow_name: str, owner: str, verified: str | None) -> str:
+    """The registered source of a workflow *owner* may run (ADR-074 D-8,
+    ADR-080; *verified* admits ``project:`` shares), or a RuntimeError by name."""
+    from umrs.server.workflow_registry_handler import resolve_workflow_for_caller
+
+    entry = (
+        resolve_workflow_for_caller(workflow_name, owner, caller_project=verified) or {}
+    )
+    source_path = str(entry.get("source_path") or "")
+    if not source_path:
+        raise RuntimeError(
+            f"workflow {workflow_name!r} is not one the loop's owner "
+            f"{owner or '(none)'!r} may run: a user workflow runs only for "
+            "its owner or those its access list admits, a system workflow "
+            "for anyone (ADR-074 D-8, ADR-080)"
+        )
+    return source_path
 
 
 class UmrsWorkflowExecutionPort(WorkflowExecutionPort):
@@ -59,29 +79,34 @@ class UmrsWorkflowExecutionPort(WorkflowExecutionPort):
     def trigger(self, workflow_name: str, params: dict) -> str:
         return self.trigger_as(workflow_name, params, owner="")
 
-    def trigger_as(self, workflow_name: str, params: dict, *, owner: str) -> str:
+    def trigger_as(
+        self,
+        workflow_name: str,
+        params: dict,
+        *,
+        owner: str,
+        owner_project: str | None = None,
+    ) -> str:
         """Start *workflow_name* as *owner* (the loop's verified owner; ""
-        for an ownerless loop). A workflow the owner may not run fails here
-        by name, before any job exists that ``wait`` would wait out."""
-        from umrs.server.workflow_registry_handler import resolve_workflow_for_caller
-
-        entry = resolve_workflow_for_caller(workflow_name, owner) or {}
-        source_path = str(entry.get("source_path") or "")
-        if not source_path:
-            raise RuntimeError(
-                f"workflow {workflow_name!r} is not one the loop's owner "
-                f"{owner or '(none)'!r} may run: a user workflow runs only for "
-                "its owner, a system workflow for anyone (ADR-074 D-8)"
-            )
-        execution_id = f"exec-{uuid4().hex}"
+        for an ownerless loop). *owner_project* is the loop's project when
+        the loop recorded it as the starter's gateway-verified project
+        (``ResearchLoop`` metadata, :func:`umrs.knowledge.loop.verified_loop_project`);
+        it admits an ADR-080 ``project:`` share, and only when it is also the
+        run's own project. A workflow the owner may not run fails here by
+        name, before any job exists that ``wait`` would wait out."""
         params = {k: v for k, v in params.items() if k != "user_id"}
         project_id = str(params.get("project_id") or "research")
+        verified = owner_project if owner and owner_project == project_id else None
+        source_path = _owner_source_path(workflow_name, owner, verified)
+        execution_id = f"exec-{uuid4().hex}"
         spec = {
             "workflow_name": workflow_name,
             "params": params,
             "execution_id": execution_id,
             "source_path": source_path,
         }
+        if verified:
+            spec[VERIFIED_PROJECT_SPEC_KEY] = verified
         job_id = self._store.create_job(
             project_id=project_id,
             user_id=owner or "research-loop",
