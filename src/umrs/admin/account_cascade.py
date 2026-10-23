@@ -124,20 +124,49 @@ def standing_loss(
     return None if project in member_of() else MEMBERSHIP_REVOKED
 
 
-def load_record(username: str) -> Any:
+def read_record(username: str) -> Any:
     """The live account record (the ``users`` row first, then JSON); None
-    when absent or unreadable. A disable in either lane wins: the JSON file
-    is the admin CLI's first write, the row its mirror."""
+    when there is no such account. Raises when a lane cannot be read, so a
+    caller can tell "unknown" from "unreadable". A disable in either lane
+    wins: the JSON file is the admin CLI's first write, the row its mirror."""
     from .user_store import UserStore, UserStoreError
 
+    store = UserStore()
     try:
-        store = UserStore()
         record = store.get(username)
-    except (UserStoreError, OSError, ValueError):
+    except UserStoreError:
         return None
     if not record.disabled and store.json_disabled(username):
         record.disabled = True
     return record
+
+
+def load_record(username: str) -> Any:
+    """``read_record``, with an unreadable record read as None."""
+    from .user_store import UserStoreError
+
+    try:
+        return read_record(username)
+    except (UserStoreError, OSError, ValueError):
+        return None
+
+
+def account_disabled(username: str) -> bool:
+    """True only on evidence that ``username``'s account is disabled.
+
+    The admin-credential check (2026-10-23, ADR-097 Amendment D-8): an admin
+    JWT outlived its owner's disable. An absent or unreadable record is not
+    evidence, so a user-store outage never locks the operator out of the
+    admin routes (the sweep's rule: act on evidence only).
+    """
+    if not (username or "").strip():
+        return False
+    try:
+        record = load_record(username.strip())
+    except Exception:  # e.g. a Postgres error: no evidence
+        logger.warning("standing of %s unreadable", username, exc_info=True)
+        return False
+    return bool(record is not None and record.disabled)
 
 
 def refusal_for(owner: str, project: str, *, pool: Any) -> str | None:
@@ -471,11 +500,13 @@ __all__ = [
     "MEMBERSHIP_REVOKED",
     "AccountStandingSweep",
     "CascadeResult",
+    "account_disabled",
     "cancel_owner_jobs",
     "live_project_ids",
     "load_record",
     "membership_enforced",
     "project_exempt",
+    "read_record",
     "refusal_for",
     "run_cascade",
     "standing_loss",

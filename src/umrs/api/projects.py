@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, NoReturn
+from typing import Any, NamedTuple, NoReturn
 
 from fastapi import APIRouter, Depends, Request, status
 from pydantic import BaseModel, Field
@@ -476,11 +476,15 @@ def list_my_projects(
     """
     owner = None if identity.is_admin else (identity.user_id or "").strip()
     rows = store.list(owner=owner, include_retired=include_retired)
+    standing = live_standing(store, (identity.user_id or "").strip())
     return {
         "status": "ok",
         "projects": [_row_response(r) for r in rows],
         "count": len(rows),
-        "memberships": live_memberships(store, (identity.user_id or "").strip()),
+        "memberships": standing.memberships,
+        # ADR-097 Amendment D-8 (2026-10-23): the gateway refuses a disabled
+        # account's tokens; null = the record could not be read.
+        "disabled": standing.disabled,
     }
 
 
@@ -498,20 +502,47 @@ def _record_projects(user: str) -> list[str]:
     return [p.strip() for p in record.projects if isinstance(p, str) and p.strip()]
 
 
-def live_memberships(store: ProjectStore, user: str) -> list[str] | None:
-    """ADR-097 D-1: the caller's live project ids — the user record's
-    projects plus the active projects they own, a retired row dropped.
-    None when either source is unreadable: the gateway then fails closed
-    instead of reading "no memberships"."""
+class Standing(NamedTuple):
+    """The caller's live standing: memberships (None = unreadable) and
+    whether the account is disabled (None = unreadable)."""
+
+    memberships: list[str] | None
+    disabled: bool | None
+
+
+def _account_disabled(user: str) -> bool:
+    """The record's disabled flag, either lane; False for an unknown user.
+    Raises when the record cannot be read."""
+    from ..admin.account_cascade import read_record
+
+    record = read_record(user)
+    return bool(record is not None and record.disabled)
+
+
+def live_standing(store: ProjectStore, user: str) -> Standing:
+    """ADR-097 D-1 memberships plus the account's standing (Amendment D-8,
+    2026-10-23). A disabled account has no memberships at all, owned
+    projects included: an older gateway that reads only ``memberships``
+    then refuses every project but the token's own."""
     if not user:
-        return []
+        return Standing([], False)
     try:
+        if _account_disabled(user):
+            return Standing([], True)
         owned = [row["project_id"] for row in store.list(owner=user)]
         listed = [pid for pid in _record_projects(user) if not _retired(store, pid)]
     except Exception:  # unreadable is not "none"
         logger.warning("live memberships unreadable for %s", user, exc_info=True)
-        return None
-    return sorted(set(owned) | set(listed))
+        return Standing(None, None)
+    return Standing(sorted(set(owned) | set(listed)), False)
+
+
+def live_memberships(store: ProjectStore, user: str) -> list[str] | None:
+    """ADR-097 D-1: the caller's live project ids — the user record's
+    projects plus the active projects they own, a retired row dropped.
+    None when either source is unreadable: the gateway then fails closed
+    instead of reading "no memberships". [] for a disabled account."""
+    return live_standing(store, user).memberships
 
 
 def _retired(store: ProjectStore, project_id: str) -> bool:

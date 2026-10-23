@@ -614,9 +614,10 @@ class TestLiveMemberships:
             "memberships"
         ] == ["kept"]
         users.set_disabled("bob", True)
-        assert _client(store).get("/umrs/projects", headers=_headers("bob")).json()[
-            "memberships"
-        ] == []
+        assert (
+            _client(store).get("/umrs/projects", headers=_headers("bob")).json()["memberships"]
+            == []
+        )
 
     @pytest.mark.usefixtures("users")
     def test_unknown_user_has_no_memberships(self) -> None:
@@ -634,3 +635,58 @@ class TestLiveMemberships:
         r = _client(ProjectStore(_Conn())).get("/umrs/projects", headers=_headers("alice"))
         assert r.status_code == 200
         assert r.json()["memberships"] is None
+
+
+class TestDisabledStanding:
+    """ADR-097 Amendment D-8 (2026-10-23): GET /umrs/projects reports the
+    caller's standing, so the gateway refuses a disabled account's tokens
+    within its membership cache window instead of at token expiry."""
+
+    @pytest.fixture
+    def users(self, tmp_path, monkeypatch):
+        from umrs.admin.user_store import UserStore
+
+        monkeypatch.setenv("UMRS_USER_FILES_DIR", str(tmp_path))
+        return UserStore(tmp_path)
+
+    def test_an_enabled_caller_is_not_disabled(self, users) -> None:
+        users.create("alice", projects=["default"])
+        body = _client(ProjectStore(_Conn())).get("/umrs/projects", headers=_headers("alice"))
+        assert body.json()["disabled"] is False
+        assert body.json()["memberships"] == ["default"]
+
+    def test_a_disabled_caller_is_reported_and_owns_nothing(self, users) -> None:
+        users.create("bob", projects=["default"])
+        store = ProjectStore(_Conn())
+        store.create("bob-lab", owner_id="bob")
+        users.set_disabled("bob", True)
+        body = _client(store).get("/umrs/projects", headers=_headers("bob")).json()
+        assert body["disabled"] is True
+        # an owned project no longer counts: an older gateway reading only
+        # `memberships` then refuses every project but the token's own
+        assert body["memberships"] == []
+
+    def test_re_enabling_restores_the_standing(self, users) -> None:
+        users.create("carol", projects=["default"])
+        client = _client(ProjectStore(_Conn()))
+        users.set_disabled("carol", True)
+        assert client.get("/umrs/projects", headers=_headers("carol")).json()["disabled"]
+        users.set_disabled("carol", False)
+        assert client.get("/umrs/projects", headers=_headers("carol")).json()["disabled"] is False
+
+    @pytest.mark.usefixtures("users")
+    def test_an_unknown_caller_is_not_disabled(self) -> None:
+        body = _client(ProjectStore(_Conn())).get("/umrs/projects", headers=_headers("nobody"))
+        assert body.json()["disabled"] is False
+
+    @pytest.mark.usefixtures("users")
+    def test_an_unreadable_record_is_null_not_false(self, monkeypatch) -> None:
+        from umrs.admin import account_cascade
+
+        def _boom(user: str) -> None:
+            raise OSError("user files unreadable")
+
+        monkeypatch.setattr(account_cascade, "read_record", _boom)
+        body = _client(ProjectStore(_Conn())).get("/umrs/projects", headers=_headers("alice"))
+        assert body.json()["disabled"] is None
+        assert body.json()["memberships"] is None

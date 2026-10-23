@@ -210,6 +210,66 @@ class TestAdminAuth:
         assert admin_h.client.get(ADMIN_URL, headers=user).status_code == 403
 
 
+class TestDisabledAdmin:
+    """ADR-097 Amendment D-8 (2026-10-23): an admin JWT outlived its owner's
+    disable for its whole lifetime; a disabled account's credential is now
+    a typed 403 on the admin routes, whatever its roles say."""
+
+    @pytest.fixture
+    def users(self, tmp_path, monkeypatch):
+        from umrs.admin.user_store import UserStore
+
+        monkeypatch.setenv("UMRS_USER_FILES_DIR", str(tmp_path))
+        store = UserStore(tmp_path)
+        store.create("root", role="admin")
+        store.create("ops-admin", role="admin")
+        return store
+
+    def test_a_disabled_admins_jwt_is_403_and_audited(self, admin_h, users):
+        assert admin_h.client.get(ADMIN_URL, headers=_bearer("root")).status_code == 200
+        users.set_disabled("root", True)
+        r = admin_h.client.get(ADMIN_URL, headers=_bearer("root"))
+        assert r.status_code == 403
+        assert r.headers["x-platform-error-code"] == "companionvenue.forbidden"
+        assert "disabled" in r.json()["detail"]
+        denied = [row for row in admin_h.audit.rows if row["event"] == "venue.admin.denied"]
+        assert denied[-1]["actor"] == "root"
+        assert denied[-1]["details"]["reason"] == "account_disabled"
+
+    def test_a_disabled_admin_cannot_stop_a_session(self, admin_h, users):
+        users.set_disabled("root", True)
+        r = admin_h.client.post(f"{ADMIN_URL}/sess-a/stop", headers=_bearer("root"))
+        assert r.status_code == 403
+        assert admin_h.service.store.get("sess-a").state == "running"
+
+    def test_re_enabling_restores_the_admin(self, admin_h, users):
+        users.set_disabled("root", True)
+        users.set_disabled("root", False)
+        assert admin_h.client.get(ADMIN_URL, headers=_bearer("root")).status_code == 200
+
+    def test_a_disabled_gateway_signed_admin_is_403(self, admin_h, users, monkeypatch):
+        monkeypatch.setenv("UMRS_AUTH_MODE", "strict")
+        monkeypatch.setenv(HMAC_ENV, "hmac-test-secret")
+        signed = {
+            "x-user-id": "ops-admin",
+            "x-verified-project-id": "ops",
+            "x-verified-is-admin": "true",
+            "x-verified-hmac": sign_claims("hmac-test-secret", "ops-admin", "ops", True),
+        }
+        users.set_disabled("ops-admin", True)
+        assert admin_h.client.get(ADMIN_URL, headers=signed).status_code == 403
+
+    @pytest.mark.usefixtures("users")
+    def test_an_unreadable_record_keeps_the_admin(self, admin_h, monkeypatch):
+        from umrs.admin import account_cascade
+
+        def _boom(user: str) -> None:
+            raise RuntimeError("users table unreachable")
+
+        monkeypatch.setattr(account_cascade, "load_record", _boom)
+        assert admin_h.client.get(ADMIN_URL, headers=_bearer("root")).status_code == 200
+
+
 class TestAdminShowAndStop:
     def test_show_any_owner_with_project_and_lease(self, admin_h):
         r = admin_h.client.get(f"{ADMIN_URL}/sess-b", headers=_bearer())

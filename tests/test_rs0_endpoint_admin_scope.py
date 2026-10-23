@@ -79,3 +79,21 @@ def test_admin_reads_another_projects_endpoint(client):
     assert client.get("/umrs/endpoints/job-b", headers=ADMIN).status_code == 200
     assert client.get("/umrs/endpoints/job-b", headers=USER).status_code == 404
     assert client.get("/umrs/endpoints/job-a", headers=USER).status_code == 200
+
+
+def test_a_disabled_admins_jwt_is_not_an_admin(client, tmp_path, monkeypatch):
+    """ADR-097 Amendment D-8 (2026-10-23): the registry's admin check
+    (``_caller_is_admin``) honoured an admin JWT for its whole lifetime,
+    after its owner was disabled."""
+    from umrs.admin.user_store import UserStore
+
+    monkeypatch.setenv("UMRS_USER_FILES_DIR", str(tmp_path))
+    users = UserStore(tmp_path)
+    users.create("root", role="admin")
+    assert _jobs(client.get("/umrs/endpoints?all_projects=true", headers=ADMIN)) == [
+        "job-a",
+        "job-b",
+    ]
+    users.set_disabled("root", True)
+    # no longer an admin: the claim project alone, and nothing runs there
+    assert _jobs(client.get("/umrs/endpoints?all_projects=true", headers=ADMIN)) == []
