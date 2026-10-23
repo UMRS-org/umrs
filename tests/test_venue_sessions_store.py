@@ -92,6 +92,7 @@ def _pg_row(sid: str = "s1", state: str = "provisioning") -> tuple:
         "updated_at": None,
         "stopped_at": None,
         "job_id": "job-1",
+        "policy": '{"web": {"mode": "public", "domains": []}}',
     }
     return tuple(values[c] for c in _COLUMNS)
 
@@ -150,4 +151,7 @@ class TestPostgresShapes:
             job_id="job-7",
         )
         sql, params = pool.record[0]
-        assert params[-1] == "job-7" and "job_id = CASE WHEN EXCLUDED.job_id <> ''" in sql
+        assert params[-3] == "job-7" and "job_id = CASE WHEN EXCLUDED.job_id <> ''" in sql
+        # ADR-099: no policy given keeps the stored one (NULL -> COALESCE)
+        assert params[-2:] == (None, None)
+        assert "policy = COALESCE(%s::jsonb, companion_venue_sessions.policy)" in sql

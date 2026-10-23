@@ -388,7 +388,7 @@ H = {"x-user-id": "alice"}
 
 
 def _start(h, sid="sess-1", **over):
-    body = {"source_refs": ["openai-main"], **over}
+    body = {"source_refs": ["openai-main"], "web_policy": "public", **over}
     return h.client.post(f"/umrs/companion/sessions/{sid}/venue/start", json=body, headers=H)
 
 
@@ -550,7 +550,7 @@ class TestOwnerRoutes:
         harness.pool.seed("alice", "sess-1")
         monkeypatch.setenv("UMRS_AGENT_PROCESSES_PER_USER_MAX", "1")
         monkeypatch.setattr("umrs.api.agent_quota.count_active_agent_units", lambda *_a, **_k: 1)
-        harness.service._quota_check = lambda uid: enforce_spawn_budget(None, user_id=uid)
+        harness.service._quota_check = lambda check: enforce_spawn_budget(None, user_id=check.owner)
         r = _start(harness)
         assert r.status_code == 503, r.text
         assert r.headers["x-platform-error-code"] == "quota.cpu_process_exceeded"
@@ -719,9 +719,7 @@ class TestRail:
             headers=rail.rail_headers,
             json={"phase": "running", "turn_seq": 4, "partial": "more…"},
         )
-        again = rail.client.get(
-            "/umrs/companion/sessions/sess-1/venue", headers=H
-        ).json()
+        again = rail.client.get("/umrs/companion/sessions/sess-1/venue", headers=H).json()
         assert again["runtime"]["tool_activity"][0] == "▸ hpc_submit sbatch run.slurm"
 
     def test_rail_heartbeat_after_stop_requests_exit(self, rail):
@@ -966,7 +964,7 @@ class TestDataClassGate:
         harness.pool.projects = {"proj-s": "sensitive"}
         r = harness.client.post(
             "/umrs/companion/sessions/sess-1/venue/start",
-            json={"source_refs": ["openai-main"], "project": "proj-s"},
+            json={"web_policy": "public", "source_refs": ["openai-main"], "project": "proj-s"},
             headers=H,
         )
         assert r.status_code == 403
@@ -979,7 +977,7 @@ class TestDataClassGate:
         harness.pool.projects = {"proj-n": "non_sensitive"}
         r = harness.client.post(
             "/umrs/companion/sessions/sess-1/venue/start",
-            json={"source_refs": ["openai-main"], "project": "proj-n"},
+            json={"web_policy": "public", "source_refs": ["openai-main"], "project": "proj-n"},
             headers=H,
         )
         assert r.status_code == 200, r.text
@@ -989,7 +987,7 @@ class TestDataClassGate:
         harness.pool.projects = {"proj-s": "sensitive"}
         r = harness.client.post(
             "/umrs/companion/sessions/sess-1/venue/start",
-            json={"source_refs": ["openai-main"]},
+            json={"web_policy": "public", "source_refs": ["openai-main"]},
             headers=H,
         )
         assert r.status_code == 200, r.text  # no claim → pre-gate behavior
@@ -999,7 +997,7 @@ class TestDataClassGate:
         harness.pool.projects = {}
         r = harness.client.post(
             "/umrs/companion/sessions/sess-1/venue/start",
-            json={"source_refs": ["openai-main"], "project": "proj-ghost"},
+            json={"web_policy": "public", "source_refs": ["openai-main"], "project": "proj-ghost"},
             headers=H,
         )
         assert r.status_code == 200, r.text  # absent row → no gate (never invented)
@@ -1020,7 +1018,7 @@ class TestDataClassGate:
         )
         r = harness.client.post(
             "/umrs/companion/sessions/sess-1/venue/start",
-            json={"source_refs": ["rikyu-main"], "project": "proj-s"},
+            json={"web_policy": "public", "source_refs": ["rikyu-main"], "project": "proj-s"},
             headers=H,
         )
         assert r.status_code == 200, r.text
@@ -1041,7 +1039,7 @@ class TestDataClassGate:
         )
         r = harness.client.post(
             "/umrs/companion/sessions/sess-1/venue/start",
-            json={"source_refs": ["rikyu-main"], "project": "proj-s"},
+            json={"web_policy": "public", "source_refs": ["rikyu-main"], "project": "proj-s"},
             headers=H,
         )
         assert r.status_code == 403
@@ -1066,7 +1064,11 @@ class TestDataClassGate:
         )
         r = harness.client.post(
             "/umrs/companion/sessions/sess-1/venue/start",
-            json={"source_refs": ["rikyu-main", "openai-main"], "project": "proj-s"},
+            json={
+                "web_policy": "public",
+                "source_refs": ["rikyu-main", "openai-main"],
+                "project": "proj-s",
+            },
             headers=H,
         )
         assert r.status_code == 403
@@ -1087,7 +1089,7 @@ class TestDataClassGate:
         )
         r = harness.client.post(
             "/umrs/companion/sessions/sess-1/venue/start",
-            json={"source_refs": ["inst-main"], "project": "proj-s"},
+            json={"web_policy": "public", "source_refs": ["inst-main"], "project": "proj-s"},
             headers=H,
         )
         assert r.status_code == 200, r.text
@@ -1108,7 +1110,7 @@ class TestDataClassGate:
         )
         r = harness.client.post(
             "/umrs/companion/sessions/sess-1/venue/start",
-            json={"source_refs": ["odd-main"], "project": "proj-s"},
+            json={"web_policy": "public", "source_refs": ["odd-main"], "project": "proj-s"},
             headers=H,
         )
         assert r.status_code == 403

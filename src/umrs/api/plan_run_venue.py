@@ -24,6 +24,7 @@ from pydantic import BaseModel, Field
 
 from ..jobs import plan_run_records as prr
 from ..jobs.store import JobStore
+from ..session_policy import PolicyError
 from ..venues import plan_runs
 from ..venues.frontend_service import VenueError
 from .jobs import CallerIdentity, get_caller_identity, get_job_store
@@ -64,13 +65,21 @@ def _caps(request: Request, project_id: str) -> dict[str, Any]:
 
 def _caller_scope(caller: CallerIdentity) -> tuple[str, str]:
     if caller.is_anonymous or not caller.user_id:
-        raise_typed(PlatformError.auth("project_required", "A plan run needs a project"))
+        raise_typed(
+            PlatformError.auth("project_required", "A plan run needs a project")
+        )
     return caller.user_id, caller.project_id
 
 
 def _refused(exc: Exception, verb: str) -> None:
+    if isinstance(exc, PolicyError):  # ADR-099: the web choice and the limits
+        from .companion_venue import policy_typed
+
+        policy_typed(exc)
     if isinstance(exc, VenueError):
-        raise_typed(PlatformError.companionvenue(exc.code, exc.message, **exc.detail), cause=exc)
+        raise_typed(
+            PlatformError.companionvenue(exc.code, exc.message, **exc.detail), cause=exc
+        )
     if isinstance(exc, prr.PlanRunRecordError):
         raise_typed(PlatformError.jobs(exc.code, exc.message), cause=exc)
     logger.exception("plan run venue %s failed", verb)
@@ -131,7 +140,11 @@ async def plan_run_venue_status(
     owner, project = _caller_scope(caller)
     try:
         return plan_runs.status(
-            _venue_service(request), job_store, owner=owner, project=project, run_id=run_id
+            _venue_service(request),
+            job_store,
+            owner=owner,
+            project=project,
+            run_id=run_id,
         )
     except HTTPException:
         raise
@@ -169,7 +182,9 @@ async def cancel_plan_run_on_venue(
 # ── slice 8b: the server-hosted loop's plan-run host ───────────────────────
 
 
-def build_loop_plan_host(pool: Any, *, service: Any = None, job_store: Any = None) -> Any:
+def build_loop_plan_host(
+    pool: Any, *, service: Any = None, job_store: Any = None
+) -> Any:
     """The venue verbs and the proposal lane a server-hosted plan loop uses
     (``umrs.knowledge.plan_iteration``), bound at boot over ``pool``.
 
@@ -210,7 +225,9 @@ def build_loop_plan_host(pool: Any, *, service: Any = None, job_store: Any = Non
         )
 
     def view(*, owner, project, run_id):
-        return plan_runs.status(venue, _store(), owner=owner, project=project, run_id=run_id)
+        return plan_runs.status(
+            venue, _store(), owner=owner, project=project, run_id=run_id
+        )
 
     def cancel(*, owner, project, run_id):
         return plan_runs.cancel(
@@ -227,7 +244,11 @@ def build_loop_plan_host(pool: Any, *, service: Any = None, job_store: Any = Non
 
 
 def _tighter_caps(project: dict[str, Any], loop: dict[str, Any]) -> dict[str, Any]:
-    walls = [int(c["max_wall_clock_sec"]) for c in (project, loop) if c.get("max_wall_clock_sec")]
+    walls = [
+        int(c["max_wall_clock_sec"])
+        for c in (project, loop)
+        if c.get("max_wall_clock_sec")
+    ]
     return {"max_wall_clock_sec": min(walls)} if walls else {}
 
 

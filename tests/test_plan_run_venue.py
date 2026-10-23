@@ -187,7 +187,12 @@ def h():
 
 
 def _start(h, run=RUN, definition=DEFINITION, **over):
-    body = {"definition": definition, "source_refs": ["openai-main"], **over}
+    body = {
+        "definition": definition,
+        "source_refs": ["openai-main"],
+        "web_policy": "public",
+        **over,
+    }
     return h.client.post(f"/umrs/traces/plan-runs/{run}/venue", json=body, headers=H)
 
 
