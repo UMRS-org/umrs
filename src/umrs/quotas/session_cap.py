@@ -4,7 +4,8 @@ At venue start (chat sessions and plan-run workers alike) UMRS counts the
 user's live ``frontend_session`` jobs at this venue (``planned``, ``queued``,
 ``running``) and refuses when the count is >= ``sessions.concurrent_user``
 of the start's resolved policy (site default 12, from
-``UMRS_SESSION_CONCURRENT_PER_USER``), and the project's likewise when
+``UMRS_SESSION_CONCURRENT_PER_USER``, parsed by ``session_policy.site_defaults``
+only), and the project's likewise when
 ``sessions.concurrent_project`` is set: ``quota.concurrent_sessions_exceeded``
 (429).
 
@@ -15,7 +16,6 @@ racing can overshoot by one; accepted (ADR-099 D-6).
 
 from __future__ import annotations
 
-import os
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
@@ -28,8 +28,6 @@ if TYPE_CHECKING:  # lane P's start hook (umrs.venues.start_checks)
     from umrs.venues.start_checks import StartCheck
 
 SESSION_JOB_TYPE = "frontend_session"
-DEFAULT_CONCURRENT_PER_USER = 12
-CONCURRENT_PER_USER_ENV = "UMRS_SESSION_CONCURRENT_PER_USER"
 
 _SCOPES = (
     ("user", "concurrent_user", "owner", "user_id"),
@@ -37,32 +35,21 @@ _SCOPES = (
 )
 
 
-def concurrent_per_user_default(env: Mapping[str, str] | None = None) -> int | None:
-    """The site default (``UMRS_SESSION_CONCURRENT_PER_USER``, 12; ``0`` = no cap)."""
-    raw = (os.environ if env is None else env).get(CONCURRENT_PER_USER_ENV, "")
-    try:
-        value = int(str(raw).strip())
-    except ValueError:
-        return DEFAULT_CONCURRENT_PER_USER
-    if value < 0:
-        return DEFAULT_CONCURRENT_PER_USER
-    return value or None
-
-
-def _cap(value: Any) -> int | None:
-    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-        return None
-    return value
-
-
 def session_limits(policy: Mapping[str, Any] | None) -> dict[str, int | None]:
-    """``sessions`` of a resolved policy; a missing key is the site default."""
+    """``sessions`` of a resolved policy; a missing key is the site default.
+
+    The site default and every value are read the one way the policy reads
+    them (``session_policy``: ``site_defaults`` parses
+    ``UMRS_SESSION_CONCURRENT_PER_USER``, ``limit_value`` reads a count:
+    null = no limit, a positive integer = the cap)."""
+    from umrs.session_policy import limit_value, site_defaults
+
     sessions = dict((policy or {}).get("sessions") or {})
     if "concurrent_user" not in sessions:
-        sessions["concurrent_user"] = concurrent_per_user_default()
+        sessions["concurrent_user"] = site_defaults()["sessions"]["concurrent_user"]
     return {
-        "concurrent_user": _cap(sessions.get("concurrent_user")),
-        "concurrent_project": _cap(sessions.get("concurrent_project")),
+        "concurrent_user": limit_value(sessions.get("concurrent_user")),
+        "concurrent_project": limit_value(sessions.get("concurrent_project")),
     }
 
 
@@ -126,11 +113,8 @@ def check_concurrent_sessions(pool: Any, check: StartCheck) -> None:
 
 
 __all__ = [
-    "CONCURRENT_PER_USER_ENV",
-    "DEFAULT_CONCURRENT_PER_USER",
     "SESSION_JOB_TYPE",
     "check_concurrent_sessions",
-    "concurrent_per_user_default",
     "count_live_sessions",
     "session_limits",
 ]

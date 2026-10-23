@@ -145,6 +145,44 @@ class TestUsageTapOneShot:
         body = b'{"error": {"message": "bad request"}}'
         assert _tap("openai", body, streaming=False).usage() is None
 
+    def test_anthropic_body_counts_only_the_top_level_usage(self):
+        """Q6: a ``usage`` object inside tool input is not the call's usage
+        (old code merged the head's first match: 5000 cache tokens extra)."""
+        tool_input = {"usage": {"cache_creation_input_tokens": 5000, "output_tokens": 77}}
+        body = json.dumps(
+            {
+                "model": "claude-x",
+                "content": [{"type": "tool_use", "name": "t", "input": tool_input}],
+                "usage": {"input_tokens": 9, "output_tokens": 4},
+            }
+        ).encode()
+        usage = _tap("anthropic", body, streaming=False).usage()
+        assert usage["prompt_tokens"] == 9 and usage["completion_tokens"] == 4
+        assert usage["total_tokens"] == 13 and usage["cached_write_tokens"] == 0
+
+    def test_openai_body_counts_only_the_top_level_usage(self):
+        nested = {"prompt_tokens": 900, "completion_tokens": 900}
+        body = json.dumps(
+            {
+                "model": "m",
+                "usage": {"prompt_tokens": 7, "completion_tokens": 3},
+                "choices": [{"message": {"content": None, "usage": nested}}],
+            }
+        ).encode()
+        usage = _tap("openai", body, streaming=False, chunk=1000).usage()
+        assert usage["prompt_tokens"] == 7 and usage["total_tokens"] == 10
+
+    def test_anthropic_stream_reads_message_start_not_an_earlier_usage_key(self):
+        """A ``usage`` key ahead of ``message_start`` in the head (a ping, a
+        content block) never feeds the input count."""
+        stream = (
+            b"event: ping\n"
+            + b'data: {"type":"ping","usage":{"cache_creation_input_tokens":5000}}\n\n'
+            + ANTHROPIC_STREAM
+        )
+        usage = _tap("anthropic", stream, streaming=True).usage()
+        assert usage["prompt_tokens"] == 125 and usage["cached_write_tokens"] == 5
+
 
 class TestBounds:
     def test_head_and_tail_stay_bounded_and_the_end_is_kept(self):

@@ -6,7 +6,10 @@
     DELETE /umrs/admin/session-policy/{scope}/{subject}  remove one (?venue=&layer=)
 
 ``subject`` is ``_`` for the ``site`` scope. ``venue`` is the site the rule
-binds: absent = this site, ``""`` = every site. Access: the admin credential
+binds: absent = this site, ``""`` = every site. When this server's site
+name is unknown (its site config could not be loaded) an absent ``venue``
+is refused (``sessionpolicy.unavailable``) rather than read as ``""``, and
+the owner layer is refused always. Access: the admin credential
 of the admin session routes (``admin_sessions.require_session_admin``: an
 admin JWT or a gateway-verified admin identity).
 
@@ -84,6 +87,20 @@ def this_site(request: Request) -> str:
     return _site_name()
 
 
+def require_site(request: Request) -> str:
+    """This server's site name, or a refusal: ``""`` is the all-sites key
+    (sites share ``umrs_db``), so an unknown name must never default to it."""
+    site = this_site(request)
+    if not site:
+        _unavailable(
+            "this server's site name is unknown (the site config could not be "
+            "loaded), so a rule cannot default to this site; name the site "
+            "(venue / --venue <site>) or write the all-sites rule explicitly "
+            "(venue '' / --all-sites)"
+        )
+    return site
+
+
 def _guarded(fn: Any, *args: Any, **kwargs: Any) -> Any:
     """Run a store/resolver call; refusals typed, store failures a 503."""
     try:
@@ -124,7 +141,7 @@ def _owner_rule_doc(
 def owner_policy_view(request: Request, project_id: str, caller: str) -> dict[str, Any]:
     """``{"owner_rule", "limits"}``: the owner layer and the caller's limits."""
     store = get_policy_store(request)
-    venue = this_site(request)
+    venue = require_site(request)
     return {
         "project_id": project_id,
         "venue": venue,
@@ -176,7 +193,9 @@ def put_owner_rule(
 ) -> dict[str, Any]:
     """Write the project owner's narrowing rule at this site (audited)."""
     store = get_policy_store(request)
-    rule = _guarded(_put_owner, store, this_site(request), project_id, doc, note, actor)
+    rule = _guarded(
+        _put_owner, store, require_site(request), project_id, doc, note, actor
+    )
     _audit("set", actor, rule, rule.doc)
     return rule.to_dict()
 
@@ -214,7 +233,9 @@ def _subject(scope: str, subject: str) -> str:
 
 
 def _venue(request: Request, venue: str | None) -> str:
-    return this_site(request) if venue is None else venue.strip()
+    """The rule's site: absent = this site (refused when unknown), ``""`` =
+    every site (only when asked for explicitly)."""
+    return require_site(request) if venue is None else venue.strip()
 
 
 @router.get("", response_model=dict[str, Any])

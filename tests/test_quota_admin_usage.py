@@ -5,7 +5,8 @@
   subject's daily token limit from the session policy;
 - ``umrs-server admin usage show`` calls it with the admin JWT and prints it;
 - ``/umrs/quota/units`` gains the caller's ``sessions`` and ``tokens_today``
-  poles (``limit`` 0 = no limit), ``null`` when the policy is unreadable.
+  poles (``limit`` null = no limit, as in the policy), ``null`` poles when
+  the policy is unreadable.
 """
 
 from __future__ import annotations
@@ -195,12 +196,29 @@ class TestQuotaUnits:
         assert body["sessions"] == {"current": 3, "limit": 12}
         assert body["tokens_today"] == {"current": 1234, "limit": 2000000}
 
-    def test_unlimited_is_limit_zero(self, monkeypatch):
+    def test_unlimited_is_limit_null(self, monkeypatch):
+        """ADR-099 D-1 one rule: null = no limit, on the poles too (was 0)."""
         monkeypatch.setattr(
             "umrs.quotas.enforcer.policy_limits", _limits(user_cap=None, sessions=None)
         )
         body = _client(_Pool(), monkeypatch).get("/umrs/quota/units", headers=self.HEADERS).json()
-        assert body["sessions"]["limit"] == 0 and body["tokens_today"]["limit"] == 0
+        assert body["sessions"] == {"current": 0, "limit": None}
+        assert body["tokens_today"] == {"current": 0, "limit": None}
+
+    def test_the_site_default_session_cap_reaches_the_pole(self, monkeypatch):
+        """P's real site_defaults through Q's session_limits: the env default
+        is the pole's limit, and 'unlimited' is null (no second parser)."""
+        from umrs.session_policy import effective_limits, site_defaults
+
+        def real(env):
+            return lambda *_a, **_kw: effective_limits(
+                [], venue="rccs", user_id="u", project_id="", defaults=site_defaults(env)
+            )
+
+        for env, want in (({}, 12), ({"UMRS_SESSION_CONCURRENT_PER_USER": "unlimited"}, None)):
+            monkeypatch.setattr("umrs.quotas.enforcer.policy_limits", real(env))
+            body = _client(_Pool(), monkeypatch).get("/umrs/quota/units", headers=self.HEADERS)
+            assert body.json()["sessions"]["limit"] == want
 
     def test_unreadable_policy_leaves_the_poles_null(self, monkeypatch):
         def broken(*_a, **_k):

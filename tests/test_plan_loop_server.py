@@ -13,6 +13,7 @@ venue, no container, no model.
 from __future__ import annotations
 
 import json
+import tempfile
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -23,12 +24,20 @@ from typing import Any
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from test_companion_venue_routes import READY_ENV
+from test_companion_venue_routes import READY_ENV, FakeSealed, _meta, _Pool
+from test_plan_run_venue import TokenPodman, VenueJobStore
 from umrs.api import plan_run_venue
 from umrs.companion_trust.approval_inbox import ApprovalInboxStore
+from umrs.jobs import plan_run_records as prr
+from umrs.jobs.secret_broker import SecretBroker
 from umrs.knowledge import ask_policy, plan_iteration, tool_approvals
 from umrs.knowledge.engine_loop_runner import EngineLoopRunner
 from umrs.knowledge.loop import LoopStatus, ResearchLoop
+from umrs.session_policy import PolicyRule, PolicyRuleStore
+from umrs.venues.frontend_config import FrontendVenueConfig
+from umrs.venues.frontend_podman import FrontendPodmanProvisioner
+from umrs.venues.frontend_service import FrontendVenueService
+from umrs.venues.venue_sessions import VenueSessionStore
 
 from r4_contracts import loop_plan
 
@@ -151,6 +160,7 @@ def _loop(mode="auto", max_iterations=3, **meta) -> ResearchLoop:
             "args": {},
             "sources": ["site"],
             "default_model": "qwen3-8b@site",
+            "web_policy": "none",
         },
         **meta,
     )
@@ -314,6 +324,7 @@ class TestTheStartRoute:
         )
         app = FastAPI()
         app.include_router(loop_api.router)
+        app.state.companion_venue_service = _real_service(PolicyRuleStore())
         yield TestClient(app), loop_api, registered
         loop_api._loop_engine = previous
         loop_api.clear_loop_store()
@@ -325,6 +336,7 @@ class TestTheStartRoute:
             "iteration_plan": "research-round",
             "iteration_plan_doc": _doc(),
             "plan_sources": ["openai-main"],
+            "plan_web_policy": "none",
             **over,
         }
 
@@ -461,3 +473,128 @@ def test_each_run_gets_the_tighter_of_the_project_and_loop_caps():
     assert tighter({}, {"max_wall_clock_sec": 900}) == {"max_wall_clock_sec": 900}
     assert tighter({"max_wall_clock_sec": 600}, {}) == {"max_wall_clock_sec": 600}
     assert tighter({}, {}) == {}
+
+
+# ── ADR-099 D-2: the loop's runs need the user's web choice (fix P1) ───────
+
+
+def _real_service(store: PolicyRuleStore, jobs: Any = None) -> FrontendVenueService:
+    """A real venue service over the route-test fakes (no podman, no DB)."""
+    broker = SecretBroker()
+    return FrontendVenueService(
+        config=FrontendVenueConfig.from_env(READY_ENV),
+        broker=broker,
+        store=VenueSessionStore(),
+        provisioner=FrontendPodmanProvisioner(
+            broker,
+            podman=TokenPodman(),
+            session_root=Path(tempfile.mkdtemp(prefix="plan-loop-")),
+        ),
+        pool=_Pool(),
+        sealed_store=FakeSealed({("alice", "openai-main"): _meta("openai-main")}),
+        job_store=jobs if jobs is not None else VenueJobStore(),
+        site_name="rccs",
+        policy_store=store,
+        policy_env={},
+    )
+
+
+class TestTheWebChoice:
+    """Old code: a loop started without plan_web_policy was accepted (201)
+    and every round was refused at its start (plan_refused at iteration 1);
+    plan_web_allow_domains did not exist, so allowlist could never run."""
+
+    @pytest.fixture
+    def loops(self, monkeypatch):
+        from umrs.api import loop as loop_api
+        from umrs.knowledge.loop import AutonomousResearchLoop
+
+        for name, value in READY_ENV.items():
+            monkeypatch.setenv(name, value)
+        monkeypatch.delenv("UMRS_SESSION_WEB_CHOICE_REQUIRED", raising=False)
+        loop_api.clear_loop_store()
+        previous = loop_api._loop_engine
+        loop_api._loop_engine = AutonomousResearchLoop(simulated=True)
+        monkeypatch.setattr("umrs.knowledge.engine_loop_runner.register", lambda *_a, **_k: None)
+        monkeypatch.setattr("umrs.api.loop._project_budget_caps", lambda _p: {})
+        store = PolicyRuleStore()
+        jobs = VenueJobStore()
+        service = _real_service(store, jobs)
+        app = FastAPI()
+        app.include_router(loop_api.router)
+        app.state.companion_venue_service = service
+        yield SimpleNamespace(
+            client=TestClient(app), api=loop_api, store=store, service=service, jobs=jobs
+        )
+        loop_api._loop_engine = previous
+        loop_api.clear_loop_store()
+
+    def _body(self, **over):
+        return {
+            "project_id": "proj-x",
+            "research_goal": "find a better solver",
+            "iteration_plan": "research-round",
+            "iteration_plan_doc": _doc(),
+            "plan_sources": ["openai-main"],
+            "mode": "auto",
+            **over,
+        }
+
+    def test_no_choice_is_refused_at_loop_start(self, loops):
+        res = loops.client.post("/umrs/loops", json=self._body())
+        assert res.status_code == 400, res.text
+        assert res.headers["x-platform-error-code"] == "sessionpolicy.web_choice_required"
+        assert "plan_web_policy" in res.text and "none | allowlist | public" in res.text
+        assert loops.api._loop_store.list_all() == []
+
+    def test_a_choice_wider_than_the_cap_is_refused_at_loop_start(self, loops):
+        loops.store.put(
+            PolicyRule("rccs", "project", "proj-x", "admin", {"web": {"allow": ["none"]}})
+        )
+        res = loops.client.post("/umrs/loops", json=self._body(plan_web_policy="public"))
+        assert res.status_code == 403, res.text
+        assert res.headers["x-platform-error-code"] == "sessionpolicy.widening_refused"
+        assert loops.api._loop_store.list_all() == []
+
+    def test_the_choice_reaches_the_run_over_the_real_venue(self, loops):
+        """Route start, then round 1 through build_loop_plan_host over a real
+        FrontendVenueService: the run's session carries the user's allowlist."""
+        body = self._body(plan_web_policy="allowlist", plan_web_allow_domains=[".arxiv.org"])
+        res = loops.client.post("/umrs/loops", json=body)
+        assert res.status_code == 201, res.text
+        (loop,) = loops.api._loop_store.list_all()
+        loop.metadata["owner_user_id"] = "alice"
+        host = plan_run_venue.build_loop_plan_host(
+            None, service=loops.service, job_store=loops.jobs
+        )
+        executor = plan_iteration.PlanRunIteration(
+            host=host, poll_seconds=0.0, sleep=lambda _s: None
+        )
+        result = executor.run(loop, 1, None, cancel_check=lambda: True)
+        assert result["plan"]["status"] == "cancelled", result  # it ran; the test stopped it
+        run_id = plan_iteration.run_id_for(loop, 1)
+        row = loops.service.store.get(prr.venue_session_id("alice", run_id))
+        assert row is not None
+        assert row.policy["web"] == {"mode": "allowlist", "domains": [".arxiv.org"]}
+        assert row.policy["origin"]["web.mode"] == "choice"
+
+
+class TestAStoredLoopWithoutAChoice:
+    def test_it_stops_before_its_round_naming_the_way_out(self, monkeypatch):
+        monkeypatch.delenv("UMRS_SESSION_WEB_CHOICE_REQUIRED", raising=False)
+        host = FakeHost([{"review": PICKED}])
+        loop = _loop()
+        loop.metadata["iteration_plan"]["web_policy"] = ""
+        loop = _drive(loop, host)
+        assert host.starts == []
+        reason = loop.metadata["state_reason"]
+        assert reason.startswith("sessionpolicy.web_choice_required")
+        assert "plan_web_policy" in reason and "--web" in reason
+
+    def test_with_the_choice_not_required_it_runs_on_the_site_default(self, monkeypatch):
+        monkeypatch.setenv("UMRS_SESSION_WEB_CHOICE_REQUIRED", "false")
+        host = FakeHost([{"review": PICKED}])
+        loop = _loop()
+        loop.metadata["iteration_plan"]["web_policy"] = ""
+        _drive(loop, host)
+        assert len(host.starts) == 1 and host.starts[0]["web_policy"] == ""
