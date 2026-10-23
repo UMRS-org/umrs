@@ -79,3 +79,57 @@ def test_admin_reads_another_projects_endpoint(client):
     assert client.get("/umrs/endpoints/job-b", headers=ADMIN).status_code == 200
     assert client.get("/umrs/endpoints/job-b", headers=USER).status_code == 404
     assert client.get("/umrs/endpoints/job-a", headers=USER).status_code == 200
+
+
+def test_a_disabled_admins_jwt_is_not_an_admin(client, tmp_path, monkeypatch):
+    """ADR-097 Amendment D-8 (2026-10-23): the registry's admin check
+    (``_caller_is_admin``) honoured an admin JWT for its whole lifetime,
+    after its owner was disabled."""
+    from umrs.admin.user_store import UserStore
+
+    monkeypatch.setenv("UMRS_USER_FILES_DIR", str(tmp_path))
+    users = UserStore(tmp_path)
+    users.create("root", role="admin")
+    assert _jobs(client.get("/umrs/endpoints?all_projects=true", headers=ADMIN)) == [
+        "job-a",
+        "job-b",
+    ]
+    users.set_disabled("root", True)
+    # no longer an admin: the claim project alone, and nothing runs there
+    assert _jobs(client.get("/umrs/endpoints?all_projects=true", headers=ADMIN)) == []
+
+
+def test_a_disabled_admins_jwt_cannot_ask_for_a_foreign_project(client, tmp_path, monkeypatch):
+    """ADR-097 Amendment D-8 review fix (2026-10-23): the direct-JWT project
+    check (``_claim_can_access_project``) still let a disabled admin's JWT
+    act in any project it named."""
+    from umrs.admin.user_store import UserStore
+
+    monkeypatch.setenv("UMRS_USER_FILES_DIR", str(tmp_path))
+    users = UserStore(tmp_path)
+    users.create("root", role="admin")
+    foreign = {**ADMIN, "X-Project-ID": "proj-b"}
+    assert _jobs(client.get("/umrs/endpoints", headers=foreign)) == ["job-b"]
+    users.set_disabled("root", True)
+    assert client.get("/umrs/endpoints", headers=foreign).status_code == 403
+
+
+def test_an_admin_in_its_own_claimed_project_reads_no_account(monkeypatch):
+    """ADR-097 Amendment D-8 re-review (2026-10-23): the direct-JWT project
+    check read the account before the claims, so an admin request that also
+    ran ``_caller_is_admin`` read the user store twice. The claims answer
+    first; only a foreign project needs the lookup."""
+    from umrs.admin import account_cascade
+
+    calls: list[str] = []
+
+    def _spy(user: str) -> bool:
+        calls.append(user)
+        return False
+
+    monkeypatch.setattr(account_cascade, "account_disabled", _spy)
+    claims = {"sub": "root", "roles": ["admin"], "project_id": "ops"}
+    assert endpoints_api._claim_can_access_project(claims, "ops") is True
+    assert calls == []
+    assert endpoints_api._claim_can_access_project(claims, "proj-b") is True
+    assert calls == ["root"]

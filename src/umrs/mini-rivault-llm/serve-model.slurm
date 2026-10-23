@@ -561,6 +561,30 @@ if [[ "${_bv_port}" != "${_bv_base}" ]]; then
 fi
 export BENTOML_VISION_DOCKER_PORT="${_bv_port}"
 
+# LiteLLM image. Default: the floating main-stable tag every venue's GPU nodes
+# already pull or stage. A venue that wants a fixed proxy pins it by digest in
+# its site.yaml partition profile (litellm_image; bdrt pins the multi-arch
+# index its nodes ran on 2026-10-22), which arrives here as LITELLM_IMAGE.
+# Review F4 (2026-10-23): a digest default was verified only on bdrt, and a
+# GPU node without that digest or registry access would not start LiteLLM.
+# LITELLM_IMAGE (profile, roster or request) wins; LITELLM_DOCKER_TAG picks
+# another tag of the default repository. Compose reads it from env.${uuid}.
+if [[ -z "${LITELLM_IMAGE:-}" ]]; then
+    LITELLM_IMAGE="ghcr.io/berriai/litellm-non_root:${LITELLM_DOCKER_TAG:-main-stable}"
+fi
+# MAX_REQUESTS_BEFORE_RESTART recycles a uvicorn worker after N requests. With
+# one worker (NUM_WORKERS=1, the default) there is no supervisor to recycle it:
+# the proxy itself exits ("Maximum request limit", exit 0) and nothing brings
+# it back but the monitor (review F1, 2026-10-23). So the default is no limit
+# for one worker and 10000 for several; an explicit value is kept.
+if [[ -z "${LITELLM_MAX_REQUESTS_BEFORE_RESTART+set}" ]]; then
+    if [[ "${LITELLM_CPU_LIMIT:-1}" =~ ^[0-9]+$ && "${LITELLM_CPU_LIMIT:-1}" -gt 1 ]]; then
+        LITELLM_MAX_REQUESTS_BEFORE_RESTART=10000
+    else
+        LITELLM_MAX_REQUESTS_BEFORE_RESTART=""
+    fi
+fi
+
 # Owner-only from the start (2026-09-26): it carries the LiteLLM/vLLM keys, and
 # the job dir sits on shared Lustre. Every reader is host-side (grep/sed,
 # podman --env-file), so no container user needs to read it.
@@ -669,6 +693,10 @@ VLLM_RCCL_MEM_LIMIT=8G
 # LiteLLM worker processes (system tier with concurrent users: set 4-8;
 # user/project tier single-user: keep at 1 for fast startup)
 LITELLM_CPU_LIMIT=${LITELLM_CPU_LIMIT:-1}
+# LiteLLM image reference (floating tag unless a profile pins it; see above)
+LITELLM_IMAGE=${LITELLM_IMAGE}
+# Requests before a LiteLLM worker restarts; empty = never (see above)
+LITELLM_MAX_REQUESTS_BEFORE_RESTART=${LITELLM_MAX_REQUESTS_BEFORE_RESTART}
 
 # ─── 3. Vision Models (BentoML service) ──────────────────────────────────────
 # SAM3 (Segment Anything Model 2) — HuggingFace repo ID and local path
@@ -1352,7 +1380,7 @@ run_litellm_db_sql_migrations() {
     fi
 
     local migrations_dir="./runtime-litellm-migrations.${uuid}"
-    local litellm_image="ghcr.io/berriai/litellm-non_root:${LITELLM_DOCKER_TAG:-main-stable}"
+    local litellm_image="${LITELLM_IMAGE}"
     local postgres_image="docker.io/postgres:${POSTGRES_VERSION:-17}"
     local postgres_container_id=""
     local db_ready=0
@@ -2387,6 +2415,114 @@ else
     echo "[rivault] budget: attempt attempt ledger env-only mode" \
         "(attempt_budget.sh missing, or flock/python3 absent; RIVAULT_ENGINE_RESPAWN_MAX=${RIVAULT_ENGINE_RESPAWN_MAX})"
 fi
+# Essential-sidecar health (2026-10-23, bdrt 8218/8219: LiteLLM exited at start,
+# vLLM stayed up, nginx answered 502 for 30 h and the job never failed).
+# LiteLLM and the nginx front are watched like the engine and respawned from
+# the same per-job budget; see stack_health.sh for the two signals.
+_RIV_HEALTH_LIB="$(dirname "$_RIV_BUDGET_LIB")/stack_health.sh"
+_STACK_HEALTH=false
+# The front is probed about once a minute, not every tick (review F1: every
+# 5 s was 17,280 requests a day, each one counted by MAX_REQUESTS_BEFORE_RESTART).
+export RIVAULT_FRONT_PROBE_EVERY_TICKS="${RIVAULT_FRONT_PROBE_EVERY_TICKS:-$(( INTERVAL > 0 ? (60 + INTERVAL - 1) / INTERVAL : 12 ))}"
+if [[ -f "$_RIV_HEALTH_LIB" ]]; then
+    # shellcheck disable=SC1090
+    source "$_RIV_HEALTH_LIB"
+    stack_health_init
+    _STACK_HEALTH=true
+    echo "[rivault] stack health: watching ${RIVAULT_ESSENTIAL_SIDECARS:-litellm nginx}" \
+        "and the front on 127.0.0.1:${NGINX_LITELLM_DOCKER_PORT:-}${RIVAULT_FRONT_PROBE_PATH:-/health/liveliness}" \
+        "every ${RIVAULT_FRONT_PROBE_EVERY_TICKS} ticks"
+else
+    echo "[rivault] stack health: WARNING ${_RIV_HEALTH_LIB} missing; only the engine is watched"
+fi
+RIVAULT_SIDECAR_RESPAWN_SLEEP_SEC=${RIVAULT_SIDECAR_RESPAWN_SLEEP_SEC:-5}
+# Claim one respawn from the per-job budget (engine and sidecars share it), or
+# mark the budget exhausted and exit 125 so the stack is torn down and the GPU
+# released. $1 names what is being respawned, for the log.
+_respawn_claim_or_exit() {
+    local what="$1"
+    if [ "$_BUDGET_VIA_LIB" = true ]; then
+        if budget_claim_job "$_BUDGET_JOB_ID" "${UMRS_DURABLE_JOB_ID:-${SLURM_JOB_ID}}"; then
+            _ENGINE_RESPAWNS=$(budget_used_read "$_BUDGET_JOB_ID")
+            return 0
+        fi
+    elif [ "$_ENGINE_RESPAWNS" -lt "$RIVAULT_ENGINE_RESPAWN_MAX" ]; then
+        _ENGINE_RESPAWNS=$(( _ENGINE_RESPAWNS + 1 ))
+        return 0
+    fi
+    echo "[rivault] Respawn budget exhausted (${RIVAULT_ENGINE_RESPAWN_MAX} respawns) at ${what}; tearing down stack"
+    if [ "$_BUDGET_VIA_LIB" = true ]; then
+        budget_mark_exhausted "$_BUDGET_JOB_ID" "${SLURM_JOB_ID}"
+    fi
+    exit 125
+}
+# podman-compose recreate of one service of this stack, nothing else.
+# _profile_flags is a flag string ("--profile a --profile b"), split on purpose.
+_compose_recreate_service() {
+    # shellcheck disable=SC2086
+    podman-compose --project-name "${RIVAULT_COMPOSE_PROJECT}" --in-pod false \
+        --env-file "./env.${uuid}" \
+        --file "./serve-model.yaml" "${GPUoverride[@]}" "${DbOverride[@]}" \
+        ${_profile_flags} \
+        up --detach --no-deps "$1"
+}
+# The services to remove for a respawn of $1, dependents first (podman refuses
+# to remove a container another one --requires: nginx on litellm, rag on vllm,
+# bentoml-vision on nginx). Without stack_health.sh, just $1.
+_compose_removal_order() {
+    if declare -F stack_removal_order >/dev/null; then
+        stack_removal_order "${RIVAULT_COMPOSE_PROJECT}" "$1"
+    else
+        printf '%s' "$1"
+    fi
+}
+# Remove the services $1 names, dependents first, then recreate them in the
+# reverse order. $2 labels the log lines. rc 1 when a recreate failed.
+_compose_respawn_services() {
+    local label="$2" svc ctr out recreate="" rc=0
+    for svc in $(_compose_removal_order "$1"); do
+        ctr="${RIVAULT_COMPOSE_PROJECT}_${svc}_1"
+        if ! out="$(podman rm -f "$ctr" 2>&1)"; then
+            echo "[rivault] could not remove ${ctr}: ${out}"
+        fi
+        recreate="${svc}${recreate:+ $recreate}"
+    done
+    for svc in $recreate; do
+        if _compose_recreate_service "$svc" 2>&1; then
+            echo "[rivault] ${label} respawn OK (${svc})"
+        else
+            echo "[rivault] ${label} respawn FAILED (${svc}); counting anyway"
+            rc=1
+        fi
+    done
+    return "$rc"
+}
+# Claim the respawn, or take it free when every exited sidecar ended by plan
+# (uvicorn's max-requests exit; stack_restart_is_free bounds those per hour).
+_sidecars_charge() {
+    if stack_restart_is_free; then
+        echo "[rivault] Sidecar planned restart (${STACK_HEALTH_REASON});" \
+            "not charged to the respawn budget: ${STACK_HEALTH_RESPAWN}"
+        return 0
+    fi
+    _respawn_claim_or_exit "sidecars (${STACK_HEALTH_REASON})"
+    echo "[rivault] Sidecar unhealthy (${STACK_HEALTH_REASON}); respawn " \
+        "${_ENGINE_RESPAWNS}/${RIVAULT_ENGINE_RESPAWN_MAX}: ${STACK_HEALTH_RESPAWN}"
+}
+# Respawn the sidecars stack_health_tick named. podman refuses to remove a
+# container another one --requires (compose depends_on: nginx on litellm), so
+# the dependents go first and come back last (stack_removal_order).
+_sidecars_respawn() {
+    local svc ctr
+    _sidecars_charge
+    sleep "$RIVAULT_SIDECAR_RESPAWN_SLEEP_SEC"
+    for svc in $(_compose_removal_order "${STACK_HEALTH_RESPAWN}"); do
+        ctr="${RIVAULT_COMPOSE_PROJECT}_${svc}_1"
+        echo "[rivault] post-mortem for ${ctr}:"
+        podman logs --tail 50 "$ctr" 2>&1 | sed 's/^/[rivault]   /' || true
+    done
+    _compose_respawn_services "${STACK_HEALTH_RESPAWN}" Sidecar || true
+}
 _engine_container_name() {
     if podman container exists rivault-vllm-mn 2>/dev/null; then
         echo "rivault-vllm-mn"
@@ -2405,18 +2541,16 @@ _engine_is_dead() {
 # same launch path as the initial stack bring-up, so the image/binds/env are
 # identical; sibling sidecars (postgres/litellm/nginx/coredns) stay up and
 # reconnect. Multi-node: rerun the functionized head launch; single-node: ask
-# podman-compose to recreate only the vllm service.
+# podman-compose to recreate the vllm service and what --requires it (the rag
+# profile: rag depends_on vllm, so `podman rm -f` of vllm alone is refused
+# and the recreate then hits the name in use), dependents removed first.
 _engine_recreate() {
     local name="$1"
-    podman rm -f "$name" >/dev/null 2>&1 || true
     if [ "$name" = "rivault-vllm-mn" ]; then
+        podman rm -f "$name" >/dev/null 2>&1 || true
         _launch_engine_mn
     else
-        podman-compose --project-name "${RIVAULT_COMPOSE_PROJECT}" --in-pod false \
-            --env-file "./env.${uuid}" \
-            --file "./serve-model.yaml" ${GPUoverride[@]} ${DbOverride[@]} \
-            ${_profile_flags} \
-            up --detach --no-deps vllm
+        _compose_respawn_services vllm Engine
     fi
 }
 _ENG_STOP_STREAK=${RIVAULT_ENGINE_ZERO_STREAK_TOLERANCE:-3}
@@ -2454,42 +2588,28 @@ while [ "$RIVAULT_JOB_TIMEOUT" -eq 0 ] || [ "$ELAPSED" -lt "$RIVAULT_JOB_TIMEOUT
     # mid-teardown via an external kill (stop-request path is checked above).
     _engine="$(_engine_container_name)"
     if [ -n "$_engine" ] && _engine_is_dead "$_engine"; then
-        _claim_ok=true
-        if [ "$_BUDGET_VIA_LIB" = true ]; then
-            if budget_claim_job "$_BUDGET_JOB_ID" "${UMRS_DURABLE_JOB_ID:-${SLURM_JOB_ID}}"; then
-                _ENGINE_RESPAWNS=$(budget_used_read "$_BUDGET_JOB_ID")
-            else
-                _claim_ok=false
-            fi
-        elif [ "$_ENGINE_RESPAWNS" -lt "$RIVAULT_ENGINE_RESPAWN_MAX" ]; then
-            _ENGINE_RESPAWNS=$(( _ENGINE_RESPAWNS + 1 ))
+        _respawn_claim_or_exit "engine ${_engine}"
+        _exit=$(podman container inspect "$_engine" --format '{{.State.ExitCode}}' 2>/dev/null || echo "?")
+        echo "[rivault] Engine dead ($_engine exit=${_exit}); respawn " \
+            "${_ENGINE_RESPAWNS}/${RIVAULT_ENGINE_RESPAWN_MAX}, sleeps ${RIVAULT_ENGINE_RESPAWN_SLEEP_SEC}s"
+        sleep "$RIVAULT_ENGINE_RESPAWN_SLEEP_SEC"
+        echo "[rivault] post-mortem for dead engine ${_engine}:"
+        # 25-tail API frames routinely hide the child (engine-core subprocess)
+        # root cause — the APIServer abort shows up last in log order while the
+        # real failure prints earlier. 200-tail at INFO level, plus full
+        # --follow-style preceding tail when the wrapper is walltime-bounded.
+        podman logs --tail 200 "$_engine" 2>&1 | sed 's/^/[rivault]   /' || true
+        if _engine_recreate "$_engine" 2>&1; then
+            echo "[rivault] Engine respawn OK ($_engine recreated; model reload in background)"
         else
-            _claim_ok=false
+            echo "[rivault] Engine respawn FAILED ($_engine); counting anyway"
         fi
-
-        if [ "$_claim_ok" = true ]; then
-            _exit=$(podman container inspect "$_engine" --format '{{.State.ExitCode}}' 2>/dev/null || echo "?")
-            echo "[rivault] Engine dead ($_engine exit=${_exit}); respawn " \
-                "${_ENGINE_RESPAWNS}/${RIVAULT_ENGINE_RESPAWN_MAX}, sleeps ${RIVAULT_ENGINE_RESPAWN_SLEEP_SEC}s"
-            sleep "$RIVAULT_ENGINE_RESPAWN_SLEEP_SEC"
-            echo "[rivault] post-mortem for dead engine ${_engine}:"
-            # 25-tail API frames routinely hide the child (engine-core subprocess)
-            # root cause — the APIServer abort shows up last in log order while the
-            # real failure prints earlier. 200-tail at INFO level, plus full
-            # --follow-style preceding tail when the wrapper is walltime-bounded.
-            podman logs --tail 200 "$_engine" 2>&1 | sed 's/^/[rivault]   /' || true
-            if _engine_recreate "$_engine" 2>&1; then
-                echo "[rivault] Engine respawn OK ($_engine recreated; model reload in background)"
-            else
-                echo "[rivault] Engine respawn FAILED ($_engine); counting anyway"
-            fi
-        else
-            echo "[rivault] Engine budget exhausted (${RIVAULT_ENGINE_RESPAWN_MAX} respawns); tearing down stack"
-            if [ "$_BUDGET_VIA_LIB" = true ]; then
-                budget_mark_exhausted "$_BUDGET_JOB_ID" "${SLURM_JOB_ID}"
-            fi
-            exit 125
-        fi
+    fi
+    # Essential sidecars (LiteLLM, the nginx front): an exited one, or a front
+    # that stays down, is respawned from the same budget (stack_health.sh).
+    if [ "$_STACK_HEALTH" = true ] \
+        && stack_health_tick "${RIVAULT_COMPOSE_PROJECT}" "${NGINX_LITELLM_DOCKER_PORT:-}"; then
+        _sidecars_respawn
     fi
     sleep "$INTERVAL"
     ELAPSED=$(( ELAPSED + INTERVAL ))

@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, Any
 
 from umrs.shared.access_scopes import ResourceCaller, access_admits
 from umrs.shared.config import get_resolved_umrs_subdir
+from umrs.shared.workflow_execution_access import VERIFIED_PROJECT_SPEC_KEY
 
 if TYPE_CHECKING:
     from umrs.server.job_tracking_handler import DurableJobCommandBackend
@@ -449,11 +450,17 @@ def _workflow_run_context(
     workflow_name: str,
     client_id: str,
     source_path: str | None = None,
+    *,
+    caller_project: str | None = None,
 ) -> tuple[str, dict[str, Any], int]:
     if source_path is None:
-        # A durable job without a usable source_path: owner-scoped like a
-        # trigger (ADR-074 D-8), never another owner's same-named workflow.
-        entry = resolve_workflow_for_caller(workflow_name, client_id)
+        # A durable job without a usable source_path: resolved like a
+        # trigger (ADR-074 D-8, ADR-080), never another owner's same-named
+        # workflow. *caller_project* is the job's own project only when the
+        # server recorded it as gateway-verified (:func:`durable_job_verified_project`).
+        entry = resolve_workflow_for_caller(
+            workflow_name, client_id, caller_project=caller_project
+        )
         if entry is None:
             raise ValueError(f"Workflow '{workflow_name}' not found in registry")
         source_path = entry.get("source_path", "")
@@ -657,11 +664,13 @@ def _launch_workflow_from_catalog(
     durable_job_id: str | None = None,
     source_path: str | None = None,
     identity_verified: bool = False,
+    caller_project: str | None = None,
 ):
     source_path, workflow_json, step_count = _workflow_run_context(
         workflow_name,
         client_id,
         source_path=source_path,
+        caller_project=caller_project,
     )
 
     logger.info(
@@ -729,25 +738,29 @@ def _submit_durable_workflow_run(
     source_path: str,
     step_count: int,
     job_backend: DurableJobCommandBackend,
+    verified_project: str | None = None,
 ) -> str:
+    spec: dict[str, Any] = {
+        "workflow_name": workflow_name,
+        "execution_id": execution_id,
+        "params": params,
+        "source_path": source_path,
+        # Auto-ingest (TASK-035): completed workflow outputs flow
+        # into the knowledge pipeline. "step" "*" marks run-level
+        # provenance (not a single named step).
+        "ingest_results": True,
+        "workflow": workflow_name,
+        "step": "*",
+    }
+    if verified_project:
+        spec[VERIFIED_PROJECT_SPEC_KEY] = verified_project
     raw = job_backend.submit_workflow_run(
         client_id,
         json.dumps(
             {
                 "project_id": _workflow_project_id(params),
                 "job_type": "workflow_run",
-                "spec": {
-                    "workflow_name": workflow_name,
-                    "execution_id": execution_id,
-                    "params": params,
-                    "source_path": source_path,
-                    # Auto-ingest (TASK-035): completed workflow outputs flow
-                    # into the knowledge pipeline. "step" "*" marks run-level
-                    # provenance (not a single named step).
-                    "ingest_results": True,
-                    "workflow": workflow_name,
-                    "step": "*",
-                },
+                "spec": spec,
                 "max_attempts": 4,
                 "restart_policy": "on_crash",
             }
@@ -840,6 +853,7 @@ def _handle_run_workflow(
             source_path=source_path,
             step_count=step_count,
             job_backend=job_backend,
+            verified_project=caller_project,
         )
 
     record, source_path, step_count = _launch_workflow_from_catalog(

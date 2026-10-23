@@ -17,7 +17,10 @@ which ``umrs-server admin endpoint|session`` send), or a gateway-signed
 admin identity (``X-Verified-*`` + HMAC). Strict and mvp alike: a request
 with neither is a typed 401, a non-admin a typed 403 (audited as
 ``venue.admin.denied``). No gateway location serves ``/umrs/admin``; the
-operator CLI calls UMRS directly.
+operator CLI calls UMRS directly. A credential whose account is disabled
+is a typed 403 too, whatever its roles say (ADR-097 Amendment D-8,
+2026-10-23; audited as ``venue.admin.denied`` with reason
+``account_disabled``).
 
 Admin views leave out the worker's live text and tool lines (the user's
 conversation, not control data); see ``frontend_service.admin_view``.
@@ -57,12 +60,31 @@ def _denied(actor: str) -> NoReturn:
     _refuse("forbidden", "admin session control requires the admin role")
 
 
+def _refuse_disabled(actor: str) -> None:
+    """A disabled account's admin credential is refused (ADR-097 Amendment
+    D-8, 2026-10-23): the JWT used to outlive its owner's disable."""
+    from .endpoints import _admin_disabled
+
+    if not _admin_disabled(actor):
+        return
+    audit_venue(
+        "admin.denied",
+        actor=actor,
+        session_id="",
+        outcome="denied",
+        scope="system",
+        reason="account_disabled",
+    )
+    _refuse("forbidden", f"account '{actor}' is disabled")
+
+
 def _admin_from_claims(claims: dict[str, Any]) -> str:
     from .endpoints import _claim_is_admin
 
     actor = str(claims.get("sub") or "")
     if not _claim_is_admin(claims):
         _denied(actor)
+    _refuse_disabled(actor)
     return actor or "admin"
 
 
@@ -82,6 +104,7 @@ def _admin_from_headers(
         _refuse("unauthorized", "admin credential required (no verified project)")
     if not caller.is_admin:
         _denied(caller.user_id)
+    _refuse_disabled(caller.user_id)
     return caller.user_id
 
 
