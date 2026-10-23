@@ -90,14 +90,15 @@ def venue(sink):
 
 
 def _start(h, **body):
-    r = h.client.post(f"{BASE}/start", json={"source_refs": ["openai-main"], **body}, headers=H)
+    body = {"source_refs": ["openai-main"], "web_policy": "public", **body}
+    r = h.client.post(f"{BASE}/start", json=body, headers=H)
     assert r.status_code == 200, r.text
     return r
 
 
 class TestOwnerLifecycle:
     def test_start_writes_one_start_row(self, venue, sink):
-        _start(venue, web_policy="allowlist")
+        _start(venue, web_policy="allowlist", web_allow_domains=["pypi.org"])
         (row,) = sink.venue()
         assert (row["event"], row["actor"], row["outcome"]) == (
             "venue.session.start",

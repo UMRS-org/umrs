@@ -112,7 +112,23 @@ def add_http_admin_args(parser: argparse.ArgumentParser) -> None:
 
 # ── admin session (C-1, remote-session plan RS-0) ──────────────────────────
 
-_SESSION_COLS = ("SESSION", "USER", "PROJECT", "STATE", "HOST", "STARTED", "REASON")
+_SESSION_COLS = (
+    "SESSION",
+    "USER",
+    "PROJECT",
+    "STATE",
+    "WEB",
+    "HOST",
+    "STARTED",
+    "REASON",
+)
+
+
+def _session_web(s: dict[str, Any]) -> str:
+    """The session's web access (ADR-099 resolved policy; the row's
+    ``web_policy`` for sessions started before it)."""
+    web = (s.get("policy") or {}).get("web") or {}
+    return str(web.get("mode") or s.get("web_policy") or "-")
 
 
 def _session_row(s: dict[str, Any]) -> tuple[str, ...]:
@@ -121,6 +137,7 @@ def _session_row(s: dict[str, Any]) -> tuple[str, ...]:
         str(s.get("user_id", "")),
         str(s.get("project", "") or "-"),
         str(s.get("state", "")),
+        _session_web(s),
         str(s.get("host", "")),
         str(s.get("started_at", "") or "-")[:19],
         str(s.get("reason", "") or "")[:40],

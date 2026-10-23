@@ -5,6 +5,7 @@ sibling companion-session routers):
 
     POST /umrs/companion/sessions/{sid}/venue/start   submit the session job
     GET  /umrs/companion/sessions/{sid}/venue         runtime status (+lease)
+    GET  /umrs/companion/sessions/{sid}/venue/policy  web-access preview (ADR-099)
     POST /umrs/companion/sessions/{sid}/venue/stop    teardown + revoke
 
 Worker rail (lease-token principal — see ``_rail_identity``):
@@ -34,13 +35,14 @@ import hashlib
 import logging
 import os
 import re
-from typing import Any
+from typing import Any, NoReturn
 from urllib.parse import unquote
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
+from umrs.session_policy import PolicyError
 from umrs.venues.frontend_service import FrontendVenueService, VenueError
 
 from ._rail_identity import (
@@ -84,8 +86,8 @@ def _site_name() -> str:
 def _quota_check(pool: Any) -> Any:
     from .agent_quota import enforce_spawn_budget
 
-    def check(user_id: str) -> None:
-        enforce_spawn_budget(pool, user_id=user_id)
+    def check(start: Any) -> None:  # a venues.start_checks.StartCheck (ADR-099)
+        enforce_spawn_budget(pool, user_id=start.owner)
 
     return check
 
@@ -103,6 +105,7 @@ def get_venue_service(request: Request) -> FrontendVenueService:
 def build_venue_service(pool: Any) -> FrontendVenueService:
     """The venue service over ``pool`` (the routes' and, slice 8b, the plan
     loop's: one construction, never a second configuration)."""
+    from umrs.session_policy import PolicyRuleStore
     from umrs.venues.frontend_config import FrontendVenueConfig
     from umrs.venues.frontend_podman import FrontendPodmanProvisioner
     from umrs.venues.venue_sessions import VenueSessionStore
@@ -121,12 +124,20 @@ def build_venue_service(pool: Any) -> FrontendVenueService:
         job_store=get_optional_job_store(),
         site_name=_site_name(),
         quota_check=_quota_check(pool),
+        policy_store=PolicyRuleStore(pool),
     )
 
 
 def _typed(exc: VenueError) -> None:
     raise_typed(
         PlatformError.companionvenue(exc.code, exc.message, **exc.detail), cause=exc
+    )
+
+
+def policy_typed(exc: PolicyError) -> NoReturn:
+    """A session-policy refusal as its typed ``sessionpolicy.*`` error."""
+    raise_typed(
+        PlatformError.sessionpolicy(exc.code, exc.message, **exc.detail), cause=exc
     )
 
 
@@ -247,10 +258,36 @@ async def start_venue(
         )
     except VenueError as exc:
         _typed(exc)
+    except PolicyError as exc:
+        policy_typed(exc)
     except HTTPException:
         raise
     except Exception as exc:  # noqa: BLE001 — unexpected → typed 503 naming the cause
         _unexpected(exc, "start")
+
+
+@router.get("/{session_id}/venue/policy", response_model=dict[str, Any])
+async def venue_policy_preview(
+    session_id: str, request: Request, project: str = ""
+) -> dict[str, Any]:
+    """What a start of this session may choose (ADR-099 D-2, D-3): the
+    effective limits for the caller in ``project`` (checked like the start),
+    whether a web choice is required, and this session's current policy.
+    # auth: verified
+    """
+    uid = _uid(request)
+    checked = _checked_start_project(request, project)
+    service = get_venue_service(request)
+    try:
+        return await asyncio.to_thread(
+            service.policy_preview, owner=uid, session_id=session_id, project=checked
+        )
+    except PolicyError as exc:
+        policy_typed(exc)
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001 — unexpected → typed 503 naming the cause
+        _unexpected(exc, "policy preview")
 
 
 @router.get("/{session_id}/venue", response_model=dict[str, Any])
@@ -470,7 +507,9 @@ _RAIL_GW_DROP_HEADERS = frozenset(
 # ADR-092 slice 8: a plan-run worker reaches the traces family for its own
 # run only, and only the record verbs (the run, its attempts, its records,
 # finishing an attempt); never another run, never start, resume or cancel.
-_PLAN_RUN_TAILS = re.compile(r"^(|/attempts|/records|/attempts/[A-Za-z0-9_.:-]+/finish)$")
+_PLAN_RUN_TAILS = re.compile(
+    r"^(|/attempts|/records|/attempts/[A-Za-z0-9_.:-]+/finish)$"
+)
 
 
 def _lease_project(principal: RailPrincipal) -> str:
@@ -627,8 +666,10 @@ def _own_plan_run_path(request: Request, principal: RailPrincipal, path: str) ->
     started for (the record UMRS wrote), never one the sandbox names."""
     run_id, _job_id = get_venue_service(request).plan_run_binding(principal.session_id)
     prefix = f"traces/plan-runs/{run_id}"
-    if not run_id or not path.startswith(prefix) or not _PLAN_RUN_TAILS.match(
-        path[len(prefix) :]
+    if (
+        not run_id
+        or not path.startswith(prefix)
+        or not _PLAN_RUN_TAILS.match(path[len(prefix) :])
     ):
         raise_typed(
             PlatformError.companionvenue(
@@ -801,14 +842,17 @@ def _bound_run_job(request: Request, principal: RailPrincipal) -> tuple[str, Any
     if not run_id or not job_id or service.job_store is None:
         raise_typed(
             PlatformError.companionvenue(
-                "forbidden", "plan gates: this session hosts no plan run (ADR-092 slice 8)"
+                "forbidden",
+                "plan gates: this session hosts no plan run (ADR-092 slice 8)",
             )
         )
     try:
         return run_id, service.job_store.get_job(job_id)
     except Exception as exc:  # noqa: BLE001 — a missing record is named
         raise_typed(
-            PlatformError.companionvenue("not_found", f"plan run record {job_id} not found"),
+            PlatformError.companionvenue(
+                "not_found", f"plan run record {job_id} not found"
+            ),
             cause=exc,
         )
 
@@ -872,7 +916,9 @@ async def rail_request_plan_gate(
     return {"session_id": session_id, "run_id": run_id, "approval": _gate_view(record)}
 
 
-@router.get("/{session_id}/rail/plan-gates/{approval_id}", response_model=dict[str, Any])
+@router.get(
+    "/{session_id}/rail/plan-gates/{approval_id}", response_model=dict[str, Any]
+)
 async def rail_get_plan_gate(
     session_id: str,
     approval_id: str,

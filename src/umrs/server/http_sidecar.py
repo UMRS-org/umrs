@@ -860,6 +860,7 @@ def _create_app():
 
     from umrs.api.a2l import router as a2l_router
     from umrs.api.a2l_ledger import router as a2l_ledger_router
+    from umrs.api.admin_session_policy import router as admin_session_policy_router
     from umrs.api.admin_sessions import router as admin_sessions_router
     from umrs.api.artifact_routes import router as artifact_router
     from umrs.api.assets import router as assets_router
@@ -1013,6 +1014,7 @@ def _create_app():
     app.include_router(companion_venue_router)
     # RS-0 C-1: admin session list/show/stop over the same venue service.
     app.include_router(admin_sessions_router)
+    app.include_router(admin_session_policy_router)  # ADR-099 session policy rules
     app.include_router(egress_audit_router)
     app.include_router(grants_router)
     app.include_router(endpoints_router)
