@@ -814,9 +814,11 @@ SESSION_HOST = "local"
 # Worker-reported runtime fields an admin view leaves out: the live
 # assistant text and tool lines are the user's conversation, not control data.
 _ADMIN_HIDDEN_RUNTIME = ("partial", "tool_activity")
-# Phases whose ``detail`` may carry conversation content (an ask_user
-# question; ADR-099 D-8): an admin sees the phase, never the detail.
-_ADMIN_HIDDEN_DETAIL_PHASES = ("awaiting_user",)
+# Phases whose ``detail`` may carry conversation content (ADR-099 D-8): an
+# ask_user question, or an approval card's description (the call's
+# arguments: a shell command, python code, the question again). An admin
+# sees the phase, never the detail — whatever a worker sends.
+_ADMIN_HIDDEN_DETAIL_PHASES = ("awaiting_user", "awaiting_approval")
 
 
 def admin_view(out: dict[str, Any]) -> dict[str, Any]:
