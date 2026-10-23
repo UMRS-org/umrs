@@ -350,6 +350,21 @@ class TestAdminNeverSeesTheQuestion:
         owner = h.client.get(f"{BASE}/venue", headers=H)
         assert owner.json()["runtime"]["detail"] == self.QUESTION
 
+    def test_an_approval_card_detail_is_hidden_from_admins(self, h):
+        # Round-2 finding 1: the worker's awaiting_approval detail carried
+        # the card's description (an ask_user question, a shell command).
+        card = f"ask_user: Call tool: ask_user\nquestion: {self.QUESTION}"
+        hb = h.client.post(
+            f"{BASE}/rail/heartbeat",
+            json={"phase": "awaiting_approval", "detail": card},
+            headers=h.rail,
+        )
+        assert hb.status_code == 200, hb.text
+        admin = h.service.admin_status("sess-1")
+        assert admin["runtime"]["phase"] == "awaiting_approval"
+        assert self.QUESTION not in repr(admin)
+        assert self.QUESTION not in repr(h.service.admin_list())
+
     def test_other_phases_keep_their_control_detail(self, h):
         h.client.post(
             f"{BASE}/rail/heartbeat",
