@@ -60,6 +60,15 @@ class UsageRecord:
     status_code: int = 200
     extra: dict = field(default_factory=dict)
 
+    # ADR-099 D-4 (0126): rows the inference proxy writes carry the issuing
+    # site, the remote session and ``origin='infer_proxy'``; the UMRS LLM
+    # proxy's own rows keep the defaults (and the pre-0126 INSERT).
+    venue: str = ""
+    session_id: str = ""
+    origin: str = ""
+    # The inference proxy keeps per-user labels out of its metrics.
+    emit_metrics: bool = True
+
 
 # ------------------------------------------------------------------
 # Extraction helpers
@@ -67,6 +76,83 @@ class UsageRecord:
 
 
 def _parse_usage_dict(usage: dict) -> dict:
+    """Normalise a provider's usage object into the ``llm_usage_log`` keys.
+
+    OpenAI / vLLM ``usage`` (the original shape), Anthropic ``usage``
+    (``input_tokens`` / ``output_tokens``) and Google ``usageMetadata``
+    (``promptTokenCount`` ...), ADR-099 D-4.
+    """
+    if _is_google_usage(usage):
+        return _parse_google_usage(usage)
+    if _is_anthropic_usage(usage):
+        return _parse_anthropic_usage(usage)
+    return _parse_openai_usage(usage)
+
+
+def _is_google_usage(usage: dict) -> bool:
+    return any(k in usage for k in ("promptTokenCount", "totalTokenCount"))
+
+
+def _is_anthropic_usage(usage: dict) -> bool:
+    return "input_tokens" in usage and "prompt_tokens" not in usage
+
+
+def _count(usage: dict, key: str) -> int:
+    try:
+        return max(0, int(usage.get(key) or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _usage_keys(**counts: int) -> dict:
+    """Every ``llm_usage_log`` token key, zero unless given."""
+    keys = (
+        "prompt_tokens",
+        "completion_tokens",
+        "total_tokens",
+        "cached_read_tokens",
+        "cached_write_tokens",
+        "reasoning_tokens",
+        "audio_tokens",
+        "accepted_prediction_tokens",
+        "rejected_prediction_tokens",
+    )
+    return {key: int(counts.get(key, 0)) for key in keys}
+
+
+def _parse_anthropic_usage(usage: dict) -> dict:
+    """Anthropic: ``input_tokens`` excludes the cache reads and writes; the
+    prompt here includes them, as OpenAI's ``prompt_tokens`` does."""
+    cache_read = _count(usage, "cache_read_input_tokens")
+    cache_write = _count(usage, "cache_creation_input_tokens")
+    prompt = _count(usage, "input_tokens") + cache_read + cache_write
+    completion = _count(usage, "output_tokens")
+    return _usage_keys(
+        prompt_tokens=prompt,
+        completion_tokens=completion,
+        total_tokens=prompt + completion,
+        cached_read_tokens=cache_read,
+        cached_write_tokens=cache_write,
+    )
+
+
+def _parse_google_usage(usage: dict) -> dict:
+    """Google ``usageMetadata``: the completion includes the thinking tokens,
+    as OpenAI's ``completion_tokens`` includes ``reasoning_tokens``."""
+    prompt = _count(usage, "promptTokenCount")
+    thoughts = _count(usage, "thoughtsTokenCount")
+    completion = _count(usage, "candidatesTokenCount") + thoughts
+    total = _count(usage, "totalTokenCount") or prompt + completion
+    return _usage_keys(
+        prompt_tokens=prompt,
+        completion_tokens=completion,
+        total_tokens=total,
+        cached_read_tokens=_count(usage, "cachedContentTokenCount"),
+        reasoning_tokens=thoughts,
+    )
+
+
+def _parse_openai_usage(usage: dict) -> dict:
     """Normalise an OpenAI / Anthropic / vLLM ``usage`` object.
 
     Extracts the standard token counts plus the thinking-model
@@ -177,13 +263,32 @@ INSERT INTO llm_usage_log (
 """
 
 
-def _do_record_sync(pool, record: UsageRecord) -> None:
-    """Execute the INSERT using a psycopg2 ThreadedConnectionPool.
+# ADR-099 D-4 (0126): the inference proxy's rows add venue, session, origin.
+_INSERT_SQL_VENUE = """
+INSERT INTO llm_usage_log (
+    request_id, user_id, project_id,
+    model, served_model, endpoint_job_id, endpoint_tier,
+    prompt_tokens, completion_tokens, total_tokens,
+    cached_read_tokens, cached_write_tokens,
+    reasoning_tokens, audio_tokens,
+    accepted_prediction_tokens, rejected_prediction_tokens,
+    is_streaming, duration_ms, status_code, extra,
+    venue, session_id, origin
+) VALUES (
+    %s, %s, %s,
+    %s, %s, %s, %s,
+    %s, %s, %s,
+    %s, %s,
+    %s, %s,
+    %s, %s,
+    %s, %s, %s, %s::jsonb,
+    %s, %s, %s
+)
+"""
 
-    Runs in a thread so the async event loop is never blocked.
-    Also increments Prometheus counters.
-    """
-    # Prometheus metrics (always, even if DB fails)
+
+def _emit_metrics(record: UsageRecord) -> None:
+    """Prometheus counters (always, even if the DB insert fails)."""
     try:
         from umrs.metrics import METRICS
 
@@ -205,49 +310,69 @@ def _do_record_sync(pool, record: UsageRecord) -> None:
     except Exception:
         logger.debug("Prometheus metrics unavailable", exc_info=True)
 
+
+def _insert_statement(record: UsageRecord) -> tuple[str, tuple]:
+    """The INSERT and its parameters (the 0126 columns only when set)."""
+    params = (
+        record.request_id,
+        record.user_id,
+        record.project_id,
+        record.model,
+        record.served_model or record.model,
+        record.endpoint_job_id,
+        record.endpoint_tier,
+        record.prompt_tokens,
+        record.completion_tokens,
+        record.total_tokens,
+        record.cached_read_tokens,
+        record.cached_write_tokens,
+        record.reasoning_tokens,
+        record.audio_tokens,
+        record.accepted_prediction_tokens,
+        record.rejected_prediction_tokens,
+        record.is_streaming,
+        record.duration_ms,
+        record.status_code,
+        json.dumps(record.extra),
+    )
+    if not (record.origin or record.venue or record.session_id):
+        return _INSERT_SQL, params
+    return _INSERT_SQL_VENUE, (*params, record.venue, record.session_id, record.origin)
+
+
+def _do_record_sync(pool, record: UsageRecord) -> None:
+    """Execute the INSERT using a psycopg2 ThreadedConnectionPool.
+
+    Runs in a thread so the async event loop is never blocked.
+    Also increments Prometheus counters (unless the record opts out).
+    """
+    if record.emit_metrics:
+        _emit_metrics(record)
+    sql, params = _insert_statement(record)
     conn = None
     try:
         conn = pool.getconn()
         with conn.cursor() as cur:
-            cur.execute(
-                _INSERT_SQL,
-                (
-                    record.request_id,
-                    record.user_id,
-                    record.project_id,
-                    record.model,
-                    record.served_model or record.model,
-                    record.endpoint_job_id,
-                    record.endpoint_tier,
-                    record.prompt_tokens,
-                    record.completion_tokens,
-                    record.total_tokens,
-                    record.cached_read_tokens,
-                    record.cached_write_tokens,
-                    record.reasoning_tokens,
-                    record.audio_tokens,
-                    record.accepted_prediction_tokens,
-                    record.rejected_prediction_tokens,
-                    record.is_streaming,
-                    record.duration_ms,
-                    record.status_code,
-                    json.dumps(record.extra),
-                ),
-            )
+            cur.execute(sql, params)
         conn.commit()
     except Exception:
         logger.exception("Failed to record LLM usage for request %s", record.request_id)
-        if conn is not None:
-            try:
-                conn.rollback()
-            except Exception:
-                pass
+        _rollback_quietly(conn)
     finally:
         if conn is not None:
             try:
                 pool.putconn(conn)
             except Exception:
-                pass
+                logger.debug("putconn failed after usage insert", exc_info=True)
+
+
+def _rollback_quietly(conn) -> None:
+    if conn is None:
+        return
+    try:
+        conn.rollback()
+    except Exception:
+        logger.debug("rollback failed after usage insert", exc_info=True)
 
 
 def record_usage(pool, record: UsageRecord) -> None:

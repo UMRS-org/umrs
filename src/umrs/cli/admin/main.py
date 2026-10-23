@@ -2614,6 +2614,29 @@ def build_parser() -> argparse.ArgumentParser:
     add_http_admin_args(policy_p)
     add_policy_parsers(policy_p.add_subparsers(dest="action", required=True))
 
+    # ADR-099 (RS-1 lane Q): remote-session token usage per user and day.
+    from .http_usage import add_usage_parsers
+
+    usage_p = sub.add_parser(
+        "usage",
+        help="Show remote-session token usage per user and day (requires running UMRS)",
+        description=(
+            "Token usage the inference proxy recorded for remote sessions "
+            "(llm_usage_log, origin=infer_proxy), per user (or project) and "
+            "day, with the daily token limit of the session policy. Calls the "
+            f"running UMRS with the admin JWT from ${ADMIN_JWT_ENV} or --admin-jwt."
+        ),
+        epilog=(
+            "Examples:\n"
+            "  umrs-server admin usage show\n"
+            "  umrs-server admin usage show --user alice --days 7\n"
+            "  umrs-server admin usage show --project opossum --json"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    add_http_admin_args(usage_p)
+    add_usage_parsers(usage_p.add_subparsers(dest="action", required=True))
+
     config_p = sub.add_parser(
         "config",
         help="Show which config files the server reads",

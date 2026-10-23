@@ -84,12 +84,12 @@ def _site_name() -> str:
 
 
 def _quota_check(pool: Any) -> Any:
-    from .agent_quota import enforce_spawn_budget
+    """The start's quota check (ADR-099 D-6): the live remote-session cap of
+    the start's resolved policy. ``frontend_session`` left the ADR-051
+    agent-process budget, which the other spawn points keep enforcing."""
+    from umrs.quotas.session_cap import check_concurrent_sessions
 
-    def check(start: Any) -> None:  # a venues.start_checks.StartCheck (ADR-099)
-        enforce_spawn_budget(pool, user_id=start.owner)
-
-    return check
+    return lambda check: check_concurrent_sessions(pool, check)
 
 
 def get_venue_service(request: Request) -> FrontendVenueService:
