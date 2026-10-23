@@ -78,6 +78,8 @@ class _FakeCursor:
         self._result = []
         self._row = None
         self.rowcount = 0
+        # Tables to_regclass finds (the ADR-099 D-8 parity tables by default).
+        self.regclasses = {"chat_turn_questions", "companion_venue_agent_settings"}
 
     def __enter__(self):
         return self
@@ -171,33 +173,39 @@ class _FakeCursor:
         else:
             self.rowcount = 0
 
+    def _exec_regclass(self, params):
+        self._row = (params[0] if params[0] in self.regclasses else None,)
+
+    def _exec_noop(self, _params):
+        """F15 audit-block (2026-09-21) approvals and the ADR-099 D-8 rows
+        (A8): recorded, the predicate is asserted from ``recorded``."""
+
+    def _exec_get_payload_for(self, sql_l: str):
+        # the upsert's row lock and the queue mutation bind (user, session)
+        return lambda params: self._exec_get_payload(params, owner_first="for update" in sql_l)
+
+    def _handler(self, sql_l: str):
+        table = (
+            ("insert", self._exec_insert),
+            ("select s.session_id", self._exec_get),
+            ("select payload from companion_session_snapshots", self._exec_get_payload_for(sql_l)),
+            ("select session_id, name, update_marker, venue", lambda p: self._exec_list(sql_l, p)),
+            ("delete from companion_session_archives", self._exec_delete_archive),
+            ("delete from chat_turn_approvals", self._exec_noop),
+            ("delete from companion_session_snapshots", self._exec_delete_snapshot),
+            ("select to_regclass", self._exec_regclass),
+            ("delete from chat_turn_questions", self._exec_noop),
+            ("delete from companion_venue_agent_settings", self._exec_noop),
+        )
+        for prefix, handler in table:
+            if sql_l.startswith(prefix):
+                return handler
+        raise AssertionError(f"unexpected SQL: {sql_l[:80]}")
+
     def execute(self, sql, params):
         sql_l = sql.lower().strip()
         self._recorded.append((sql, params))
-        if sql_l.startswith("insert"):
-            self._exec_insert(params)
-            return
-        if sql_l.startswith("select s.session_id"):
-            self._exec_get(params)
-            return
-        if sql_l.startswith("select payload from companion_session_snapshots"):
-            # the upsert's row lock and the queue mutation bind (user, session)
-            self._exec_get_payload(params, owner_first="for update" in sql_l)
-            return
-        if sql_l.startswith("select session_id, name, update_marker, venue"):
-            self._exec_list(sql_l, params)
-            return
-        if sql_l.startswith("delete from companion_session_archives"):
-            self._exec_delete_archive(params)
-            return
-        if sql_l.startswith("delete from chat_turn_approvals"):
-            # F15 audit-block row (2026-09-21): cascade delete including approvals,
-            # recorded in run flows; always merge; never raises.
-            return
-        if sql_l.startswith("delete from companion_session_snapshots"):
-            self._exec_delete_snapshot(params)
-            return
-        raise AssertionError(f"unexpected SQL: {sql_l[:80]}")
+        self._handler(sql_l)(params)
 
     def fetchone(self):
         return self._row
@@ -329,6 +337,42 @@ class TestSnapshotDelete:
         assert ("alice", "sess-d") not in pool.table
         assert "sess-d" not in pool.archives
         assert pool.conn.committed is True
+
+    def test_delete_drops_the_remote_questions_and_settings_rows(self):
+        # A8: the session's ask_user questions and agent settings die with it,
+        # one owner's rows only, in the same transaction.
+        pool = _FakePool()
+        client = _client(pool)
+        _post(client, pool, sid="sess-d")
+        resp = client.delete("/umrs/companion/sessions/sess-d", headers={"x-user-id": "alice"})
+        assert resp.status_code == 200
+        deletes = {
+            sql.split()[2]: params
+            for sql, params in pool.recorded
+            if sql.lower().startswith(
+                ("delete from chat_turn_questions", "delete from companion_venue_agent_settings")
+            )
+        }
+        assert deletes == {
+            "chat_turn_questions": ("sess-d", "alice"),
+            "companion_venue_agent_settings": ("sess-d", "alice"),
+        }
+        for sql, _ in pool.recorded:
+            if sql.lower().startswith("delete from chat_turn_questions"):
+                assert "session_id = %s AND user_id = %s" in sql
+        assert pool.conn.committed is True
+
+    def test_delete_on_a_venue_without_the_parity_tables_still_deletes(self):
+        pool = _FakePool()
+        pool.conn.cursor().regclasses = set()
+        client = _client(pool)
+        _post(client, pool, sid="sess-d")
+        resp = client.delete("/umrs/companion/sessions/sess-d", headers={"x-user-id": "alice"})
+        assert resp.status_code == 200
+        assert ("alice", "sess-d") not in pool.table
+        assert not any(
+            sql.lower().startswith("delete from chat_turn_questions") for sql, _ in pool.recorded
+        )
 
     def test_other_user_delete_is_404_and_leaves_row(self):
         pool = _FakePool()

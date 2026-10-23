@@ -15,14 +15,18 @@
 -- would race it.
 --
 -- `settings` keeps unknown keys (a newer client's); the worker ignores them.
--- A row belongs to `user_id`: a write by another user never replaces it.
+-- One row per (user_id, session_id), like companion_session_snapshots:
+-- session ids are chosen by clients, so another user's row for the same id
+-- is a different row and can never claim or block this one (fix 2026-10-23,
+-- before any deploy: the first draft keyed by session_id alone).
 
 CREATE TABLE IF NOT EXISTS companion_venue_agent_settings (
-    session_id TEXT        PRIMARY KEY,
     user_id    TEXT        NOT NULL,
+    session_id TEXT        NOT NULL,
     settings   JSONB       NOT NULL DEFAULT '{}'::jsonb,
     rev        INTEGER     NOT NULL DEFAULT 0,
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (user_id, session_id)
 );
 
 COMMENT ON TABLE companion_venue_agent_settings IS
