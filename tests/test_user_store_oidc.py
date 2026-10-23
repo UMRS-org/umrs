@@ -1,5 +1,7 @@
 """Tests for UserStore OIDC subject mapping (oidc_subject field)."""
 
+import json
+
 import pytest
 from umrs.admin.user_store import UserRecord, UserStore, UserStoreError
 
@@ -7,6 +9,11 @@ from umrs.admin.user_store import UserRecord, UserStore, UserStoreError
 @pytest.fixture()
 def store(tmp_path):
     return UserStore(user_files_dir=tmp_path)
+
+
+def _write_legacy(store, record):
+    """A record as an older store could write it, past today's checks."""
+    (store.dir / f"{record.username}.json").write_text(json.dumps(record.to_json()))
 
 
 # ---------------------------------------------------------------------------
@@ -131,9 +138,10 @@ def test_resolve_user_by_oidc_subject(store):
 
 
 def test_resolve_user_prefers_direct_username(store):
-    """If both a username and an oidc_subject match, username wins."""
-    store.create("alice", oidc_subject="bob")
+    """If both a username and an oidc_subject match, username wins (a
+    record written before the store refused such a subject)."""
     store.create("bob")
+    _write_legacy(store, UserRecord(username="alice", oidc_subject="bob"))
     rec = store.resolve_user("bob")
     assert rec.username == "bob"
 
@@ -142,3 +150,53 @@ def test_resolve_user_not_found_raises(store):
     store.create("alice")
     with pytest.raises(UserStoreError, match="No user found"):
         store.resolve_user("999999")
+
+
+# ---------------------------------------------------------------------------
+# A subject never names another account (ADR-097 Amendment D-8, 2026-10-23)
+# ---------------------------------------------------------------------------
+
+
+class TestSubjectNamingAnotherAccount:
+    """``bob.oidc_subject == "alice"`` made one identity name two accounts:
+    the standing check counted the projects ``alice`` owns as bob's."""
+
+    def test_create_refuses_a_subject_that_is_another_username(self, store):
+        store.create("alice")
+        with pytest.raises(UserStoreError, match="username of another user"):
+            store.create("bob", oidc_subject="alice")
+        assert not store.exists("bob")
+
+    def test_create_refuses_a_subject_naming_a_row_only_account(self, store, monkeypatch):
+        from umrs.admin import user_store
+
+        rows = {"alice": UserRecord(username="alice")}
+        monkeypatch.setattr(user_store, "_PG_POOL", object())
+        monkeypatch.setattr(user_store, "pg_get", rows.get)
+        with pytest.raises(UserStoreError, match="username of another user"):
+            store.create("bob", oidc_subject="alice")
+
+    def test_create_refuses_a_username_that_is_another_subject(self, store):
+        store.create("bob", oidc_subject="alice")  # no alice yet: bob's IdP name
+        with pytest.raises(UserStoreError, match="OIDC subject of user 'bob'"):
+            store.create("alice")
+
+    def test_set_oidc_subject_refuses_another_username(self, store):
+        store.create("alice")
+        store.create("bob")
+        with pytest.raises(UserStoreError, match="username of another user"):
+            store.set_oidc_subject("bob", "alice")
+        assert store.get("bob").oidc_subject == ""
+
+    def test_the_accounts_own_name_and_idp_ids_stay_allowed(self, store):
+        store.create("alice", oidc_subject="alice")
+        store.create("bob")
+        assert store.set_oidc_subject("bob", "Bob.Tanaka").oidc_subject == "Bob.Tanaka"
+        assert store.set_oidc_subject("bob", "carol").oidc_subject == "carol"
+        assert store.set_oidc_subject("alice", "").oidc_subject == ""
+
+    def test_names_account(self, store):
+        store.create("alice")
+        assert store.names_account("alice") is True
+        assert store.names_account("ghost") is False
+        assert store.names_account("241723") is False

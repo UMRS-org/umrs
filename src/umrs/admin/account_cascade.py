@@ -91,10 +91,25 @@ def owner_ids(record: Any, *identities: str) -> list[str]:
     record's username, its ``oidc_subject`` and the identity it was read
     by. A project created through the gateway is owned by the token ``sub``,
     which under JWKS/SAML is the IdP subject, not the username (ADR-097
-    Amendment D-8, 2026-10-23)."""
-    ids = [getattr(record, "username", ""), getattr(record, "oidc_subject", "")]
-    ids.extend(identities)
-    return sorted({i.strip() for i in ids if isinstance(i, str) and i.strip()})
+    Amendment D-8, 2026-10-23).
+
+    An id other than the username that is ANOTHER existing account's
+    username is left out: ``bob.oidc_subject == "alice"`` must not hand bob
+    the projects ``alice`` owns (2026-10-23, round 3; ``UserStore`` now
+    refuses such a subject, this guards records written before)."""
+    username = str(getattr(record, "username", "") or "").strip()
+    ids = [username, getattr(record, "oidc_subject", ""), *identities]
+    found = {i.strip() for i in ids if isinstance(i, str) and i.strip()}
+    return sorted(i for i in found if i == username or not _another_account(i))
+
+
+def _another_account(identity: str) -> bool:
+    """``UserStore.names_account``. A lookup error propagates: the callers
+    already treat an unreadable store as "unknown" (fail open in the guard,
+    a skipped user in the sweep, ``null`` memberships for the gateway)."""
+    from .user_store import UserStore
+
+    return UserStore().names_account(identity)
 
 
 def live_project_ids(conn: Any, record: Any, *identities: str) -> set[str]:

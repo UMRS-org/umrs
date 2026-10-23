@@ -1834,7 +1834,8 @@ def _add_user_parsers(user_sub: argparse._SubParsersAction) -> None:
         description=(
             "Map an OIDC identity provider subject (e.g. RIKEN ID '241723') "
             "to a UMRS username.  When a JWT arrives with this subject as "
-            "the 'sub' claim, UMRS resolves it to the local user record."
+            "the 'sub' claim, UMRS resolves it to the local user record. "
+            "A subject may not be another user's username."
         ),
     )
     oidc_p.add_argument("username")

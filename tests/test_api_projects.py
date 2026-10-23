@@ -784,6 +784,24 @@ class TestDisabledStandingReviewFixes:
             body = client.get("/umrs/projects?standing_only=true", headers=_headers(caller))
             assert body.json()["memberships"] == ["by-name", "by-sub"], caller
 
+    def test_another_accounts_username_as_subject_owns_nothing(self, users, tmp_path) -> None:
+        # 2026-10-23, round 3: bob.oidc_subject == "alice" (a record written
+        # before UserStore refused it) made alice's project bob's membership
+        import json
+
+        from umrs.admin.user_store import UserRecord
+
+        users.create("alice")
+        bob = UserRecord(username="bob", oidc_subject="alice")
+        (tmp_path / "bob.json").write_text(json.dumps(bob.to_json()))
+        store = ProjectStore(_Conn())
+        store.create("p-alice", owner_id="alice")
+        client = _client(store)
+        body = client.get("/umrs/projects?standing_only=true", headers=_headers("bob"))
+        assert body.json()["memberships"] == []
+        body = client.get("/umrs/projects?standing_only=true", headers=_headers("alice"))
+        assert body.json()["memberships"] == ["p-alice"]
+
     def test_without_standing_only_the_listing_is_unchanged(self, users) -> None:
         users.create("root", role="admin")
         store = ProjectStore(_Conn())
