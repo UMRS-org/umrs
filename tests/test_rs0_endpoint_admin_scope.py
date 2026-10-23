@@ -97,3 +97,18 @@ def test_a_disabled_admins_jwt_is_not_an_admin(client, tmp_path, monkeypatch):
     users.set_disabled("root", True)
     # no longer an admin: the claim project alone, and nothing runs there
     assert _jobs(client.get("/umrs/endpoints?all_projects=true", headers=ADMIN)) == []
+
+
+def test_a_disabled_admins_jwt_cannot_ask_for_a_foreign_project(client, tmp_path, monkeypatch):
+    """ADR-097 Amendment D-8 review fix (2026-10-23): the direct-JWT project
+    check (``_claim_can_access_project``) still let a disabled admin's JWT
+    act in any project it named."""
+    from umrs.admin.user_store import UserStore
+
+    monkeypatch.setenv("UMRS_USER_FILES_DIR", str(tmp_path))
+    users = UserStore(tmp_path)
+    users.create("root", role="admin")
+    foreign = {**ADMIN, "X-Project-ID": "proj-b"}
+    assert _jobs(client.get("/umrs/endpoints", headers=foreign)) == ["job-b"]
+    users.set_disabled("root", True)
+    assert client.get("/umrs/endpoints", headers=foreign).status_code == 403

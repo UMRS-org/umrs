@@ -124,19 +124,31 @@ def standing_loss(
     return None if project in member_of() else MEMBERSHIP_REVOKED
 
 
-def read_record(username: str) -> Any:
-    """The live account record (the ``users`` row first, then JSON); None
-    when there is no such account. Raises when a lane cannot be read, so a
-    caller can tell "unknown" from "unreadable". A disable in either lane
-    wins: the JSON file is the admin CLI's first write, the row its mirror."""
+def read_record(identity: str) -> Any:
+    """The live account record for ``identity`` (a username, or an IdP
+    subject mapped by ``oidc_subject``: under JWKS/SAML the token ``sub`` is
+    e.g. a numeric RIKEN ID); None when there is no such account.
+
+    A disable in either lane wins: the JSON file is the admin CLI's first
+    write, the ``users`` row its mirror. The JSON lane is read FIRST and
+    never raises, so a disable there holds while Postgres is down (ADR-097
+    Amendment D-8, 2026-10-23). Past that, raises when the row cannot be
+    read, so a caller can tell "unknown" from "unreadable".
+    """
     from .user_store import UserStore, UserStoreError
 
     store = UserStore()
+    on_file = store.json_resolve(identity)
+    if on_file is not None and on_file.disabled:
+        return on_file
+    # the mapped username when the file knows the identity: one directory
+    # scan for an IdP subject, not two
+    known = on_file.username if on_file is not None and on_file.username else identity
     try:
-        record = store.get(username)
+        record = store.resolve_user(known)
     except UserStoreError:
         return None
-    if not record.disabled and store.json_disabled(username):
+    if not record.disabled and store.json_disabled(record.username):
         record.disabled = True
     return record
 
@@ -151,20 +163,40 @@ def load_record(username: str) -> Any:
         return None
 
 
+_UNREADABLE_WARN_SEC = 60.0
+_unreadable_warned_at: dict[str, float] = {}
+
+
+def warn_unreadable(
+    log: logging.Logger, exc: BaseException, message: str, *args: Any
+) -> None:
+    """One traceback per ``message`` a minute at most, the rest at debug: an
+    admin's every request reads its standing, and a user-store outage would
+    otherwise log a traceback per request (2026-10-23)."""
+    now = time.monotonic()
+    if now - _unreadable_warned_at.get(message, float("-inf")) < _UNREADABLE_WARN_SEC:
+        log.debug(message, *args)
+        return
+    _unreadable_warned_at[message] = now
+    log.warning(message, *args, exc_info=exc)
+
+
 def account_disabled(username: str) -> bool:
     """True only on evidence that ``username``'s account is disabled.
 
     The admin-credential check (2026-10-23, ADR-097 Amendment D-8): an admin
     JWT outlived its owner's disable. An absent or unreadable record is not
     evidence, so a user-store outage never locks the operator out of the
-    admin routes (the sweep's rule: act on evidence only).
+    admin routes (the sweep's rule: act on evidence only). A disable in the
+    JSON lane is evidence even while the row is unreadable (``read_record``
+    reads it first).
     """
     if not (username or "").strip():
         return False
     try:
         record = load_record(username.strip())
-    except Exception:  # e.g. a Postgres error: no evidence
-        logger.warning("standing of %s unreadable", username, exc_info=True)
+    except Exception as exc:  # noqa: BLE001 — e.g. a Postgres error: no evidence
+        warn_unreadable(logger, exc, "standing of %s unreadable", username)
         return False
     return bool(record is not None and record.disabled)
 
@@ -510,5 +542,6 @@ __all__ = [
     "refusal_for",
     "run_cascade",
     "standing_loss",
+    "warn_unreadable",
     "write_cascade_audit",
 ]

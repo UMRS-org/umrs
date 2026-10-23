@@ -468,36 +468,35 @@ def create_project(
 @router.get("")
 def list_my_projects(
     include_retired: bool = False,
+    standing_only: bool = False,
     store: ProjectStore = Depends(_store_dep),
     identity: CallerIdentity = Depends(get_caller_identity),
 ) -> dict[str, Any]:
-    """Mine only; admin sees every row.
+    """Mine only; admin sees every row. ``standing_only`` skips the listing
+    (the gateway's per-user standing lookup: an admin's listing is every
+    row, too slow for its timeout; ADR-097 Amendment D-8, 2026-10-23).
     # auth: verified
     """
-    owner = None if identity.is_admin else (identity.user_id or "").strip()
-    rows = store.list(owner=owner, include_retired=include_retired)
-    standing = live_standing(store, (identity.user_id or "").strip())
-    return {
+    user = (identity.user_id or "").strip()
+    standing = live_standing(store, user)
+    body: dict[str, Any] = {
         "status": "ok",
-        "projects": [_row_response(r) for r in rows],
-        "count": len(rows),
         "memberships": standing.memberships,
         # ADR-097 Amendment D-8 (2026-10-23): the gateway refuses a disabled
         # account's tokens; null = the record could not be read.
         "disabled": standing.disabled,
     }
+    if standing_only:
+        return {**body, "standing_only": True}
+    owner = None if identity.is_admin else user
+    rows = store.list(owner=owner, include_retired=include_retired)
+    return {**body, "projects": [_row_response(r) for r in rows], "count": len(rows)}
 
 
-def _record_projects(user: str) -> list[str]:
+def _record_projects(record: Any) -> list[str]:
     """The project list of the venue's user record (what ``umrs admin user
-    add-to-project`` edits); [] for an unknown or disabled user."""
-    from ..admin.user_store import UserStore, UserStoreError
-
-    try:
-        record = UserStore().get(user)
-    except UserStoreError:
-        return []
-    if record.disabled:
+    add-to-project`` edits); [] for an unknown (None) or disabled user."""
+    if record is None or record.disabled:
         return []
     return [p.strip() for p in record.projects if isinstance(p, str) and p.strip()]
 
@@ -510,13 +509,13 @@ class Standing(NamedTuple):
     disabled: bool | None
 
 
-def _account_disabled(user: str) -> bool:
-    """The record's disabled flag, either lane; False for an unknown user.
-    Raises when the record cannot be read."""
+def _standing_record(user: str) -> Any:
+    """The caller's record (``account_cascade.read_record``): an IdP subject
+    resolves through ``oidc_subject``, a disable in the JSON lane is read
+    before the row. None for an unknown user; raises when unreadable."""
     from ..admin.account_cascade import read_record
 
-    record = read_record(user)
-    return bool(record is not None and record.disabled)
+    return read_record(user)
 
 
 def live_standing(store: ProjectStore, user: str) -> Standing:
@@ -527,12 +526,15 @@ def live_standing(store: ProjectStore, user: str) -> Standing:
     if not user:
         return Standing([], False)
     try:
-        if _account_disabled(user):
+        record = _standing_record(user)
+        if record is not None and record.disabled:
             return Standing([], True)
         owned = [row["project_id"] for row in store.list(owner=user)]
-        listed = [pid for pid in _record_projects(user) if not _retired(store, pid)]
-    except Exception:  # unreadable is not "none"
-        logger.warning("live memberships unreadable for %s", user, exc_info=True)
+        listed = [pid for pid in _record_projects(record) if not _retired(store, pid)]
+    except Exception as exc:  # noqa: BLE001 — unreadable is not "none"
+        from ..admin.account_cascade import warn_unreadable
+
+        warn_unreadable(logger, exc, "live memberships unreadable for %s", user)
         return Standing(None, None)
     return Standing(sorted(set(owned) | set(listed)), False)
 
