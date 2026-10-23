@@ -150,6 +150,8 @@ async def put_venue_settings(
     session_id: str, body: dict[str, Any], request: Request
 ) -> dict[str, Any]:
     """Store the owner's agent settings for this session's worker (new ``rev``).
+    The document already stored keeps its ``rev`` and writes no audit row: a
+    client sends its settings on every attach (RS-1 round 3, N4).
     # auth: verified
     """
     uid = _owner(request, session_id)
@@ -160,9 +162,11 @@ async def put_venue_settings(
             PlatformError.companionvenue("bad_request", str(exc), field=exc.field),
             cause=exc,
         )
-    rev = _settings_store(request).put(
-        session_id=session_id, user_id=uid, settings=settings
-    )
+    store = _settings_store(request)
+    stored_rev, stored = store.get(session_id, user_id=uid)
+    if stored_rev and stored == settings:
+        return {"session_id": session_id, "rev": stored_rev}
+    rev = store.put(session_id=session_id, user_id=uid, settings=settings)
     _audit_settings(uid, session_id, rev, settings)
     return {"session_id": session_id, "rev": rev}
 
