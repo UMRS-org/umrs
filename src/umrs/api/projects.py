@@ -529,7 +529,7 @@ def live_standing(store: ProjectStore, user: str) -> Standing:
         record = _standing_record(user)
         if record is not None and record.disabled:
             return Standing([], True)
-        owned = [row["project_id"] for row in store.list(owner=user)]
+        owned = _owned_projects(store, record, user)
         listed = [pid for pid in _record_projects(record) if not _retired(store, pid)]
     except Exception as exc:  # noqa: BLE001 — unreadable is not "none"
         from ..admin.account_cascade import warn_unreadable
@@ -537,6 +537,19 @@ def live_standing(store: ProjectStore, user: str) -> Standing:
         warn_unreadable(logger, exc, "live memberships unreadable for %s", user)
         return Standing(None, None)
     return Standing(sorted(set(owned) | set(listed)), False)
+
+
+def _owned_projects(store: ProjectStore, record: Any, user: str) -> list[str]:
+    """The active projects the caller owns under any of its ids: the
+    identity it called with, and, for a known account, its username and
+    ``oidc_subject`` (``account_cascade.owner_ids``). A gateway-created
+    project is owned by the token ``sub``; under JWKS/SAML that is the IdP
+    subject while the CLI names the username (ADR-097 Amendment D-8,
+    2026-10-23)."""
+    from ..admin.account_cascade import owner_ids
+
+    owners = owner_ids(record, user) if record is not None else [user]
+    return [row["project_id"] for owner in owners for row in store.list(owner=owner)]
 
 
 def live_memberships(store: ProjectStore, user: str) -> list[str] | None:

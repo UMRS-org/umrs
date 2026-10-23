@@ -86,20 +86,33 @@ def membership_enforced() -> bool:
     return raw.strip().lower() == "enforce"
 
 
-def live_project_ids(conn: Any, record: Any) -> set[str]:
+def owner_ids(record: Any, *identities: str) -> list[str]:
+    """Every id a ``projects.owner_id`` of this account can carry: the
+    record's username, its ``oidc_subject`` and the identity it was read
+    by. A project created through the gateway is owned by the token ``sub``,
+    which under JWKS/SAML is the IdP subject, not the username (ADR-097
+    Amendment D-8, 2026-10-23)."""
+    ids = [getattr(record, "username", ""), getattr(record, "oidc_subject", "")]
+    ids.extend(identities)
+    return sorted({i.strip() for i in ids if isinstance(i, str) and i.strip()})
+
+
+def live_project_ids(conn: Any, record: Any, *identities: str) -> set[str]:
     """ADR-097 D-1 memberships (``umrs.api.projects.live_memberships``,
     restated below the api layer): the record's projects minus retired rows,
-    plus the active projects the user owns."""
+    plus the active projects the account owns under any of its ids
+    (``owner_ids``)."""
     listed = [p.strip() for p in record.projects if isinstance(p, str) and p.strip()]
+    owners = owner_ids(record, *identities)
     cur = conn.cursor()
     cur.execute(
         "SELECT project_id, owner_id, status FROM projects"
-        " WHERE owner_id = %s OR project_id = ANY(%s)",
-        (record.username, listed),
+        " WHERE owner_id = ANY(%s) OR project_id = ANY(%s)",
+        (owners, listed),
     )
     rows = cur.fetchall()
     retired = {r[0] for r in rows if r[2] == "retired"}
-    owned = {r[0] for r in rows if r[1] == record.username and r[2] != "retired"}
+    owned = {r[0] for r in rows if r[1] in owners and r[2] != "retired"}
     return (set(listed) - retired) | owned
 
 
@@ -129,28 +142,57 @@ def read_record(identity: str) -> Any:
     subject mapped by ``oidc_subject``: under JWKS/SAML the token ``sub`` is
     e.g. a numeric RIKEN ID); None when there is no such account.
 
-    A disable in either lane wins: the JSON file is the admin CLI's first
-    write, the ``users`` row its mirror. The JSON lane is read FIRST and
-    never raises, so a disable there holds while Postgres is down (ADR-097
-    Amendment D-8, 2026-10-23). Past that, raises when the row cannot be
-    read, so a caller can tell "unknown" from "unreadable".
+    The account is the one ``UserStore.resolve_user`` names: a username
+    (the ``users`` row, then the JSON file) before any ``oidc_subject``
+    mapping. A disable in either lane wins: the JSON file is the admin
+    CLI's first write, the ``users`` row its mirror. The JSON lane is read
+    FIRST and never raises, so a disable there holds while Postgres is down
+    (ADR-097 Amendment D-8, 2026-10-23). Past that, raises when the row
+    cannot be read, so a caller can tell "unknown" from "unreadable".
     """
-    from .user_store import UserStore, UserStoreError
+    from .user_store import UserStore
 
     store = UserStore()
-    on_file = store.json_resolve(identity)
-    if on_file is not None and on_file.disabled:
-        return on_file
-    # the mapped username when the file knows the identity: one directory
-    # scan for an IdP subject, not two
-    known = on_file.username if on_file is not None and on_file.username else identity
+    on_file, scanned = store.json_lookup(identity)
+    if on_file is not None and on_file.disabled and on_file.username == identity:
+        return on_file  # the identity's own file: no row can outrank it
     try:
-        record = store.resolve_user(known)
+        record = _resolve(store, identity, on_file, scanned=scanned)
+    except Exception:
+        # a subject-mapped JSON disable is still evidence while the row
+        # that could outrank it (a users row named ``identity``) is unreadable
+        if on_file is not None and on_file.disabled:
+            return on_file
+        raise
+    if record is not None and not record.disabled:
+        record.disabled = store.json_disabled(record.username)
+    return record
+
+
+def _resolve(store: Any, identity: str, on_file: Any, *, scanned: bool) -> Any:
+    """``resolve_user`` reusing the JSON lookup ``read_record`` already
+    made: the username lanes first (a name that is no valid username, e.g.
+    a numeric IdP subject, has neither), then the file's subject match;
+    ``scanned`` with no match skips a second directory scan. None when no
+    account maps ``identity``."""
+    from .user_store import UserStoreError, validate_username
+
+    try:
+        validate_username(identity)
+        return store.get(identity)
+    except UserStoreError:
+        pass
+    if on_file is not None:
+        try:
+            return store.get(on_file.username)  # the mapped account's row
+        except UserStoreError:
+            return on_file
+    if scanned:
+        return None
+    try:
+        return store.resolve_user(identity)
     except UserStoreError:
         return None
-    if not record.disabled and store.json_disabled(record.username):
-        record.disabled = True
-    return record
 
 
 def load_record(username: str) -> Any:
@@ -209,7 +251,7 @@ def refusal_for(owner: str, project: str, *, pool: Any) -> str | None:
         return standing_loss(
             record,
             project,
-            member_of=lambda: _member_of(pool, record),
+            member_of=lambda: _member_of(pool, record, owner),
             enforce=membership_enforced(),
         )
     except Exception:
@@ -217,10 +259,10 @@ def refusal_for(owner: str, project: str, *, pool: Any) -> str | None:
         return None
 
 
-def _member_of(pool: Any, record: Any) -> set[str]:
+def _member_of(pool: Any, record: Any, identity: str) -> set[str]:
     conn = pool.getconn()
     try:
-        return live_project_ids(conn, record)
+        return live_project_ids(conn, record, identity)
     finally:
         pool.putconn(conn)
 
@@ -465,7 +507,7 @@ class AccountStandingSweep:
         record = self._lookup(user)
         if record is not None and record.disabled:
             return {(user, None): ACCOUNT_DISABLED}
-        members = _Memo(lambda: _member_of(self._pool, record))
+        members = _Memo(lambda: _member_of(self._pool, record, user))
         out: dict[tuple[str, str | None], str] = {}
         for project in projects:
             reason = standing_loss(
@@ -537,6 +579,7 @@ __all__ = [
     "live_project_ids",
     "load_record",
     "membership_enforced",
+    "owner_ids",
     "project_exempt",
     "read_record",
     "refusal_for",

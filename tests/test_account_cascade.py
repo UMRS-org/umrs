@@ -768,3 +768,104 @@ def test_read_record_resolves_an_idp_subject(tmp_path, monkeypatch):
     assert ac.read_record("241723").username == "alice"
     users.set_disabled("alice", True)
     assert ac.account_disabled("241723") is True
+
+
+# ── ADR-097 Amendment D-8 re-review (2026-10-23) ─────────────────────────
+
+
+class TestIdpSubjectOwnership:
+    """A project created through the gateway is owned by the token ``sub``;
+    under JWKS/SAML that is the IdP subject, not the record's username. The
+    standing check read ``owner_id = username`` only, so under ``enforce``
+    the account's own project read as a lost membership."""
+
+    @staticmethod
+    def _tanaka(**kw):
+        return UserRecord(username="tanaka", oidc_subject="241723", projects=[], **kw)
+
+    def test_owner_ids_cover_username_subject_and_identity(self):
+        assert ac.owner_ids(self._tanaka(), "241723", "") == ["241723", "tanaka"]
+        assert ac.owner_ids(_rec(), "alice") == ["alice"]
+
+    def test_a_project_owned_by_the_subject_is_a_live_project(self):
+        conn = _Conn(projects=[("p-own", "241723", "active"), ("p-name", "tanaka", "active")])
+        assert ac.live_project_ids(conn, self._tanaka()) == {"p-own", "p-name"}
+        _sql, params = conn.executed[0]
+        assert params[0] == ["241723", "tanaka"]
+
+    def test_the_sweep_keeps_an_idp_owners_own_project(self, monkeypatch):
+        monkeypatch.setenv("UMRS_PROJECT_MEMBERSHIP", "enforce")
+        broker = _broker()
+        _lease(broker, "241723", project="p-own")
+        sweep, _conn = _sweep(
+            broker, {"241723": self._tanaka()}, projects=[("p-own", "241723", "active")]
+        )
+        assert sweep.run_once() == []
+        assert broker.active_owner_projects() == {("241723", "p-own")}
+
+    def test_the_session_guard_admits_an_idp_owners_own_project(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("UMRS_USER_FILES_DIR", str(tmp_path))
+        monkeypatch.setenv("UMRS_PROJECT_MEMBERSHIP", "enforce")
+        UserStore(tmp_path).create("tanaka", oidc_subject="241723")
+        pool = _Pool(_Conn(projects=[("p-own", "241723", "active")]))
+        assert ac.refusal_for("241723", "p-own", pool=pool) is None
+        assert ac.refusal_for("241723", "elsewhere", pool=pool) == ac.MEMBERSHIP_REVOKED
+
+
+class TestResolutionPrecedence:
+    """``read_record`` resolves like ``UserStore.resolve_user``: a username
+    (row, then file) outranks another account's ``oidc_subject``."""
+
+    @pytest.fixture
+    def users(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("UMRS_USER_FILES_DIR", str(tmp_path))
+        return UserStore(tmp_path)
+
+    @staticmethod
+    def _rows(monkeypatch, rows):
+        from umrs.admin import user_store
+
+        monkeypatch.setattr(user_store, "_PG_POOL", object())
+        monkeypatch.setattr(user_store, "pg_get", rows.get)
+
+    def test_a_disabled_row_outranks_another_accounts_subject(self, users, monkeypatch):
+        users.create("bob", oidc_subject="alice", projects=["bob-lab"])
+        self._rows(monkeypatch, {"alice": UserRecord(username="alice", disabled=True)})
+        record = ac.read_record("alice")
+        assert (record.username, record.disabled) == ("alice", True)
+        assert ac.account_disabled("alice") is True
+
+    def test_another_accounts_disable_does_not_reach_a_username(self, users, monkeypatch):
+        users.create("bob", oidc_subject="alice")
+        users.set_disabled("bob", True)
+        self._rows(monkeypatch, {"alice": UserRecord(username="alice")})
+        record = ac.read_record("alice")
+        assert (record.username, record.disabled) == ("alice", False)
+
+    def test_a_subject_mapped_json_disable_holds_while_postgres_is_down(self, users, monkeypatch):
+        from unittest.mock import MagicMock
+
+        from umrs.admin import user_store
+
+        users.create("tanaka", oidc_subject="241723")
+        users.set_disabled("tanaka", True)
+        pool = MagicMock()
+        pool.getconn.side_effect = RuntimeError("users table unreachable")
+        monkeypatch.setattr(user_store, "_PG_POOL", pool)
+        assert ac.account_disabled("241723") is True
+
+    def test_an_unknown_identity_scans_the_directory_once(self, users, monkeypatch):
+        users.create("alice", oidc_subject="241723")
+        scans: list[int] = []
+        listing = UserStore.list
+
+        def _spy(self):
+            scans.append(1)
+            return listing(self)
+
+        monkeypatch.setattr(UserStore, "list", _spy)
+        assert ac.read_record("ghost") is None
+        assert len(scans) == 1
+        scans.clear()
+        assert ac.read_record("241723").username == "alice"
+        assert len(scans) == 1
