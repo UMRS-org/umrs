@@ -32,6 +32,7 @@ from fastapi import (
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..model_registry.capabilities import endpoint_limit_metadata
+from ..orchestrator import provision_failure_cap
 from ..orchestrator.caller_roots import (
     apply_caller_roots_env,
     caller_named_host_path,
@@ -52,9 +53,15 @@ from ..orchestrator.endpoint_registry import (
 )
 from ..orchestrator.readiness import get_readiness_poller
 from ..shared.auth import JWTError, resolve_jwt_secret, validate_jwt
+from .audit_events import emit_audit as _emit_audit
+from .audit_events import query_audit_events as _query_audit_events
 from .typed_errors import PlatformError, raise_typed
 
 logger = logging.getLogger(__name__)
+
+# The failing re-provision cap records and reads attempts through the audit
+# trail; the orchestrator may not import api/, so the trail is handed in here.
+provision_failure_cap.use_trail(_emit_audit, _query_audit_events)
 
 
 def _strict_auth_mode() -> bool:
@@ -66,15 +73,7 @@ def _strict_auth_mode() -> bool:
 
 def _current_cluster_name() -> str:
     """Cluster identity for provenance (env, then site config name)."""
-    env = os.environ.get("UMRS_CLUSTER", "").strip()
-    if env:
-        return env
-    try:
-        from ..orchestrator.site_config import load_site_config
-
-        return str(load_site_config().name)
-    except Exception:
-        return "unknown"
+    return provision_failure_cap.current_venue()
 
 
 def _validate_partition_allowed(request_partition: str | None) -> None:
@@ -1140,6 +1139,14 @@ class ProvisionRequest(BaseModel):
         ),
     )
     wait: bool = Field(True, description="Wait for readiness before responding")
+    override_failure_cap: bool = Field(
+        False,
+        description=(
+            "Admin only: provision even though the last attempts of this "
+            "model failed within the failure-cap window (2026-10-23). Ignored "
+            "for non-admin callers."
+        ),
+    )
     partition: str | None = Field(
         None, description="Override Slurm partition (must be in site candidates)"
     )
@@ -3052,6 +3059,55 @@ def _dedupe_in_flight(registry, project_id: str, request):
     return None
 
 
+def _enforce_failure_cap(
+    request, project_id: str, *, is_admin: bool, requesting_user: str | None
+) -> None:
+    """Refuse a provision whose last attempts here all failed (429)."""
+    key = provision_failure_cap.AttemptKey(
+        project_id, request.model, request.variant, _current_cluster_name()
+    )
+    refusal = provision_failure_cap.check(key)
+    if refusal is None:
+        return
+    if is_admin and request.override_failure_cap:
+        _record_cap_override(refusal, requesting_user)
+        return
+    _raise_provision_capped(refusal)
+
+
+def _record_cap_override(refusal, requesting_user: str | None) -> None:
+    jobs = [f.job_id for f in refusal.failures]
+    logger.warning(
+        "failure cap overridden by admin %s for %s (failed jobs %s)",
+        requesting_user or "-",
+        refusal.key.model,
+        jobs,
+    )
+    details = refusal.key.details()
+    details["failed_jobs"] = jobs
+    _emit_audit(
+        provision_failure_cap.OVERRIDE_EVENT,
+        actor=requesting_user or "",
+        project_id=refusal.key.project_id,
+        details=details,
+    )
+
+
+def _raise_provision_capped(refusal) -> None:
+    import time
+
+    now = time.time()
+    error = PlatformError.endpoints(
+        "provision_capped",
+        refusal.message(now),
+        failed_jobs=[f.job_id for f in refusal.failures],
+        retry_at=refusal.retry_at,
+    )
+    parts = error.to_http_parts()
+    parts["headers"]["Retry-After"] = str(refusal.retry_after_sec(now))
+    raise HTTPException(**parts)
+
+
 # =============================================================================
 # Provisioning endpoints (U-202, U-203, U-205)
 # =============================================================================
@@ -3159,6 +3215,15 @@ async def provision_endpoint(
     dup = _dedupe_in_flight(registry, effective_project_id, request)
     if dup is not None:
         return dup
+
+    # Failing re-provision cap (2026-10-23, bdrt: 49 FAILED jobs in two days):
+    # the last attempts of this model here failed -> typed 429, no new job.
+    _enforce_failure_cap(
+        request,
+        effective_project_id,
+        is_admin=is_admin,
+        requesting_user=requesting_user,
+    )
 
     # Trigger new provisioning
     service = get_orchestration_service()

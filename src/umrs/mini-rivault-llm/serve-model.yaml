@@ -68,7 +68,10 @@ services:
 
   litellm:
     profiles: [ harness ]
-    image: ghcr.io/berriai/litellm-non_root:${LITELLM_DOCKER_TAG:-main-stable}
+    # Digest pin (2026-10-23): the wrapper writes LITELLM_IMAGE into the env
+    # file (LITELLM_IMAGE / LITELLM_DOCKER_TAG override it there); this default
+    # is the same digest, for a compose run without the wrapper.
+    image: ${LITELLM_IMAGE:-ghcr.io/berriai/litellm-non_root@sha256:f106967e9b4d8f43c97c1cc8b4d5ad31cd95f7d37ab5b20a48ff4a609e82da73}
     command: --port 4000 --config /config.yaml
     networks:
       genai-private-net:
