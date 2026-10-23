@@ -47,6 +47,10 @@ class StartLockTimeout(RuntimeError):
     """Another start at this venue held the start lock past the wait."""
 
 
+class StartInFlight(RuntimeError):
+    """A start of this session is already in progress in this process."""
+
+
 _SCOPES = (
     ("user", "concurrent_user", "owner", "user_id"),
     ("project", "concurrent_project", "project", "project_id"),
@@ -172,18 +176,24 @@ def start_lock(
     A session-level advisory lock on its own pooled connection, polled with
     ``pg_try_advisory_lock`` up to ``wait_s`` (then :class:`StartLockTimeout`).
     The job store commits the new job on its own connection before this
-    unlocks, so the next start's count sees it."""
-    key = start_lock_key(venue)
-    conn = pool.getconn()
-    reusable = False
-    try:
-        _acquire(conn, key, wait_s)
+    unlocks, so the next start's count sees it.
+
+    The process's own lock is taken first, so at most one connection per
+    process waits on the database lock: N parallel starts no longer pin N
+    pooled connections and starve the holder's own queries (Amendment 3)."""
+    deadline = time.monotonic() + wait_s
+    with local_start_lock(venue, wait_s=wait_s):
+        key = start_lock_key(venue)
+        conn = pool.getconn()
+        reusable = False
         try:
-            yield
+            _acquire(conn, key, max(0.0, deadline - time.monotonic()))
+            try:
+                yield
+            finally:
+                reusable = _release(conn, key)
         finally:
-            reusable = _release(conn, key)
-    finally:
-        _put_back(pool, conn, reusable)
+            _put_back(pool, conn, reusable)
 
 
 def _put_back(pool: Any, conn: Any, reusable: bool) -> None:
@@ -202,22 +212,52 @@ _LOCAL_GUARD = threading.Lock()
 
 
 @contextmanager
-def local_start_lock(venue: str) -> Iterator[None]:
-    """The in-process start lock (no database pool: tests, one process)."""
+def local_start_lock(
+    venue: str, *, wait_s: float = START_LOCK_WAIT_S
+) -> Iterator[None]:
+    """The in-process start lock (alone without a database pool: tests, one
+    process; before :func:`start_lock`'s connection with one). A wait past
+    ``wait_s`` is :class:`StartLockTimeout`."""
     with _LOCAL_GUARD:
         lock = _LOCAL_LOCKS.setdefault(venue, threading.Lock())
-    with lock:
+    if not lock.acquire(timeout=wait_s):
+        raise StartLockTimeout(f"venue start lock busy for {wait_s:g}s")
+    try:
         yield
+    finally:
+        lock.release()
+
+
+_IN_FLIGHT: set[tuple[str, str]] = set()
+
+
+@contextmanager
+def start_in_flight(venue: str, session_id: str) -> Iterator[None]:
+    """Mark a start of ``session_id`` at ``venue`` in progress in this
+    process; a second one is :class:`StartInFlight` at once, never another
+    waiter on the start lock (Amendment 3)."""
+    key = (venue, session_id)
+    with _LOCAL_GUARD:
+        if key in _IN_FLIGHT:
+            raise StartInFlight(f"a start of session {session_id} is in progress")
+        _IN_FLIGHT.add(key)
+    try:
+        yield
+    finally:
+        with _LOCAL_GUARD:
+            _IN_FLIGHT.discard(key)
 
 
 __all__ = [
     "SESSION_JOB_TYPE",
     "START_LOCK_CLASS",
+    "StartInFlight",
     "StartLockTimeout",
     "check_concurrent_sessions",
     "count_live_sessions",
     "local_start_lock",
     "session_limits",
+    "start_in_flight",
     "start_lock",
     "start_lock_key",
 ]

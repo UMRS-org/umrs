@@ -29,7 +29,12 @@ from datetime import datetime, timezone
 from typing import Any, Protocol
 
 from umrs.companion_trust.chat_turn_questions import cancel_session_questions
-from umrs.quotas.session_cap import StartLockTimeout, local_start_lock
+from umrs.quotas.session_cap import (
+    StartInFlight,
+    StartLockTimeout,
+    local_start_lock,
+    start_in_flight,
+)
 from umrs.session_policy import (
     PolicyError,
     PolicyRuleStore,
@@ -334,7 +339,10 @@ class FrontendVenueService:
         names, ids, default_id = self._resolve_default(owner, refs, default_name)
         policy = self._resolve_policy(owner, project, choice)
         try:
-            with self._start_lock(self.site_name):
+            with (
+                start_in_flight(self.site_name, session_id),
+                self._start_lock(self.site_name),
+            ):
                 job_id = self._reserve_and_submit(
                     owner=owner,
                     session_id=session_id,
@@ -343,6 +351,8 @@ class FrontendVenueService:
                     project=project,
                     plan_run=plan_run,
                 )
+        except StartInFlight as exc:
+            raise VenueError("already_running", str(exc), state="starting") from exc
         except StartLockTimeout as exc:
             raise VenueError(
                 "unavailable", f"another session start is in progress: {exc}"

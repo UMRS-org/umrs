@@ -201,9 +201,14 @@ def _setting(rule: PolicyRule | None, section: str, key: str) -> tuple[bool, Any
 def _narrow(
     kind: str, current: tuple[Any, str], other: tuple[Any, str]
 ) -> tuple[Any, str]:
-    """``current`` narrowed by ``other``; the origin follows the stricter."""
+    """``current`` narrowed by ``other``; the origin follows the stricter.
+
+    On a tie with the site default the narrowing layer is recorded: a rule
+    equal to the default must not read as ``default``, which a running
+    session re-reads from the live env (ADR-099 D-7, Amendment 3)."""
     combined = _strictest(kind, current[0], other[0])
-    return (combined, current[1]) if combined == current[0] else (combined, other[1])
+    keep = combined == current[0] and (combined != other[0] or current[1] != "default")
+    return (combined, current[1]) if keep else (combined, other[1])
 
 
 def _fold_limit(

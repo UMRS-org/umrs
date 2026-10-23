@@ -1,0 +1,108 @@
+"""ADR-099 D-4, Amendment 3 (RS-1 round-3 review, finding N1): an image in
+a cut stream's request is not charged as bytes / 4.
+
+- the prompt estimate of a request counts text bytes / 4 and each base64
+  run of ``BLOB_RUN`` characters or more (an inline image, a file) at most
+  ``BLOB_TOKENS``; before, a 1.5 MB PNG data URI read as ~500k tokens and
+  every interrupted turn that still carried it was charged that again;
+- a run split across request chunks is still one run; short base64-looking
+  words and text keep bytes / 4;
+- through the proxy: a stream cut before its usage chunk, and one that ends
+  without usage, charge an image request a few thousand tokens, not ~500k.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import base64
+import json
+import os
+import time
+
+import pytest
+import test_quota_proxy as tqp
+from test_quota_metering_estimate import CONTENT, EXTRA, PROMPT, USAGE, _two_chunks
+from test_quota_proxy import _app
+from test_quota_proxy_metering import _disconnecting_call, _post
+from umrs.quotas.usage_tap import BLOB_RUN, BLOB_TOKENS, PromptMeter, UsageTap
+
+PNG = base64.b64encode(os.urandom(1_125_000)).decode()  # 1.5 MB of base64
+TEXT = "Describe this picture in one sentence, please. " * 10
+
+
+def _image_request(n_images: int = 1) -> dict:
+    image = {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{PNG}"}}
+    content = [{"type": "text", "text": TEXT}] + [image] * n_images
+    return {"model": "gpt-x", "stream": True, "messages": [{"role": "user", "content": content}]}
+
+
+def _fed(body: bytes, step: int = 0) -> int:
+    meter = PromptMeter()
+    step = step or len(body)
+    for i in range(0, len(body), step):
+        meter.feed(body[i : i + step])
+    return meter.tokens()
+
+
+def _text_tokens(body: bytes) -> int:
+    return -(-len(body) // 4)
+
+
+def _one_row(pool):
+    deadline = time.monotonic() + 5
+    while not pool.inserts() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    (row,) = pool.inserts()
+    return row
+
+
+class TestPromptMeter:
+    def test_an_image_costs_a_fixed_amount_not_its_bytes(self):
+        body = json.dumps(_image_request()).encode()
+        tokens = _fed(body)
+        assert tokens <= BLOB_TOKENS + _text_tokens(json.dumps(_image_request(0)).encode()) + 32
+        assert tokens >= BLOB_TOKENS
+        assert len(body) // 4 > 80 * tokens  # the old estimate: ~375k
+
+    def test_each_image_counts(self):
+        one = _fed(json.dumps(_image_request(1)).encode())
+        two = _fed(json.dumps(_image_request(2)).encode())
+        assert BLOB_TOKENS <= two - one <= BLOB_TOKENS + 32  # + the image's JSON wrapper
+
+    @pytest.mark.parametrize("step", [1, 7, 1000, 65536])
+    def test_a_run_split_across_chunks_is_one_run(self, step):
+        body = json.dumps(_image_request()).encode()[:200_000]
+        assert _fed(body, step) == _fed(body)
+
+    def test_text_keeps_bytes_over_four(self):
+        body = json.dumps({"messages": [{"content": TEXT * 50}]}).encode()
+        assert _fed(body) == _text_tokens(body)
+
+    def test_a_short_run_is_text(self):
+        word = b"a" * (BLOB_RUN - 1)
+        assert _fed(word) == _text_tokens(word)
+        assert _fed(word + b"a") == _text_tokens(word + b"a")  # at the threshold
+        assert _fed(b"a" * 100 * BLOB_RUN) == BLOB_TOKENS
+
+    def test_the_tap_takes_the_meters_prompt(self):
+        tap = UsageTap(provider_kind="openai", streaming=True)
+        tap.feed(CONTENT % b"hello")
+        usage, estimated = tap.metered(request_bytes=2_000_000, generation=True, prompt_tokens=42)
+        assert estimated and usage["prompt_tokens"] == 42
+
+
+class TestThroughTheProxy:
+    def test_a_cut_stream_with_an_image_is_not_charged_its_bytes(self, monkeypatch):
+        monkeypatch.setattr(tqp, "_stream_response", _two_chunks(CONTENT % b"A", USAGE))
+        app, pool, _broker, _calls = _app(monkeypatch, content_type="text/event-stream")
+        asyncio.run(_disconnecting_call(app, _image_request()))
+        row = _one_row(pool)
+        assert json.loads(row[EXTRA])["usage"] == "estimated"
+        assert BLOB_TOKENS <= row[PROMPT] <= BLOB_TOKENS + 1000  # before: ~375k
+
+    def test_a_stream_ending_without_usage_with_an_image(self, monkeypatch):
+        body = CONTENT % b"hi" + b"data: [DONE]\n\n"
+        app, pool, _broker, _calls = _app(monkeypatch, body=body, content_type="text/event-stream")
+        assert _post(app, _image_request()).status_code == 200
+        row = _one_row(pool)
+        assert BLOB_TOKENS <= row[PROMPT] <= BLOB_TOKENS + 1000

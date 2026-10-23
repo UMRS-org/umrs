@@ -48,7 +48,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, StreamingResponse
 from starlette.routing import Route
 
-from umrs.quotas.usage_tap import UsageTap, record_proxy_usage
+from umrs.quotas.usage_tap import PromptMeter, UsageTap, record_proxy_usage
 from umrs.security.provider_url import _is_global_unicast as _ip_is_public
 from umrs.security.seal import SealedBlob, SealError, unseal_credential
 from umrs.security.sealed_sources import SealedSourceStore
@@ -435,19 +435,30 @@ def _metered_completion(request: Request, prep: _Prepared) -> bool:
 
 
 class _Sent:
-    """Request bytes sent upstream: the prompt side of a usage estimate."""
+    """Request bytes sent upstream: the prompt side of a usage estimate
+    (``meter``: images and other base64 runs at a fixed cost, Amendment 3)."""
 
-    def __init__(self, size: int = 0) -> None:
-        self.size = size
+    def __init__(self) -> None:
+        self.size = 0
+        self.meter = PromptMeter()
 
     async def counted(self, stream: Any) -> Any:
         async for chunk in stream:
             self.size += len(chunk)
+            self.meter.feed(chunk)
             yield chunk
 
     def body(self, raw: bytes) -> bytes:
         self.size = len(raw)
+        self.meter = PromptMeter()
+        self.meter.feed(raw)
         return raw
+
+
+def _sent_body(raw: bytes) -> _Sent:
+    sent = _Sent()
+    sent.body(raw)
+    return sent
 
 
 async def _upstream_content(request: Request, prep: _Prepared, sent: _Sent) -> Any:
@@ -644,6 +655,7 @@ def _record_usage(
         usage, estimated = tap.metered(
             request_bytes=meta.sent.size,
             generation=request.method not in _UNMETERED_METHODS,
+            prompt_tokens=meta.sent.meter.tokens(),
         )
         record_proxy_usage(
             getattr(request.app.state, "umrs_db_pool", None),
@@ -716,7 +728,7 @@ async def _site_forward(request: Request, pool: Any, lease: Any, path: str) -> A
         started=started,
         model=str(model or ""),
         served_model=str(payload["model"] or ""),
-        sent=_Sent(len(json.dumps(payload).encode())),
+        sent=_sent_body(json.dumps(payload).encode()),
     )
     return _relayed(request, lease, upstream, meta)
 
