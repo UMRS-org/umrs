@@ -33,6 +33,7 @@ from .endpoint_registry import (
 )
 from .factory import get_orchestrator, resolve_configured_backend_name
 from .ports import PortManager, get_port_manager
+from .provision_failure_cap import AttemptKey, current_venue, record_attempt
 from .readiness import (
     ReadinessPoller,
     get_readiness_poller,
@@ -162,6 +163,18 @@ def _resumed_request(endpoint: RegisteredEndpoint) -> ProvisionRequest:
         ttl_sec=0 if endpoint.expires_at is None else 1,
         metadata=dict(endpoint.metadata),
         variant=endpoint.variant,
+    )
+
+
+def _record_attempt(
+    request: ProvisionRequest, job_id: str, *, ok: bool, error: str | None = None
+) -> None:
+    """The attempt's outcome, for the failing re-provision cap."""
+    key = AttemptKey(
+        request.project_id, request.model, request.variant, current_venue()
+    )
+    record_attempt(
+        key, job_id=job_id, ok=ok, error=error, actor=request.requesting_user or ""
     )
 
 
@@ -372,7 +385,9 @@ class OrchestrationService:
                 return location
 
             await asyncio.sleep(
-                _location_pause(job_id, job, deadline - loop.time(), poll_interval, queue_patient)
+                _location_pause(
+                    job_id, job, deadline - loop.time(), poll_interval, queue_patient
+                )
             )
 
     async def _location_job_status(
@@ -829,6 +844,7 @@ class OrchestrationService:
 
             if readiness_result.is_ready:
                 self.registry.mark_ready(job_id)
+                _record_attempt(request, job_id, ok=True)
                 if progress:
                     progress("ready", {"models": readiness_result.models})
                 endpoint = self.registry.get_by_job_id(job_id)
@@ -845,6 +861,7 @@ class OrchestrationService:
                 or f"Readiness check failed: {readiness_result.state.value}"
             )
             self.registry.mark_failed(job_id, error)
+            _record_attempt(request, job_id, ok=False, error=error)
             if progress:
                 progress("failed", {"error": error})
             await self._cleanup_failed_job(
@@ -862,6 +879,7 @@ class OrchestrationService:
         except Exception as e:
             logger.exception(f"Provision finalize failed: {e}")
             self.registry.mark_failed(job_id, str(e))
+            _record_attempt(request, job_id, ok=False, error=str(e))
             await self._cleanup_failed_job(
                 job_id,
                 actual_host,
@@ -1573,7 +1591,9 @@ class OrchestrationService:
         stuck_statuses = {EndpointStatus.PROVISIONING, EndpointStatus.STARTING}
         with self.registry._lock:
             return [
-                ep for ep in self.registry._endpoints.values() if ep.status in stuck_statuses
+                ep
+                for ep in self.registry._endpoints.values()
+                if ep.status in stuck_statuses
             ]
 
     async def _still_in_queue(self, ep: RegisteredEndpoint) -> bool:
@@ -1663,7 +1683,9 @@ class OrchestrationService:
             task.add_done_callback(self._resume_tasks.discard)
             resumed.append(ep.job_id)
         if resumed:
-            logger.info("Resumed %d interrupted provision(s): %s", len(resumed), resumed)
+            logger.info(
+                "Resumed %d interrupted provision(s): %s", len(resumed), resumed
+            )
         return resumed
 
     async def close(self):

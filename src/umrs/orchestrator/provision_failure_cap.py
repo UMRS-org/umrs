@@ -1,0 +1,247 @@
+"""Cap on repeated failing re-provisioning (2026-10-23).
+
+bdrt, 2026-10-20..22: job 8218 held dgx-spark-0's GPU behind a dead LiteLLM.
+Every new request for the same model submitted a fresh Slurm job, which
+landed on the same node, could not start vLLM (8.4 of 119.7 GiB free), used
+up its respawn budget and failed: 49 FAILED jobs, each accepted as if the
+last one had never happened.
+
+Policy: when the last ``max_failures`` provision attempts of one
+(project, model, variant) on this venue all failed inside ``window_sec``, a
+new request is refused with ``endpoints.provision_capped`` (HTTP 429 and
+Retry-After) instead of submitting another job. A success in between ends
+the run. The refusal names the failed jobs and the time the oldest of them
+leaves the window. An admin may pass ``override_failure_cap``.
+
+Store: the audit trail (the persistent ``audit_events`` table when the
+server has one, else the in-process ring buffer), so there is no new table
+and no migration. The trail belongs to the api layer, which the orchestrator
+may not import (import boundary): ``umrs.api.endpoints`` hands its emit and
+query functions in through :func:`use_trail` when it is imported. Without a
+trail nothing is recorded and nothing is refused. Each finished attempt is one ``endpoint.provision_attempt``
+event, outcome ``success`` or ``error``, whose details carry the model,
+variant, venue and job id. Every venue's server writes the same table, so
+the venue is part of the key.
+
+Tunables: ``UMRS_PROVISION_FAILURE_CAP`` (failures, default 3; 0 disables)
+and ``UMRS_PROVISION_FAILURE_WINDOW_SEC`` (default 1800).
+"""
+
+from __future__ import annotations
+
+import logging
+import math
+import os
+import time
+from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import Any
+
+logger = logging.getLogger(__name__)
+
+ATTEMPT_EVENT = "endpoint.provision_attempt"
+OVERRIDE_EVENT = "endpoint.provision_cap_overridden"
+_QUERY_LIMIT = 200
+_ERROR_CHARS = 300
+
+# emit_audit / query_audit_events of umrs.api.audit_events, set by use_trail.
+_TRAIL: dict[str, Callable[..., Any]] = {}
+
+
+def use_trail(
+    emit: Callable[..., None], query: Callable[..., list[dict[str, Any]]]
+) -> None:
+    """Hand in the audit trail the attempts are written to and read from."""
+    _TRAIL.update(emit=emit, query=query)
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        logger.warning("%s=%r is not an integer; using %d", name, raw, default)
+        return default
+
+
+@dataclass(frozen=True)
+class CapPolicy:
+    """How many failures inside which window pause a model's provisioning."""
+
+    max_failures: int = 3
+    window_sec: int = 1800
+
+    @property
+    def enabled(self) -> bool:
+        return self.max_failures > 0 and self.window_sec > 0
+
+    @classmethod
+    def from_env(cls) -> CapPolicy:
+        return cls(
+            max_failures=_env_int("UMRS_PROVISION_FAILURE_CAP", cls.max_failures),
+            window_sec=_env_int("UMRS_PROVISION_FAILURE_WINDOW_SEC", cls.window_sec),
+        )
+
+
+@dataclass(frozen=True)
+class AttemptKey:
+    """What one run of failures is counted per."""
+
+    project_id: str
+    model: str
+    variant: str | None
+    venue: str
+
+    def details(self) -> dict[str, Any]:
+        return {"model": self.model, "variant": self.variant or "", "venue": self.venue}
+
+    def matches(self, details: dict[str, Any]) -> bool:
+        return all(details.get(k, "") == v for k, v in self.details().items())
+
+
+@dataclass(frozen=True)
+class FailedAttempt:
+    job_id: str
+    ts: float
+    error: str
+
+
+def _utc(ts: float) -> str:
+    return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+@dataclass(frozen=True)
+class CapRefusal:
+    """A refused provision: the failures that caused it and when to retry."""
+
+    key: AttemptKey
+    failures: tuple[FailedAttempt, ...]  # newest first
+    window_sec: int
+    retry_at: float
+
+    def retry_after_sec(self, now: float) -> int:
+        return max(1, math.ceil(self.retry_at - now))
+
+    def message(self, now: float) -> str:
+        variant = f" (variant {self.key.variant})" if self.key.variant else ""
+        jobs = "; ".join(
+            f"job {f.job_id} at {_utc(f.ts)}: {f.error[:120] or 'no error recorded'}"
+            for f in self.failures
+        )
+        return (
+            f"Provisioning '{self.key.model}'{variant} on {self.key.venue} for project "
+            f"'{self.key.project_id}' is paused: the last {len(self.failures)} attempts "
+            f"failed within {self.window_sec // 60} min ({jobs}). Retry after "
+            f"{_utc(self.retry_at)} (in {self.retry_after_sec(now)} s), after fixing the "
+            "cause; an admin may provision now with override_failure_cap=true."
+        )
+
+
+def current_venue() -> str:
+    """This server's venue (env, then site config name)."""
+    env = os.environ.get("UMRS_CLUSTER", "").strip()
+    if env:
+        return env
+    try:
+        from .site_config import load_site_config
+
+        return str(load_site_config().name)
+    except Exception:  # noqa: BLE001 - provenance only; never fail the caller
+        return "unknown"
+
+
+def record_attempt(
+    key: AttemptKey, *, job_id: str, ok: bool, error: str | None = None, actor: str = ""
+) -> None:
+    """One finished provision attempt into the audit trail (never raises)."""
+    emit = _TRAIL.get("emit")
+    if emit is None:
+        logger.debug("no audit trail; provision attempt %s not recorded", job_id)
+        return
+    details = key.details()
+    details.update({"job_id": job_id, "error": (error or "")[:_ERROR_CHARS]})
+    try:
+        emit(
+            ATTEMPT_EVENT,
+            actor=actor,
+            project_id=key.project_id,
+            outcome="success" if ok else "error",
+            scope="project",
+            details=details,
+        )
+    except Exception:
+        logger.warning("could not record provision attempt %s", job_id, exc_info=True)
+
+
+def recent_attempts(key: AttemptKey, *, since: float) -> list[dict[str, Any]]:
+    """This key's attempt events since ``since``, any order."""
+    query = _TRAIL.get("query")
+    if query is None:
+        return []
+    rows = query(
+        event=ATTEMPT_EVENT, project_id=key.project_id, since=since, limit=_QUERY_LIMIT
+    )
+    return [r for r in rows if key.matches(r.get("details") or {})]
+
+
+def _as_attempt(row: dict[str, Any]) -> tuple[FailedAttempt, bool]:
+    details = row.get("details") or {}
+    attempt = FailedAttempt(
+        job_id=str(details.get("job_id", "")),
+        ts=float(row.get("ts", 0.0)),
+        error=str(details.get("error", "")),
+    )
+    return attempt, row.get("outcome") == "success"
+
+
+def leading_failures(
+    rows: list[dict[str, Any]], *, since: float
+) -> list[FailedAttempt]:
+    """The failures since ``since`` newer than the last success, newest first.
+
+    A job recorded twice counts once.
+    """
+    attempts = sorted(
+        (_as_attempt(r) for r in rows), key=lambda a: a[0].ts, reverse=True
+    )
+    failures: list[FailedAttempt] = []
+    seen: set[str] = set()
+    for attempt, ok in attempts:
+        if ok or attempt.ts < since:
+            break
+        if attempt.job_id not in seen:
+            seen.add(attempt.job_id)
+            failures.append(attempt)
+    return failures
+
+
+def evaluate(
+    rows: list[dict[str, Any]], key: AttemptKey, policy: CapPolicy, now: float
+) -> CapRefusal | None:
+    """The refusal these attempt rows call for, or None."""
+    failures = leading_failures(rows, since=now - policy.window_sec)
+    if len(failures) < policy.max_failures:
+        return None
+    counted = tuple(failures[: policy.max_failures])
+    return CapRefusal(
+        key=key,
+        failures=counted,
+        window_sec=policy.window_sec,
+        retry_at=counted[-1].ts + policy.window_sec,
+    )
+
+
+def check(
+    key: AttemptKey, policy: CapPolicy | None = None, now: float | None = None
+) -> CapRefusal | None:
+    """Refusal for a new provision of ``key`` now, or None to go ahead."""
+    policy = policy or CapPolicy.from_env()
+    if not policy.enabled:
+        return None
+    now = time.time() if now is None else now
+    return evaluate(
+        recent_attempts(key, since=now - policy.window_sec), key, policy, now
+    )
