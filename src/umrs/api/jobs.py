@@ -815,9 +815,10 @@ _UNDISPATCHABLE_JOB_TYPES = {
     # BATCH_INFER graduated 2026-09-12 (c5061d43).
     # MODEL_EVAL graduated 2026-09-12 (this wave).
     JobType.FINE_TUNE,
-    # SESSION_GC: gated at submission (operator-side, POST /umrs/jobs requires
-    # identity as every other submission; max_days is job-locked at submit-time).
-    # Not in this set.
+    # SESSION_GC: dispatchable, admin-only at submission (it archives every
+    # project's sessions: job_tracking_handler.ADMIN_ONLY_JOB_TYPES, enforced by
+    # _enforce_spec_resources for the parent and every fan-out child; review
+    # 2026-10-23). Not in this set.
     # D-44 domain benchmark GRADUATED 2026-09-23: the executor
     # (DomainBenchmarkBackend, node-existence scoring) + the suite format
     # (spec.benchmark: [{question, expected_node_ids}]) landed — removed

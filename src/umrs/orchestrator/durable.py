@@ -44,6 +44,31 @@ from .service import OrchestrationService, ProvisionResult
 logger = logging.getLogger(__name__)
 
 
+def _session_gc_lane(db_pool) -> tuple[object | None, object | None]:
+    """SESSION_GC lane: ``(session_store, backend)`` stitched to the umrs_db pool.
+
+    ONE backend is shared by the dispatch factory and the status checker
+    (the checker reads the backend's per-job reports by reference). Absent
+    → ``(None, None)``: an honest failure at submit, never a straight-DELETE
+    fallback. Both modules are top-level packages: ``umrs.research_sessions``
+    (48eae903 had ``.research_sessions``, fixed 3d0857ff) and
+    ``umrs.jobs.session_gc`` — the relative ``.session_gc`` import 3d0857ff
+    kept named ``umrs.orchestrator.session_gc``, which does not exist; the
+    ImportError was swallowed at debug level, so every boot ran without a
+    session store and every session_gc job failed "wiring missing"
+    (2026-10-23). A wiring failure is now logged as a warning.
+    """
+    try:
+        from umrs.jobs.session_gc import SessionGcBackend
+        from umrs.research_sessions.store import SessionStore
+
+        session_store = SessionStore(db_pool)
+        return session_store, SessionGcBackend(session_store=session_store)
+    except (ImportError, AttributeError, TypeError) as exc:
+        logger.warning("session_gc lane wiring skipped: %s", exc)
+        return None, None
+
+
 @dataclass
 class DurableProvisionRequest:
     """Request for durable endpoint provisioning."""
@@ -182,29 +207,11 @@ class DurableOrchestrationService:
             from umrs.admin.user_store import UserStore
 
             user_store = UserStore()
-        except Exception:
+        except Exception:  # noqa: BLE001 — per-user accounts are optional
             logger.debug("UserStore unavailable; per-user Slurm accounts disabled")
             user_store = None
 
-        # SESSION_GC lane: ONE shared backend across dispatch factory + status
-        # checker (their reports are shared by reference), stitched to the umrs_db
-        # pool; absent → honest failure at submit (never a straight-DELETE fallback).
-        # research_sessions is a TOP-LEVEL package (umrs.research_sessions),
-        # never umrs.orchestrator.research_sessions — 48eae903 had this wrong
-        # and the wiring degraded silently under any db_pool presence.
-        try:
-            from umrs.research_sessions.store import SessionStore
-
-            from .session_gc import SessionGcBackend
-
-            session_store = SessionStore(self.db_pool)
-            session_gc_backend = SessionGcBackend(session_store=session_store)
-        except (ImportError, AttributeError, TypeError) as exc:
-            logger.debug(
-                "SessionGcBackend wiring skipped (session_gc unavailable): %s", exc
-            )
-            session_store = None
-            session_gc_backend = None
+        session_store, session_gc_backend = _session_gc_lane(self.db_pool)
 
         # ADR-046 A2: frontend-session lane (remote companion sandboxes) —
         # present only where the venue is configured; shared backend/checker.
@@ -227,6 +234,7 @@ class DurableOrchestrationService:
             path_validator=path_validator,
             user_store=user_store,
             session_store=session_store,
+            session_gc_backend=session_gc_backend,
             frontend_session_backend=frontend_session_backend,
         )
         self._job_service.set_backend_factory(backend_factory)
@@ -238,6 +246,7 @@ class DurableOrchestrationService:
             orchestrator=orch.backend,
             instance_id=self._job_service.instance_id,
             session_store=session_store,
+            session_gc_backend=session_gc_backend,
             frontend_session_checker=frontend_session_checker,
         )
         self._job_service.set_status_checker(status_checker)
@@ -515,7 +524,6 @@ _durable_service: DurableOrchestrationService | None = None
 
 def get_durable_orchestration_service() -> DurableOrchestrationService:
     """Get the global durable orchestration service singleton."""
-    global _durable_service
     if _durable_service is None:
         raise RuntimeError(
             "DurableOrchestrationService not initialized. "

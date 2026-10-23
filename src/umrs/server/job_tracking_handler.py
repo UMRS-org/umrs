@@ -189,6 +189,13 @@ WORKFLOW_RUN_SERVER_ONLY = (
 )
 
 
+#: Operator job types: their backend acts across every tenant of the shared
+#: umrs_db (session_gc archives EVERY project's research sessions older than
+#: spec.max_days; SessionStore.archive_aged_sessions has no project or user
+#: filter). Only an admin submits them, on both seams (review 2026-10-23).
+ADMIN_ONLY_JOB_TYPES = frozenset({JobType.SESSION_GC})
+
+
 def spec_resource_refusal(
     job_type: JobType, spec: dict[str, Any], user_id: str, is_admin: bool
 ) -> str | None:
@@ -197,10 +204,24 @@ def spec_resource_refusal(
     data_ingestion reads the named object with the server's S3 credentials
     and writes back into that bucket; index_build runs on the admin DB
     connection — a caller-chosen bucket or (database, table) reached any
-    user's data (review 2026-10-04). Shared by the ZMQ and HTTP submit paths.
+    user's data (review 2026-10-04). An operator job type
+    (``ADMIN_ONLY_JOB_TYPES``) acts on every tenant's data, so a non-admin
+    may not submit one at all. Shared by the ZMQ and HTTP submit paths.
     """
     if is_admin:
         return None
+    if job_type in ADMIN_ONLY_JOB_TYPES:
+        return (
+            f"{job_type.value} is an operator job across every project: "
+            "it requires admin role"
+        )
+    return _owned_resource_refusal(job_type, spec, user_id)
+
+
+def _owned_resource_refusal(
+    job_type: JobType, spec: dict[str, Any], user_id: str
+) -> str | None:
+    """A data_ingestion bucket / index_build table the caller does not own."""
     from umrs.server.step_staging import bucket_owned_by, database_table_owned_by
 
     if job_type == JobType.DATA_INGESTION and not bucket_owned_by(
