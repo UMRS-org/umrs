@@ -127,9 +127,9 @@ class TestDisconnect:
         assert row[9] == 29 and row[-1] == "infer_proxy"
 
 
-async def _disconnecting_call(app) -> None:
+async def _disconnecting_call(app, payload: dict | None = None) -> None:
     """One ASGI 2.4 call whose client is gone at the first body chunk."""
-    body = json.dumps({"model": "gpt-x", "stream": True}).encode()
+    body = json.dumps(payload or {"model": "gpt-x", "stream": True}).encode()
     scope = {
         "type": "http",
         "asgi": {"version": "3.0", "spec_version": "2.4"},

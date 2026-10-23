@@ -22,9 +22,11 @@ When the provider's counts cannot be trusted to be whole (a stream that
 ended without usage, or any generation call the relay did not see to its
 end: the client left before the final usage chunk) the row carries a
 conservative estimate instead of zero, tagged ``extra.usage = "estimated"``
-(ADR-099 D-4, Amendment 2): the prompt is the request body's bytes / 4, the
-completion the larger of the streamed content bytes / 4 and the number of
-content events (a whole body's bytes / 4 when it is not an event stream).
+(ADR-099 D-4, Amendment 2): the prompt is the request body's bytes / 4
+(:class:`PromptMeter`: a base64 run, an inline image, counts at most
+:data:`BLOB_TOKENS`, Amendment 3), the completion the larger of the streamed
+content bytes / 4 and the number of content events (a whole body's bytes / 4
+when it is not an event stream).
 A count the provider did report is kept, and raised to the estimate only
 where the estimate is larger. Any other answer without usage (a one-shot
 body, a listing) records zero tokens and ``extra.usage = "absent"``.
@@ -149,6 +151,59 @@ def _quarter(n: int) -> int:
     return math.ceil(max(0, n) / 4)
 
 
+#: A run of base64 characters this long is binary data (an image, a file),
+#: not text: no prose or code goes 1 KiB without a space or punctuation.
+BLOB_RUN = 1024
+
+#: The estimate's charge for one such run (ADR-099 D-4, Amendment 3): a
+#: vision prompt's image costs ~0.3-5k tokens whatever its bytes, never
+#: bytes / 4 (a 1.5 MB PNG would read as ~500k). Shorter runs count / 4.
+BLOB_TOKENS = 4096
+
+#: The base64 alphabet, the URL-safe one, and JSON's escaped ``\/``.
+_RUN_RE = re.compile(rb"[A-Za-z0-9+/=_\\-]+")
+
+
+class PromptMeter:
+    """The prompt side of an estimate, fed the request body as it is sent:
+    text bytes / 4, plus each base64 run of :data:`BLOB_RUN` or more at most
+    :data:`BLOB_TOKENS` (a run may span chunks; nothing is kept but counts)."""
+
+    def __init__(self) -> None:
+        self._text = 0  # bytes outside long runs
+        self._blob_tokens = 0
+        self._run = 0  # the open run's length (it may continue in the next chunk)
+
+    def feed(self, chunk: bytes) -> None:
+        pos = 0
+        for match in _RUN_RE.finditer(chunk):
+            if match.start() > pos:
+                self._close()
+                self._text += match.start() - pos
+            self._run += match.end() - match.start()
+            pos = match.end()
+        if pos < len(chunk):
+            self._close()
+            self._text += len(chunk) - pos
+
+    def _close(self) -> None:
+        if self._run >= BLOB_RUN:
+            self._blob_tokens += _run_tokens(self._run)
+        else:
+            self._text += self._run
+        self._run = 0
+
+    def tokens(self) -> int:
+        """The prompt estimate of what was fed so far."""
+        if self._run >= BLOB_RUN:
+            return _quarter(self._text) + self._blob_tokens + _run_tokens(self._run)
+        return _quarter(self._text + self._run) + self._blob_tokens
+
+
+def _run_tokens(run: int) -> int:
+    return min(_quarter(run), BLOB_TOKENS)
+
+
 def _merged(
     reported: dict[str, int] | None, estimate: dict[str, int]
 ) -> tuple[dict[str, int], bool]:
@@ -223,8 +278,11 @@ class UsageTap:
         self._content_bytes += size
         self._content_events += 1 if size else 0
 
-    def estimate(self, request_bytes: int) -> dict[str, int]:
-        """The conservative token estimate of this call (ADR-099 D-4)."""
+    def estimate(
+        self, request_bytes: int, prompt_tokens: int | None = None
+    ) -> dict[str, int]:
+        """The conservative token estimate of this call (ADR-099 D-4); the
+        prompt is ``prompt_tokens`` (a :class:`PromptMeter`'s) when given."""
         if self._line:
             self._count_line(bytes(self._line))
             self._line.clear()
@@ -232,7 +290,7 @@ class UsageTap:
             completion = max(self._content_events, _quarter(self._content_bytes))
         else:
             completion = _quarter(self._total)
-        prompt = _quarter(request_bytes)
+        prompt = _quarter(request_bytes) if prompt_tokens is None else prompt_tokens
         return {
             "prompt_tokens": prompt,
             "completion_tokens": completion,
@@ -240,7 +298,11 @@ class UsageTap:
         }
 
     def metered(
-        self, *, request_bytes: int, generation: bool
+        self,
+        *,
+        request_bytes: int,
+        generation: bool,
+        prompt_tokens: int | None = None,
     ) -> tuple[dict[str, int] | None, bool]:
         """``(usage, estimated)`` for the call's row.
 
@@ -252,7 +314,7 @@ class UsageTap:
         whole = self.ended and (reported is not None or not self.streaming)
         if whole or not generation:
             return reported, False
-        return _merged(reported, self.estimate(request_bytes))
+        return _merged(reported, self.estimate(request_bytes, prompt_tokens))
 
     def _text(self, buf: bytearray) -> str:
         return bytes(buf).decode("utf-8", errors="replace")
@@ -409,9 +471,12 @@ def record_proxy_usage(
 
 
 __all__ = [
+    "BLOB_RUN",
+    "BLOB_TOKENS",
     "HEAD_BYTES",
     "ORIGIN",
     "TAIL_BYTES",
+    "PromptMeter",
     "UsageTap",
     "build_usage_record",
     "record_proxy_usage",
