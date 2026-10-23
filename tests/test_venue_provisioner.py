@@ -274,6 +274,22 @@ class TestWorkerHardening:
         token_leaks = [e for e in env_pairs if e.startswith("R4_VENUE_SESSION_TOKEN=")]
         assert token_leaks == []
 
+    def test_worker_env_carries_the_started_web_access(self):
+        """ADR-099 D-9 (RS-1 fix W1): the worker's web guard follows the choice
+        the sandbox was started with, the one squid enforces; a restored copy
+        without a choice used to leave the worker's web tools refusing."""
+        cases = (
+            (_cfg(), "R4_WEB_ACCESS=public"),
+            (_cfg(web_policy="none"), "R4_WEB_ACCESS=none"),
+            (
+                _cfg(web_policy="allowlist", web_allow_domains=(".arxiv.org", "pypi.org")),
+                "R4_WEB_ACCESS=allowlist:.arxiv.org,pypi.org",
+            ),
+        )
+        for cfg, expected in cases:
+            env_pairs = _env_values(worker_run_args(cfg).argv)
+            assert [e for e in env_pairs if e.startswith("R4_WEB_ACCESS=")] == [expected]
+
     def test_nginx_rail_listener_only_with_upstream(self):
         without = render_nginx_conf(_cfg())
         assert "listen 8081" not in without
