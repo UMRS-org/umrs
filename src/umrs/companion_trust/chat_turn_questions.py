@@ -12,12 +12,16 @@ Answers are conversation content: admin views never read this table.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sqlite3
 import threading
+from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
+
+logger = logging.getLogger(__name__)
 
 _TABLE = "chat_turn_questions"
 _COLUMNS = (
@@ -218,6 +222,71 @@ class ChatTurnQuestionsStore:
             raise KeyError(f"question not found: {question_id}")
         return record
 
+    def table_present(self) -> bool:
+        """False on a database without migration 0127 (the sqlite fallback
+        creates its table itself)."""
+        if self._sqlite:
+            return True
+        with self._lock:
+            cur = self._conn.cursor()
+            cur.execute(f"SELECT to_regclass('{_TABLE}') IS NOT NULL")
+            row = cur.fetchone()
+        return bool(row and row[0])
+
+    def cancel_pending(self, *, session_id: str, user_id: str) -> int:
+        """Close one owner's pending questions of a session as ``cancelled``
+        (a new worker, a stop or the lease end: nobody polls them any more).
+        The number of questions closed."""
+        with self._lock:
+            cur = self._conn.cursor()
+            cur.execute(
+                self._q(
+                    f"UPDATE {_TABLE} SET status = 'cancelled' WHERE session_id = %s "
+                    "AND user_id = %s AND status = 'pending'"
+                ),
+                (session_id, user_id),
+            )
+            closed = int(cur.rowcount or 0)
+            self._conn.commit()
+        return closed
+
+
+def cancel_session_questions(
+    pool: Any,
+    *,
+    session_id: str,
+    user_id: str,
+    factory: Callable[[Any], ChatTurnQuestionsStore] | None = None,
+) -> int:
+    """Best effort: cancel a session's pending questions on a pooled
+    connection (ADR-099 D-8). A venue without migration 0127, or a database
+    error, cancels nothing and never fails the caller's start or stop."""
+    if pool is None:
+        return 0
+    conn = pool.getconn()
+    try:
+        store = factory(conn) if factory is not None else ChatTurnQuestionsStore(conn)
+        if not store.table_present():
+            return 0
+        return store.cancel_pending(session_id=session_id, user_id=user_id)
+    except Exception:  # cleanup never blocks a start or a stop
+        logger.warning(
+            "pending questions of %s not cancelled", session_id, exc_info=True
+        )
+        _rollback(conn)
+        return 0
+    finally:
+        pool.putconn(conn)
+
+
+def _rollback(conn: Any) -> None:
+    rollback = getattr(conn, "rollback", None)
+    if callable(rollback):
+        try:
+            rollback()
+        except Exception:  # the pool discards a broken connection
+            logger.debug("rollback failed", exc_info=True)
+
 
 __all__ = [
     "MAX_ANSWER_CHARS",
@@ -225,5 +294,6 @@ __all__ = [
     "STATUSES",
     "ChatTurnQuestionsStore",
     "QuestionClosed",
+    "cancel_session_questions",
     "clean_options",
 ]

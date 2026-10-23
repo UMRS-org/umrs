@@ -41,7 +41,6 @@ from umrs.companion_trust.chat_turn_questions import (
 )
 from umrs.venues.agent_settings import (
     SettingsInvalid,
-    SettingsOwnerConflict,
     VenueAgentSettingsStore,
     validate_agent_settings,
 )
@@ -161,12 +160,9 @@ async def put_venue_settings(
             PlatformError.companionvenue("bad_request", str(exc), field=exc.field),
             cause=exc,
         )
-    try:
-        rev = _settings_store(request).put(
-            session_id=session_id, user_id=uid, settings=settings
-        )
-    except SettingsOwnerConflict as exc:
-        raise_typed(PlatformError.companionvenue("conflict", str(exc)), cause=exc)
+    rev = _settings_store(request).put(
+        session_id=session_id, user_id=uid, settings=settings
+    )
     _audit_settings(uid, session_id, rev, settings)
     return {"session_id": session_id, "rev": rev}
 

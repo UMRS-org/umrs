@@ -5,9 +5,10 @@ The owner's client computes the settings its local bridge applies and sends
 them before every remote start and on every change; the worker reads them
 through its rail and applies them from the next turn when ``rev`` grew.
 
-One row per session, owned by ``user_id``: a write by another user never
-replaces it, and the rail read is filtered by the lease owner. Unknown keys
-(a newer client's) are kept; the worker ignores them.
+One row per ``(user_id, session_id)``: another user's write for the same
+session id is another row and never replaces or blocks this one, and the
+rail read is filtered by the lease owner. Unknown keys (a newer client's)
+are kept; the worker ignores them.
 """
 
 from __future__ import annotations
@@ -100,18 +101,13 @@ def validate_agent_settings(doc: Any) -> dict[str, Any]:
     return out
 
 
-class SettingsOwnerConflict(PermissionError):
-    """The session's settings row belongs to another user."""
-
-
 _PUT_SQL = """
 INSERT INTO companion_venue_agent_settings (session_id, user_id, settings, rev, updated_at)
 VALUES (%s, %s, %s::jsonb, 1, now())
-ON CONFLICT (session_id) DO UPDATE
+ON CONFLICT (user_id, session_id) DO UPDATE
     SET settings = EXCLUDED.settings,
         rev = companion_venue_agent_settings.rev + 1,
         updated_at = now()
-    WHERE companion_venue_agent_settings.user_id = EXCLUDED.user_id
 RETURNING rev
 """
 
@@ -121,16 +117,14 @@ class VenueAgentSettingsStore:
 
     def __init__(self, pool: Any = None) -> None:
         self._pool = pool
-        self._rows: dict[str, tuple[str, int, dict[str, Any]]] = {}
+        self._rows: dict[tuple[str, str], tuple[int, dict[str, Any]]] = {}
         self._lock = threading.Lock()
 
-    def get(self, session_id: str, *, user_id: str = "") -> tuple[int, dict[str, Any]]:
-        """``(rev, settings)``; ``(0, {})`` when none were sent (or another
-        user's row, when ``user_id`` is given)."""
+    def get(self, session_id: str, *, user_id: str) -> tuple[int, dict[str, Any]]:
+        """``user_id``'s ``(rev, settings)`` for the session; ``(0, {})`` when
+        that user sent none."""
         if self._pool is None:
-            owner, rev, settings = self._rows.get(session_id, ("", 0, {}))
-            if user_id and owner != user_id:
-                return 0, {}
+            rev, settings = self._rows.get((user_id, session_id), (0, {}))
             return rev, dict(settings)
         row = self._fetch(session_id, user_id)
         if row is None:
@@ -152,34 +146,27 @@ class VenueAgentSettingsStore:
                 commit()
         finally:
             self._pool.putconn(conn)
-        if row is None:
-            raise SettingsOwnerConflict(
-                f"settings of session {session_id} belong to another user"
-            )
+        if row is None:  # an upsert with RETURNING always returns its row
+            raise RuntimeError(f"settings of session {session_id} not stored")
         return int(row[0])
 
     def _put_memory(
         self, session_id: str, user_id: str, settings: dict[str, Any]
     ) -> int:
         with self._lock:
-            owner, rev, _old = self._rows.get(session_id, (user_id, 0, {}))
-            if owner != user_id:
-                raise SettingsOwnerConflict(
-                    f"settings of session {session_id} belong to another user"
-                )
-            self._rows[session_id] = (user_id, rev + 1, dict(settings))
+            rev, _old = self._rows.get((user_id, session_id), (0, {}))
+            self._rows[(user_id, session_id)] = (rev + 1, dict(settings))
             return rev + 1
 
     def _fetch(self, session_id: str, user_id: str) -> Any:
-        sql = "SELECT rev, settings FROM companion_venue_agent_settings WHERE session_id = %s"
-        params: tuple[str, ...] = (session_id,)
-        if user_id:
-            sql += " AND user_id = %s"
-            params = (session_id, user_id)
+        sql = (
+            "SELECT rev, settings FROM companion_venue_agent_settings "
+            "WHERE session_id = %s AND user_id = %s"
+        )
         conn = self._pool.getconn()
         try:
             with conn.cursor() as cur:
-                cur.execute(sql, params)
+                cur.execute(sql, (session_id, user_id))
                 return cur.fetchone()
         finally:
             self._pool.putconn(conn)
@@ -191,7 +178,6 @@ __all__ = [
     "PERMISSION_MODES",
     "SETTINGS_SCHEMA",
     "SettingsInvalid",
-    "SettingsOwnerConflict",
     "VenueAgentSettingsStore",
     "validate_agent_settings",
 ]
