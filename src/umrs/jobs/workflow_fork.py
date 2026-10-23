@@ -171,11 +171,17 @@ class WorkflowForker:
         description: str,
     ) -> dict[str, Any]:
         """Create the forked spec by deep-copying and applying overrides."""
+        from umrs.shared.workflow_execution_access import VERIFIED_PROJECT_SPEC_KEY
+
         spec = copy.deepcopy(source_job.spec or {})
+        # The verified project is server-owned evidence of the original
+        # trigger; a fork re-proves nothing, so it never inherits or sets it.
+        spec.pop(VERIFIED_PROJECT_SPEC_KEY, None)
 
         # Apply parameter overrides
         for key, value in param_overrides.items():
-            spec[key] = value
+            if key != VERIFIED_PROJECT_SPEC_KEY:
+                spec[key] = value
 
         # Set fork lineage metadata
         spec["forked_from_job_id"] = source_job.job_id

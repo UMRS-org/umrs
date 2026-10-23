@@ -1395,6 +1395,15 @@ class CleanupStatusChecker(BackendStatusChecker):
         return await self.check_status(attempt, job)
 
 
+def _session_gc_backend(shared, session_store):
+    """The SESSION_GC backend the status checker shares, else one of our own."""
+    if shared is not None:
+        return shared
+    from .session_gc import SessionGcBackend
+
+    return SessionGcBackend(session_store=session_store)
+
+
 def create_backend_factory(
     orchestrator: BaseOrchestrator,
     registry: EndpointRegistry,
@@ -1407,6 +1416,7 @@ def create_backend_factory(
     user_store=None,
     session_store=None,
     frontend_session_backend=None,
+    session_gc_backend=None,
 ):
     """
     Create a backend factory function for JobService.
@@ -1420,6 +1430,8 @@ def create_backend_factory(
         model_store: Model registry store for download jobs (optional)
         path_validator: Path validator for download jobs (optional)
         user_store: Optional UserStore for per-user Slurm account resolution
+        session_gc_backend: The SESSION_GC backend shared with the status
+            checker (optional; built from ``session_store`` when absent)
 
     Returns:
         Factory function: (JobType) -> OrchestratorBackend
@@ -1452,9 +1464,7 @@ def create_backend_factory(
 
     model_eval_backend = ModelEvalBackend()
 
-    from .session_gc import SessionGcBackend
-
-    session_gc_backend = SessionGcBackend(session_store=session_store)
+    session_gc_backend = _session_gc_backend(session_gc_backend, session_store)
 
     from .knowledge_adapters import (
         DomainBenchmarkBackend,

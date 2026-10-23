@@ -28,7 +28,9 @@ def _mvp_auth_and_engine(monkeypatch):
     from umrs.knowledge.loop import AutonomousResearchLoop
 
     loop_api._loop_engine = AutonomousResearchLoop(simulated=True)
-    monkeypatch.setattr(loop_api, "_registered_workflow_names", lambda _owner: ["wf"])
+    monkeypatch.setattr(
+        loop_api, "_registered_workflow_names", lambda _owner, _project=None, **_kw: ["wf"]
+    )
     monkeypatch.setattr(engine_loop_runner, "register", lambda *_a, **_k: None)
     loop_api._configure_hosting()
     yield

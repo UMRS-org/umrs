@@ -22,7 +22,7 @@ from __future__ import annotations
 import logging
 import threading
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
@@ -69,6 +69,29 @@ class EndpointStatus(str, Enum):
     EXPIRED = "expired"  # Past expires_at, pending cleanup
     FAILED = "failed"  # Job failed, pending cleanup
     TERMINATED = "terminated"  # Explicitly stopped
+
+
+# Metadata keys (UTC ISO; rows from before 2026-10-23 carry neither): when
+# the row last turned STARTING, and when the provision first saw its job out
+# of the scheduler's queue (before the location is published, remote Slurm's
+# bring-up runs with the row still PROVISIONING).
+STARTING_AT_KEY = "starting_at"
+LEFT_QUEUE_AT_KEY = "left_queue_at"
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _naive_utc(raw: Any) -> datetime | None:
+    """``raw`` (an ISO timestamp) as a naive UTC datetime, or None."""
+    try:
+        value = datetime.fromisoformat(str(raw))
+    except (TypeError, ValueError):
+        return None
+    if value.tzinfo is not None:
+        value = value.astimezone(timezone.utc).replace(tzinfo=None)
+    return value
 
 
 @dataclass
@@ -118,6 +141,18 @@ class RegisteredEndpoint:
 
     # Metadata
     metadata: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def starting_at(self) -> datetime | None:
+        """When the row turned STARTING (naive UTC), if it recorded it."""
+        raw = self.metadata.get(STARTING_AT_KEY)
+        return _naive_utc(raw) if raw else None
+
+    @property
+    def left_queue_at(self) -> datetime | None:
+        """When its job was first seen out of the queue (naive UTC), if known."""
+        raw = self.metadata.get(LEFT_QUEUE_AT_KEY)
+        return _naive_utc(raw) if raw else None
 
     @property
     def litellm_url(self) -> str:
@@ -496,6 +531,10 @@ class EndpointRegistry:
                 endpoint.consecutive_failures = 0
             elif status == EndpointStatus.FAILED:
                 endpoint.consecutive_failures += 1
+            elif status == EndpointStatus.STARTING and old_status != status:
+                # Re-review N4 (2026-10-23): the stuck reap ages a STARTING row
+                # from here, not from created_at (which includes queue time).
+                endpoint.metadata[STARTING_AT_KEY] = _utc_now_iso()
 
             # Persist status change
             self._persist(endpoint)

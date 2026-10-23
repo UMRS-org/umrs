@@ -34,7 +34,12 @@ def get_execution_registry() -> Any:
     return _provider()
 
 
-__all__ = ["get_execution_registry", "register_execution_registry_provider"]
+__all__ = [
+    "VERIFIED_PROJECT_SPEC_KEY",
+    "durable_job_verified_project",
+    "get_execution_registry",
+    "register_execution_registry_provider",
+]
 
 
 # Registry-handler delegate (workflow_run's backend path) — same provider
@@ -57,3 +62,25 @@ def _launch_workflow_from_catalog(**kwargs: Any) -> Any:
             "registered its launcher (is the sidecar booted?)"
         )
     return _handler(**kwargs)
+
+
+# ADR-080 on the durable path (2026-10-23): a ``workflow_run`` job spec is
+# built only by the server (both client submit lanes refuse the job type),
+# and it records the job's project under this key only when that project was
+# gateway-verified at trigger time (an HTTP trigger with a signed identity, a
+# research loop started in its starter's verified project). A re-dispatch
+# that must re-resolve the workflow (no usable ``source_path``) admits a
+# ``project:`` share only through that record — never the bare
+# ``jobs.project_id``, which the ZMQ trigger lane takes from a payload claim.
+VERIFIED_PROJECT_SPEC_KEY = "verified_project_id"
+
+
+def durable_job_verified_project(project_id: Any, spec: Any) -> str | None:
+    """The job's project when its spec records it as verified, else None."""
+    if not isinstance(spec, dict):
+        return None
+    recorded = spec.get(VERIFIED_PROJECT_SPEC_KEY)
+    project = str(project_id or "").strip()
+    if not isinstance(recorded, str) or not project or project == "default":
+        return None
+    return project if recorded.strip() == project else None

@@ -68,7 +68,11 @@ services:
 
   litellm:
     profiles: [ harness ]
-    image: ghcr.io/berriai/litellm-non_root:${LITELLM_DOCKER_TAG:-main-stable}
+    # The wrapper writes LITELLM_IMAGE into the env file: the floating
+    # main-stable tag unless the venue's partition profile pins a digest
+    # (litellm_image, 2026-10-23; bdrt does). This default is for a compose
+    # run without the wrapper.
+    image: ${LITELLM_IMAGE:-ghcr.io/berriai/litellm-non_root:main-stable}
     command: --port 4000 --config /config.yaml
     networks:
       genai-private-net:
@@ -105,7 +109,10 @@ services:
       LITELLM_LOG: "INFO"
       LITELLM_SALT_KEY: ${LITELLM_SALT_KEY:?} # used for postgres db encryption
       LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:?} # admin key is required to access admin functions, like generating user API keys, ensure it starts with 'sk-'
-      MAX_REQUESTS_BEFORE_RESTART: ${LITELLM_MAX_REQUESTS_BEFORE_RESTART:-10000}
+      # Empty = no limit (LiteLLM's click option reads an empty value as
+      # unset). With NUM_WORKERS=1 the limit exits the whole proxy, not one
+      # worker, so the wrapper leaves it empty then (review F1, 2026-10-23).
+      MAX_REQUESTS_BEFORE_RESTART: ${LITELLM_MAX_REQUESTS_BEFORE_RESTART:-}
       #LANGFUSE_HOST: http://langfuse-web:3000
       #LANGFUSE_SECRET_KEY: ${LANGFUSE_INIT_PROJECT_SECRET_KEY:?}
       #LANGFUSE_PUBLIC_KEY: ${LANGFUSE_INIT_PROJECT_PUBLIC_KEY:?}

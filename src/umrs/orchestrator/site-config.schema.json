@@ -219,6 +219,7 @@
         "network_backend": { "type": "string", "enum": ["netavark", "cni"] },
         "vllm_docker_tag": { "type": "string" },
         "vllm_docker_image": { "type": "string" },
+        "litellm_image": { "type": "string", "description": "LiteLLM image for this partition (e.g. a digest pin); empty keeps the wrapper's floating main-stable default. Pin only where the GPU nodes hold or can pull that digest." },
         "gpus": { "type": "integer", "minimum": 0 },
         "needs_netavark_switch": { "type": "boolean" },
         "gpu_mem_util_max": {

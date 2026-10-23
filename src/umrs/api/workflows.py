@@ -835,7 +835,10 @@ async def list_workflow_triggers(
     )
     caller = _header_str(x_user_id) or ""
     entry = resolve_workflow_for_caller(
-        workflow_name, caller, is_admin=_header_str(x_verified_is_admin) == "true"
+        workflow_name,
+        caller,
+        is_admin=_header_str(x_verified_is_admin) == "true",
+        caller_project=_header_str(x_verified_project_id),
     )
     if entry is None:
         raise_typed(
@@ -912,8 +915,11 @@ async def get_workflow_package(
     """Definition + registered CODE for the console definition card.
     # auth: verified
 
-    Owner-scoped exactly like describe (ADR-074 D-8): own or system entry,
-    another owner's only for admins. ``files`` carries registered sources
+    Resolved exactly like describe (ADR-074 D-8, ADR-080): own or system
+    entry, one whose access list admits the caller (``project:`` scopes only
+    for the gateway-verified project), another owner's only for admins.
+    Without the verified project a project-shared workflow listed in /work
+    opened as a 404 (live 2026-10-23). ``files`` carries registered sources
     with honest caps (``truncated`` flags); a missing source dir ships an
     empty list, never an invented listing.
     """
@@ -922,7 +928,10 @@ async def get_workflow_package(
     )
     caller = _header_str(x_user_id) or ""
     entry = resolve_workflow_for_caller(
-        workflow_name, caller, is_admin=_header_str(x_verified_is_admin) == "true"
+        workflow_name,
+        caller,
+        is_admin=_header_str(x_verified_is_admin) == "true",
+        caller_project=_header_str(x_verified_project_id),
     )
     if entry is None:
         raise_typed(
