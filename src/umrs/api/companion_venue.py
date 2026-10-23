@@ -92,6 +92,16 @@ def _quota_check(pool: Any) -> Any:
     return lambda check: check_concurrent_sessions(pool, check)
 
 
+def _start_lock(pool: Any) -> Any:
+    """The venue's start lock (ADR-099 D-6): a Postgres advisory lock across
+    workers and containers; the in-process lock without a pool."""
+    from umrs.quotas.session_cap import local_start_lock, start_lock
+
+    if pool is None:
+        return local_start_lock
+    return lambda venue: start_lock(pool, venue)
+
+
 def get_venue_service(request: Request) -> FrontendVenueService:
     """Process-cached service (tests inject ``app.state.companion_venue_service``)."""
     cached = getattr(request.app.state, "companion_venue_service", None)
@@ -124,6 +134,7 @@ def build_venue_service(pool: Any) -> FrontendVenueService:
         job_store=get_optional_job_store(),
         site_name=_site_name(),
         quota_check=_quota_check(pool),
+        start_lock=_start_lock(pool),
         policy_store=PolicyRuleStore(pool),
     )
 
