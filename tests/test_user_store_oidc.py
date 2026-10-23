@@ -7,7 +7,15 @@ from umrs.admin.user_store import UserRecord, UserStore, UserStoreError
 
 
 @pytest.fixture()
-def store(tmp_path):
+def store(tmp_path, monkeypatch):
+    # JSON lane only: the PG lane is a module global, and in CI an earlier
+    # test can leave it wired to the shared test database, whose ``users``
+    # rows (an "alice" among them) then answer this file's identity checks
+    # (2026-10-23, PR #553 Test UMRS). Tests that want the PG lane patch it in.
+    from umrs.admin import user_store
+
+    monkeypatch.setattr(user_store, "_PG_POOL", None)
+    monkeypatch.setattr(user_store, "_PG_VENUE", "")
     return UserStore(user_files_dir=tmp_path)
 
 
