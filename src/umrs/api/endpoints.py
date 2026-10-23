@@ -463,7 +463,7 @@ def _caller_is_admin(
 ) -> bool:
     claims = _jwt_claims(authorization, required=False)
     if claims is not None:
-        return _claim_is_admin(claims)
+        return _claim_is_admin(claims) and not _admin_disabled(claims.get("sub"))
     header_admin = _header_bool(x_verified_is_admin)
     if not header_admin:
         # Non-admin callers only need base identity, which callers resolve
@@ -471,7 +471,7 @@ def _caller_is_admin(
         return False
     from ._verified_headers import handshake_secret, verify_admin_flag
 
-    return verify_admin_flag(
+    verified = verify_admin_flag(
         strict=_strict_auth_mode(),
         secret=handshake_secret(),
         presented_hmac=_header_str(x_verified_hmac),
@@ -479,6 +479,17 @@ def _caller_is_admin(
         project_id=_header_str(x_verified_project_id),
         presented_is_admin=True,
     )
+    return verified and not _admin_disabled(_header_str(x_user_id))
+
+
+def _admin_disabled(user: object) -> bool:
+    """ADR-097 Amendment D-8 (2026-10-23): an admin credential whose account
+    is disabled is not an admin's. An admin JWT used to outlive its owner's
+    disable for its whole lifetime (30 days by default). Evidence only: an
+    unreadable record keeps the verdict (``account_cascade.account_disabled``)."""
+    from umrs.admin.account_cascade import account_disabled
+
+    return account_disabled(user if isinstance(user, str) else "")
 
 
 def _require_internal_endpoint_writer(
