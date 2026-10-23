@@ -34,7 +34,10 @@ class WorkflowRunBackend(OrchestratorBackend):
         if not isinstance(workflow_name, str) or not workflow_name.strip():
             raise ValueError("workflow_run spec.workflow_name is required")
 
-        from umrs.shared.workflow_execution_access import _launch_workflow_from_catalog
+        from umrs.shared.workflow_execution_access import (
+            _launch_workflow_from_catalog,
+            durable_job_verified_project,
+        )
 
         source_path = job.spec.get("source_path")
         if (
@@ -51,6 +54,9 @@ class WorkflowRunBackend(OrchestratorBackend):
             execution_id=execution_id,
             durable_job_id=job.job_id,
             source_path=source_path,
+            # ADR-080: a re-resolution admits a project share only for the
+            # job's own project the server recorded as verified.
+            caller_project=durable_job_verified_project(job.project_id, job.spec),
         )
         return f"workflow_run|execution_id={execution_id}"
 

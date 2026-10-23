@@ -23,10 +23,13 @@ from pydantic import BaseModel, Field
 
 from umrs.knowledge import loop_hosting, plan_iteration
 from umrs.knowledge.loop import (
+    OWNER_PROJECT_KEY,
+    SERVER_OWNED_METADATA,
     AutonomousResearchLoop,
     LoopPhase,
     LoopStatus,
     ResearchLoop,
+    verified_loop_project,
 )
 from umrs.knowledge.loop_store import LoopStore
 from umrs.knowledge.project import ResearchProject
@@ -604,12 +607,16 @@ _WORKFLOW_DISCOVERY_HINT = (
 )
 
 
-def _registered_workflow_names(owner: str) -> list[str]:
+def _registered_workflow_names(owner: str, project: str | None = None) -> list[str]:
     """Names of registered UMRS workflows the loop owner may run.
 
-    In-process catalog read (the same handler the REST listing uses).
-    System-scope workflows are visible to everyone; user-scope ones only to
-    their owner. An ownerless loop (no gateway identity) sees all of them.
+    In-process catalog read through the same scoped listing the REST route
+    uses: the owner's own, ``system`` ones, and those whose ADR-080 access
+    list admits the owner (``project:`` shares only for *project*, the
+    loop's verified project — :func:`verified_loop_project`). Until
+    2026-10-23 shares were missing here, so a loop start naming a workflow
+    shared with the owner was a 400. An ownerless loop (no gateway identity)
+    sees all of them.
     """
     import json as _json
 
@@ -617,20 +624,30 @@ def _registered_workflow_names(owner: str) -> list[str]:
     from umrs.server.workflow_registry_handler import handle_workflow_command
 
     data = _json.loads(
-        handle_workflow_command(TaskCmd.LIST_WORKFLOWS, owner or "_", "")
+        handle_workflow_command(
+            TaskCmd.LIST_WORKFLOWS, owner or "_", _owner_listing(owner, project)
+        )
     )
     if data.get("status") == "error":
         raise RuntimeError(str(data.get("message") or "workflow catalog error"))
-    entries = [e for e in (data.get("workflows") or []) if _workflow_visible(e, owner)]
-    return sorted({str(e.get("name")).strip() for e in entries})
+    names = {str(e.get("name") or "").strip() for e in data.get("workflows") or []}
+    return sorted(names - {""})
 
 
-def _workflow_visible(entry: dict[str, Any], owner: str) -> bool:
-    if not str(entry.get("name") or "").strip():
-        return False
-    if not owner or entry.get("scope", "user") == "system":
-        return True
-    return str(entry.get("user_id") or "") == owner
+def _owner_listing(owner: str, project: str | None) -> str:
+    """The LIST payload for *owner*'s runnable set ("" lists all: ownerless)."""
+    if not owner:
+        return ""
+    import json as _json
+
+    return _json.dumps(
+        {
+            "user_id": owner,
+            "include_shared_for": owner,
+            "include_system": True,
+            "verified_project": project or "",
+        }
+    )
 
 
 def _experiment_workflow(experiment: Any) -> str:
@@ -649,10 +666,12 @@ def _plan_workflow(loop: ResearchLoop) -> str | None:
     return None
 
 
-def _catalog_candidates(requested: str, owner: str) -> list[str] | None:
+def _catalog_candidates(
+    requested: str, owner: str, project: str | None = None
+) -> list[str] | None:
     """Registered names, or None when the catalog is unreachable but a name was given."""
     try:
-        return _registered_workflow_names(owner)
+        return _registered_workflow_names(owner, project)
     except Exception as exc:  # noqa: BLE001 — reported as 503, never hidden
         if requested:
             logger.warning(
@@ -738,7 +757,7 @@ def _resolve_loop_workflow(
         }
         return planned
     requested = (request.workflow_name or "").strip()
-    candidates = _catalog_candidates(requested, owner)
+    candidates = _catalog_candidates(requested, owner, verified_loop_project(loop))
     name, source = _pick_workflow(requested, candidates)
     _stamp_experiments(loop, name)
     loop.metadata["workflow_name"] = name
@@ -921,6 +940,12 @@ def _loop_owner(
     return (x_user_id or "").strip()
 
 
+def _verified_header_project(http_request: Request) -> str:
+    """``X-Verified-Project-ID`` of a request whose identity ``_loop_owner``
+    already verified (call it only when that returned an owner)."""
+    return (http_request.headers.get("x-verified-project-id") or "").strip()
+
+
 def _enforce_loop_project(
     request: StartLoopRequest, http_request: Request, owner: str
 ) -> None:
@@ -1068,6 +1093,9 @@ async def start_loop(
         loop.metadata["driver_note"] = "agent-deprecated"
     if owner:
         loop.metadata["owner_user_id"] = owner
+        # ADR-080: the project the starter's verified token names (_loop_owner
+        # checked its signature); a project share runs only in that project.
+        loop.metadata[OWNER_PROJECT_KEY] = _verified_header_project(http_request)
     workflow_name = _resolve_loop_workflow(request, engine, loop, owner)
     # Snapshot the just-started state for the response: the memory store
     # shares this object with the driver thread, which may complete the loop
@@ -1547,10 +1575,19 @@ async def update_loop_state(
     if body.error is not None:
         loop.metadata["error"] = body.error
     if body.metadata:
-        loop.metadata.update(body.metadata)
+        loop.metadata.update(_driver_metadata(body.metadata))
     loop.updated_at = datetime.now(timezone.utc).isoformat()
     _loop_store.save(loop)
     return await get_loop_status(loop_id, caller)
+
+
+def _driver_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
+    """A driver's metadata write without the server-stamped identity keys.
+
+    The owner (or anyone the owner hands the loop to) could rewrite
+    ``owner_user_id`` here and the loop's next run went out as that user
+    (2026-10-23 sweep); the verified project stamp is kept the same way."""
+    return {k: v for k, v in metadata.items() if k not in SERVER_OWNED_METADATA}
 
 
 def _apply_loop_enums(loop: Any, body: LoopStateUpdateRequest) -> None:

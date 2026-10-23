@@ -463,13 +463,13 @@ class TestWorkflowResolution:
         client.app.state.loop_job_submitter = _submitter
         if isinstance(registry, Exception):
 
-            def _boom(owner):
+            def _boom(owner, _project=None):
                 raise registry
 
             monkeypatch.setattr(loop_api, "_registered_workflow_names", _boom)
         else:
             monkeypatch.setattr(
-                loop_api, "_registered_workflow_names", lambda _owner: list(registry)
+                loop_api, "_registered_workflow_names", lambda _owner, _project=None: list(registry)
             )
         return client
 

@@ -325,7 +325,9 @@ class TestLoopAutoRegister:
         # workflow at start (one registered workflow → automatic default).
         import umrs.api.loop as loop_mod
 
-        monkeypatch.setattr(loop_mod, "_registered_workflow_names", lambda owner: ["wf-only"])
+        monkeypatch.setattr(
+            loop_mod, "_registered_workflow_names", lambda _owner, _project=None: ["wf-only"]
+        )
 
     def test_start_loop_registers_under_session(self):
         import contextlib
