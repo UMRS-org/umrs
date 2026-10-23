@@ -23,10 +23,19 @@ from __future__ import annotations
 
 import logging
 import uuid
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from typing import Any, Protocol
 
+from umrs.session_policy import (
+    PolicyError,
+    PolicyRuleStore,
+    WebChoice,
+    effective_limits_for,
+    resolve_session_policy,
+    web_choice_required,
+)
 from umrs.shared.project_data_class import (
     PUBLIC_PROVIDER_KINDS,
     data_class_for_project,
@@ -35,12 +44,12 @@ from umrs.shared.project_data_class import (
 from umrs.shared.site_source import SITE_SOURCE_ID, SITE_SOURCE_NAME
 
 from .frontend_config import (
-    VALID_WEB_POLICIES,
     FrontendVenueConfig,
     SubnetPoolExhausted,
     allocate_subnet,
 )
 from .session_audit import audit_session_stop, audit_venue
+from .start_checks import StartCheck, StartCheckFn
 from .venue_sessions import VenueSessionRow, VenueSessionStore, project_session_state
 
 logger = logging.getLogger(__name__)
@@ -96,7 +105,9 @@ class FrontendVenueService:
         sealed_store: Any | None = None,
         job_store: JobSubmitter | None = None,
         site_name: str = "",
-        quota_check: Callable[[str], None] | None = None,
+        quota_check: StartCheckFn | None = None,
+        policy_store: PolicyRuleStore | None = None,
+        policy_env: Mapping[str, str] | None = None,
     ) -> None:
         self.config = config
         self.broker = broker
@@ -111,6 +122,12 @@ class FrontendVenueService:
         # matters). "" would let ANY site claim it — never submit that.
         self.site_name = site_name
         self._quota_check = quota_check
+        # ADR-099: the limit rules (in memory = no rules when none is given)
+        # and the env the site defaults read (None = the process env).
+        self.policy_store = (
+            policy_store if policy_store is not None else PolicyRuleStore()
+        )
+        self._policy_env = policy_env
 
     # ── helpers ───────────────────────────────────────────────────────
 
@@ -229,10 +246,13 @@ class FrontendVenueService:
         web_allow_domains: list[str] | None = None,
         project: str = "",
     ) -> dict[str, Any]:
-        """Validate, reserve the row, submit the ``frontend_session`` job."""
+        """Validate, reserve the row, submit the ``frontend_session`` job.
+
+        ``web_policy``/``web_allow_domains`` are the user's web choice
+        (ADR-099 D-2; ``""`` = none made); a refusal of it raises
+        :class:`PolicyError`."""
         self._require_configured()
         refs = _validated_refs(source_refs)
-        policy = self._validated_policy(web_policy)
         default_name = _validated_default(refs, default_source)
         self._require_startable(owner, session_id)
         return self._launch(
@@ -240,8 +260,7 @@ class FrontendVenueService:
             session_id=session_id,
             refs=refs,
             default_name=default_name,
-            policy=policy,
-            web_allow_domains=web_allow_domains,
+            choice=_web_choice(web_policy, web_allow_domains),
             project=project,
         )
 
@@ -269,7 +288,6 @@ class FrontendVenueService:
         """
         self._require_configured()
         refs = _validated_refs(source_refs)
-        policy = self._validated_policy(web_policy)
         default_name = _validated_default(refs, default_source)
         self._require_not_running(owner, session_id)
         return self._launch(
@@ -277,8 +295,7 @@ class FrontendVenueService:
             session_id=session_id,
             refs=refs,
             default_name=default_name,
-            policy=policy,
-            web_allow_domains=web_allow_domains,
+            choice=_web_choice(web_policy, web_allow_domains),
             project=project,
             plan_run=(run_id, run_job_id),
         )
@@ -290,12 +307,13 @@ class FrontendVenueService:
         session_id: str,
         refs: list[str],
         default_name: str,
-        policy: str,
-        web_allow_domains: list[str] | None,
+        choice: WebChoice,
         project: str,
         plan_run: tuple[str, str] | None = None,
     ) -> dict[str, Any]:
         names, ids, default_id = self._resolve_default(owner, refs, default_name)
+        policy = self._resolve_policy(owner, project, choice)
+        self._run_start_check(owner, project, session_id, policy)
         self._enforce_data_class_gate(owner, project, names)
         subnet = self._reserve_subnet()
         spec = _session_spec(
@@ -306,7 +324,6 @@ class FrontendVenueService:
             default_id=default_id,
             default_name=default_name,
             policy=policy,
-            domains=web_allow_domains,
             project=project,
             site=self.site_name,
             subnet=subnet,
@@ -322,8 +339,9 @@ class FrontendVenueService:
             source_ids=ids,
             default_source_id=default_id,
             default_source_name=default_name,
-            web_policy=policy,
+            web_policy=policy["web"]["mode"],
             job_id=job_id,
+            policy=policy,
         )
         self._enqueue(job_id, session_id)
         audit_venue(
@@ -333,7 +351,9 @@ class FrontendVenueService:
             owner=owner,
             project=project,
             job_id=job_id,
-            web_policy=policy,
+            web_policy=policy["web"]["mode"],
+            policy_web=policy["web"],
+            policy_origin=_shaped_by(policy),
             sources=list(names),
             plan_run_id=plan_run[0] if plan_run else "",
         )
@@ -350,14 +370,69 @@ class FrontendVenueService:
                 missing=blocked,
             )
 
-    def _validated_policy(self, web_policy: str) -> str:
-        policy = (web_policy or self.config.web_policy_default).strip()
-        if policy not in VALID_WEB_POLICIES:
-            raise VenueError(
-                "bad_request",
-                f"web_policy must be one of {', '.join(VALID_WEB_POLICIES)}",
+    # ── session policy (ADR-099) ──────────────────────────────────────
+
+    def _limits(self, owner: str, project: str) -> dict[str, Any]:
+        """Effective limits of a session here; unreadable rules fail closed."""
+        try:
+            return effective_limits_for(
+                self.policy_store,
+                venue=self.site_name,
+                user_id=owner,
+                project_id=project,
+                env=self._policy_env,
             )
-        return policy
+        except Exception as exc:
+            logger.warning("session policy rules unreadable", exc_info=True)
+            raise PolicyError(
+                "unavailable", f"session policy rules unreadable: {type(exc).__name__}"
+            ) from exc
+
+    def _resolve_policy(
+        self, owner: str, project: str, choice: WebChoice
+    ) -> dict[str, Any]:
+        """The resolved session policy (limits + the checked web choice)."""
+        return resolve_session_policy(
+            self._limits(owner, project),
+            choice,
+            require_choice=web_choice_required(self._policy_env),
+            legacy_default=self.config.web_policy_default,
+            now=datetime.now(timezone.utc),
+        )
+
+    def _run_start_check(
+        self, owner: str, project: str, session_id: str, policy: dict[str, Any]
+    ) -> None:
+        if self._quota_check is None:
+            return
+        self._quota_check(
+            StartCheck(
+                owner=owner,
+                project=project,
+                venue=self.site_name,
+                session_id=session_id,
+                policy=policy,
+            )
+        )
+
+    def policy_preview(
+        self, *, owner: str, session_id: str, project: str
+    ) -> dict[str, Any]:
+        """What a start of this session may choose (ADR-099 preview route):
+        the effective limits, whether a web choice is required, and the
+        policy the session's current row carries (None when absent)."""
+        limits = self._limits(owner, project)
+        row = self.store.get(session_id)
+        current = None
+        if row is not None and row.user_id == owner and row.policy:
+            current = dict(row.policy)
+        return {
+            "session_id": session_id,
+            "project_id": project,
+            "choice_required": web_choice_required(self._policy_env),
+            "limits": limits,
+            "current": current,
+        }
 
     def _require_startable(self, owner: str, session_id: str) -> None:
         if not self.session_exists(owner, session_id):
@@ -393,7 +468,9 @@ class FrontendVenueService:
         try:
             job = self.job_store.get_job(row.job_id)
         except Exception:  # an unreadable binding binds nothing
-            logger.warning("session job lookup failed for %s", session_id, exc_info=True)
+            logger.warning(
+                "session job lookup failed for %s", session_id, exc_info=True
+            )
             return "", ""
         spec = getattr(job, "spec", None) or {}
         if not isinstance(spec, dict) or not spec.get("plan_run_id"):
@@ -468,8 +545,6 @@ class FrontendVenueService:
             raise VenueError(
                 "unavailable", "site name unresolved; refusing an any-site job"
             )
-        if self._quota_check is not None:
-            self._quota_check(owner)
         try:
             # JobStore.create_job answers the job_id (str); tolerate a Job too.
             created = self.job_store.create_job(
@@ -669,7 +744,9 @@ class FrontendVenueService:
         renewed = bool(self.broker.renew_lease(lease_id, extend, actor="worker"))
         row = self.store.update_runtime(
             session_id,
-            _runtime_report(phase, turn_seq, partial, detail, tool_activity=tool_activity),
+            _runtime_report(
+                phase, turn_seq, partial, detail, tool_activity=tool_activity
+            ),
         )
         lease = self.broker.get_lease(lease_id)
         stop_requested = row is None or row.state in ("stopped", "failed")
@@ -750,6 +827,19 @@ def _validated_default(refs: list[str], default_source: str) -> str:
     return default_name
 
 
+def _shaped_by(policy: dict[str, Any]) -> dict[str, str]:
+    """The policy fields a rule or the choice set (the audit's origin; the
+    full map, defaults included, is on the session row)."""
+    return {k: v for k, v in policy.get("origin", {}).items() if v != "default"}
+
+
+def _web_choice(web_policy: str, domains: list[str] | None) -> WebChoice:
+    return WebChoice(
+        mode=(web_policy or "").strip(),
+        domains=tuple(d.strip() for d in (domains or []) if d and d.strip()),
+    )
+
+
 def _session_spec(
     *,
     session_id: str,
@@ -758,13 +848,15 @@ def _session_spec(
     names: tuple[str, ...],
     default_id: str,
     default_name: str,
-    policy: str,
-    domains: list[str] | None,
+    policy: dict[str, Any],
     project: str,
     site: str,
     subnet: str,
 ) -> dict[str, Any]:
-    """The ``frontend_session`` job spec (validated again by the backend)."""
+    """The ``frontend_session`` job spec (validated again by the backend).
+
+    ``web_policy``/``web_allow_domains`` are the resolved choice squid
+    enforces; ``policy`` is the whole resolved session policy (ADR-099)."""
     return {
         "session_id": session_id,
         "owner": owner,
@@ -772,11 +864,12 @@ def _session_spec(
         "source_names": list(names),
         "default_source_id": default_id,
         "default_source_name": default_name,
-        "web_policy": policy,
-        "web_allow_domains": [d.strip() for d in (domains or []) if d.strip()],
+        "web_policy": policy["web"]["mode"],
+        "web_allow_domains": list(policy["web"]["domains"]),
         "project": project,
         "venue": site,
         "subnet_hint": subnet,
+        "policy": policy,
     }
 
 
