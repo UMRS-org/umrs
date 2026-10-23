@@ -869,3 +869,46 @@ class TestResolutionPrecedence:
         scans.clear()
         assert ac.read_record("241723").username == "alice"
         assert len(scans) == 1
+
+
+class TestSubjectNamingAnotherAccount:
+    """2026-10-23, round 3 (ADR-097 Amendment D-8): ``owner_ids`` took the
+    record's ``oidc_subject`` as one of its ids even when that subject was
+    ANOTHER account's username, so ``bob.oidc_subject == "alice"`` made the
+    projects alice owns bob's live memberships. ``UserStore`` now refuses
+    such a subject; a record written before is the case left here."""
+
+    @pytest.fixture
+    def users(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("UMRS_USER_FILES_DIR", str(tmp_path))
+        users = UserStore(tmp_path)
+        users.create("alice")
+        bob = UserRecord(username="bob", oidc_subject="alice", projects=[])
+        (tmp_path / "bob.json").write_text(json.dumps(bob.to_json()))
+        return users
+
+    def test_owner_ids_leave_out_another_accounts_username(self, users):
+        assert ac.owner_ids(users.get("bob"), "bob") == ["bob"]
+        assert ac.owner_ids(users.get("alice"), "alice") == ["alice"]
+
+    def test_a_row_only_account_is_another_account_too(self, tmp_path, monkeypatch):
+        from umrs.admin import user_store
+
+        monkeypatch.setenv("UMRS_USER_FILES_DIR", str(tmp_path))
+        monkeypatch.setattr(user_store, "_PG_POOL", object())
+        monkeypatch.setattr(user_store, "pg_get", {"alice": _rec()}.get)
+        bob = UserRecord(username="bob", oidc_subject="alice")
+        assert ac.owner_ids(bob, "bob") == ["bob"]
+
+    def test_a_subject_no_account_carries_still_owns(self, tmp_path, monkeypatch):
+        # no account "alice": the projects owned by bob's IdP name are bob's
+        monkeypatch.setenv("UMRS_USER_FILES_DIR", str(tmp_path))
+        bob = UserRecord(username="bob", oidc_subject="alice")
+        assert ac.owner_ids(bob, "bob") == ["alice", "bob"]
+
+    def test_the_session_guard_refuses_another_accounts_project(self, users, monkeypatch):
+        monkeypatch.setenv("UMRS_PROJECT_MEMBERSHIP", "enforce")
+        assert users.get("bob").oidc_subject == "alice"
+        pool = _Pool(_Conn(projects=[("p-alice", "alice", "active")]))
+        assert ac.refusal_for("bob", "p-alice", pool=pool) == ac.MEMBERSHIP_REVOKED
+        assert ac.refusal_for("alice", "p-alice", pool=pool) is None
