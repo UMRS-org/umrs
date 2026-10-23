@@ -23,6 +23,15 @@ event, outcome ``success`` or ``error``, whose details carry the model,
 variant, venue and job id. Every venue's server writes the same table, so
 the venue is part of the key.
 
+What counts (review F5 and its re-review, 2026-10-23): a failure the request
+caused. A job the backend reported FAILED counts, also before it published a
+location (the wrapper writes that only at the end of bring-up, so a missing
+model, an unpullable image or a compose failure end the job before it); so
+does a job that left the queue and then outran the provision budget, and a
+STARTING endpoint the janitor reaped as stuck (:func:`record_reaped_stuck`).
+A job still queued at the deadline, a job that stopped (cancelled), and an
+endpoint being deprovisioned (row marked, gone, TERMINATED or EXPIRED) do not.
+
 Tunables: ``UMRS_PROVISION_FAILURE_CAP`` (failures, default 3; 0 disables)
 and ``UMRS_PROVISION_FAILURE_WINDOW_SEC`` (default 1800).
 """
@@ -37,6 +46,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
+
+from .endpoint_registry import EndpointStatus, RegisteredEndpoint
 
 logger = logging.getLogger(__name__)
 
@@ -188,6 +199,48 @@ def record_attempt(
         )
     except Exception:
         logger.warning("could not record provision attempt %s", job_id, exc_info=True)
+
+
+# Registry marks of an endpoint someone is taking down (review F5).
+DEPROVISION_MARKS = ("deprovision_requested_at", "cleanup_status")
+# The janitor's mark on a STARTING endpoint it reaps as stuck (re-review N2b).
+REAPED_STUCK_MARK = "reaped_stuck_at"
+
+
+def failure_is_the_models(endpoint: RegisteredEndpoint | None) -> bool:
+    """Whether a failed attempt of this registry row counts toward the cap.
+
+    Not an endpoint that was being deprovisioned (the cancel ends the job),
+    nor one whose row is gone or already expired/terminated (deprovisioned or
+    a stale registry). The caller decides whether the job got far enough: a
+    queue or assignment timeout says nothing about the model.
+    """
+    if endpoint is None:
+        return False
+    if endpoint.status in (EndpointStatus.TERMINATED, EndpointStatus.EXPIRED):
+        return False
+    return not any(mark in endpoint.metadata for mark in DEPROVISION_MARKS)
+
+
+def record_reaped_stuck(endpoint: RegisteredEndpoint, error: str) -> bool:
+    """A STARTING endpoint the janitor reaps as stuck, as a failed attempt.
+
+    Its job reached a node and the engine never became ready inside the
+    janitor's stuck timeout. Without this the row was removed unmarked, the
+    provision still waiting on it saw no row and did not count the failure,
+    and a hanging engine was re-provisioned every ~10 min, uncapped. Returns
+    whether the attempt was recorded.
+    """
+    if endpoint.status != EndpointStatus.STARTING:
+        return False
+    if not failure_is_the_models(endpoint):
+        return False
+    key = AttemptKey(
+        endpoint.project_id, endpoint.model, endpoint.variant, current_venue()
+    )
+    actor = str(endpoint.metadata.get("requesting_user") or "")
+    record_attempt(key, job_id=endpoint.job_id, ok=False, error=error, actor=actor)
+    return True
 
 
 def recent_attempts(key: AttemptKey, *, since: float) -> list[dict[str, Any]]:

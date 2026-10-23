@@ -71,7 +71,7 @@ exit 0
 # Recreate = the container comes back in the next state recreate.<svc> lists
 # (one line per recreate), else STUB_RECREATE_STATE; with STUB_RECREATE_EXIT
 # as its exit code. A name still in use fails, like podman create does; nginx
-# comes back requiring litellm (depends_on).
+# comes back requiring litellm and rag requiring vllm (depends_on).
 _COMPOSE = r"""#!/bin/bash
 echo "podman-compose $*" >> "$STUB_DIR/calls.log"
 svc="${@: -1}"
@@ -89,6 +89,7 @@ fi
 echo "$state" > "$STUB_DIR/state.$ctr"
 echo "${STUB_RECREATE_EXIT:-1}" > "$STUB_DIR/exitcode.$ctr"
 [ "$svc" = nginx ] && echo "rivault-77_litellm_1" > "$STUB_DIR/requires.$ctr"
+[ "$svc" = rag ] && echo "rivault-77_vllm_1" > "$STUB_DIR/requires.$ctr"
 exit 0
 """
 
@@ -318,6 +319,40 @@ def test_after_a_respawn_failures_inside_the_respawn_grace_do_not_count(stub: Pa
     assert r.stdout.strip() == "respawn@3", r.stderr
 
 
+def test_a_respawn_before_the_front_answered_keeps_the_start_grace(stub: Path) -> None:
+    """Re-review N2: a LiteLLM respawned during its cold start got the 120 s
+    respawn grace instead of the rest of the 900 s start grace, so a slow
+    start could be charged again and again until exit 125."""
+    _set_state(stub, "litellm", "exited")
+    script = (
+        f"stack_health_init; stack_health_tick {PROJECT} 4000; "
+        f"echo running > $STUB_DIR/state.{PROJECT}_litellm_1; "
+        "for i in 1 2 3 4 5; do "
+        f'stack_health_tick {PROJECT} 4000 && echo -n "respawn@$i "; done; echo done'
+    )
+    r = _lib(
+        stub,
+        script,
+        STUB_HTTP_CODE="502",
+        RIVAULT_FRONT_FAIL_STREAK="1",
+        RIVAULT_FRONT_RESPAWN_GRACE_SEC="0",
+    )
+    assert r.stdout.strip() == "done", r.stderr
+
+
+def test_a_respawn_grace_longer_than_the_start_grace_still_applies(stub: Path) -> None:
+    script = (
+        'stack_health_init; stack_health_respawned; echo "$(( _SH_GRACE_UNTIL - $(date +%s) ))"'
+    )
+    r = _lib(
+        stub,
+        script,
+        RIVAULT_FRONT_STARTUP_GRACE_SEC="10",
+        RIVAULT_FRONT_RESPAWN_GRACE_SEC="600",
+    )
+    assert 595 <= int(r.stdout.strip()) <= 600, r.stderr
+
+
 def test_the_front_is_probed_every_nth_tick(stub: Path) -> None:
     script = f"stack_health_init; for i in $(seq 1 24); do stack_health_tick {PROJECT} 4000; done"
     r = _lib(stub, script, RIVAULT_FRONT_PROBE_EVERY_TICKS="12")
@@ -458,3 +493,79 @@ def test_the_monitor_probes_the_front_about_once_a_minute(stub: Path) -> None:
     r = _run_monitor(stub)  # 300 s at 5 s ticks
     assert r.returncode == 124, r.stdout[-2000:]
     assert _calls(stub).count("curl ") == 5
+
+
+def _removals_and_recreates(stub: Path) -> list[str]:
+    """``rm <container>`` / ``up <service>`` for each podman rm / compose up."""
+    steps = []
+    for line in _calls(stub).splitlines():
+        if line.startswith("podman rm -f "):
+            steps.append("rm " + line.rsplit(" ", 1)[1])
+        elif " up --detach --no-deps " in line:
+            steps.append("up " + line.rsplit(" ", 1)[1])
+    return steps
+
+
+def test_a_dead_engine_with_rag_on_removes_rag_first_and_recreates_it_last(stub: Path) -> None:
+    """Round-1 open item: rag --requires vllm, so ``podman rm -f`` of the
+    engine alone was refused (hidden by ``|| true``), the recreate hit the name
+    in use, and every engine respawn failed while it spent the budget."""
+    _set_state(stub, "vllm", "exited")
+    _set_state(stub, "rag", "running")
+    _write(stub, "requires", "rag", f"{PROJECT}_vllm_1")
+    r = _run_monitor(stub, STUB_RECREATE_STATE="running")
+    assert r.returncode == 124, r.stdout[-2000:]
+    assert _removals_and_recreates(stub) == [
+        f"rm {PROJECT}_rag_1",
+        f"rm {PROJECT}_vllm_1",
+        "up vllm",
+        "up rag",
+    ]
+    assert "could not remove" not in r.stdout
+    assert "Engine respawn OK" in r.stdout
+
+
+def test_a_dead_engine_without_rag_recreates_only_the_engine(stub: Path) -> None:
+    _set_state(stub, "vllm", "exited")
+    r = _run_monitor(stub, STUB_RECREATE_STATE="running")
+    assert r.returncode == 124, r.stdout[-2000:]
+    assert _removals_and_recreates(stub) == [f"rm {PROJECT}_vllm_1", "up vllm"]
+
+
+def _function_text(name: str) -> str:
+    text = SERVE_MODEL_SLURM.read_text()
+    start = text.index(f"{name}() {{")
+    return text[start : text.index("\n}\n", start) + 3]
+
+
+@pytest.mark.skipif(shutil.which("shellcheck") is None, reason="shellcheck not installed")
+def test_the_recreate_quotes_its_override_arrays(tmp_path: Path) -> None:
+    """SC2068: an unquoted ${GPUoverride[@]} re-splits its elements."""
+    script = tmp_path / "recreate.sh"
+    script.write_text("#!/bin/bash\n" + _function_text("_compose_recreate_service"))
+    r = subprocess.run(
+        ["shellcheck", "-S", "warning", str(script)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert "SC2068" not in r.stdout, r.stdout
+
+
+def test_the_recreate_passes_the_override_files_and_profiles(stub: Path) -> None:
+    body = _function_text("_compose_recreate_service")
+    script = (
+        f"RIVAULT_COMPOSE_PROJECT={PROJECT}; uuid=u77; "
+        "GPUoverride=(--file ./x_nvidia-override.yaml); DbOverride=(); "
+        '_profile_flags=" --profile harness --profile vllm"; '
+        f"{body}\n_compose_recreate_service postgres"
+    )
+    r = subprocess.run(
+        ["bash", "-c", script], env=_env(stub), capture_output=True, text=True, check=False
+    )
+    assert r.returncode == 0, r.stderr
+    assert _calls(stub).strip() == (
+        f"podman-compose --project-name {PROJECT} --in-pod false --env-file ./env.u77 "
+        "--file ./serve-model.yaml --file ./x_nvidia-override.yaml "
+        "--profile harness --profile vllm up --detach --no-deps postgres"
+    )

@@ -54,7 +54,13 @@
 # --requires on litellm (depends_on), and podman refuses to remove a container
 # another one requires. stack_removal_order names the dependents first, so the
 # caller removes nginx (and whatever requires nginx) before litellm, and
-# recreates them in the reverse order.
+# recreates them in the reverse order. The engine respawn uses the same order
+# (rag --requires vllm when the rag profile is on).
+#
+# Side effect (re-review N3): with the vision profile on, bentoml-vision
+# --requires nginx, so every LiteLLM or nginx respawn also removes and
+# recreates bentoml-vision; that includes the free planned restarts (uvicorn's
+# max-requests exit), so the vision service restarts with them.
 #
 # Tunables:
 #   RIVAULT_ESSENTIAL_SIDECARS          services that must stay up ("litellm nginx")
@@ -88,10 +94,18 @@ stack_health_init() {
 }
 
 # After a respawn: the streak restarts and a short grace runs; whether the
-# front ever answered is kept.
+# front ever answered is kept. The grace is the later of the one running and
+# the respawn grace: before the front first answered, the start grace keeps
+# running (2026-10-23 re-review N2: a LiteLLM respawned during its cold start
+# got ~180 s instead of the 900 s start grace and could be charged again and
+# again until exit 125). Once it answered, no grace runs but a respawn's.
 stack_health_respawned() {
+    local until
     _SH_FRONT_STREAK=0
-    _SH_GRACE_UNTIL=$(( $(_sh_now) + ${RIVAULT_FRONT_RESPAWN_GRACE_SEC:-120} ))
+    until=$(( $(_sh_now) + ${RIVAULT_FRONT_RESPAWN_GRACE_SEC:-120} ))
+    if [ "$until" -gt "$_SH_GRACE_UNTIL" ]; then
+        _SH_GRACE_UNTIL=$until
+    fi
 }
 
 stack_sidecar_container() { printf '%s_%s_1' "$1" "$2"; }
