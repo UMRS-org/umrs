@@ -947,7 +947,23 @@ def _validate_loop_venue(request: StartLoopRequest) -> str:
         validate_research_loop_spec({"loop_id": "venue-probe", "venue": venue})
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
+    _refuse_foreign_loop_venue(venue)
     return venue
+
+
+def _refuse_foreign_loop_venue(venue: str) -> None:
+    """403 ``cross_site_venue_refused`` for ``cluster:<another site>`` (S1a,
+    Y-1): that site's server would claim the loop's job off the shared jobs
+    table and run it without its own gateway or user gate. This site's own
+    cluster venue and ``frontend`` stay; with no site name configured nothing
+    changes (``umrs.jobs.store.cross_site_venue_refusal``)."""
+    from umrs.jobs import store as job_store
+
+    refusal = job_store.cross_site_venue_refusal(
+        venue, job_store.configured_site_name()
+    )
+    if refusal:
+        raise_typed(PlatformError.loops("forbidden", refusal))
 
 
 # ── Owner identity (ADR-036 (a): approvals are answerable by the loop owner) ─
@@ -1107,6 +1123,9 @@ async def start_loop(
     # request when the caller left mode unset; an explicit mode always
     # wins (the persisted default never overrides a caller's choice).
     request = _apply_project_ask_policy(http_request, request)
+    # S1a: the venue is checked before the loop record exists, so a refused
+    # venue (grammar 400, another site 403) leaves no orphan loop behind.
+    venue = _validate_loop_venue(request)
 
     engine = _get_engine()
     loop = engine.start_loop(
@@ -1116,7 +1135,6 @@ async def start_loop(
     )
     _apply_loop_mode(loop, request)
     _attach_iteration_plan(loop, request)
-    venue = _validate_loop_venue(request)
     loop.metadata["venue"] = venue
     # D-52 (2026-09-22): one trace id through the loop's jobs, iterations and
     # knowledge writes — the loop id itself is the trace anchor.

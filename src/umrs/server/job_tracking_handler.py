@@ -251,6 +251,18 @@ def _raise_for_spec_project(job_type: JobType, spec: Any, project_id: Any) -> No
         raise ValueError(refusal)
 
 
+def _raise_for_spec_venue(spec: dict[str, Any], job_store: Any) -> None:
+    """The ZMQ seam's own-site venue rule (S1a, Y-1): the same
+    ``cross_site_venue_refusal`` as POST /umrs/jobs, never two rules."""
+    from ..jobs.store import cross_site_venue_refusal
+
+    refusal = cross_site_venue_refusal(
+        spec.get("venue"), str(getattr(job_store, "site_name", "") or "")
+    )
+    if refusal:
+        raise ValueError(refusal)
+
+
 # Job types whose backend acts on a project's data: the job's own project,
 # never another one a spec names (umrs.jobs.knowledge_adapters.job_project).
 PROJECT_SCOPED_JOB_TYPES = frozenset(
@@ -491,6 +503,7 @@ class DurableJobCommandBackend:
                 return json.dumps({"status": "error", "message": policy_err})
             _raise_for_spec_resources(job_type, spec, client_id, is_admin)
             _raise_for_spec_project(job_type, spec, project_id)
+            _raise_for_spec_venue(spec, self._job_store)
             priority = int(payload.get("priority", 0))
             max_attempts = int(payload.get("max_attempts", 3))
             restart_policy = _parse_restart_policy(
