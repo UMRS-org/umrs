@@ -315,6 +315,27 @@ async def _upload_success(
     )
 
 
+async def _record_rag_contribution(
+    pool: Any, artifact_id: str, project_id: str, user_id: str, filename: str
+) -> None:
+    """K1.2: the uploader's contribution to the project default graph (it
+    replaces the executor's untraced placeholder for the same artifact)."""
+    from umrs.knowledge.contributions import Contribution, origin_for, record_with_pool
+    from umrs.knowledge.graph_registry import default_graph_id
+
+    await record_with_pool(
+        pool,
+        Contribution(
+            artifact_id=artifact_id,
+            graph_id=default_graph_id(project_id),
+            project_id=project_id,
+            user_id=user_id,
+            origin_actor=origin_for(None, user_id),
+            title=filename,
+        ),
+    )
+
+
 async def _mint_knowledge_nodes(
     request: Request,
     *,
@@ -345,7 +366,7 @@ async def _mint_knowledge_nodes(
     doc_node_id = f"ragdoc-{document_id}"
     content_hash = hashlib.sha256(f"{document_id}:{filename}".encode()).hexdigest()[:16]
     artifact_id = f"artifact-rag-{document_id}"
-    await store.insert_artifact(
+    held_by = await store.insert_artifact(
         artifact_id,
         content_hash,
         "document",
@@ -359,6 +380,7 @@ async def _mint_knowledge_nodes(
             "document_id": document_id,
         },
     )
+    await _record_rag_contribution(pool, held_by or artifact_id, project_id, user_id, filename)
     await store.upsert_node(
         KnowledgeNode(
             node_id=doc_node_id,

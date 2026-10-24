@@ -33,6 +33,7 @@ import hashlib
 import logging
 from typing import Any
 
+from umrs.knowledge.contributions import Contribution, record_contribution_sync
 from umrs.knowledge.graph_registry import default_graph_id
 from umrs.knowledge.rag_upload_mint import (
     _upsert_artifact,
@@ -140,6 +141,13 @@ def canonize_document(
             mime_type="application/octet-stream",
             origin=ORIGIN,
             extra_node_content={"s3_object": doc_uri},
+        )
+        # K1.2: canonized legacy documents have no traceable contributor.
+        record_contribution_sync(
+            cur,
+            Contribution(
+                artifact_id=artifact_id, graph_id=gid, project_id=project_id, title=filename
+            ),
         )
         _upsert_node(
             cur,

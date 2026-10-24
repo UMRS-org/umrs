@@ -496,7 +496,7 @@ class TestKnowledgeIngestBackend:
         fake_s3 = _make_fake_s3()
         captured: list[tuple[str, list]] = []
 
-        def _capture_store(project_id: str, descs: list[dict]) -> object:
+        def _capture_store(project_id: str, descs: list[dict], **_kw: object) -> object:
             from umrs.jobs.knowledge_adapters import _StoredArtifacts
 
             captured.append((project_id, descs))
@@ -544,7 +544,7 @@ class TestKnowledgeIngestBackend:
         sample_job.spec["bucket"] = "test-bucket"
         chained: list[list[dict]] = []
 
-        def _known_bytes(_project_id: str, descs: list[dict]) -> object:
+        def _known_bytes(_project_id: str, descs: list[dict], **_kw: object) -> object:
             from umrs.jobs.knowledge_adapters import _StoredArtifacts
 
             fresh = descs[0]["artifact_id"]
@@ -589,7 +589,7 @@ class TestKnowledgeIngestBackend:
         sample_job.spec["bucket"] = "test-bucket"
         chained: list[list[dict]] = []
 
-        def _row_lost(_project_id: str, descs: list[dict]) -> object:
+        def _row_lost(_project_id: str, descs: list[dict], **_kw: object) -> object:
             from umrs.jobs.knowledge_adapters import _StoredArtifacts
 
             lost = {"artifact_id": descs[0]["artifact_id"], "error": "artifact row not written: x"}

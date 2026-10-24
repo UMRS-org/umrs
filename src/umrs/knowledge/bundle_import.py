@@ -666,8 +666,12 @@ class KnowledgeImportEngine:
         mcp_store: Any = None,
         catalog_store: Any = None,
         raw_writer: Any = None,
+        imported_by: str = "",
     ) -> None:
         self._store = store
+        # K1.2: the importer is the contributor of every artifact the bundle
+        # writes (origin ``import``, the target's default graph).
+        self._imported_by = imported_by
         # ADR-032 raw-materials amendment: ``raw_writer(project_id, bytes) ->
         # object key`` stores one verified object in the destination's own
         # storage (the api layer supplies it; None = raw objects not restored).
@@ -905,10 +909,35 @@ class KnowledgeImportEngine:
             logger.warning("Skipping artifact row %s: %s", row_id, exc)
             self._unwritten.artifact(row_id, "")
             return False
+        if stored:
+            await self._record_import(str(stored), project_id, row)
         if stored != row_id:
             self._unwritten.artifact(row_id, str(stored or ""))
             return False
         return True
+
+    async def _record_import(
+        self, artifact_id: str, project_id: str, row: dict[str, Any]
+    ) -> None:
+        """K1.2: the importer's contribution, also when the bytes were already
+        held under another id in the target (a deduplicated hit)."""
+        from .contributions import Contribution, record_with_pool, title_for
+        from .graph_registry import default_graph_id
+
+        pool = self._pool()
+        if pool is None:
+            return
+        await record_with_pool(
+            pool,
+            Contribution(
+                artifact_id=artifact_id,
+                graph_id=default_graph_id(project_id),
+                project_id=project_id,
+                user_id=self._imported_by,
+                origin_actor="import",
+                title=title_for(row.get("metadata"), str(row.get("source_ref") or "")),
+            ),
+        )
 
     async def _artifact_present(
         self, row: dict[str, Any], row_id: str, project_id: str

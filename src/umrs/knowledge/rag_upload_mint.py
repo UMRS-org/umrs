@@ -18,6 +18,7 @@ import hashlib
 import logging
 from typing import Any
 
+from umrs.knowledge.contributions import Contribution, record_contribution_sync
 from umrs.knowledge.graph_registry import default_graph_id
 
 logger = logging.getLogger(__name__)
@@ -215,6 +216,17 @@ def mint_rag_upload(
                 document_id=document_id,
                 filename=filename,
                 mime_type=mime_type,
+            )
+            # K1.2: the executor does not know the uploader; it records an
+            # untraced placeholder the proxy's attributed row replaces.
+            record_contribution_sync(
+                cur,
+                Contribution(
+                    artifact_id=artifact_id,
+                    graph_id=gid,
+                    project_id=project_id,
+                    title=filename,
+                ),
             )
             _upsert_node(
                 cur,

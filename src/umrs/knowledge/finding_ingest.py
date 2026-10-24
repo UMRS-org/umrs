@@ -58,6 +58,8 @@ class FindingSink(Protocol):
         source_ref: str,
         size_bytes: int,
         metadata: dict[str, Any],
+        graph_id: str = "",
+        owner_user_id: str = "",
     ) -> bool: ...
 
     def link(
@@ -155,6 +157,7 @@ class KnowledgeFindingSink:
         id (ADR-093 D-11, wave F)."""
         from umrs.jobs.knowledge_adapters import _open_pool
 
+        from .contributions import record_with_pool
         from .store import ArtifactWriteError, KnowledgeStore
 
         async with _open_pool() as pool:
@@ -170,11 +173,12 @@ class KnowledgeFindingSink:
                 mime_type=FINDING_MIME,
                 metadata=fields["metadata"],
             )
-        if stored != fields["artifact_id"]:
-            raise ArtifactWriteError(
-                f"finding {fields['artifact_id']}: its bytes are stored as {stored}; "
-                "not minted"
-            )
+            if stored != fields["artifact_id"]:
+                raise ArtifactWriteError(
+                    f"finding {fields['artifact_id']}: its bytes are stored as "
+                    f"{stored}; not minted"
+                )
+            await record_with_pool(pool, _finding_contribution(fields))
         return True
 
     async def _link(
@@ -192,6 +196,22 @@ class KnowledgeFindingSink:
                 await store.upsert_node(KnowledgeNode(project_id=project_id, **node))
             for edge in edges:
                 await store.upsert_edge(KnowledgeEdge(project_id=project_id, **edge))
+
+
+def _finding_contribution(fields: dict[str, Any]) -> Any:
+    """K1.2: a finding is the loop owner's contribution, origin ``loop``,
+    to the loop's graph."""
+    from .contributions import Contribution
+
+    statement = str((fields["metadata"].get("finding") or {}).get("statement") or "")
+    return Contribution(
+        artifact_id=fields["artifact_id"],
+        graph_id=str(fields.get("graph_id") or ""),
+        project_id=fields["project_id"],
+        user_id=str(fields.get("owner_user_id") or ""),
+        origin_actor="loop",
+        title=statement[:200] or f"finding {fields['artifact_id']}",
+    )
 
 
 # ── minting ─────────────────────────────────────────────────────────────────
@@ -397,6 +417,8 @@ def _mint_one(
         source_ref=f"loop:{loop.loop_id}#iteration-{iteration.iteration_number}",
         size_bytes=len(raw),
         metadata={**metadata, **canonical_identity.stamp(raw, content_hash)},
+        graph_id=loop_graph_id(loop),
+        owner_user_id=str(loop.metadata.get("owner_user_id") or ""),
     )
     nodes, edges = _lineage(loop, artifact_id, finding, content_hash)
     sink.link(project_id=loop.project_id, nodes=nodes, edges=edges)
