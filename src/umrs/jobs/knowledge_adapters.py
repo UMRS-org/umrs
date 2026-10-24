@@ -1137,7 +1137,9 @@ def _run_ingest_sync(
     # source_ref S3 key + kind) are required by the chained
     # KNOWLEDGE_UNDERSTAND job — bare artifact_ids are skipped at parse time.
     # A descriptor whose row was not written leaves the chain by name.
-    stored = _store_artifacts_in_db_sync(project_id, success_descs)
+    stored = _store_artifacts_in_db_sync(
+        project_id, success_descs, contributor=_ingest_contributor(job, project_id)
+    )
     _drop_rowless(stored, result, success_ids, success_descs)
 
     KnowledgeEvent(
@@ -1612,9 +1614,46 @@ class _StoredArtifacts:
     failed: list[dict[str, Any]] = field(default_factory=list)
 
 
+def _ingest_contributor(job: Job, project_id: str) -> Any:
+    """The contribution template an ingest job's artifacts record (K1.2):
+    its target graph (else the project default), its owner and its actor."""
+    from umrs.knowledge.contributions import Contribution, origin_for
+    from umrs.knowledge.graph_registry import default_graph_id
+
+    user_id = str(getattr(job, "user_id", "") or "")
+    return Contribution(
+        artifact_id="",
+        graph_id=str(job.spec.get("graph_id") or "") or default_graph_id(project_id),
+        project_id=project_id,
+        user_id=user_id,
+        origin_actor=origin_for(job.spec.get("origin_actor"), user_id),
+    )
+
+
+async def _record_ingest_contribution(
+    pool: Any, desc: dict[str, Any], contributor: Any
+) -> None:
+    """One contribution for the artifact a descriptor now names — the stored
+    id when its bytes were deduplicated, so a second uploader is recorded."""
+    import dataclasses
+
+    from umrs.knowledge.contributions import record_with_pool, title_for
+
+    await record_with_pool(
+        pool,
+        dataclasses.replace(
+            contributor,
+            artifact_id=desc["artifact_id"],
+            title=title_for(desc.get("metadata"), str(desc.get("source_ref") or "")),
+        ),
+    )
+
+
 def _store_artifacts_in_db_sync(
     project_id: str,
     artifact_descs: list[dict[str, Any]],
+    *,
+    contributor: Any = None,
 ) -> _StoredArtifacts:
     """Persist artifact metadata to Postgres (synchronous).
 
@@ -1658,6 +1697,9 @@ def _store_artifacts_in_db_sync(
                     written.add(index)
                 except Exception as exc:  # noqa: BLE001 — per-artifact, named below
                     errors[index] = str(exc) or type(exc).__name__
+                    continue
+                if contributor is not None:
+                    await _record_ingest_contribution(pool, desc, contributor)
 
     try:
         _run_coroutine_sync(_do(), "persist_artifact_meta")
@@ -4784,6 +4826,27 @@ def _dedup_artifacts(
     return deduped, bucket
 
 
+async def _record_workflow_contribution(
+    pool: Any, artifact_id: str, project_id: str, job: Any, title: str
+) -> None:
+    """K1.2: a workflow output is the run owner's contribution to the
+    project default graph (origin ``workflow``)."""
+    from umrs.knowledge.contributions import Contribution, record_with_pool
+    from umrs.knowledge.graph_registry import default_graph_id
+
+    await record_with_pool(
+        pool,
+        Contribution(
+            artifact_id=artifact_id,
+            graph_id=default_graph_id(project_id),
+            project_id=project_id,
+            user_id=str(getattr(job, "user_id", "") or ""),
+            origin_actor="workflow",
+            title=title,
+        ),
+    )
+
+
 def _store_artifact_provenance(
     deduped: list[dict[str, Any]],
     project_id: str,
@@ -4808,7 +4871,7 @@ def _store_artifact_provenance(
                         aid = art.get("artifact_id", f"art-{uuid.uuid4().hex[:8]}")
                         ch = art.get("content_hash", "") or art.get("sha256", "")
                         kind = art.get("kind", "document")
-                        await store.insert_artifact(
+                        held_by = await store.insert_artifact(
                             artifact_id=aid,
                             content_hash=ch,
                             kind=kind,
@@ -4821,6 +4884,9 @@ def _store_artifact_provenance(
                                 "workflow": workflow,
                                 "step": step,
                             },
+                        )
+                        await _record_workflow_contribution(
+                            pool, held_by or aid, project_id, job, f"{workflow}/{step}"
                         )
                     except Exception as exc:  # noqa: BLE001 — best-effort, named
                         # A provenance row is not written: say which (wave F).

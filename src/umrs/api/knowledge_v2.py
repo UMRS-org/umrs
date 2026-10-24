@@ -13,6 +13,7 @@ No umrs.api or umrs.server imports — strict boundary.
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from typing import Any
 from uuid import uuid4
 
@@ -460,36 +461,59 @@ async def list_artifacts(
     page: int = Query(1, ge=1),
     page_size: int = Query(25, ge=1, le=100),
     kind: str | None = Query(None, description="Filter by artifact kind"),
-    status: str | None = Query(None, description="Filter by status"),
+    status: str | None = Query(None, description="Filter by status (default active)"),
+    created_by: str | None = Query(None, description="Only artifacts this user added"),
+    since: datetime | None = Query(None, description="Added at or after (ISO 8601)"),
+    graph_id: str | None = Query(None, description="Only artifacts added to this graph"),
 ) -> ArtifactListResponse:
-    """List knowledge artifacts (paginated)."""
+    """List the project's artifacts the caller may read, newest first.
+
+    K1.2 (2026-10-24): through the contributions table (0129) and the
+    retrieve verb's graph-readable predicate, so another member's
+    personal-graph artifacts never appear; each artifact lists its readable
+    contributions (who, which graph, which actor). The ``kind``/``status``
+    filters used to be accepted and ignored.
+    """
+    from umrs.knowledge.contributions import ArtifactFilters
+
+    filters = ArtifactFilters(
+        kind=kind,
+        status=status or "active",
+        created_by=created_by,
+        since=since,
+        graph_id=graph_id,
+    )
     try:
-        # Reuse the shared app-level pool (built once in http_sidecar.py) —
-        # do NOT call build_durable_job_db_pool_from_env() here, which opens
-        # a brand-new connection pool on every request and leaks it.
-        import dataclasses
-
-        from umrs.api._asyncpg_pool import knowledge_asyncpg_pool
-        from umrs.knowledge.store import KnowledgeStore
-
-        pool = await knowledge_asyncpg_pool(request)
-        store = KnowledgeStore(pool)
-        artifact_rows, total = await store.list_artifacts(
-            project_id=project_id, page=page, page_size=page_size
-        )
-        page_artifacts = [dataclasses.asdict(a) for a in artifact_rows]
-
-        return ArtifactListResponse(
-            artifacts=page_artifacts,
-            total=total,
-            page=page,
-            page_size=page_size,
+        rows, total = await _readable_artifact_page(
+            request, project_id, filters, page, page_size
         )
     except HTTPException:
         raise
     except Exception as exc:
         logger.exception("Failed to list artifacts")
         raise_typed(PlatformError.knowledge2("failure", str(exc)))
+    return ArtifactListResponse(
+        artifacts=rows, total=total, page=page, page_size=page_size
+    )
+
+
+async def _readable_artifact_page(
+    request: Request, project_id: str, filters: Any, page: int, page_size: int
+) -> tuple[list[dict[str, Any]], int]:
+    """One page through the graph-readable predicate (``_artifact_scope``)."""
+    # Reuse the shared app-level pool (built once in http_sidecar.py) — do
+    # NOT call build_durable_job_db_pool_from_env() here, which opens a
+    # brand-new connection pool on every request and leaks it.
+    from umrs.api._asyncpg_pool import knowledge_asyncpg_pool
+    from umrs.knowledge.contributions import list_readable_artifacts
+
+    from ._artifact_scope import hidden_graphs_for
+
+    hidden = await hidden_graphs_for(request, project_id)
+    pool = await knowledge_asyncpg_pool(request)
+    return await list_readable_artifacts(
+        pool, project_id, hidden, filters, page=page, page_size=page_size
+    )
 
 
 def _lint_source(checks: list, source: str, file_path: str) -> list[dict[str, Any]]:

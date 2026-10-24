@@ -189,6 +189,14 @@ def _raw_object_writer() -> Any:
     return write
 
 
+def _importer(request: Request) -> str:
+    """The verified caller (HMAC-checked), recorded as the contributor of
+    the artifacts an import writes (K1.2)."""
+    from umrs.api._scope_identity import request_caller_scope
+
+    return request_caller_scope(request).user_id or ""
+
+
 async def _import_bundle_dir(
     request: Request,
     pool: Any,
@@ -209,6 +217,7 @@ async def _import_bundle_dir(
             store=KnowledgeStore(pool),
             secret_key=os.getenv("UMRS_SECRET_KEY", ""),
             raw_writer=_raw_object_writer(),
+            imported_by=_importer(request),
             **ref_stores,
         )
         try:
