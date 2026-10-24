@@ -35,7 +35,10 @@ from fastapi import (
 from fastapi import status as http_status
 
 from ..shared.storage.s3_config import get_s3_config
-from ._knowledge_mutation_guard import enforce_graph_mutation_authorization
+from ._knowledge_mutation_guard import (
+    enforce_graph_mutation_authorization,
+    request_actor,
+)
 from .files import get_project_id
 from .governance import guard_ingest
 from .knowledge_v2 import _resolve_ingest_target
@@ -148,8 +151,15 @@ async def _submit_upload_ingest(
     project_id: str,
     target_graph_id: str,
     user_id: str = "",
+    origin_actor: str = "user",
 ) -> dict[str, Any]:
-    """Submit the KNOWLEDGE_INGEST job against the staged key (503 on no runtime)."""
+    """Submit the KNOWLEDGE_INGEST job against the staged key (503 on no runtime).
+
+    ``origin_actor`` rides the spec to the understand chain (D-35, K1.1(a)):
+    an agent upload, admitted only with an approved proposal, lands its
+    graph rows ``proposed``, never ``established``. The actor is the
+    ``x-r4-actor`` header, so this holds for clients that set it (K-12).
+    """
     from umrs.jobs.models import JobType
     from umrs.server.durable_job_runtime import get_runtime
 
@@ -177,6 +187,7 @@ async def _submit_upload_ingest(
         "project_id": project_id,
         "graph_id": target_graph_id,
         "source": "knowledge_upload",
+        "origin_actor": origin_actor,
     }
     if proposal_id:
         spec["proposal_id"] = proposal_id
@@ -283,4 +294,5 @@ async def knowledge_upload(
         project_id=project_id,
         target_graph_id=target_graph_id,
         user_id=user_id,
+        origin_actor=request_actor(request),
     )

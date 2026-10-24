@@ -1192,13 +1192,7 @@ class KnowledgeImportEngine:
             for row in _iter_rows(path):
                 try:
                     await conn.execute(
-                        """INSERT INTO knowledge_catalog
-                           (name, project_id, metadata)
-                           VALUES ($1, $2, $3)
-                           ON CONFLICT DO NOTHING""",
-                        str(row["name"]),
-                        project_id,
-                        row.get("metadata") or {},
+                        _CATALOG_IMPORT_SQL, *_catalog_import_params(row, project_id)
                     )
                     count += 1
                 except (KeyError, TypeError, ValueError) as exc:
@@ -1488,3 +1482,47 @@ async def _insert_node_vectors(
                     "Skipping node embedding %s: %s", row.get("node_id"), exc
                 )
     return count
+
+
+# ── catalog rows (#545) ──────────────────────────────────────────────────────
+
+#: #545 (K1.1(f), 2026-10-24): the restore wrote a ``knowledge_catalog``
+#: table no migration creates; the data catalog is ``catalog_objects`` (0054).
+#: An imported row is always ``project`` visibility in the importing project:
+#: a bundle never widens a row to ``system``. A row already present keeps
+#: its local state.
+_CATALOG_IMPORT_SQL = """INSERT INTO catalog_objects
+       (project_id, s3_key, state, summary, deterministic_summary,
+        perception_summary, perception_model, tags, filename_signals,
+        detected_modality, visibility)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'project')
+ON CONFLICT (project_id, s3_key) DO NOTHING"""
+
+_CATALOG_STATES = frozenset({"pending", "ready", "error"})
+
+
+def _catalog_state(row: dict[str, Any]) -> str:
+    """The row's catalog state when it is one the table admits, else pending."""
+    state = str(row.get("state") or "pending")
+    return state if state in _CATALOG_STATES else "pending"
+
+
+def _catalog_import_params(row: dict[str, Any], project_id: str) -> tuple[Any, ...]:
+    """``catalog.jsonl`` row → insert parameters. Rows of the older shape
+    (``name`` + ``metadata``) carry their name as the object key."""
+    key = str(row.get("s3_key") or row["name"])
+    if not key:
+        raise ValueError("catalog row without an object key")
+    text = {k: str(row.get(k) or "") for k in ("summary", "deterministic_summary")}
+    return (
+        project_id,
+        key,
+        _catalog_state(row),
+        text["summary"],
+        text["deterministic_summary"],
+        row.get("perception_summary"),
+        row.get("perception_model"),
+        list(row.get("tags") or []),
+        list(row.get("filename_signals") or []),
+        str(row.get("detected_modality") or "unknown"),
+    )

@@ -123,6 +123,13 @@ def searches(monkeypatch) -> list[str]:
             return []
 
     monkeypatch.setattr(external, "ExternalKnowledgeSearcher", _Searcher)
+    # K1.1 / K-13 (2026-10-24): the route needs the site flag and a
+    # non_sensitive project (refusals pinned in test_k1_governance_egress.py).
+    monkeypatch.setenv("UMRS_KNOWLEDGE_EXTERNAL_SEARCH", "1")
+    monkeypatch.setattr(
+        "umrs.shared.project_data_class.data_class_for_project",
+        lambda _pool, _project: "non_sensitive",
+    )
     return calls
 
 

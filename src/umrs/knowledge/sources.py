@@ -11,8 +11,9 @@ Supported kinds:
   - ``git_repo``   -> remote git URL (requires egress grant)
 
 Remote types (``http_url``, ``git_repo``) raise ``EgressDisabledError``
-unless ``allow_domains`` is non-empty (either passed directly or from
-site config).  ``s3_uri`` is treated as a reference -- no egress needed.
+unless the site allowlist (``extra.knowledge_ingest.allowed_domains``),
+narrowed by any caller ``allow_domains``, is non-empty (K1.1, 2026-10-24:
+the caller's list used to replace the site list).  ``s3_uri`` is treated as a reference -- no egress needed.
 
 Kind auto-detection via ``detect_kind(uri)``.  Caller may override.
 """
@@ -152,7 +153,8 @@ class SourceResolver:
             source_kind: One of 'local', 'http_url', 'git_repo', 's3_uri',
                          'local_dir', 'local_file'.
             uri: The source URI or path.
-            allow_domains: Optional EgressGuard domain allowlist override.
+            allow_domains: Optional caller allowlist; it narrows the site
+                allowlist and never widens or replaces it.
 
         Returns:
             ResolvedSource with resolved path/uri/files.
@@ -163,14 +165,17 @@ class SourceResolver:
         kind = self._normalize_kind(source_kind)
 
         # --- remote types: egress check ---
+        # K1.1(d): the site allowlist always applies. A caller's list only
+        # narrows it (entries the site list does not admit are dropped); it
+        # never replaces it, and no caller list means the site list.
         if kind in ("http_url", "git_repo"):
-            domains = (
-                allow_domains
-                if allow_domains is not None
-                else self._get_allowed_domains()
-            )
+            from .egress_fetch import intersect_allowlists
+
+            domains = intersect_allowlists(allow_domains, self._get_allowed_domains())
             if not domains:
-                raise EgressDisabledError(kind, "no allowlist configured")
+                raise EgressDisabledError(
+                    kind, "no allowlist configured (site list empty or caller list outside it)"
+                )
 
             return ResolvedSource(
                 kind=kind,
@@ -391,7 +396,7 @@ def resolve_ingest_source(
         source_kind: Source kind string.
         uri: Source URI or path.
         site_config: Optional site config for egress policy.
-        allow_domains: Optional domain allowlist override.
+        allow_domains: Optional caller allowlist (narrows the site list).
 
     Returns:
         ResolvedSource.

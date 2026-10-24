@@ -221,27 +221,30 @@ class TestResolveRemoteEgressFailClose:
         assert result.allow_egress is True
         assert "example.com" in result.allow_domains
 
-    def test_http_url_with_inline_allow_domains(self) -> None:
+    def test_http_url_inline_list_without_site_list_is_refused(self) -> None:
+        # K1.1 (2026-10-24): a caller list no longer stands in for the site
+        # allowlist; with no site list, nothing is fetched.
         resolver = SourceResolver()
-        result = resolver.resolve(
-            "http_url",
-            "https://example.com/data.json",
-            allow_domains=["override.com", "api.test.org"],
-        )
-        assert result.allow_egress is True
-        assert result.allow_domains == ["override.com", "api.test.org"]
+        with pytest.raises(EgressDisabledError):
+            resolver.resolve(
+                "http_url",
+                "https://example.com/data.json",
+                allow_domains=["override.com", "api.test.org"],
+            )
 
-    def test_http_url_inline_overrides_config(self) -> None:
+    def test_http_url_inline_list_narrows_config(self) -> None:
         config = type(
-            "Config", (), {"extra": {"knowledge_ingest": {"allowed_domains": ["config.com"]}}}
+            "Config",
+            (),
+            {"extra": {"knowledge_ingest": {"allowed_domains": ["config.com", "api.test.org"]}}},
         )()
         resolver = SourceResolver(site_config=config)
         result = resolver.resolve(
             "http_url",
-            "https://override.com/data.json",
-            allow_domains=["override.com"],
+            "https://api.test.org/data.json",
+            allow_domains=["override.com", "api.test.org"],
         )
-        assert result.allow_domains == ["override.com"]
+        assert result.allow_domains == ["api.test.org"]
 
     def test_git_repo_no_allowlist(self) -> None:
         resolver = SourceResolver()
@@ -460,19 +463,20 @@ class TestSiteConfigEgress:
         with pytest.raises(EgressDisabledError):
             resolver.resolve("http_url", "https://example.com/data")
 
-    def test_allow_domains_override_takes_precedence(self) -> None:
+    def test_allow_domains_outside_site_list_is_refused(self) -> None:
+        # K1.1: the caller narrows the site list, never replaces it.
         from unittest.mock import MagicMock
 
         mock_config = MagicMock()
         mock_config.extra = {"knowledge_ingest": {"allowed_domains": ["config.com"]}}
 
         resolver = SourceResolver(site_config=mock_config)  # type: ignore[arg-type]
-        result = resolver.resolve(
-            "http_url",
-            "https://example.com/data",
-            allow_domains=["override.com"],
-        )
-        assert result.allow_domains == ["override.com"]
+        with pytest.raises(EgressDisabledError):
+            resolver.resolve(
+                "http_url",
+                "https://example.com/data",
+                allow_domains=["override.com"],
+            )
 
 
 class TestResolveIngestSourceConvenience:
@@ -485,9 +489,13 @@ class TestResolveIngestSourceConvenience:
         assert result.resolved is True
 
     def test_http_url_with_domains(self) -> None:
+        config = type(
+            "Config", (), {"extra": {"knowledge_ingest": {"allowed_domains": ["example.com"]}}}
+        )()
         result = resolve_ingest_source(
             "http_url",
             "https://example.com/data",
+            site_config=config,
             allow_domains=["example.com"],
         )
         assert result.resolved is True

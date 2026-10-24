@@ -24,6 +24,14 @@ def client(monkeypatch):
 
     monkeypatch.setenv("UMRS_AUTH_MODE", "strict")
     monkeypatch.setenv("UMRS_HANDSHAKE_HMAC_SECRET", _SECRET)
+    # K1.1 / K-13 (2026-10-24): the route runs only with the site flag on and
+    # for a non_sensitive project (tests/test_k1_governance_egress.py pins
+    # both refusals).
+    monkeypatch.setenv("UMRS_KNOWLEDGE_EXTERNAL_SEARCH", "1")
+    monkeypatch.setattr(
+        "umrs.shared.project_data_class.data_class_for_project",
+        lambda _pool, _project: "non_sensitive",
+    )
     app = FastAPI()
     app.include_router(knowledge_module.router)
     return TestClient(

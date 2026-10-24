@@ -40,7 +40,11 @@ class IngestRequest(BaseModel):
     )
     project_id: str | None = Field(None, description="Project ID override")
     allow_domains: list[str] | None = Field(
-        None, description="Domain allowlist for remote sources"
+        None,
+        description=(
+            "Domain allowlist for remote sources: narrows the site allowlist, "
+            "never widens or replaces it (K1.1)"
+        ),
     )
     proposal_id: str | None = Field(
         None,
@@ -360,7 +364,11 @@ async def trigger_ingest(
     )
 
     sources = body.sources if body.sources else []
-    allow_domains = body.allow_domains if body.allow_domains else []
+    # K1.1(d): no caller list (None or []) travels as None, which the job's
+    # resolver reads as "the site list". A caller list only narrows the site
+    # list there; it never replaces it (it used to: [] was carried and an
+    # empty or arbitrary caller list was the only list consulted).
+    allow_domains = body.allow_domains or None
 
     # Unified ingest governance (R6.4): quota + audit before job submit.
     from umrs.api.governance import guard_ingest

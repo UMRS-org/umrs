@@ -1173,7 +1173,7 @@ def _ingest_one_source(
     from umrs.knowledge.artifact_storage import ArtifactStorage
     from umrs.knowledge.sources import SourceResolver
 
-    resolver = SourceResolver()
+    resolver = SourceResolver(site_config=_ingest_site_config())
     resolved = resolver.resolve(source_kind, uri, allow_domains=allow_domains)
     if not resolved.resolved:
         result.failed_items.append(
@@ -1444,6 +1444,20 @@ def _copy_streamed(
         }
     )
     return "", 0
+
+
+def _ingest_site_config() -> Any:
+    """The site config whose ``knowledge_ingest.allowed_domains`` bounds every
+    remote source (K1.1: the job used a config-less resolver, so the site list
+    was never consulted and the caller's list was the only list). ``None``
+    when no config loads: the resolver then admits nothing (fail-closed)."""
+    try:
+        from umrs.orchestrator.site_config import get_site_config
+
+        return get_site_config()
+    except Exception:  # no config → empty site list → egress refused
+        logger.warning("site config unavailable: remote ingest stays disabled", exc_info=True)
+        return None
 
 
 def _fetch_and_store_remote(
@@ -2864,6 +2878,12 @@ def _nodes_edges_for_artifact(
 
     Order matters: graph-JSON artifacts (W3) import verbatim; ordinary prose
     without code structure falls back to site-LLM extraction (W2).
+
+    K-1 (ADR-084 D-2, accepted 2026-10-24): entities and relations a model
+    extracted are a judgement, so they land ``proposed`` whoever uploaded
+    the document. The document node, the deterministic structure and a
+    graph-JSON payload the author wrote keep the actor's tier (the caller
+    demotes everything for agent origins).
     """
     nodes = _build_nodes(
         artifact_id, ir_id, parsed, project_id, graph_id=target_graph_id
@@ -2874,13 +2894,16 @@ def _nodes_edges_for_artifact(
         return nodes, edges
     text = content.decode("utf-8", errors="replace")
     payload = _detect_graph_payload(text)
-    if payload is None and len(nodes) == 1:
+    model_extracted = payload is None and len(nodes) == 1
+    if model_extracted:
         # Structural parse found nothing semantic → LLM extraction (W2).
         payload = _llm_extract_document(text, project_id=project_id, notes=notes)
     if payload is not None:
         sem_nodes, sem_edges = _semantic_nodes_edges(
             artifact_id, ir_id, project_id, target_graph_id, payload
         )
+        if model_extracted:
+            sem_nodes, sem_edges = _as_proposed_tier(sem_nodes, sem_edges)
         nodes = [*nodes, *sem_nodes]
         edges = [*edges, *sem_edges]
     return nodes, edges
