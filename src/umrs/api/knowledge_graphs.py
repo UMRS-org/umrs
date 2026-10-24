@@ -6,6 +6,7 @@ Routes (mounted under the gateway ``/gw/knowledge/`` prefix — no nginx edits):
   POST  /umrs/knowledge/graphs            — create a named graph
   GET   /umrs/knowledge/graphs/{graph_id} — graph detail
   PATCH /umrs/knowledge/graphs/{graph_id} — metadata update / archive (no hard delete)
+  GET   /umrs/knowledge/graphs/{graph_id}/proposed — proposed rows awaiting review (K1.5)
 
 Backward compatibility: listing with a ``project_id`` the caller may write
 materializes that project's deterministic default graph first (H-1,
@@ -76,7 +77,9 @@ def _shared_read_admits(
     return access_admits(stored_access, caller)
 
 
-def _stored_project(kind: str | None, project_id: str | None, scope: CallerScope) -> str | None:
+def _stored_project(
+    kind: str | None, project_id: str | None, scope: CallerScope
+) -> str | None:
     """The project a new graph is stored under.
 
     Owner-only graphs are not project-bound and system graphs stay global.
@@ -323,6 +326,48 @@ async def get_graph_content(
             PlatformError.knowledgegraphs("not_found", f"Graph {graph_id} not found")
         )
     return content
+
+
+def _review_queue(request: Request) -> Any:
+    from umrs.knowledge.review_queue import ReviewQueueStore
+
+    return ReviewQueueStore(getattr(request.app.state, "umrs_db_pool", None))
+
+
+@router.get("/{graph_id}/proposed")
+async def list_proposed_rows(
+    graph_id: str,
+    request: Request,
+    limit: int = Query(200, ge=1, le=1000),
+    identity: CallerIdentity = Depends(get_caller_identity),
+) -> dict[str, Any]:
+    """Proposed (D-35) nodes and edges of one graph, newest first (K1.5).
+
+    The review inbox reads this to show what waits for a person to
+    establish. Read-only; needs the verified caller (401 without), and the
+    graph detail route's visibility (404 when the graph is unknown or
+    outside the caller's reach). Each row names its origin and run, for
+    "establish run" (ADR-084 D-2).
+    """
+    graph = _registry(request).resolve_graph(graph_id)
+    scope = CallerScope(
+        user_id=identity.user_id or "",
+        project_id=identity.project_id or "",
+        is_admin=identity.is_admin,
+    )
+    if graph is None or not _graph_read_allowed(
+        request,
+        kind=graph.kind,
+        project_id=graph.project_id,
+        owner_id=graph.owner_id,
+        stored_access=graph.access,
+        scope=scope,
+    ):
+        raise_typed(
+            PlatformError.knowledgegraphs("not_found", f"Graph {graph_id} not found")
+        )
+    rows = _review_queue(request).proposed_rows(graph, limit=limit)
+    return {"graph_id": graph.graph_id, "project_id": graph.project_id, **rows}
 
 
 @router.patch("/{graph_id}")
