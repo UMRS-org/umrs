@@ -45,27 +45,27 @@ def _validate_partition(partition: str, site: Any) -> None:
     When a caller provides an explicit partition_override that doesn't
     match any partition known to this deployment's site_config, sbatch will
     fail with "invalid partition specified". Catch it early with a clear
-    error so the job is rejected immediately (no retry loop).
+    error so the job is rejected immediately (no retry loop). A comma list
+    (candidates the submit chooses one of) is valid when every element is.
     """
-    if not partition:
+    from umrs.orchestrator.partition_choice import split_partitions
+
+    requested = split_partitions(partition)
+    if not requested:
         raise RuntimeError(
             "No partition specified — set partition in pool roster, "
             "site_config scheduler.partition, or pass partition_override."
         )
 
-    # 1. Check against scheduler.partition candidates (comma-separated)
-    raw = getattr(site.scheduler, "partition", "") or ""
-    candidates = [p.strip() for p in raw.split(",") if p.strip()]
-    if partition in candidates:
-        return  # OK
-
-    # 2. Check against partition_profiles keys
+    # Known: scheduler.partition candidates (comma-separated) + profile keys.
+    candidates = split_partitions(getattr(site.scheduler, "partition", "") or "")
     profiles = getattr(site, "partition_profiles", {}) or {}
-    if partition in profiles:
+    unknown = [p for p in requested if p not in candidates and p not in profiles]
+    if not unknown:
         return  # OK
 
     raise RuntimeError(
-        f"Partition '{partition}' is not valid for this deployment. "
+        f"Partition '{unknown[0]}' is not valid for this deployment. "
         f"Known partitions: {candidates + list(profiles.keys())}. "
         "Use a pool roster (UMRS_PROVISION_ROSTER) or pass a valid partition_override."
     )

@@ -18,7 +18,13 @@ description: >-
 
 scheduler:
   kind: slurm-podman
-  partition: ng-dgx-m0,ng-dgx-m1,ng-dgx-m2,ng-dgx-m3  # ng-dgx-m0-[08-09], ng-dgx-m1-[10-11], ng-dgx-m2-[12-13], ng-dgx-m3-[14-15] (GB10)
+  # GB10 candidates: ng-dgx-m0-[08-09], m1-[10-11], m2-[12-13], m3-[14-15],
+  # ng-dgx-s-[00-07]. Slurm never sees this as a list: RCCS rejects
+  # --partition=a,b (2026-10-24). This on-cluster config (slurm-podman, no
+  # partition_choice) submits to one candidate (the first, or an idle one by
+  # sinfo when nothing names a partition); the live front
+  # (rccs-front/site.yaml) picks the earliest sbatch --test-only start.
+  partition: ng-dgx-m0,ng-dgx-m1,ng-dgx-m2,ng-dgx-m3,ng-dgx-s
   account: cloud-users
   qos: ""
   time_limit: "2-00:00:00"   # 2 days; allows queued jobs to run uninterrupted once started
@@ -97,6 +103,8 @@ vllm:
 # and steps must execute on compute nodes with GPUs.
 step_executor:
   kind: slurm                                 # Submit steps as Slurm jobs to GPU compute nodes
+  # 2026-10-24: RCCS rejects a comma list at sbatch ("Multiple partitions are
+  # not allowed"); the live step lane is rccs-front's single ng-dgx-m3.
   partition: ng-dgx-s,ng-dgx-m0,ng-dgx-m1,ng-dgx-m2,ng-dgx-m3  # GB10 Blackwell partitions; ng-dgx-s re-enabled 2026-09-30 (was temporarily unavailable)
   gpus: 0                                     # ng-dgx-m* partitions reject --gpus
   cpus: 8                                     # 8 CPUs per step

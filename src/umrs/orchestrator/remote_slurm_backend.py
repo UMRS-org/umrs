@@ -34,6 +34,7 @@ import shlex
 from datetime import datetime
 from typing import Any
 
+from . import partition_choice as pc
 from .base import (
     EndpointInfo,
     JobInfo,
@@ -60,6 +61,13 @@ _SQUEUE_NOT_LISTED = "not listed by squeue"
 # longer knows the job; how it ended is unknowable.
 _SLURM_VANISHED = "slurm-vanished"
 _SLURM_VANISHED_ERROR = "Slurm no longer lists the job and sacct is unavailable"
+
+# Per-candidate bound on one `sbatch --test-only` probe; a timeout counts as
+# a failed candidate. At most _TEST_ONLY_CONCURRENCY probes run at once (they
+# share the ControlMaster with squeue polls; sshd MaxSessions defaults to
+# 10), so five candidates wait at most two rounds of this bound.
+_TEST_ONLY_TIMEOUT_SEC = 30
+_TEST_ONLY_CONCURRENCY = 3
 
 
 def _squeue_omits_job(result: Any) -> bool:
@@ -343,9 +351,11 @@ class RemoteSlurmBackend(SlurmBackend):
         convention (e.g. ``1n4gpu``, ``2n4gpu``). When such a profile exists for
         the requested sizing, route to it so multi-GPU/multi-node jobs land on a
         partition that can satisfy the allocation. Sites that do not follow this
-        convention (e.g. rccs-cloud) fall through to the configured default.
+        convention (e.g. rccs-cloud) fall through to the configured default:
+        the whole candidate list on a site that chooses per submit
+        (``scheduler.partition_choice: earliest_start``), else the first.
         """
-        default = site.scheduler.partition.split(",")[0]
+        default = pc.default_partition(site)
         if not gpu_count:
             return default
         nodes = node_count if node_count and node_count > 1 else 1
@@ -372,7 +382,9 @@ class RemoteSlurmBackend(SlurmBackend):
         # Resource sizing (popped up-front so partition selection can use them).
         gpu_count = kwargs.pop("gpu_count", None)
         node_count = kwargs.pop("node_count", None)
-        partition_override = kwargs.pop("partition_override", None)
+        candidates = self._partition_candidates(
+            site, kwargs.pop("partition_override", None), gpu_count, node_count
+        )
         slurm_account = kwargs.pop("slurm_account", None) or site.scheduler.account
         nodelist_hint = kwargs.pop("nodelist_hint", None)
 
@@ -381,7 +393,7 @@ class RemoteSlurmBackend(SlurmBackend):
             output_dir=output_dir,
             gpu_count=gpu_count,
             node_count=node_count,
-            partition_override=partition_override,
+            partition_override=",".join(candidates) or None,
             slurm_account=slurm_account,
             nodelist_hint=nodelist_hint,
         )
@@ -389,11 +401,20 @@ class RemoteSlurmBackend(SlurmBackend):
         # Pop unused kwargs before building env
         kwargs.pop("min_gpu_memory_gb", None)
 
-        # Build environment exports + sacct attribution for the job.
+        if requesting_user and self._delegation_mode == "per_user_ssh":
+            ssh = await self._get_ssh_for_user(requesting_user)
+        else:
+            ssh = await self._get_ssh()
+        # One partition per submission (RCCS refuses a list); the probes run
+        # through the same ssh as the real submit.
+        ranked = await self._rank_partitions(
+            ssh, [*sbatch_args, shlex.quote(wrapper_script)], candidates
+        )
+
+        # Build environment exports + sacct attribution for the job. The cap
+        # is the strictest over every partition the submit may still land on.
         requested_env = _cap_gpu_mem_util_env(
-            site,
-            partition_override or self._select_partition(site, gpu_count, node_count),
-            kwargs.pop("env", None),
+            site, ",".join(ranked), kwargs.pop("env", None)
         )
         project_id = kwargs.pop("project_id", None)
         if isinstance(requested_env, dict) and not project_id:
@@ -412,14 +433,7 @@ class RemoteSlurmBackend(SlurmBackend):
         # Append the wrapper script path
         sbatch_args.append(shlex.quote(wrapper_script))
 
-        cmd = " ".join(sbatch_args)
-        logger.info("Submitting wrapper job: %s", cmd)
-
-        if requesting_user and self._delegation_mode == "per_user_ssh":
-            ssh = await self._get_ssh_for_user(requesting_user)
-        else:
-            ssh = await self._get_ssh()
-        result = await ssh.run_remote(cmd, timeout=60)
+        result = await self._sbatch_ranked(ssh, sbatch_args, ranked)
 
         if not result.ok:
             raise RuntimeError(f"Remote sbatch failed: {result.stderr}")
@@ -434,6 +448,109 @@ class RemoteSlurmBackend(SlurmBackend):
             created_at=datetime.now(),
             backend=self.backend_name,
         )
+
+    def _partition_candidates(
+        self,
+        site: Any,
+        partition_override: str | None,
+        gpu_count: int | None,
+        node_count: int | None,
+    ) -> list[str]:
+        """The partitions this submit may use, in configured order.
+
+        A list collapses to its first candidate unless the site chooses per
+        submit (``scheduler.partition_choice: earliest_start``).
+        """
+        raw = partition_override or self._select_partition(site, gpu_count, node_count)
+        candidates = pc.split_partitions(raw)
+        if len(candidates) > 1 and not pc.spreads_partitions(site):
+            return candidates[:1]
+        return candidates
+
+    async def _rank_partitions(
+        self, ssh: Any, sbatch_args: list[str], candidates: list[str]
+    ) -> list[str]:
+        """Candidates ranked by `sbatch --test-only` start, earliest first.
+
+        A single candidate (or none) is returned untouched, without a probe.
+        Candidates whose probe fails (quota, invalid, unavailable, timeout)
+        are dropped; ties (see ``partition_choice``) go to the partition this
+        process picked least recently. When none passes (e.g. every probe
+        timed out), the whole list is kept in configured order so the real
+        submit still moves on after a quota refusal.
+        """
+        if len(candidates) <= 1:
+            return candidates
+        gate = asyncio.Semaphore(_TEST_ONLY_CONCURRENCY)
+
+        async def _probe(cand: str) -> datetime | None:
+            async with gate:
+                return await self._test_only_start(ssh, sbatch_args, cand)
+
+        starts = await asyncio.gather(*(_probe(cand) for cand in candidates))
+        by_name = dict(zip(candidates, starts, strict=True))
+        ranked = pc.choose(candidates, by_name)
+        if not ranked:
+            logger.info(
+                "No Slurm partition of %s passed --test-only; submitting in "
+                "configured order",
+                ",".join(candidates),
+            )
+            return list(candidates)
+        logger.info(
+            "Selected Slurm partition %s from %s (earliest start %s)",
+            ranked[0],
+            ",".join(candidates),
+            by_name[ranked[0]].isoformat(),  # type: ignore[union-attr]
+        )
+        return ranked
+
+    async def _test_only_start(
+        self, ssh: Any, sbatch_args: list[str], partition: str
+    ) -> datetime | None:
+        """When Slurm would start this job on ``partition``; None if refused."""
+        cmd = " ".join(pc.probe_args(sbatch_args, partition))
+        try:
+            result = await ssh.run_remote(cmd, timeout=_TEST_ONLY_TIMEOUT_SEC)
+        except (asyncio.TimeoutError, OSError) as exc:
+            logger.info("Partition %s skipped: --test-only failed: %s", partition, exc)
+            return None
+        output = f"{result.stdout}\n{result.stderr}"
+        parsed = pc.parse_test_only(output) if result.ok else None
+        if parsed is None:
+            logger.info(
+                "Partition %s skipped: %s",
+                partition,
+                pc.first_line(result.stderr) or pc.first_line(result.stdout),
+            )
+            return None
+        return parsed[0]
+
+    async def _sbatch_ranked(
+        self, ssh: Any, sbatch_args: list[str], ranked: list[str]
+    ) -> Any:
+        """Submit to the first ranked partition; on a quota refusal, the next.
+
+        Any other failure (and the quota refusal of the last candidate) is
+        returned to the caller unchanged, as a single submit was before.
+        """
+        result = None
+        for index, partition in enumerate(ranked or [""]):
+            args = (
+                pc.with_partition(sbatch_args, partition) if partition else sbatch_args
+            )
+            logger.info("Submitting wrapper job: %s", pc.redact_exports(args))
+            result = await ssh.run_remote(" ".join(args), timeout=60)
+            last = index >= len(ranked) - 1
+            if result.ok or last or not pc.quota_exceeded_partition(result.stderr):
+                return result
+            logger.info(
+                "Partition %s refused by quota (%s); trying %s",
+                partition,
+                pc.first_line(result.stderr),
+                ranked[index + 1],
+            )
+        return result
 
     def _build_wrapper_sbatch_args(
         self,

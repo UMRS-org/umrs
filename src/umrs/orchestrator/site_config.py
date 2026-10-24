@@ -64,6 +64,12 @@ class SchedulerConfig:
 
     kind: str = "slurm"  # slurm | slurm-remote | k8s | compose
     partition: str = ""  # Slurm partition or comma-separated candidates / K8s namespace
+    # How a slurm-remote submit picks ONE partition from a comma list:
+    # "first" (default) = the first candidate; "earliest_start" = the candidate
+    # `sbatch --test-only` says starts earliest (ties keep list order), with a
+    # retry on the next one when a per-partition quota refuses the submit
+    # (orchestrator/partition_choice.py; RCCS rejects lists, 2026-10-24).
+    partition_choice: str = "first"
     account: str = ""  # Slurm account
     qos: str = ""  # Slurm QoS
     time_limit: str = "04:00:00"  # Default wall-clock

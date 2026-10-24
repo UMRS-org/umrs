@@ -27,7 +27,17 @@ description: >-
 
 scheduler:
   kind: slurm-remote
-  partition: ng-dgx-m0,ng-dgx-m1,ng-dgx-m2,ng-dgx-m3
+  # Candidates, not a Slurm list (2026-10-24): RCCS rejects --partition=a,b
+  # ("Multiple partitions are not allowed") and caps each user per partition
+  # (2 x 72 node-hours). UMRS submits each job to ONE of them, the earliest
+  # `sbatch --test-only` start, and moves to the next on a quota refusal
+  # (orchestrator/partition_choice.py). Ties (starts within 60 s) go to the
+  # partition this server picked least in the last 2 min, then to this
+  # order: ng-dgx-s first (8 standalone nodes; singletons there, pairs kept
+  # for pair work, dgx-spark-fleet-plan-2026-10-08 §3/R8), ng-dgx-m3 last
+  # (the step lane's only partition, step_executor.partition below).
+  partition: ng-dgx-s,ng-dgx-m0,ng-dgx-m1,ng-dgx-m2,ng-dgx-m3
+  partition_choice: earliest_start
   account: cloud-users
   qos: ""
   time_limit: "23:00:00"  # ng-dgx-m* max is 1-00:00:00; 23h gives clean RIVAULT_JOB_TIMEOUT exit headroom
@@ -207,11 +217,12 @@ extra:
 # Partition profiles are identical to rccs-cloud — same compute hardware
 partition_profiles:
   # ng-dgx-s-[00-07] (8 GB10 nodes, 1-00:00:00 max; partition listing
-  # 2026-10-01). Listed here so a pool entry may pin it (_validate_partition
-  # accepts profile keys); deliberately NOT in scheduler.partition, so generic
-  # provisions keep landing on ng-dgx-m*. First user: the Bespoke-Nimble-9B
-  # decision endpoint (pool-rccs.yaml, ADR-076). gpus: 0 mirrors m* — relax to
-  # 1 only after a job proves the partition accepts --gres.
+  # 2026-10-01). First user: the Bespoke-Nimble-9B decision endpoint
+  # (pool-rccs.yaml, ADR-076). 2026-10-24: now also in scheduler.partition
+  # (first, so ties go to the standalone nodes): generic provisions spread
+  # over every GB10 partition instead of queueing on ng-dgx-m0 while the
+  # others idle. gpus: 0
+  # mirrors m* — relax to 1 only after a job proves the partition accepts --gres.
   ng-dgx-s:
     arch: aarch64
     gpu_vendor: nvidia

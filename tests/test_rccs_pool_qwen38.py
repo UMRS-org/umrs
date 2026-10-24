@@ -21,11 +21,10 @@ def defaults(monkeypatch):
 
 def test_resolves_single_gb10_node(defaults):
     assert defaults is not None
-    assert (defaults["partition"], defaults["node_count"], defaults["gpu_count"]) == (
-        "ng-dgx-m0",
-        1,
-        1,
-    )
+    assert (defaults["node_count"], defaults["gpu_count"]) == (1, 1)
+    # No partition pin (2026-10-24, was ng-dgx-m0): the job takes the site's
+    # GB10 candidate list and UMRS submits it to the earliest-starting one.
+    assert "partition" not in defaults
     assert defaults["max_model_len"] == 262144
 
 

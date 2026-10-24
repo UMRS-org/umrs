@@ -22,6 +22,8 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from .partition_choice import split_partitions
+
 if TYPE_CHECKING:
     from umrs.orchestrator.deployment_spec import DeploymentSpec
     from umrs.orchestrator.launcher_stack import LauncherStack
@@ -257,20 +259,22 @@ class PreflightValidator:
         )
 
     def _validate_partition_profile(self) -> list[str]:
-        """Check that the requested partition can satisfy the GPU/node request."""
+        """Check that the requested partition can satisfy the GPU/node request.
+
+        A comma list (the submit picks one) is checked element by element.
+        """
         if not self.site:
             return []
         profiles = getattr(self.site, "partition_profiles", {}) or {}
-        partition = self.spec.partition
-        if partition and partition in profiles:
-            profile = profiles[partition]
-            profile_gpus = getattr(profile, "gpus", 0)
+        errors = []
+        for partition in split_partitions(self.spec.partition):
+            profile_gpus = getattr(profiles.get(partition), "gpus", 0)
             if profile_gpus and self.spec.gpus_per_node > profile_gpus:
-                return [
+                errors.append(
                     f"Partition '{partition}' has {profile_gpus} GPU/node, "
                     f"but spec requests {self.spec.gpus_per_node}"
-                ]
-        return []
+                )
+        return errors
 
     async def _check_storage(self) -> PreflightCheck:
         """Storage: model weights and required files exist on the shared FS."""
