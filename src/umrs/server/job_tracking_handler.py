@@ -297,6 +297,32 @@ def spec_project_refusal(job_type: JobType, spec: Any, project_id: str) -> str |
     )
 
 
+#: Job types whose client-built spec may not carry a /save's tier fields or
+#: ``session_turns`` sources (``session_turns.client_spec_refusal``).
+SAVE_GUARDED_JOB_TYPES = frozenset(
+    {JobType.KNOWLEDGE_INGEST, JobType.KNOWLEDGE_UNDERSTAND}
+)
+
+
+def spec_save_refusal(job_type: JobType, spec: Any) -> str | None:
+    """Why a client-submitted spec may not be queued as a knowledge job, or
+    None: a /save (K1.6) is built only by ``POST /umrs/k2/ingest``, which
+    scans the text and takes the establisher from the caller. Shared by the
+    ZMQ and HTTP submit paths, admin or not (review of K1 part B, 2026-10-24)."""
+    from umrs.knowledge.session_turns import client_spec_refusal
+
+    if job_type not in SAVE_GUARDED_JOB_TYPES:
+        return None
+    refusal = client_spec_refusal(spec)
+    return f"{job_type.value}: {refusal}" if refusal else None
+
+
+def _raise_for_spec_save(job_type: JobType, spec: Any) -> None:
+    refusal = spec_save_refusal(job_type, spec)
+    if refusal:
+        raise ValueError(refusal)
+
+
 def _check_submit_surface(job_type: JobType, internal: bool) -> None:
     if (job_type == JobType.WORKFLOW_RUN) != internal:
         raise ValueError(
@@ -503,6 +529,7 @@ class DurableJobCommandBackend:
                 return json.dumps({"status": "error", "message": policy_err})
             _raise_for_spec_resources(job_type, spec, client_id, is_admin)
             _raise_for_spec_project(job_type, spec, project_id)
+            _raise_for_spec_save(job_type, spec)
             _raise_for_spec_venue(spec, self._job_store)
             priority = int(payload.get("priority", 0))
             max_attempts = int(payload.get("max_attempts", 3))

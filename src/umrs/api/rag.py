@@ -829,11 +829,11 @@ async def list_documents(
     documents are the spine's artifacts this caller may read (``_rag_spine``);
     the endpoint corpus answered ``[]`` after every upload.
     """
-    _user_id, caller_project = _require_rag_scope(request, project_id, write=False)
+    user_id, caller_project = _require_rag_scope(request, project_id, write=False)
     if spine_answers():
         # K1.3: uploads feed the spine; list it through the graph-readable
         # predicate (never another member's personal-graph file).
-        return await spine_documents(request, project_id or caller_project)
+        return await spine_documents(request, project_id or caller_project, user_id)
     # The caller's endpoint serves the call; the parameter names the corpus.
     rag_base = _discover_rag_endpoint(registry, caller_project)
     project_id = project_id or caller_project
@@ -889,14 +889,30 @@ async def delete_document(document_id: str, request: Request) -> dict[str, Any]:
     return await delete_rag_document(request, document_id, project_id, user_id)
 
 
+async def _spine_document_info(
+    request: Request, caller: tuple[str, str], document_id: str
+) -> DocumentInfo:
+    """*caller* is ``(project_id, user_id)`` from ``_require_rag_scope``."""
+    from ._rag_spine import spine_document
+
+    project_id, user_id = caller
+    doc = await spine_document(request, project_id, document_id, user_id)
+    if doc is None:
+        raise_typed(PlatformError.rag("not_found", "Document not found"))
+    return DocumentInfo(**doc)
+
+
 @router.get("/documents/{document_id}", response_model=DocumentInfo)
 async def get_document(
     document_id: str,
     request: Request,
     registry: EndpointRegistry = Depends(get_registry),
 ):
-    """Get document metadata."""
-    _user_id, project_id = _require_rag_scope(request, write=False)
+    """Get document metadata (from the spine with the central facade, like
+    the listing; K1.3 review, 2026-10-24)."""
+    user_id, project_id = _require_rag_scope(request, write=False)
+    if spine_answers():
+        return await _spine_document_info(request, (project_id, user_id), document_id)
 
     rag_base = _discover_rag_endpoint(registry, project_id)
     rag_url = f"{rag_base}/rag/documents/{document_id}"

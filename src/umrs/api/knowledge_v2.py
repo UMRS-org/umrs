@@ -303,10 +303,11 @@ def _refuse_server_side_source_kinds(sources: list[dict[str, Any]]) -> None:
 
 def _session_save(
     request: Request, sources: list[dict[str, Any]]
-) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], Any]:
     """K1.6 ``/save``: a ``session_turns`` source is validated and scanned
     here, before anything is queued, and becomes the inline source the job
-    stores; its tier fields join the spec. Other sources pass unchanged."""
+    stores; the plan (``SessionSave``) carries its tier. Other sources pass
+    unchanged, with no plan."""
     from umrs.knowledge.session_turns import (
         SESSION_TURNS_KIND,
         SessionSaveRefused,
@@ -314,7 +315,7 @@ def _session_save(
     )
 
     if not any((src or {}).get("kind") == SESSION_TURNS_KIND for src in sources):
-        return sources, {}
+        return sources, None
     if len(sources) != 1:
         raise_typed(
             PlatformError.knowledge2(
@@ -329,7 +330,47 @@ def _session_save(
         )
     except SessionSaveRefused as exc:
         raise_typed(PlatformError.knowledge2("bad_request", str(exc), reason=exc.code))
-    return [save.source], save.spec_extra
+    return [save.source], save
+
+
+async def _refuse_stale_vouch(
+    request: Request, project_id: str, graph_id: str, save: Any
+) -> None:
+    """A vouch over text the graph already holds as proposed is refused by
+    name (``session_turns.vouch_refusal``): it would change nothing while the
+    receipt said "established" (review of K1 part B, 2026-10-24)."""
+    import hashlib
+
+    from umrs.knowledge.contributions import stored_save_origins
+    from umrs.knowledge.session_turns import VOUCHED_ORIGIN, vouch_refusal
+
+    if save is None or save.origin != VOUCHED_ORIGIN:
+        return
+    from ._asyncpg_pool import knowledge_asyncpg_pool
+
+    content_hash = hashlib.sha256(save.source["content"].encode("utf-8")).hexdigest()
+    pool = await knowledge_asyncpg_pool(request)
+    origins = await stored_save_origins(pool, project_id, content_hash, graph_id)
+    refusal = vouch_refusal(save, origins)
+    if refusal is not None:
+        raise_typed(
+            PlatformError.knowledge2("bad_request", str(refusal), reason=refusal.code)
+        )
+
+
+def _save_spec(save: Any) -> dict[str, Any]:
+    """The spec fields a /save adds (its tier), else none."""
+    return dict(save.spec_extra) if save is not None else {}
+
+
+def _save_receipt(save: Any) -> dict[str, Any]:
+    """What the route decided for a /save, for the client's receipt: the
+    origin the contribution records and the tier its rows land in."""
+    from umrs.knowledge.session_turns import planned_tier
+
+    if save is None:
+        return {}
+    return {"save": {"origin": save.origin, "tier": planned_tier(save.origin)}}
 
 
 def _job_owner(request: Request) -> str:
@@ -380,7 +421,7 @@ async def trigger_ingest(
         )
 
     _refuse_server_side_source_kinds(body.sources or [])
-    sources, save_extra = _session_save(request, body.sources or [])
+    sources, save = _session_save(request, body.sources or [])
 
     runtime = get_runtime()
     if runtime is None:
@@ -396,6 +437,7 @@ async def trigger_ingest(
         target_graph_id=target_graph_id,
         proposal_id=body.proposal_id,
     )
+    await _refuse_stale_vouch(request, project_id, target_graph_id, save)
 
     # K1.1(d): no caller list (None or []) travels as None, which the job's
     # resolver reads as "the site list". A caller list only narrows the site
@@ -429,8 +471,8 @@ async def trigger_ingest(
         # nodes/edges as 'proposed' (the understand chain reads this).
         "origin_actor": request_actor(request),
         # K1.6: a kept assistant answer lands proposed, a vouched one
-        # established with its establisher (``session_turns.tier_stamp``).
-        **save_extra,
+        # established, its owner the establisher (``session_turns.tier_stamp``).
+        **_save_spec(save),
     }
     if body.proposal_id:
         spec["proposal_id"] = body.proposal_id
@@ -448,6 +490,7 @@ async def trigger_ingest(
         "job_id": job_id,
         "job_type": JobType.KNOWLEDGE_INGEST.value,
         "status": "queued",
+        **_save_receipt(save),
     }
 
 
@@ -557,7 +600,13 @@ async def _readable_artifact_page(
     readable = await readable_graphs_for(request, project_id)
     pool = await knowledge_asyncpg_pool(request)
     return await list_readable_artifacts(
-        pool, project_id, readable, filters, page=page, page_size=page_size
+        pool,
+        project_id,
+        readable,
+        filters,
+        page=page,
+        page_size=page_size,
+        viewer=_job_owner(request),
     )
 
 

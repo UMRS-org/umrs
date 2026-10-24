@@ -239,6 +239,41 @@ def _filter_params(filters: ArtifactFilters) -> tuple[Any, ...]:
     )
 
 
+#: A /save's metadata (``session_turns._metadata``): the saver's session
+#: back-link and labels. An artifact is shared by content hash, so the first
+#: saver's keys sit on a row other members may list through their own
+#: contribution of the same bytes.
+SAVE_METADATA_KEYS = (
+    "session_id",
+    "turn_ids",
+    "roles",
+    "saved_origin",
+    "saved_by",
+    "attested_by_client",
+    "title",
+    "tags",
+    "source_name",
+)
+
+
+def public_metadata(row: dict[str, Any], viewer: str) -> dict[str, Any]:
+    """*row*'s metadata as *viewer* may see it: a /save's keys only when the
+    viewer saved it or can see the saver's contribution (review of K1 part
+    B, 2026-10-24: a member who added identical bytes saw another member's
+    session id, title and tags from a personal-graph save)."""
+    raw = row.get("metadata")
+    meta: dict[str, Any] = raw if isinstance(raw, dict) else {}
+    if "saved_by" not in meta or str(meta["saved_by"] or "") in _seen_by(row, viewer):
+        return meta
+    return {k: v for k, v in meta.items() if k not in SAVE_METADATA_KEYS}
+
+
+def _seen_by(row: dict[str, Any], viewer: str) -> set[str]:
+    """The viewer and every contributor the viewer can see on *row*."""
+    users = {str(c.get("user_id") or "") for c in row.get("contributions") or []}
+    return ({viewer} | users) - {""}
+
+
 async def list_readable_artifacts(
     pool: Any,
     project_id: str,
@@ -247,10 +282,13 @@ async def list_readable_artifacts(
     *,
     page: int = 1,
     page_size: int = 25,
+    viewer: str = "",
 ) -> tuple[list[dict[str, Any]], int]:
     """A page of the project's readable artifacts, newest contribution first,
     each with its readable contributions; plus the filtered total.
-    *readable_graph_ids* is the allowlist (``_artifact_scope``)."""
+    *readable_graph_ids* is the allowlist (``_artifact_scope``); *viewer*
+    (the caller's user id) decides which /save metadata shows
+    (:func:`public_metadata`)."""
     head = (project_id, list(readable_graph_ids), *_filter_params(filters))
     async with pool.acquire() as conn:
         total = int(await conn.fetchval(_COUNT_SQL, *head) or 0)
@@ -263,9 +301,41 @@ async def list_readable_artifacts(
     for row in found:
         entry = dict(row)
         by_artifact[str(entry.pop("artifact_id"))].append(entry)
-    return [
+    listed = [
         {**dict(r), "contributions": by_artifact[str(r["artifact_id"])]} for r in rows
-    ], total
+    ]
+    return [{**r, "metadata": public_metadata(r, viewer)} for r in listed], total
+
+
+_ONE_SQL = """SELECT a.artifact_id, a.content_hash, a.kind, a.project_id, a.source_ref,
+       a.size_bytes, a.mime_type, a.status, a.metadata, a.created_at,
+       a.updated_at, a.embedding_status,
+       (SELECT MAX(c.created_at) FROM knowledge_artifact_contributions c
+         WHERE c.artifact_id = a.artifact_id AND c.project_id = $1
+           AND c.graph_id = ANY($2::text[])) AS last_added
+  FROM knowledge_artifacts a
+ WHERE a.project_id = $1 AND a.artifact_id = $3"""
+
+
+async def readable_artifact(
+    pool: Any,
+    project_id: str,
+    readable_graph_ids: tuple[str, ...],
+    artifact_id: str,
+    viewer: str = "",
+) -> dict[str, Any] | None:
+    """One artifact as the listing shows it (readable contributions, the
+    viewer's metadata), or None when the caller may not read it."""
+    graphs = list(readable_graph_ids)
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(_ONE_SQL, project_id, graphs, artifact_id)
+        found = await conn.fetch(_CONTRIBUTIONS_SQL, project_id, graphs, [artifact_id])
+    if row is None or not found:
+        return None
+    entry = {**dict(row), "contributions": [dict(c) for c in found]}
+    for contribution in entry["contributions"]:
+        contribution.pop("artifact_id", None)
+    return {**entry, "metadata": public_metadata(entry, viewer)}
 
 
 async def readable_artifact_ids(
@@ -283,24 +353,54 @@ async def readable_artifact_ids(
     return {str(r["artifact_id"]) for r in rows}
 
 
-_CHUNK_COUNTS_SQL = """SELECT content->>'artifact_id' AS artifact_id, COUNT(*) AS chunks
-  FROM knowledge_nodes
- WHERE project_id = $1 AND content->>'kind' = 'chunk'
-   AND content->>'artifact_id' = ANY($2::text[])
+# Chunks are written per graph (``node-chunk-{scope}{artifact}``): only the
+# chunks in a readable graph (or the legacy '' graph) count, so a copy in
+# another member's personal graph neither doubles nor leaks into the count
+# (review of K1 part B, 2026-10-24).
+_READABLE_CHUNK = """n.project_id = $1 AND n.content->>'kind' = 'chunk'
+   AND (n.graph_id = ANY($2::text[]) OR n.graph_id = '')"""
+
+_CHUNK_COUNTS_SQL = f"""SELECT n.content->>'artifact_id' AS artifact_id, COUNT(*) AS chunks
+  FROM knowledge_nodes n
+ WHERE {_READABLE_CHUNK}
+   AND n.content->>'artifact_id' = ANY($3::text[])
  GROUP BY 1"""
 
 
 async def artifact_chunk_counts(
-    pool: Any, project_id: str, artifact_ids: list[str]
+    pool: Any,
+    project_id: str,
+    artifact_ids: list[str],
+    readable_graph_ids: tuple[str, ...] = (),
 ) -> dict[str, int]:
-    """Chunk nodes per artifact (the embed job writes them; 0 = not indexed
-    yet). Only *artifact_ids* are counted: the caller has already applied
-    the graph-readable predicate."""
+    """Chunk nodes per artifact in the readable graphs (the embed job writes
+    them; 0 = not indexed yet). Only *artifact_ids* are counted: the caller
+    has already applied the graph-readable predicate."""
     if not artifact_ids:
         return {}
     async with pool.acquire() as conn:
-        rows = await conn.fetch(_CHUNK_COUNTS_SQL, project_id, artifact_ids)
+        rows = await conn.fetch(
+            _CHUNK_COUNTS_SQL, project_id, list(readable_graph_ids), artifact_ids
+        )
     return {str(r["artifact_id"]): int(r["chunks"]) for r in rows}
+
+
+_STORED_SAVE_ORIGINS_SQL = """SELECT DISTINCT c.origin_actor
+  FROM knowledge_artifacts a
+  JOIN knowledge_artifact_contributions c ON c.artifact_id = a.artifact_id
+ WHERE a.project_id = $1 AND a.content_hash = $2 AND a.status = 'active'
+   AND c.graph_id = $3"""
+
+
+async def stored_save_origins(
+    pool: Any, project_id: str, content_hash: str, graph_id: str
+) -> set[str]:
+    """The contribution origins already recorded in *graph_id* for the
+    project's active artifact with *content_hash* (empty: not stored there).
+    The /save route reads it before a vouch (``session_turns.vouch_refusal``)."""
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(_STORED_SAVE_ORIGINS_SQL, project_id, content_hash, graph_id)
+    return {str(r["origin_actor"]) for r in rows}
 
 
 # K1.3: the corpus statistics ``GET /rag/stats`` answers from the spine,
@@ -318,6 +418,7 @@ SELECT (SELECT COUNT(*) FROM docs) AS documents,
        (SELECT COUNT(*) FROM docs WHERE embedding_status = 'current') AS embedded,
        (SELECT COUNT(*) FROM knowledge_nodes n
          WHERE n.project_id = $1 AND n.content->>'kind' = 'chunk'
+           AND (n.graph_id = ANY($2::text[]) OR n.graph_id = '')
            AND n.content->>'artifact_id' IN (SELECT artifact_id FROM docs)) AS chunks,
        (SELECT embedding_model FROM docs WHERE embedding_model <> ''
          GROUP BY embedding_model ORDER BY COUNT(*) DESC, embedding_model

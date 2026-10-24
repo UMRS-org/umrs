@@ -144,3 +144,54 @@ def test_the_endpoint_facade_keeps_the_old_proxy(env, monkeypatch) -> None:
     monkeypatch.setenv("UMRS_RAG_UPLOAD_FACADE", "endpoint")
     # No endpoint registered: the proxy answers, not the spine.
     assert bob.get("/umrs/rag/documents").status_code >= 400
+
+
+# ── review of K1 part B (2026-10-24) ──────────────────────────────────────
+
+
+def _graph_chunk(project: str, artifact_id: str, index: int, graph: str) -> None:
+    async def _run() -> None:
+        async with _Acquired() as conn:
+            await conn.execute(
+                "INSERT INTO knowledge_nodes (node_id, project_id, label, node_type, "
+                "content, content_hash, graph_id) VALUES ($1, $2, $3, 'entity', $4, 'h', $5)",
+                f"node-chunk-{graph}-{artifact_id}-{index}",
+                project,
+                f"chunk {index}",
+                {"kind": "chunk", "artifact_id": artifact_id, "chunk_index": index},
+                graph,
+            )
+
+    asyncio.run(_run())
+
+
+def test_chunks_in_another_members_personal_graph_are_not_counted(env, monkeypatch) -> None:
+    """The same bytes in the default graph and alice's personal graph: bob's
+    chunk counts were doubled by (and leaked the size of) her copy."""
+    w, pool = env
+    aid = _ingest(w, user="alice", graph=w.default, content="twice")
+    assert _ingest(w, user="alice", graph=w.personal, content="twice") == aid
+    _graph_chunk(w.project, aid, 0, w.default)
+    _graph_chunk(w.project, aid, 0, w.personal)
+    bob = _rag_client("bob", w, pool, monkeypatch)
+    assert _docs(bob)[aid]["chunks"] == 1
+    assert _stats(bob)["chunks"] == 1
+    assert _docs(_rag_client("alice", w, pool, monkeypatch))[aid]["chunks"] == 2
+
+
+def test_one_document_answers_from_the_spine(env, monkeypatch) -> None:
+    """``GET /rag/documents/{id}`` proxied the endpoint corpus: the ids the
+    listing gives were 404 there."""
+    w, pool = env
+    public = _ingest(w, user="alice", graph=w.default, content="one-doc")
+    private = _ingest(w, user="alice", graph=w.personal, content="one-private")
+    bob = _rag_client("bob", w, pool, monkeypatch)
+    resp = bob.get(f"/umrs/rag/documents/{public}")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert (body["filename"], body["metadata"]["contributors"]) == ("one-doc.md", ["alice"])
+    assert bob.get(f"/umrs/rag/documents/{private}").status_code == 404
+    assert bob.get("/umrs/rag/documents/art-none").status_code == 404
+    assert _rag_client("alice", w, pool, monkeypatch).get(
+        f"/umrs/rag/documents/{private}"
+    ).status_code == 200

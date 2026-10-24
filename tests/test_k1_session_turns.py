@@ -62,7 +62,10 @@ def test_a_vouched_answer_is_established_by_the_person() -> None:
 
     save = plan_session_save(_source(vouch=True), actor="user", user_id="alice")
     assert save.origin == VOUCHED_ORIGIN
-    assert save.spec_extra == {"kept_origin": VOUCHED_ORIGIN, "established_by": "alice"}
+    # The establisher is the job's owner at write time, never a spec field
+    # (review of K1 part B: a raw spec named any user).
+    assert save.spec_extra == {"kept_origin": VOUCHED_ORIGIN}
+    assert save.established_by == "alice"
 
 
 def test_the_persons_own_text_is_established() -> None:
@@ -244,7 +247,7 @@ def _rows(monkeypatch, spec: dict[str, Any]) -> list[Any]:
     nodes, edges = ka._nodes_edges_for_artifact(
         "art-s", "ir-s", "document", ANSWER.encode(), {}, "proj-k16", "g-k16"
     )
-    job = SimpleNamespace(spec=spec, job_id="job-k16")
+    job = SimpleNamespace(spec=spec, job_id="job-k16", user_id="alice")
     nodes, _edges = ka._tiered_rows(nodes, edges, job, spec.get("origin_actor", "user"))
     return nodes
 
@@ -256,11 +259,7 @@ def test_a_kept_answer_lands_proposed(monkeypatch) -> None:
 
 
 def test_a_vouched_answer_lands_established_with_its_establisher(monkeypatch) -> None:
-    spec = {
-        "origin_actor": "user",
-        "kept_origin": "agent_authored_user_vouched",
-        "established_by": "alice",
-    }
+    spec = {"origin_actor": "user", "kept_origin": "agent_authored_user_vouched"}
     nodes = _rows(monkeypatch, spec)
     assert nodes and {n.status for n in nodes} == {"established"}
     assert {n.content["review"]["established_by"] for n in nodes} == {"alice"}
@@ -277,10 +276,7 @@ def test_the_understand_job_inherits_the_tier_fields() -> None:
     spec = {
         "origin_actor": "user",
         "kept_origin": "agent_authored_user_vouched",
-        "established_by": "alice",
+        "established_by": "mallory",  # a stale or forged field never travels
     }
-    assert tier_fields(spec) == {
-        "kept_origin": "agent_authored_user_vouched",
-        "established_by": "alice",
-    }
+    assert tier_fields(spec) == {"kept_origin": "agent_authored_user_vouched"}
     assert tier_fields({"origin_actor": "user"}) == {}

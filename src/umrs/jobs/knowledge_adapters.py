@@ -2435,7 +2435,11 @@ def _tiered_rows(nodes: list, edges: list, job: Any, origin_actor: str) -> tuple
     already proposed, e.g. K-1 extractions, keep their own stamp)."""
     from umrs.knowledge.session_turns import tier_stamp
 
-    proposed, stamp = tier_stamp({**job.spec, "origin_actor": origin_actor}, job.job_id)
+    proposed, stamp = tier_stamp(
+        {**job.spec, "origin_actor": origin_actor},
+        job.job_id,
+        str(getattr(job, "user_id", "") or ""),
+    )
     if proposed:
         return _as_proposed_tier(nodes, edges, stamp=stamp)
     if not stamp:
