@@ -285,8 +285,10 @@ def test_delete_document_never_proxies_and_records_nothing_unresolved(monkeypatc
     assert calls == []
 
 
-def test_get_document_endpoint():
-    """Get document metadata should work."""
+def test_get_document_endpoint(monkeypatch):
+    """Get document metadata should work (the endpoint facade's proxy; the
+    central facade answers from the spine since the K1 part B review)."""
+    monkeypatch.setenv("UMRS_RAG_UPLOAD_FACADE", "endpoint")
     registry = _make_registry_with_endpoint()
     client = _create_client(registry)
 

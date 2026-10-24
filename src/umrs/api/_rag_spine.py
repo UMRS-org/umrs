@@ -73,8 +73,12 @@ def _document(row: dict[str, Any], chunks: int) -> dict[str, Any]:
     }
 
 
-async def spine_documents(request: Request, project_id: str) -> list[dict[str, Any]]:
-    """The project's active documents this caller may read, newest first."""
+async def spine_documents(
+    request: Request, project_id: str, viewer: str = ""
+) -> list[dict[str, Any]]:
+    """The project's active documents this caller may read, newest first.
+    *viewer* is the verified caller (``_require_rag_scope``): it decides
+    which /save metadata shows (``contributions.public_metadata``)."""
     from umrs.knowledge.contributions import (
         ArtifactFilters,
         artifact_chunk_counts,
@@ -93,11 +97,32 @@ async def spine_documents(request: Request, project_id: str) -> list[dict[str, A
         ArtifactFilters(),
         page=1,
         page_size=SPINE_DOCUMENTS_MAX,
+        viewer=viewer,
     )
     counts = await artifact_chunk_counts(
-        pool, project_id, [str(r["artifact_id"]) for r in rows]
+        pool, project_id, [str(r["artifact_id"]) for r in rows], graphs
     )
     return [_document(row, counts.get(str(row["artifact_id"]), 0)) for row in rows]
+
+
+async def spine_document(
+    request: Request, project_id: str, document_id: str, viewer: str = ""
+) -> dict[str, Any] | None:
+    """One document :func:`spine_documents` would list, or None (not
+    readable, or not in the project): ``GET /rag/documents/{id}`` answers
+    the ids the listing gives (review of K1 part B, 2026-10-24)."""
+    from umrs.knowledge.contributions import artifact_chunk_counts, readable_artifact
+
+    from ._artifact_scope import readable_graphs_for
+    from ._asyncpg_pool import knowledge_asyncpg_pool
+
+    graphs = await readable_graphs_for(request, project_id)
+    pool = await knowledge_asyncpg_pool(request)
+    row = await readable_artifact(pool, project_id, graphs, document_id, viewer)
+    if row is None:
+        return None
+    counts = await artifact_chunk_counts(pool, project_id, [document_id], graphs)
+    return _document(row, counts.get(document_id, 0))
 
 
 async def spine_stats(request: Request, project_id: str) -> dict[str, Any]:
@@ -125,6 +150,7 @@ async def spine_stats(request: Request, project_id: str) -> dict[str, Any]:
 __all__ = [
     "SPINE_DOCUMENTS_MAX",
     "spine_answers",
+    "spine_document",
     "spine_documents",
     "spine_stats",
     "upload_facade",

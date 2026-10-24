@@ -704,6 +704,7 @@ async def create_job(
             job_type, spec, (user_id, project_id, is_admin), request.fan_out_jobs
         )
         _enforce_export_release(job_type, spec, request.fan_out_jobs)
+        _enforce_spec_save(job_type, spec, request.fan_out_jobs)
         _enforce_own_site_venue(
             job_type, spec, request.fan_out_jobs, getattr(store, "site_name", "")
         )
@@ -890,6 +891,22 @@ def _enforce_export_release(
                 "POST /knowledge/export, which gates and audits the release",
             )
         )
+
+
+def _enforce_spec_save(
+    job_type: JobType, spec: dict[str, Any], fan_out_jobs: list[dict[str, Any]] | None
+) -> None:
+    """400 for a knowledge_ingest / knowledge_understand spec (parent or
+    fan-out child) carrying a /save's tier fields or a ``session_turns``
+    source: only POST /umrs/k2/ingest builds a save (shared with the ZMQ
+    submit, ``job_tracking_handler.spec_save_refusal``; review of K1 part B,
+    2026-10-24)."""
+    from ..server.job_tracking_handler import spec_save_refusal
+
+    for target_type, target_spec in _spec_targets(job_type, spec, fan_out_jobs):
+        refusal = spec_save_refusal(target_type, target_spec)
+        if refusal:
+            raise_typed(PlatformError.jobs("bad_request", refusal))
 
 
 def _enforce_own_site_venue(
