@@ -5,8 +5,10 @@ cannot say who added it or to which graph; one contribution row per
 (artifact, graph, contributor) can. Every artifact insert site records one,
 including when the insert returned an existing (deduplicated) artifact.
 
-The rows are also how the artifact listing (``GET /k2/artifacts``, K1.2)
-and the artifact delete (review of K1 part A, 2026-10-24) apply the
+The rows are also how the artifact listing (``GET /k2/artifacts``, K1.2),
+the rag facade's document listing and corpus statistics (``GET
+/rag/documents``, ``GET /rag/stats``, K1.3) and the artifact delete (review
+of K1 part A, 2026-10-24) apply the
 graph-readable predicate the retrieve verb uses
 (``api.rag_retrieve.graph_hidden``): an artifact is readable through a
 contribution in a graph the caller may read, so a member never lists or
@@ -144,7 +146,8 @@ def record_contribution_sync(cur: Any, contribution: Contribution) -> None:
     cur.execute(_SYNC_INSERT_SQL, contribution.params())
     if contribution.user_id:
         cur.execute(
-            _SYNC_DROP_PLACEHOLDER_SQL, (contribution.artifact_id, contribution.graph_id)
+            _SYNC_DROP_PLACEHOLDER_SQL,
+            (contribution.artifact_id, contribution.graph_id),
         )
 
 
@@ -200,7 +203,7 @@ _LIST_SQL = (
     _READABLE_CTE
     + """SELECT a.artifact_id, a.content_hash, a.kind, a.project_id, a.source_ref,
        a.size_bytes, a.mime_type, a.status, a.metadata, a.created_at,
-       a.updated_at, m.last_added
+       a.updated_at, a.embedding_status, m.last_added
 """
     + _MATCHED_ARTIFACTS
     + "\n ORDER BY m.last_added DESC, a.artifact_id\n LIMIT $8 OFFSET $9"
@@ -260,7 +263,9 @@ async def list_readable_artifacts(
     for row in found:
         entry = dict(row)
         by_artifact[str(entry.pop("artifact_id"))].append(entry)
-    return [{**dict(r), "contributions": by_artifact[str(r["artifact_id"])]} for r in rows], total
+    return [
+        {**dict(r), "contributions": by_artifact[str(r["artifact_id"])]} for r in rows
+    ], total
 
 
 async def readable_artifact_ids(
@@ -276,6 +281,66 @@ async def readable_artifact_ids(
             _READABLE_IDS_SQL, project_id, list(readable_graph_ids), artifact_ids
         )
     return {str(r["artifact_id"]) for r in rows}
+
+
+_CHUNK_COUNTS_SQL = """SELECT content->>'artifact_id' AS artifact_id, COUNT(*) AS chunks
+  FROM knowledge_nodes
+ WHERE project_id = $1 AND content->>'kind' = 'chunk'
+   AND content->>'artifact_id' = ANY($2::text[])
+ GROUP BY 1"""
+
+
+async def artifact_chunk_counts(
+    pool: Any, project_id: str, artifact_ids: list[str]
+) -> dict[str, int]:
+    """Chunk nodes per artifact (the embed job writes them; 0 = not indexed
+    yet). Only *artifact_ids* are counted: the caller has already applied
+    the graph-readable predicate."""
+    if not artifact_ids:
+        return {}
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(_CHUNK_COUNTS_SQL, project_id, artifact_ids)
+    return {str(r["artifact_id"]): int(r["chunks"]) for r in rows}
+
+
+# K1.3: the corpus statistics ``GET /rag/stats`` answers from the spine,
+# through the same allowlist as the listing (active artifacts only).
+_STATS_SQL = """WITH ids AS (
+    SELECT DISTINCT c.artifact_id
+      FROM knowledge_artifact_contributions c
+     WHERE c.project_id = $1 AND c.graph_id = ANY($2::text[])
+), docs AS (
+    SELECT a.artifact_id, a.embedding_status, a.embedding_model, a.embedding_dim
+      FROM ids JOIN knowledge_artifacts a ON a.artifact_id = ids.artifact_id
+     WHERE a.project_id = $1 AND a.status = 'active'
+)
+SELECT (SELECT COUNT(*) FROM docs) AS documents,
+       (SELECT COUNT(*) FROM docs WHERE embedding_status = 'current') AS embedded,
+       (SELECT COUNT(*) FROM knowledge_nodes n
+         WHERE n.project_id = $1 AND n.content->>'kind' = 'chunk'
+           AND n.content->>'artifact_id' IN (SELECT artifact_id FROM docs)) AS chunks,
+       (SELECT embedding_model FROM docs WHERE embedding_model <> ''
+         GROUP BY embedding_model ORDER BY COUNT(*) DESC, embedding_model
+         LIMIT 1) AS embedding_model,
+       (SELECT MAX(embedding_dim) FROM docs WHERE embedding_model <> '') AS embedding_dim"""
+
+
+async def readable_corpus_stats(
+    pool: Any, project_id: str, readable_graph_ids: tuple[str, ...]
+) -> dict[str, Any]:
+    """Counts over the project's active artifacts readable through
+    *readable_graph_ids*: documents, chunks, embedded documents, and the
+    embedding model most of them carry."""
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(_STATS_SQL, project_id, list(readable_graph_ids))
+    data = dict(row) if row else {}
+    return {
+        "documents": int(data.get("documents") or 0),
+        "chunks": int(data.get("chunks") or 0),
+        "embedded": int(data.get("embedded") or 0),
+        "embedding_model": data.get("embedding_model") or "",
+        "embedding_dimensions": data.get("embedding_dim"),
+    }
 
 
 @dataclass(frozen=True)

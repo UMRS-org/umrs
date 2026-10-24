@@ -173,8 +173,11 @@ def test_query_rag_prefers_verified_project(monkeypatch):
     assert response.status_code == 200
 
 
-def test_list_documents_endpoint():
+def test_list_documents_endpoint(monkeypatch):
     """List documents endpoint should work."""
+    # The endpoint corpus answers only under the endpoint facade (K1.3: the
+    # central default lists the spine; tests/test_k1_spine_listing_pg.py).
+    monkeypatch.setenv("UMRS_RAG_UPLOAD_FACADE", "endpoint")
     registry = _make_registry_with_endpoint()
     client = _create_client(registry)
 
@@ -208,11 +211,14 @@ def _list_documents_with_upstream(payload):
         )
 
 
-def test_list_documents_reads_the_rag_service_list_shape():
+def test_list_documents_reads_the_rag_service_list_shape(monkeypatch):
     """The rag service's GET /rag/documents answers a bare list
     (response_model=list[GatewayDocumentInfo], rag_service.py). The proxy read
     `.get("documents")` from it and answered 500 with "'list' object has no
     attribute 'get'" (ops-watch #470, umrs-server-rccs, 2026-10-16)."""
+    # The endpoint corpus answers only under the endpoint facade (K1.3: the
+    # central default lists the spine; tests/test_k1_spine_listing_pg.py).
+    monkeypatch.setenv("UMRS_RAG_UPLOAD_FACADE", "endpoint")
     response = _list_documents_with_upstream([])
     assert response.status_code == 200
     assert response.json() == []
@@ -232,9 +238,12 @@ def test_list_documents_reads_the_rag_service_list_shape():
     ]
 
 
-def test_list_documents_tolerates_an_unexpected_upstream_body():
+def test_list_documents_tolerates_an_unexpected_upstream_body(monkeypatch):
     """Neither a list nor a {"documents": [...]} envelope: an empty listing,
     never a 500 from inside the proxy."""
+    # The endpoint corpus answers only under the endpoint facade (K1.3: the
+    # central default lists the spine; tests/test_k1_spine_listing_pg.py).
+    monkeypatch.setenv("UMRS_RAG_UPLOAD_FACADE", "endpoint")
     response = _list_documents_with_upstream({"status": "ok"})
     assert response.status_code == 200
     assert response.json() == []
@@ -304,8 +313,11 @@ def test_get_document_endpoint():
     assert response.json()["filename"] == "paper.pdf"
 
 
-def test_rag_falls_back_to_system_endpoints():
+def test_rag_falls_back_to_system_endpoints(monkeypatch):
     """If no project endpoint, should try system tier endpoints."""
+    # The endpoint corpus answers only under the endpoint facade (K1.3: the
+    # central default lists the spine; tests/test_k1_spine_listing_pg.py).
+    monkeypatch.setenv("UMRS_RAG_UPLOAD_FACADE", "endpoint")
     registry = _make_registry_with_endpoint(project_id="system")
     client = _create_client(registry)
 

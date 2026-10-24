@@ -32,6 +32,7 @@ from umrs.orchestrator.endpoint_registry import (
 from umrs.rag.corpus_access import get_corpus_access_store, shared_corpus_readable
 
 from ._access import checked_access, resource_caller
+from ._rag_spine import spine_answers, spine_documents, spine_stats
 from .rag_retrieve import LEGACY_TOP_K
 from .typed_errors import PlatformError, raise_typed
 
@@ -380,7 +381,9 @@ async def _mint_knowledge_nodes(
             "document_id": document_id,
         },
     )
-    await _record_rag_contribution(pool, held_by or artifact_id, project_id, user_id, filename)
+    await _record_rag_contribution(
+        pool, held_by or artifact_id, project_id, user_id, filename
+    )
     await store.upsert_node(
         KnowledgeNode(
             node_id=doc_node_id,
@@ -702,10 +705,7 @@ async def upload_document(
 
     # Dual-corpus dwell: the central ingest plane runs its OWN
     # governance/mutation gates (single audit record).
-    import os as _os
-
-    facade = _os.environ.get("UMRS_RAG_UPLOAD_FACADE", "central").lower()
-    if facade != "endpoint":
+    if spine_answers():
         return await _upload_via_central(request, file, project_id)
     return await _upload_via_endpoint(request, file, registry, _user_id, project_id)
 
@@ -824,8 +824,16 @@ async def list_documents(
     docs <project>``, ``/rag docs <project>``) was dropped and the caller's own
     corpus listed under it (TUI audit 2026-10-17). It now names the corpus,
     checked like ``/query``: read tier, then the ADR-080 access list.
+
+    K1.3 (2026-10-24): with the central upload facade (the default) the
+    documents are the spine's artifacts this caller may read (``_rag_spine``);
+    the endpoint corpus answered ``[]`` after every upload.
     """
     _user_id, caller_project = _require_rag_scope(request, project_id, write=False)
+    if spine_answers():
+        # K1.3: uploads feed the spine; list it through the graph-readable
+        # predicate (never another member's personal-graph file).
+        return await spine_documents(request, project_id or caller_project)
     # The caller's endpoint serves the call; the parameter names the corpus.
     rag_base = _discover_rag_endpoint(registry, caller_project)
     project_id = project_id or caller_project
@@ -928,11 +936,23 @@ async def get_document(
 async def rag_stats(
     request: Request,
     registry: EndpointRegistry = Depends(get_registry),
+    project_id: str | None = Query(
+        None, description="Corpus to count (default: the caller's)"
+    ),
 ):
-    """Get RAG corpus statistics for the current project."""
-    _user_id, project_id = _require_rag_scope(request, write=False)
+    """Corpus statistics for a project the caller may read.
 
-    rag_base = _discover_rag_endpoint(registry, project_id)
+    K1.3 (2026-10-24): the requested project is honoured when readable (it
+    was dropped: the caller's own corpus was counted under any name), and
+    with the central upload facade the counts come from the spine through
+    the graph-readable predicate, matching ``GET /rag/documents``.
+    """
+    _user_id, caller_project = _require_rag_scope(request, project_id, write=False)
+    if spine_answers():
+        return await spine_stats(request, project_id or caller_project)
+    # The caller's endpoint serves the call; the parameter names the corpus.
+    rag_base = _discover_rag_endpoint(registry, caller_project)
+    project_id = project_id or caller_project
     rag_url = f"{rag_base}/rag/stats"
 
     try:

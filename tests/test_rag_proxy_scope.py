@@ -136,7 +136,10 @@ def _mock_get(payload, seen: list):
 # `r4 rag docs <project>` listed the caller's own corpus under that name.
 
 
-def test_documents_lists_the_named_corpus():
+def test_documents_lists_the_named_corpus(monkeypatch):
+    # The endpoint corpus answers only under the endpoint facade (K1.3: the
+    # central default lists the spine; tests/test_k1_spine_listing_pg.py).
+    monkeypatch.setenv("UMRS_RAG_UPLOAD_FACADE", "endpoint")
     client = _create_client()
     seen: list = []
     docs = {"documents": [{"document_id": "d1", "filename": "a.pdf"}]}
@@ -151,7 +154,10 @@ def test_documents_lists_the_named_corpus():
     assert response.json()[0]["project_id"] == "system"
 
 
-def test_documents_defaults_to_the_caller_corpus():
+def test_documents_defaults_to_the_caller_corpus(monkeypatch):
+    # The endpoint corpus answers only under the endpoint facade (K1.3: the
+    # central default lists the spine; tests/test_k1_spine_listing_pg.py).
+    monkeypatch.setenv("UMRS_RAG_UPLOAD_FACADE", "endpoint")
     client = _create_client()
     seen: list = []
     with patch.object(httpx.AsyncClient, "get", _mock_get({"documents": []}, seen)):
