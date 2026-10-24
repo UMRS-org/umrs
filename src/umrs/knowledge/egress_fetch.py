@@ -420,7 +420,13 @@ def _arm(resp: Any, budget: _Budget) -> None:
 
 def _read_chunk(resp: Any, budget: _Budget) -> bytes:
     """One read bounded by the budget; a read that ran the deadline out is
-    refused by name, not reported as a bare socket timeout."""
+    refused by name, not reported as a bare socket timeout.
+
+    A closed response has nothing left: since Python 3.11 http.client closes
+    the socket once the body is read, and arming it then raises EBADF (CI
+    2026-10-24, run 40094838994; the 3.10 dev venv never saw it)."""
+    if resp.isclosed():
+        return b""
     _arm(resp, budget)
     try:
         return resp.read1(_CHUNK_BYTES)
