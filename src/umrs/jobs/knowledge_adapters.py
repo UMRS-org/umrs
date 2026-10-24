@@ -1881,7 +1881,10 @@ async def _run_understand(
     target_graph_id = str(job.spec.get("graph_id") or "")
     # D-35 producer leg: agent-originated extractions land their graph
     # rows as 'proposed' (humans promote via the establish seam; 0106).
-    origin_actor = str(job.spec.get("origin_actor") or "").strip().lower()
+    # Any recorded actor but a person's is an agent (review of K1.1).
+    from umrs.knowledge.actors import normalize_actor
+
+    origin_actor = normalize_actor(job.spec.get("origin_actor"))
 
     for src in artifacts_to_process:
         artifact_id = src.get("artifact_id", "")
@@ -2250,7 +2253,9 @@ async def _understand_one_artifact(
     """Parse → IR → graph for one artifact (per-artifact extract).
 
     ``origin_actor`` (D-35): 'agent' origins land nodes/edges as
-    ``proposed`` — machine-authored content is never auto-established.
+    ``proposed`` — machine-authored content is never auto-established —
+    and each row records that origin and this job, so the review inbox
+    names who wrote it and can establish the job's rows as one run.
     """
     from umrs.knowledge.ir import build_knowledge_ir
 
@@ -2318,7 +2323,9 @@ async def _understand_one_artifact(
     if origin_actor == "agent":
         # D-35: agent-authored content enters the two-tier graph as
         # proposed — the establish seam (human) is the only promotion.
-        nodes, edges = _as_proposed_tier(nodes, edges)
+        nodes, edges = _as_proposed_tier(
+            nodes, edges, stamp={"origin_actor": "agent", "job_id": job.job_id}
+        )
 
     try:
         for node in nodes:
@@ -2406,17 +2413,29 @@ def _node_id_scope(project_id: str, graph_id: str) -> str:
     return f"{graph_id}-"
 
 
-def _as_proposed_tier(nodes: list, edges: list) -> tuple[list, list]:
+def _as_proposed_tier(
+    nodes: list, edges: list, stamp: dict[str, Any] | None = None
+) -> tuple[list, list]:
     """D-35: stamp nodes/edges with the proposed tier (agent origin, 0106).
 
     Frozen dataclasses → ``dataclasses.replace``; confidence stays 0.0 —
     an unreviewed machine extraction claims no confidence it cannot show.
+    ``stamp`` keys go into each row's content (its origin, the writing
+    job), so the review inbox can say where the row came from.
     """
     import dataclasses
 
+    extra = dict(stamp or {})
+
     def _tier(rows: list) -> list:
         return [
-            dataclasses.replace(row, status="proposed", confidence=0.0) for row in rows
+            dataclasses.replace(
+                row,
+                status="proposed",
+                confidence=0.0,
+                content={**(row.content or {}), **extra},
+            )
+            for row in rows
         ]
 
     return _tier(nodes), _tier(edges)
@@ -2945,7 +2964,9 @@ def _nodes_edges_for_artifact(
             artifact_id, ir_id, project_id, target_graph_id, payload
         )
         if model_extracted:
-            sem_nodes, sem_edges = _as_proposed_tier(sem_nodes, sem_edges)
+            sem_nodes, sem_edges = _as_proposed_tier(
+                sem_nodes, sem_edges, stamp={"origin_actor": "extracted"}
+            )
         nodes = [*nodes, *sem_nodes]
         edges = [*edges, *sem_edges]
     return nodes, edges

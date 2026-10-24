@@ -12,6 +12,12 @@ establish routes.
 Each row carries a ``run_id`` so a client can promote one run's rows in one
 action (ADR-084 D-2 "establish run"): the loop id for research-loop rows,
 else the writing job or the source artifact when the row records one.
+
+Review of K1 part A (2026-10-24): the listing takes a ``run_id`` filter, so
+"establish run" reaches every row of a run however many newer rows other
+runs wrote (the newest-200 window used to hide them); and every row names
+its origin: ``agent``, ``loop``, ``extracted`` (entities and relations a
+model extracted from a person's upload, K-1) or the recorded actor.
 """
 
 from __future__ import annotations
@@ -31,17 +37,20 @@ _LOOP_KEYS = ("source_loop", "loop_id")
 _SUMMARY_MAX = 200
 
 _GRAPH_SCOPE = "(graph_id = %s OR (%s AND graph_id = '' AND project_id = %s))"
+# The run a row belongs to, exactly as :func:`row_run_id` reads it.
+_RUN_EXPR = "COALESCE(" + ", ".join(f"NULLIF(content->>'{k}', '')" for k in _RUN_KEYS) + ")"
+_RUN_FILTER = f"(%s::text IS NULL OR {_RUN_EXPR} = %s)"
 
 _NODES_SQL = (
     "SELECT node_id, label, node_type, confidence, content, created_at, graph_id "
     "FROM knowledge_nodes WHERE status = 'proposed' AND " + _GRAPH_SCOPE + " "
-    "ORDER BY created_at DESC LIMIT %s"
+    "AND " + _RUN_FILTER + " ORDER BY created_at DESC LIMIT %s"
 )
 _EDGES_SQL = (
     "SELECT edge_id, source_id, target_id, relation_type, confidence, content, "
     "created_at, graph_id FROM knowledge_edges "
     "WHERE status = 'proposed' AND " + _GRAPH_SCOPE + " "
-    "ORDER BY created_at DESC LIMIT %s"
+    "AND " + _RUN_FILTER + " ORDER BY created_at DESC LIMIT %s"
 )
 
 
@@ -56,11 +65,15 @@ def row_run_id(content: dict[str, Any]) -> str:
 
 
 def row_origin(content: dict[str, Any]) -> str:
-    """Who wrote the row: the recorded ``origin_actor``, 'loop' for loop rows."""
+    """Who wrote the row: the recorded ``origin_actor``, 'loop' for loop
+    rows, 'extracted' for a model's extraction written before rows recorded
+    their origin (semantic rows of an upload), else ''."""
     actor = str(content.get("origin_actor") or "").strip()
     if actor:
         return actor
-    return "loop" if any(content.get(k) for k in _LOOP_KEYS) else ""
+    if any(content.get(k) for k in _LOOP_KEYS):
+        return "loop"
+    return "extracted" if content.get("semantic") or content.get("semantic_type") else ""
 
 
 def _common(row: Any, content: dict[str, Any]) -> dict[str, Any]:
@@ -108,13 +121,14 @@ class ReviewQueueStore(_SyncPoolStore):
     """Read-only: proposed nodes and edges of one registered graph."""
 
     def proposed_rows(
-        self, graph: KnowledgeGraphMeta, *, limit: int = 200
+        self, graph: KnowledgeGraphMeta, *, limit: int = 200, run_id: str | None = None
     ) -> dict[str, Any]:
         project_id = graph.project_id or ""
         legacy_default = bool(
             project_id and graph_id_is_default(graph.graph_id, project_id)
         )
-        params = (graph.graph_id, legacy_default, project_id, limit)
+        run = run_id or None
+        params = (graph.graph_id, legacy_default, project_id, run, run, limit)
         with self._cursor() as cur:
             cur.execute(_NODES_SQL, params)
             nodes = [_node_dict(row) for row in cur.fetchall()]

@@ -75,7 +75,7 @@ class EgressDisabledError(RuntimeError):
         self.reason = reason  # type: ignore[assignment]
         super().__init__(
             f"Egress disabled for {source_kind} source: {reason}. "
-            f"Set 'knowledge_ingest.allowed_domains' in site config to enable."
+            f"Set 'extra.knowledge_ingest.allowed_domains' in site.yaml to enable."
         )
 
 

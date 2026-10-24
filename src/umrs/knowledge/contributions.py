@@ -5,12 +5,19 @@ cannot say who added it or to which graph; one contribution row per
 (artifact, graph, contributor) can. Every artifact insert site records one,
 including when the insert returned an existing (deduplicated) artifact.
 
-The rows are also how artifact paths apply the graph-readable predicate the
-retrieve verb uses (``api.rag_retrieve.graph_hidden``): an artifact is
-readable through a contribution in a graph the caller may read, so a member
-never lists another member's personal-graph artifact. An artifact with no
-contribution row is listed nowhere (fail closed); the backfill
+The rows are also how the artifact listing (``GET /k2/artifacts``, K1.2)
+and the artifact delete (review of K1 part A, 2026-10-24) apply the
+graph-readable predicate the retrieve verb uses
+(``api.rag_retrieve.graph_hidden``): an artifact is readable through a
+contribution in a graph the caller may read, so a member never lists or
+deletes another member's personal-graph artifact. Lineage and export do not
+apply it yet (knowledge plan K2/K4). An artifact with no contribution row is
+listed nowhere (fail closed); the backfill
 (:mod:`umrs.knowledge.contribution_backfill`) gives legacy artifacts theirs.
+
+The predicate is an allowlist: the caller's readable graphs are computed
+first and the query keeps only contributions in them, so a contribution
+written in between, in a graph the scope never saw, is not listed.
 """
 
 from __future__ import annotations
@@ -61,11 +68,13 @@ class ArtifactFilters:
 
 
 def origin_for(spec_origin: Any, user_id: str) -> str:
-    """The origin a write records: the request's actor when it named one,
+    """The origin a write records: the request's actor when it named one
+    (``user`` or ``agent``: :func:`umrs.knowledge.actors.normalize_actor`),
     else ``user`` for an attributed write and ``unknown`` otherwise."""
-    named = str(spec_origin or "").strip().lower()
-    if named:
-        return named
+    from .actors import normalize_actor
+
+    if str(spec_origin or "").strip():
+        return normalize_actor(spec_origin)
     return "user" if user_id else PLACEHOLDER_ORIGIN
 
 
@@ -139,13 +148,38 @@ def record_contribution_sync(cur: Any, contribution: Contribution) -> None:
         )
 
 
+def record_contribution_guarded_sync(cur: Any, contribution: Contribution) -> bool:
+    """:func:`record_contribution_sync` inside a savepoint; False (logged)
+    when it fails, and the caller's transaction goes on.
+
+    The sync sites (the rag executor's mint, the legacy canonization) write
+    inside the artifact's own transaction: an executor running against a
+    database without 0129 rolled the whole mint back (review of K1 part A).
+    The artifact is then listed nowhere until the backfill names it.
+    """
+    cur.execute("SAVEPOINT k1_contribution")
+    try:
+        record_contribution_sync(cur, contribution)
+    except Exception as exc:  # noqa: BLE001 — attribution never fails the write
+        cur.execute("ROLLBACK TO SAVEPOINT k1_contribution")
+        logger.warning(
+            "contribution not recorded: artifact=%s graph=%s: %s",
+            contribution.artifact_id,
+            contribution.graph_id,
+            exc,
+        )
+        return False
+    cur.execute("RELEASE SAVEPOINT k1_contribution")
+    return True
+
+
 # ── reads through the graph-readable predicate ──────────────────────────────
 
 _READABLE_CTE = """WITH readable AS (
     SELECT c.artifact_id, c.graph_id, c.user_id, c.origin_actor, c.title,
            c.created_at
       FROM knowledge_artifact_contributions c
-     WHERE c.project_id = $1 AND NOT (c.graph_id = ANY($2::text[]))
+     WHERE c.project_id = $1 AND c.graph_id = ANY($2::text[])
 ), matched AS (
     SELECT r.artifact_id, MAX(r.created_at) AS last_added
       FROM readable r
@@ -177,14 +211,19 @@ _COUNT_SQL = _READABLE_CTE + "SELECT COUNT(*) " + _MATCHED_ARTIFACTS
 _CONTRIBUTIONS_SQL = """SELECT artifact_id, graph_id, user_id, origin_actor, title,
        created_at
   FROM knowledge_artifact_contributions
- WHERE project_id = $1 AND NOT (graph_id = ANY($2::text[]))
+ WHERE project_id = $1 AND graph_id = ANY($2::text[])
    AND artifact_id = ANY($3::text[])
  ORDER BY artifact_id, created_at"""
 
 _READABLE_IDS_SQL = """SELECT DISTINCT artifact_id
   FROM knowledge_artifact_contributions
- WHERE project_id = $1 AND NOT (graph_id = ANY($2::text[]))
+ WHERE project_id = $1 AND graph_id = ANY($2::text[])
    AND ($3::text[] IS NULL OR artifact_id = ANY($3::text[]))"""
+
+_ACCESS_SQL = """SELECT COALESCE(bool_or(graph_id = ANY($2::text[])), false),
+       COALESCE(bool_or(NOT (graph_id = ANY($2::text[]))), false)
+  FROM knowledge_artifact_contributions
+ WHERE project_id = $1 AND artifact_id = $3"""
 
 
 def _filter_params(filters: ArtifactFilters) -> tuple[Any, ...]:
@@ -200,21 +239,22 @@ def _filter_params(filters: ArtifactFilters) -> tuple[Any, ...]:
 async def list_readable_artifacts(
     pool: Any,
     project_id: str,
-    hidden_graph_ids: tuple[str, ...],
+    readable_graph_ids: tuple[str, ...],
     filters: ArtifactFilters,
     *,
     page: int = 1,
     page_size: int = 25,
 ) -> tuple[list[dict[str, Any]], int]:
     """A page of the project's readable artifacts, newest contribution first,
-    each with its readable contributions; plus the filtered total."""
-    head = (project_id, list(hidden_graph_ids), *_filter_params(filters))
+    each with its readable contributions; plus the filtered total.
+    *readable_graph_ids* is the allowlist (``_artifact_scope``)."""
+    head = (project_id, list(readable_graph_ids), *_filter_params(filters))
     async with pool.acquire() as conn:
         total = int(await conn.fetchval(_COUNT_SQL, *head) or 0)
         rows = await conn.fetch(_LIST_SQL, *head, page_size, (page - 1) * page_size)
         ids = [str(r["artifact_id"]) for r in rows]
         found = await conn.fetch(
-            _CONTRIBUTIONS_SQL, project_id, list(hidden_graph_ids), ids
+            _CONTRIBUTIONS_SQL, project_id, list(readable_graph_ids), ids
         )
     by_artifact: dict[str, list[dict[str, Any]]] = {aid: [] for aid in ids}
     for row in found:
@@ -226,13 +266,33 @@ async def list_readable_artifacts(
 async def readable_artifact_ids(
     pool: Any,
     project_id: str,
-    hidden_graph_ids: tuple[str, ...],
+    readable_graph_ids: tuple[str, ...],
     artifact_ids: list[str] | None = None,
 ) -> set[str]:
-    """The project's artifacts readable through a contribution in a graph not
-    hidden from the caller (optionally only among *artifact_ids*)."""
+    """The project's artifacts readable through a contribution in one of
+    *readable_graph_ids* (optionally only among *artifact_ids*)."""
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            _READABLE_IDS_SQL, project_id, list(hidden_graph_ids), artifact_ids
+            _READABLE_IDS_SQL, project_id, list(readable_graph_ids), artifact_ids
         )
     return {str(r["artifact_id"]) for r in rows}
+
+
+@dataclass(frozen=True)
+class ArtifactAccess:
+    """Where one artifact's contributions sit for this caller."""
+
+    readable: bool  # some contribution is in a graph the caller may read
+    held_elsewhere: bool  # some contribution is in a graph the caller may not
+
+
+async def artifact_access(
+    pool: Any, project_id: str, readable_graph_ids: tuple[str, ...], artifact_id: str
+) -> ArtifactAccess:
+    """Whether the caller can see *artifact_id*, and whether a graph the
+    caller cannot read also holds it (the delete gate)."""
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            _ACCESS_SQL, project_id, list(readable_graph_ids), artifact_id
+        )
+    return ArtifactAccess(bool(row and row[0]), bool(row and row[1]))

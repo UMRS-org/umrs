@@ -480,7 +480,7 @@ async def list_artifacts(
         kind=kind,
         status=status or "active",
         created_by=created_by,
-        since=since,
+        since=_as_utc(since),
         graph_id=graph_id,
     )
     try:
@@ -497,6 +497,16 @@ async def list_artifacts(
     )
 
 
+def _as_utc(since: datetime | None) -> datetime | None:
+    """A ``since`` with no timezone is UTC (asyncpg read it in the server's
+    local zone: a 9-hour shift on a JST host; review of K1 part A)."""
+    from datetime import timezone
+
+    if since is not None and since.tzinfo is None:
+        return since.replace(tzinfo=timezone.utc)
+    return since
+
+
 async def _readable_artifact_page(
     request: Request, project_id: str, filters: Any, page: int, page_size: int
 ) -> tuple[list[dict[str, Any]], int]:
@@ -507,12 +517,12 @@ async def _readable_artifact_page(
     from umrs.api._asyncpg_pool import knowledge_asyncpg_pool
     from umrs.knowledge.contributions import list_readable_artifacts
 
-    from ._artifact_scope import hidden_graphs_for
+    from ._artifact_scope import readable_graphs_for
 
-    hidden = await hidden_graphs_for(request, project_id)
+    readable = await readable_graphs_for(request, project_id)
     pool = await knowledge_asyncpg_pool(request)
     return await list_readable_artifacts(
-        pool, project_id, hidden, filters, page=page, page_size=page_size
+        pool, project_id, readable, filters, page=page, page_size=page_size
     )
 
 

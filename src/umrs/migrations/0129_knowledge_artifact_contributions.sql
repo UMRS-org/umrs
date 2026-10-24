@@ -6,9 +6,10 @@
 -- a personal-graph upload kept the shared project_id and only its nodes moved
 -- graph. One row per (artifact, graph, contributor) survives deduplication,
 -- names every contributor and every graph the artifact was added to, and is
--- what the artifact paths join to apply the graph-readable predicate (the
--- retrieve verb's hidden_graphs rule): a member never lists another member's
--- personal-graph artifact.
+-- what the artifact listing (GET /k2/artifacts) and the artifact delete join
+-- to apply the graph-readable predicate (the retrieve verb's hidden_graphs
+-- rule): a member never lists or deletes another member's personal-graph
+-- artifact. Lineage and export do not join it yet (knowledge plan K2/K4).
 --
 -- origin_actor vocabulary (no CHECK, so later origins need no migration):
 --   user     a person's explicit action (upload, add)
@@ -22,7 +23,9 @@
 -- (umrs.knowledge.contributions.record_contribution).
 --
 -- Backfill: python -m umrs.knowledge.contribution_backfill (dry run by
--- default; --apply writes, idempotent).
+-- default; --apply writes, idempotent). An untraced artifact gets a
+-- placeholder in the graphs its nodes sit in; one with no node is reported,
+-- not written (listed nowhere until an admin triages it).
 --
 -- Rollback (forward-only): DROP TABLE knowledge_artifact_contributions; the
 -- artifact listing then has no rows to list (it never falls back to the
@@ -51,4 +54,5 @@ CREATE INDEX IF NOT EXISTS idx_knowledge_artifact_contributions_graph
 
 COMMENT ON TABLE knowledge_artifact_contributions IS
     'Who added an artifact to which graph, as which actor (K1.2); the join '
-    'every artifact path uses for the graph-readable predicate.';
+    'the artifact listing and delete use for the graph-readable predicate '
+    '(lineage/export: K2/K4).';

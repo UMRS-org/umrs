@@ -17,18 +17,17 @@ from typing import Any
 
 from fastapi import Request
 
+from umrs.knowledge.actors import AGENT_ACTOR, normalize_actor
 from umrs.knowledge.graph_registry import ProposalStore
 
 from .typed_errors import PlatformError, raise_typed
 
 logger = logging.getLogger(__name__)
 
-AGENT_ACTOR = "agent"
-
-
 def request_actor(request: Request) -> str:
-    """Actor identity: ``user`` unless explicitly marked as an agent."""
-    return (request.headers.get("x-r4-actor") or "user").strip().lower() or "user"
+    """Actor identity: ``user`` unless the request names any other actor
+    (``umrs.knowledge.actors``: any value but ``user`` is an agent)."""
+    return normalize_actor(request.headers.get("x-r4-actor"))
 
 
 def request_session_id(request: Request) -> str:

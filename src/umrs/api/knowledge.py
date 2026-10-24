@@ -192,9 +192,12 @@ async def post_external_search(
     ``data_class`` is not ``non_sensitive``. Retire once ``doi:``/``arxiv:``
     ingest lands inside the KNOWLEDGE_INGEST job (K5).
     """
+    from starlette.concurrency import run_in_threadpool
+
     from umrs.knowledge.external import ExternalKnowledgeSearcher, ExternalSourceType
 
-    _refuse_external_search(request, caller_project)
+    # The data_class read is a blocking psycopg2 query: off the event loop.
+    await run_in_threadpool(_refuse_external_search, request, caller_project)
     default = ["arxiv", "semantic_scholar", "crossref", "cinii", "jstage"]
     names = req.sources or default
     try:

@@ -526,6 +526,50 @@ class TestKnowledgeIngestBackend:
         assert desc["artifact_id"].startswith("art-")
 
     @pytest.mark.asyncio
+    async def test_the_ingest_hands_its_contributor_to_the_store(self, sample_job, tmp_py_file):
+        """K1.2: the listing fails closed, so an ingest that stopped passing
+        ``contributor=`` would make every new upload vanish from
+        ``/k2/artifacts`` with no other test noticing (review of K1 part A)."""
+        from umrs.knowledge.graph_registry import default_graph_id
+
+        sample_attempt = JobAttempt(
+            attempt_id=generate_attempt_id(),
+            job_id=sample_job.job_id,
+            attempt_no=1,
+            backend="compose",
+            status=AttemptStatus.CREATED,
+            backend_ref="",
+            metrics={},
+        )
+        sample_job.spec["sources"] = [{"kind": "local_file", "uri": tmp_py_file}]
+        sample_job.spec["bucket"] = "test-bucket"
+        sample_job.spec["origin_actor"] = "agent"
+        seen: list[object] = []
+
+        def _capture_store(_project_id: str, _descs: list[dict], **kw: object) -> object:
+            from umrs.jobs.knowledge_adapters import _StoredArtifacts
+
+            seen.append(kw.get("contributor"))
+            return _StoredArtifacts()
+
+        with (
+            patch("boto3.client", return_value=_make_fake_s3()),
+            patch(
+                "umrs.jobs.knowledge_adapters._store_artifacts_in_db_sync",
+                side_effect=_capture_store,
+            ),
+        ):
+            await KnowledgeIngestBackend().submit_job(sample_job, sample_attempt)
+
+        (contributor,) = seen
+        assert contributor is not None
+        assert (contributor.graph_id, contributor.user_id, contributor.origin_actor) == (
+            default_graph_id(sample_job.project_id),
+            "test-user",
+            "agent",
+        )
+
+    @pytest.mark.asyncio
     async def test_a_reupload_continues_on_the_stored_artifact(self, sample_job, tmp_py_file):
         """Bytes the project already holds: the result, the provenance and the
         chained understand all name the stored artifact, not a fresh id with no

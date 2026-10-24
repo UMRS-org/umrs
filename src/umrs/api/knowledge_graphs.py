@@ -339,6 +339,7 @@ async def list_proposed_rows(
     graph_id: str,
     request: Request,
     limit: int = Query(200, ge=1, le=1000),
+    run_id: str | None = Query(None, description="Only the rows of this run"),
     identity: CallerIdentity = Depends(get_caller_identity),
 ) -> dict[str, Any]:
     """Proposed (D-35) nodes and edges of one graph, newest first (K1.5).
@@ -347,7 +348,8 @@ async def list_proposed_rows(
     establish. Read-only; needs the verified caller (401 without), and the
     graph detail route's visibility (404 when the graph is unknown or
     outside the caller's reach). Each row names its origin and run, for
-    "establish run" (ADR-084 D-2).
+    "establish run" (ADR-084 D-2); ``run_id`` narrows to one run, so a
+    run is reachable past the newest ``limit`` rows.
     """
     graph = _registry(request).resolve_graph(graph_id)
     scope = CallerScope(
@@ -366,7 +368,7 @@ async def list_proposed_rows(
         raise_typed(
             PlatformError.knowledgegraphs("not_found", f"Graph {graph_id} not found")
         )
-    rows = _review_queue(request).proposed_rows(graph, limit=limit)
+    rows = _review_queue(request).proposed_rows(graph, limit=limit, run_id=run_id)
     return {"graph_id": graph.graph_id, "project_id": graph.project_id, **rows}
 
 

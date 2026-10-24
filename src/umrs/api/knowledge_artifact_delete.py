@@ -15,7 +15,14 @@ Gates, in order:
   another, which only an admin may write; an anonymous caller never deletes;
 - the artifact must belong to that project: a foreign, unknown or
   already-deleted id is 404 by name, never a cross-project delete and never a
-  second "deleted".
+  second "deleted";
+- the caller must be able to read it (K1.2 contributions, review of K1 part
+  A, 2026-10-24): an artifact whose every contribution sits in a graph the
+  caller may not read (another member's personal graph) is 404 like an
+  unknown id, and one that such a graph ALSO holds is 403 — the delete
+  cascades over every contribution, so it would destroy the other member's
+  copy. An artifact with no contribution row (the backfill not yet run) is
+  404 too (fail closed).
 """
 
 from __future__ import annotations
@@ -82,9 +89,29 @@ def _target_project(request: Request, project_id: str | None) -> tuple[str, str]
     return target, caller.user_id
 
 
+async def require_deletable(request: Request, artifact_id: str, project_id: str) -> None:
+    """404 unless the caller can read the artifact; 403 when a graph the
+    caller cannot read also holds it (see the module docstring)."""
+    from ._artifact_scope import artifact_access_for
+
+    access = await artifact_access_for(request, project_id, artifact_id)
+    if not access.readable:
+        missing = ArtifactNotFound(artifact_id, project_id)
+        raise_typed(PlatformError.knowledge("not_found", str(missing)), cause=missing)
+    if access.held_elsewhere:
+        raise_typed(
+            PlatformError.knowledge_guard(
+                "forbidden",
+                f"knowledge artifact {artifact_id!r} is also held in a graph you cannot "
+                "read; deleting it would remove that copy too. Nothing was deleted.",
+            )
+        )
+
+
 async def run_delete(request: Request, artifact_id: str, project_id: str) -> ArtifactDeleteReport:
     """The delete over the knowledge pool; 404 by name, 500 = nothing deleted."""
     pool = await knowledge_asyncpg_pool(request)
+    await require_deletable(request, artifact_id, project_id)
     try:
         return await delete_artifact(pool, artifact_id, project_id, object_store)
     except ArtifactNotFound as exc:
