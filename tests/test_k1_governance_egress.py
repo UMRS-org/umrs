@@ -220,6 +220,19 @@ def test_loop_finding_honours_a_loop_graph() -> None:
     assert {row["graph_id"] for row in sink.nodes.values()} == {"g-loop"}
 
 
+def test_every_row_of_a_finding_names_its_loop_as_run() -> None:
+    """Review of K1 part A: evidence stubs (``{"role": "evidence"}``) and
+    the loop's edges named no run, so ``establish --run <loop>`` left them
+    proposed under established ``derived_from`` edges."""
+    from umrs.knowledge.review_queue import row_run_id
+
+    sink = InMemoryFindingSink()
+    mint_iteration(_loop(), _iteration(), sink=sink)
+    assert "art-e" in sink.nodes  # the evidence stub
+    rows = [*sink.nodes.values(), *sink.edges.values()]
+    assert {row_run_id(row["content"]) for row in rows} == {"loop-k1"}
+
+
 def test_postgres_sink_builds_proposed_store_rows() -> None:
     """The production sink feeds the dicts to KnowledgeNode/KnowledgeEdge:
     the tier keys must be dataclass fields (a typo would raise here)."""
@@ -534,3 +547,313 @@ def test_external_search_runs_when_on_for_a_non_sensitive_project(monkeypatch) -
         "/umrs/knowledge/external/search", json={"query": "q"}
     )
     assert resp.status_code == 200, resp.text
+
+
+# ── review of K1.1 (2026-10-24): deadline, truncation, downgrade, ports ────
+#
+# The first four fail on the K1.1 code (no total deadline, a short body
+# stored as a success, https→http followed, any port fetched); the rest
+# guard properties K1.1 already had and no test exercised (pinned connect,
+# one private answer among public ones, IPv4-mapped IPv6 literals).
+
+
+class _TrickleHandler(BaseHTTPRequestHandler):
+    """Sends a header promising 15 bytes, then one byte every 0.2 s."""
+
+    def do_GET(self) -> None:  # noqa: N802 — http.server's name
+        import time
+
+        self.send_response(200)
+        self.send_header("Content-Length", "15")
+        self.end_headers()
+        for _ in range(15):
+            self.wfile.write(b"x")
+            self.wfile.flush()
+            time.sleep(0.2)
+
+    def log_message(self, *_args: Any) -> None:
+        return
+
+
+def test_a_trickling_server_is_cut_off_at_the_total_deadline(monkeypatch) -> None:
+    import time
+
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), _TrickleHandler)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    port = httpd.server_address[1]
+    real_open = egress_fetch._open_connection
+
+    def _open(scheme: str, host: str, _port: int, _address: str, timeout: float) -> Any:
+        return real_open("http", host, port, "127.0.0.1", timeout)
+
+    monkeypatch.setattr(egress_fetch, "_resolve_host", lambda _h, _p: [_PUBLIC])
+    monkeypatch.setattr(egress_fetch, "_open_connection", _open)
+    monkeypatch.setattr(egress_fetch, "_EGRESS_TOTAL_SEC", 1)
+    started = time.monotonic()
+    try:
+        result = fetch_url("http://docs.example.org/slow", allow_domains=["docs.example.org"])
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+    assert result.content is None
+    assert "longer than 1s in total" in result.error
+    assert time.monotonic() - started < 2.5
+
+
+def test_a_body_shorter_than_its_content_length_is_refused(fake_net) -> None:
+    _Handler.routes = {"/cut": (200, {"Content-Length": "100"}, b"8 bytes!")}
+    result = fetch_url("http://docs.example.org/cut", allow_domains=["docs.example.org"])
+    assert result.content is None
+    assert "truncated body: 8 of 100 bytes" in result.error
+
+
+def test_an_https_hop_never_redirects_down_to_http(fake_net) -> None:
+    _Handler.routes = {
+        "/start": (302, {"Location": "http://docs.example.org/final", "Content-Length": "0"}, b""),
+        "/final": (200, {"Content-Length": "2"}, b"ok"),
+    }
+    result = fetch_url("https://docs.example.org/start", allow_domains=["docs.example.org"])
+    assert result.content is None
+    assert "down to" in result.error
+
+
+def test_a_port_the_allowlist_does_not_name_is_refused(fake_net) -> None:
+    _Handler.routes = {"/doc": (200, {"Content-Length": "5"}, b"hello")}
+    url = "http://docs.example.org:8080/doc"
+    refused = fetch_url(url, allow_domains=["docs.example.org"])
+    assert refused.content is None and "port 8080" in refused.error
+    named = fetch_url(url, allow_domains=["docs.example.org:8080"])
+    assert named.content == b"hello", named.error
+
+
+def test_port_rules() -> None:
+    assert egress_fetch.port_allowed("a.example.org", 443, ["*.example.org"])
+    assert egress_fetch.port_allowed("a.example.org", 8443, ["*.example.org:8443"])
+    assert not egress_fetch.port_allowed("a.example.org", 8443, ["*.example.org"])
+    assert not egress_fetch.port_allowed("b.other.org", 8443, ["*.example.org:8443"])
+    # An IPv6 literal is a host, not host:port.
+    assert egress_fetch.domain_allowed("2001:db8::1", ["2001:db8::1"])
+
+
+def test_the_connection_goes_to_the_address_that_was_checked(monkeypatch, server) -> None:
+    """A rebinding name answers public first, loopback second: the socket
+    must go to the first (checked) answer, the request keep its Host."""
+    import socket
+
+    answers = iter([[_PUBLIC], ["127.0.0.1"]])
+    monkeypatch.setattr(egress_fetch, "_resolve_host", lambda _h, _p: next(answers))
+    seen: list[str] = []
+    real_connect = socket.create_connection
+
+    def _connect(address: tuple[str, int], *args: Any, **kwargs: Any) -> Any:
+        seen.append(address[0])
+        return real_connect(("127.0.0.1", server), *args, **kwargs)
+
+    monkeypatch.setattr(socket, "create_connection", _connect)
+    _Handler.routes = {"/doc": (200, {"Content-Length": "5"}, b"hello")}
+    result = fetch_url("http://docs.example.org/doc", allow_domains=["docs.example.org"])
+    assert result.content == b"hello", result.error
+    assert seen == [_PUBLIC]
+
+
+def test_one_private_answer_among_public_ones_refuses_the_hop(fake_net, monkeypatch) -> None:
+    monkeypatch.setitem(_DNS, "mixed.example.org", [_PUBLIC, "10.0.0.5"])
+    result = fetch_url("http://mixed.example.org/x", allow_domains=["mixed.example.org"])
+    assert result.content is None
+    assert "private" in result.error
+
+
+def test_an_ipv4_mapped_ipv6_literal_is_unwrapped_and_refused() -> None:
+    result = fetch_url("http://[::ffff:127.0.0.1]/x", allow_domains=["::ffff:127.0.0.1"])
+    assert result.content is None
+    assert "loopback" in result.error
+
+
+def test_the_refusal_names_the_key_the_site_loader_reads(tmp_path) -> None:
+    """The message used to say ``knowledge_ingest.allowed_domains``; the
+    loader reads only ``extra``, so following it changed nothing."""
+    import re
+
+    import yaml
+    from umrs.orchestrator.site_config import load_site_config
+
+    with pytest.raises(EgressDisabledError) as refused:
+        SourceResolver().resolve("http_url", "https://arxiv.org/a")
+    key = re.search(r"'([a-z_.]+)'", str(refused.value)).group(1)
+    raw: dict[str, Any] = {}
+    node = raw
+    *parents, leaf = key.split(".")
+    for part in parents:
+        node = node.setdefault(part, {})
+    node[leaf] = ["arxiv.org"]
+    path = tmp_path / "site.yaml"
+    path.write_text(yaml.safe_dump({"name": "t", **raw}))
+    resolved = SourceResolver(site_config=load_site_config(str(path))).resolve(
+        "http_url", "https://arxiv.org/a"
+    )
+    assert resolved.allow_domains == ["arxiv.org"]
+
+
+# ── review of K1.1: the actor vocabulary is closed; rows name their origin ──
+
+
+@pytest.mark.parametrize("raw", ["agent", "companion", "loop", "Agent-Team", " AGENT "])
+def test_any_named_actor_but_a_person_is_an_agent(raw) -> None:
+    from umrs.knowledge.actors import normalize_actor
+
+    assert normalize_actor(raw) == "agent"
+    assert {normalize_actor(v) for v in (None, "", "user", " User ")} == {"user"}
+
+
+def test_an_unknown_actor_header_needs_a_proposal() -> None:
+    """``x-r4-actor: companion`` got the human tier and no proposal check."""
+    from fastapi import HTTPException
+    from starlette.requests import Request
+    from umrs.api._knowledge_mutation_guard import enforce_graph_mutation_authorization
+
+    request = Request(
+        {"type": "http", "headers": [(b"x-r4-actor", b"companion")], "app": FastAPI()}
+    )
+    with pytest.raises(HTTPException) as refused:
+        enforce_graph_mutation_authorization(request, target_graph_id="g-1", proposal_id=None)
+    assert refused.value.status_code == 409
+
+
+def test_an_unknown_actor_upload_records_an_agent_origin(monkeypatch) -> None:
+    calls: list[dict[str, Any]] = []
+    client = TestClient(_upload_app(monkeypatch, calls), raise_server_exceptions=False)
+    resp = client.post(
+        "/umrs/knowledge/upload",
+        files={"file": ("note.md", io.BytesIO(b"# note"), "text/markdown")},
+        headers={"x-user-id": "u-1", "x-r4-actor": "companion", "x-proposal-id": "p"},
+    )
+    assert resp.status_code == 202, resp.text
+    assert calls[-1]["spec"]["origin_actor"] == "agent"
+
+
+def _understand_rows(monkeypatch, origin: str) -> list[Any]:
+    """Run ``_understand_one_artifact`` over fakes; return what it upserted."""
+    import asyncio
+
+    from umrs.jobs import knowledge_adapters as ka
+    from umrs.knowledge import ir as ir_module
+    from umrs.knowledge.store import KnowledgeEdge, KnowledgeNode
+
+    node = KnowledgeNode(
+        node_id="n-1", project_id="proj-k1", label="L", node_type="concept",
+        content={"artifact_id": "art-a"},
+    )
+    edge = KnowledgeEdge(
+        edge_id="e-1", project_id="proj-k1", source_id="n-1", target_id="n-1",
+        relation_type="related", content={"artifact_id": "art-a"},
+    )
+
+    async def _prepared(*_a: Any, **_k: Any) -> Any:
+        return "art-a", "document", b"x", {}
+
+    async def _no(*_a: Any, **_k: Any) -> bool:
+        return False
+
+    monkeypatch.setattr(ka, "_understand_input", _prepared)
+    monkeypatch.setattr(ka, "_already_understood", _no)
+    monkeypatch.setattr(ka, "_nodes_edges_for_artifact", lambda *_a, **_k: ([node], [edge]))
+    monkeypatch.setattr(
+        ir_module,
+        "build_knowledge_ir",
+        lambda **_k: SimpleNamespace(ir_id="ir-a", to_dict=lambda: {}, content_hash="h"),
+    )
+    written: list[Any] = []
+
+    class _Store:
+        async def insert_ir(self, **_k: Any) -> bool:
+            return True
+
+        async def upsert_node(self, row: Any) -> None:
+            written.append(row)
+
+        async def upsert_edge(self, row: Any) -> None:
+            written.append(row)
+
+    job = SimpleNamespace(job_id="job-u1", spec={}, project_id="proj-k1")
+    monkeypatch.setattr(ka, "_derive_a2l_link", lambda *_a, **_k: None)
+    monkeypatch.setattr(ka.KnowledgeEvent, "emit", lambda _self: None)
+    result = ka.KnowledgeUnderstandResult()
+    attempt = SimpleNamespace(attempt_id="att-u1")
+    asyncio.run(
+        ka._understand_one_artifact(
+            job, attempt, {"artifact_id": "art-a"}, "proj-k1", "g-k1", _Store(),
+            None, "", result, origin_actor=origin,
+        )
+    )
+    return written
+
+
+def test_an_agent_write_lands_proposed_and_names_its_origin_and_job(monkeypatch) -> None:
+    """The inbox showed ``origin=-`` for agent-ingested rows: the understand
+    chain demoted them but recorded neither origin nor job."""
+    rows = _understand_rows(monkeypatch, "agent")
+    assert rows and {(r.status, r.content["origin_actor"], r.content["job_id"]) for r in rows} == {
+        ("proposed", "agent", "job-u1")
+    }
+
+
+def test_a_person_write_keeps_its_tier(monkeypatch) -> None:
+    rows = _understand_rows(monkeypatch, "user")
+    assert {r.status for r in rows} == {"established"}
+    assert all("origin_actor" not in r.content for r in rows)
+
+
+def test_llm_rows_name_their_origin_extracted(monkeypatch) -> None:
+    nodes, edges = _human_upload_rows(monkeypatch)
+    semantic = [r for r in [*nodes, *edges] if (r.content or {}).get("artifact_id") and r.status == "proposed"]
+    assert semantic and {r.content["origin_actor"] for r in semantic} == {"extracted"}
+
+
+def test_the_data_class_read_runs_off_the_event_loop(monkeypatch) -> None:
+    """``data_class_for_project`` is a blocking psycopg2 query; it ran on the
+    event loop inside the async route (review of K1 part A)."""
+    import asyncio
+
+    monkeypatch.setenv("UMRS_KNOWLEDGE_EXTERNAL_SEARCH", "1")
+    client = _search_client(monkeypatch, "sensitive")
+    on_loop: list[bool] = []
+
+    def _class(_pool: Any, _project: str) -> str:
+        try:
+            asyncio.get_running_loop()
+            on_loop.append(True)
+        except RuntimeError:
+            on_loop.append(False)
+        return "sensitive"
+
+    monkeypatch.setattr("umrs.shared.project_data_class.data_class_for_project", _class)
+    resp = client.post("/umrs/knowledge/external/search", json={"query": "q"})
+    assert resp.status_code == 403
+    assert on_loop == [False]
+
+
+def test_a_since_without_a_timezone_is_utc(monkeypatch) -> None:
+    """asyncpg read a naive ``since`` in the server's local zone (a 9-hour
+    shift on a JST host; review of K1 part A)."""
+    from datetime import datetime, timezone
+
+    from umrs.api import knowledge_v2
+    from umrs.api.files import get_project_id
+
+    seen: list[Any] = []
+
+    async def _page(_request: Any, _project: str, filters: Any, *_a: Any) -> Any:
+        seen.append(filters)
+        return [], 0
+
+    monkeypatch.setattr(knowledge_v2, "_readable_artifact_page", _page)
+    app = FastAPI()
+    app.include_router(knowledge_v2.router)
+    app.dependency_overrides[get_project_id] = lambda: "proj-k1"
+    client = TestClient(app, raise_server_exceptions=False)
+    for since in ("2026-10-01", "2026-10-01T00:00:00"):
+        resp = client.get("/umrs/k2/artifacts", params={"since": since})
+        assert resp.status_code == 200, resp.text
+    assert [f.since for f in seen] == [datetime(2026, 10, 1, tzinfo=timezone.utc)] * 2
+    resp = client.get("/umrs/k2/artifacts", params={"since": "2026-10-01T09:00:00+09:00"})
+    assert seen[-1].since == datetime(2026, 10, 1, tzinfo=timezone.utc)

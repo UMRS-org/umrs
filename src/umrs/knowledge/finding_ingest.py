@@ -299,7 +299,11 @@ def _edge_id(source: str, relation: str, target: str) -> str:
 
 def loop_graph_id(loop: ResearchLoop) -> str:
     """The graph a loop's findings land in: ``metadata.graph_id`` when the
-    loop names one, else its project's default graph (no registry lookup)."""
+    loop names one, else its project's default graph (no registry lookup).
+
+    No loop producer sets ``metadata.graph_id`` yet (2026-10-24): every
+    finding lands in the default graph until a loop can be started on a
+    named graph (knowledge plan K2)."""
     from .graph_registry import default_graph_id
 
     named = str(loop.metadata.get("graph_id") or "").strip()
@@ -328,7 +332,9 @@ def _lineage(
     Node ids follow the ingest chain: an artifact's node id IS its artifact
     id (edge endpoints are FKs into ``knowledge_nodes``); ``node_type`` stays
     inside the DB CHECK vocabulary (semantic role lives in the label). Every
-    row is ``proposed`` in the loop's graph (K1.1(b)).
+    row is ``proposed`` in the loop's graph (K1.1(b)) and names its loop
+    (``source_loop``), evidence stubs and edges included, so establishing the
+    loop's run promotes all of them (review of K1 part A, 2026-10-24).
     """
     loop_node = f"loop:{loop.loop_id}"
     nodes: list[dict[str, Any]] = [
@@ -365,7 +371,7 @@ def _lineage(
             "source_id": artifact_id,
             "target_id": loop_node,
             "relation_type": RELATION_PRODUCED_BY,
-            "content": {"iteration": finding.get("iteration", 0)},
+            "content": {"iteration": finding.get("iteration", 0), "source_loop": loop.loop_id},
         }
     ]
     for evidence_id in _evidence_artifact_ids(finding):
@@ -374,7 +380,7 @@ def _lineage(
                 "node_id": evidence_id,
                 "label": f"artifact:{evidence_id}",
                 "node_type": "entity",
-                "content": {"role": "evidence"},
+                "content": {"role": "evidence", "source_loop": loop.loop_id},
                 "content_hash": _sha256(f"artifact-node-{evidence_id}".encode()),
                 "source_ir": None,
             }
@@ -385,7 +391,7 @@ def _lineage(
                 "source_id": artifact_id,
                 "target_id": evidence_id,
                 "relation_type": RELATION_DERIVED_FROM,
-                "content": {},
+                "content": {"source_loop": loop.loop_id},
             }
         )
     return _as_proposed(loop, nodes), _as_proposed(loop, edges)

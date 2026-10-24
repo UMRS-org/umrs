@@ -106,6 +106,7 @@ def world(sync_pool, monkeypatch):
 
 async def _cleanup(project: str, graphs: list[str]) -> None:
     async with _Acquired() as conn:
+        await conn.execute("DELETE FROM knowledge_nodes WHERE project_id = $1", project)
         await conn.execute("DELETE FROM knowledge_artifacts WHERE project_id = $1", project)
         await conn.execute("DELETE FROM knowledge_graphs WHERE graph_id = ANY($1)", graphs)
         if await conn.fetchval("SELECT to_regclass('jobs') IS NOT NULL"):
@@ -232,18 +233,93 @@ def test_a_shared_copy_never_reveals_the_personal_contribution(
     assert _who(listed[aid]) == {("bob", world.shared)}
 
 
+def _scope_request(client: Any) -> Any:
+    return SimpleNamespace(headers=client.headers, app=SimpleNamespace(state=SimpleNamespace()))
+
+
 def test_readable_artifact_ids_applies_the_same_rule(world, sync_pool, monkeypatch) -> None:
-    from umrs.api._artifact_scope import hidden_artifact_graphs
+    from umrs.api._artifact_scope import readable_artifact_graphs
     from umrs.knowledge.contributions import readable_artifact_ids
 
     private = _ingest(world, user="alice", graph=world.personal, content="p1")
     public = _ingest(world, user="alice", graph=world.default, content="p2")
     client = _client("bob", world.project, sync_pool, monkeypatch)
-    request = SimpleNamespace(headers=client.headers, app=SimpleNamespace(state=SimpleNamespace()))
-    hidden = hidden_artifact_graphs(request, sync_pool, world.project)
-    assert world.personal in hidden
-    ids = asyncio.run(readable_artifact_ids(_LoopFreePool(), world.project, hidden))
+    readable = readable_artifact_graphs(_scope_request(client), sync_pool, world.project)
+    assert world.personal not in readable and world.default in readable
+    ids = asyncio.run(readable_artifact_ids(_LoopFreePool(), world.project, readable))
     assert public in ids and private not in ids
+
+
+def test_a_graph_the_scope_never_saw_is_not_listed(world, sync_pool, monkeypatch) -> None:
+    """Review of K1 part A: the listing hid a denylist read before the list
+    query, so a personal-graph contribution written in between was listed."""
+    from umrs.api._artifact_scope import readable_artifact_graphs
+    from umrs.knowledge.contributions import ArtifactFilters, list_readable_artifacts
+
+    _ingest(world, user="alice", graph=world.default, content="before")
+    client = _client("bob", world.project, sync_pool, monkeypatch)
+    readable = readable_artifact_graphs(_scope_request(client), sync_pool, world.project)
+    late = _ingest(world, user="alice", graph=world.personal, content="in-between")
+    rows, _total = asyncio.run(
+        list_readable_artifacts(_LoopFreePool(), world.project, readable, ArtifactFilters())
+    )
+    assert late not in {r["artifact_id"] for r in rows}
+
+
+# ── the delete gate (review of K1 part A) ───────────────────────────────────
+
+
+def _delete_client(user: str, w: Any, sync_pool: Any, monkeypatch: Any) -> Any:
+    from umrs.api import knowledge_artifact_delete as route
+
+    client = _client(user, w.project, sync_pool, monkeypatch)
+
+    async def _pool(_request: Any) -> Any:
+        return _LoopFreePool()
+
+    monkeypatch.setattr(route, "knowledge_asyncpg_pool", _pool)
+    monkeypatch.setattr(route, "object_store", lambda: None)
+    client.app.include_router(route.router)
+    return client
+
+
+def _exists(artifact_id: str) -> bool:
+    async def _run() -> bool:
+        async with _Acquired() as conn:
+            return bool(
+                await conn.fetchval(
+                    "SELECT 1 FROM knowledge_artifacts WHERE artifact_id = $1", artifact_id
+                )
+            )
+
+    return asyncio.run(_run())
+
+
+def test_a_member_cannot_delete_another_members_personal_artifact(
+    world, sync_pool, monkeypatch
+) -> None:
+    private = _ingest(world, user="alice", graph=world.personal, content="diary-d")
+    bob = _delete_client("bob", world, sync_pool, monkeypatch)
+    assert bob.delete(f"/umrs/knowledge/artifacts/{private}").status_code == 404
+    assert _exists(private)
+
+
+def test_a_shared_copy_cannot_take_the_personal_one_with_it(
+    world, sync_pool, monkeypatch
+) -> None:
+    aid = _ingest(world, user="alice", graph=world.personal, content="both-d")
+    _ingest(world, user="bob", graph=world.shared, content="both-d")
+    bob = _delete_client("bob", world, sync_pool, monkeypatch)
+    assert bob.delete(f"/umrs/knowledge/artifacts/{aid}").status_code == 403
+    assert _exists(aid)
+
+
+def test_the_owner_deletes_their_own_artifact(world, sync_pool, monkeypatch) -> None:
+    aid = _ingest(world, user="alice", graph=world.default, content="mine-d")
+    alice = _delete_client("alice", world, sync_pool, monkeypatch)
+    resp = alice.delete(f"/umrs/knowledge/artifacts/{aid}")
+    assert resp.status_code == 200, resp.text
+    assert not _exists(aid)
 
 
 # ── filters ─────────────────────────────────────────────────────────────────
@@ -287,10 +363,14 @@ def test_status_filter_is_honoured(world, sync_pool, monkeypatch) -> None:
 
 def _seed_history(world: Any, sync_pool: Any) -> dict[str, str]:
     """Pre-0129 history: artifacts with no contribution, one ingest job each
-    for alice (personal graph) and bob (no graph), one untraced artifact."""
+    for alice (personal graph) and bob (no graph); two untraced artifacts
+    whose nodes sit in alice's personal graph and in the legacy '' graph;
+    one untraced artifact with no node at all."""
     from umrs.jobs.schema import CREATE_ATTEMPTS_TABLE, CREATE_JOBS_TABLE
 
-    ids = {k: f"art-{k}-{uuid.uuid4().hex[:8]}" for k in ("alice", "bob", "orphan")}
+    keys = ("alice", "bob", "orphan", "legacy_personal", "legacy_default")
+    ids = {k: f"art-{k}-{uuid.uuid4().hex[:8]}" for k in keys}
+    node_graphs = {"legacy_personal": world.personal, "legacy_default": ""}
     conn = sync_pool.getconn()
     try:
         with conn, conn.cursor() as cur:
@@ -302,6 +382,19 @@ def _seed_history(world: Any, sync_pool: Any) -> dict[str, str]:
                     "project_id, source_ref, status, metadata) VALUES "
                     "(%s, %s, 'document', %s, %s, 'active', %s::jsonb)",
                     (aid, uuid.uuid4().hex, world.project, f"k/{key}.md", json.dumps({})),
+                )
+            for key, graph in node_graphs.items():
+                cur.execute(
+                    "INSERT INTO knowledge_nodes (node_id, project_id, label, node_type, "
+                    "content, content_hash, graph_id) VALUES (%s, %s, %s, 'file', %s::jsonb, "
+                    "'h', %s)",
+                    (
+                        f"node-file-{ids[key]}",
+                        world.project,
+                        key,
+                        json.dumps({"artifact_id": ids[key]}),
+                        graph,
+                    ),
                 )
             for user, graph in (("alice", world.personal), ("bob", "")):
                 job = f"job-{uuid.uuid4().hex[:12]}"
@@ -339,10 +432,17 @@ def test_backfill_dry_run_traces_jobs_and_counts_the_untraced(world, sync_pool) 
         (ids["alice"], world.personal, "alice"),
         (ids["bob"], world.default, "bob"),
     }
-    assert [(c.artifact_id, c.user_id, c.origin_actor) for c in plan.untraced] == [
-        (ids["orphan"], "", "unknown")
-    ]
-    assert (plan.summary()["untraced_placeholders"], written) == (1, 0)
+    assert {(c.artifact_id, c.graph_id, c.user_id, c.origin_actor) for c in plan.untraced} == {
+        (ids["legacy_personal"], world.personal, "", "unknown"),
+        (ids["legacy_default"], world.default, "", "unknown"),
+    }
+    assert plan.graph_unknown == [ids["orphan"]]
+    summary = plan.summary()
+    assert (summary["untraced_placeholders"], summary["untraced_graph_unknown"], written) == (
+        2,
+        1,
+        0,
+    )
 
 
 def test_backfill_apply_is_idempotent_and_keeps_personal_items_hidden(
@@ -350,12 +450,18 @@ def test_backfill_apply_is_idempotent_and_keeps_personal_items_hidden(
 ) -> None:
     ids = _seed_history(world, sync_pool)
     _plan_before, written = _plan(sync_pool, world.project, apply=True)
-    assert written == 3
+    assert written == 4
     again, _ = _plan(sync_pool, world.project)
-    assert (again.traced, again.untraced, again.already) == ([], [], 3)
-    for_bob = _listed(_client("bob", world.project, sync_pool, monkeypatch))
+    assert (again.traced, again.untraced, again.already) == ([], [], 4)
+    assert again.graph_unknown == [ids["orphan"]]  # still for an admin to triage
+    for_bob = set(_listed(_client("bob", world.project, sync_pool, monkeypatch)))
     assert ids["alice"] not in for_bob  # backfilled into alice's personal graph
-    assert {ids["bob"], ids["orphan"]} <= set(for_bob)
+    # Review of K1 part A: an untraced personal-graph upload used to become a
+    # default-graph placeholder every member listed; a node-less one too.
+    assert ids["legacy_personal"] not in for_bob and ids["orphan"] not in for_bob
+    assert {ids["bob"], ids["legacy_default"]} <= for_bob
+    for_alice = set(_listed(_client("alice", world.project, sync_pool, monkeypatch)))
+    assert ids["legacy_personal"] in for_alice
 
 
 def test_an_attributed_row_replaces_the_placeholder(world, sync_pool, monkeypatch) -> None:
@@ -384,10 +490,11 @@ def test_backfill_cli_is_a_dry_run_by_default(world, sync_pool, capsys) -> None:
     _seed_history(world, sync_pool)
     assert main(["--db-url", _db_url() or "", "--project", world.project]) == 0
     report = json.loads(capsys.readouterr().out)
-    assert (report["mode"], report["traced"], report["untraced_placeholders"]) == (
-        "dry-run",
-        2,
-        1,
-    )
+    assert (
+        report["mode"],
+        report["traced"],
+        report["untraced_placeholders"],
+        report["untraced_graph_unknown"],
+    ) == ("dry-run", 2, 2, 1)
     plan, _ = _plan(sync_pool, world.project)
     assert len(plan.traced) == 2  # nothing was written

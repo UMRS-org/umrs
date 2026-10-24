@@ -316,10 +316,24 @@ def audit(monkeypatch) -> list[tuple[str, dict]]:
 
 
 @pytest.fixture()
-def client(monkeypatch, db, store, audit) -> TestClient:
+def access() -> dict[str, tuple[bool, bool]]:
+    """artifact id -> (readable, held in a graph the caller cannot read);
+    absent ids are readable and held nowhere else (the K1.2 gate's input)."""
+    return {}
+
+
+@pytest.fixture()
+def client(monkeypatch, db, store, audit, access) -> TestClient:
+    from umrs.api import _artifact_scope
+    from umrs.knowledge.contributions import ArtifactAccess
+
     async def _pool(_request):
         return FakePool(db)
 
+    async def _access(_request, _project_id, artifact_id):
+        return ArtifactAccess(*access.get(artifact_id, (True, False)))
+
+    monkeypatch.setattr(_artifact_scope, "artifact_access_for", _access)
     monkeypatch.setattr(route, "knowledge_asyncpg_pool", _pool)
     monkeypatch.setattr(route, "object_store", lambda: store)
     app = FastAPI()
@@ -525,6 +539,40 @@ def test_an_admin_names_the_project_and_deletes_there(client, db):
     assert response.json()["project_id"] == OTHER
     assert "art-x" not in db.t["artifacts"]
     assert "foreign-claims-a" in db.t["nodes"]  # names art-a, not art-x
+
+
+def test_another_members_personal_artifact_is_404_and_kept(client, db, store, access, audit):
+    """Review of K1 part A: the delete filtered by project only, so member B
+    holding the id of A's personal-graph artifact destroyed it."""
+    access["art-a"] = (False, True)
+    before = db.snapshot()
+
+    response = _delete(client, "art-a")
+
+    assert response.status_code == 404
+    assert _code(response) == "knowledge.not_found"
+    assert db.t == before and store.deleted == [] and audit == []
+
+
+def test_an_artifact_another_members_graph_also_holds_is_403(client, db, store, access):
+    access["art-a"] = (True, True)
+    before = db.snapshot()
+
+    response = _delete(client, "art-a")
+
+    assert response.status_code == 403
+    assert "also held in a graph you cannot read" in response.text
+    assert db.t == before and store.deleted == []
+
+
+def test_the_rag_facade_applies_the_same_gate(client, db, access, recorded):
+    access["artifact-rag-d1"] = (False, True)
+    before = db.snapshot()
+
+    response = _rag_delete(client, "d1")
+
+    assert response.status_code == 404
+    assert db.t == before and recorded == []
 
 
 def test_agents_may_not_delete(client, db):

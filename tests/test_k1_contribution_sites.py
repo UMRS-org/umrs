@@ -130,6 +130,53 @@ def test_rag_executor_mint_writes_an_untraced_placeholder() -> None:
     ]
 
 
+class _No0129Cursor(_Cursor):
+    """A database the executor reaches before migration 0129 ran."""
+
+    def execute(self, sql: str, params: tuple = ()) -> None:
+        super().execute(sql, params)
+        if "INTO knowledge_artifact_contributions" in sql:
+            raise RuntimeError('relation "knowledge_artifact_contributions" does not exist')
+
+
+class _No0129Conn(_Conn):
+    def cursor(self) -> _Cursor:
+        return _No0129Cursor(self.log)
+
+
+def test_a_database_without_0129_keeps_the_mint() -> None:
+    """Review of K1 part A: the placeholder insert ran in the mint's own
+    transaction with no guard, so a missing table rolled the mint back."""
+    from umrs.knowledge.rag_upload_mint import mint_rag_upload
+
+    conn = _No0129Conn()
+    pool = SimpleNamespace(getconn=lambda: conn, putconn=lambda _c: None)
+    mint_rag_upload(
+        pool,
+        project_id="p1",
+        document_id="doc-9",
+        filename="a.txt",
+        mime_type="text/plain",
+        chunks=[],
+        embeddings=[],
+        model_name="m",
+    )
+    statements = [sql.split(" (")[0] for sql, _p in conn.log]
+    assert "ROLLBACK TO SAVEPOINT k1_contribution" in statements
+    assert any(sql.startswith("INSERT INTO knowledge_nodes") for sql, _p in conn.log)
+
+
+def test_legacy_canonization_survives_a_database_without_0129() -> None:
+    from umrs.knowledge.legacy_corpus_canonize import canonize_document
+
+    conn = _No0129Conn()
+    canonize_document(
+        conn, doc_key="k", doc_uri="bucket/legacy.pdf", chunk_rows=[], project_id="p1",
+        max_per_doc=0,
+    )
+    assert any(sql.startswith("INSERT INTO knowledge_nodes") for sql, _p in conn.log)
+
+
 def test_legacy_canonization_writes_an_untraced_placeholder() -> None:
     from umrs.knowledge.legacy_corpus_canonize import canonize_document
 

@@ -14,10 +14,18 @@ Each artifact gets the contributions its history names:
   (``spec.origin_actor``). A personal-graph upload is recorded in that
   personal graph, so it stays hidden from other members;
 * **artifact metadata** — a rag upload's ``owner_id``, a workflow output's
-  producing job's owner, a loop finding (origin ``loop``);
-* **untraced** — an artifact none of the above names gets one placeholder in
-  its project's default graph (``user_id ''``, origin ``unknown``), and the
-  report counts them. Without a row an artifact would be listed nowhere.
+  producing job's owner, a loop finding (origin ``loop``), in the graphs the
+  artifact's nodes sit in (else the project default graph);
+* **untraced** — an artifact none of the above names gets one placeholder
+  (``user_id ''``, origin ``unknown``) in each graph its nodes sit in
+  (``knowledge_nodes.content->>'artifact_id'``; a legacy ``''`` graph is the
+  project default graph), and the report counts them;
+* **graph unknown** — an untraced artifact with no node at all is NOT
+  written: the report lists it for an admin to triage, and it stays listed
+  nowhere (fail closed). Review of K1 part A (2026-10-24): placing every
+  untraced artifact in the default graph made a personal-graph upload from
+  before ingest attempts recorded their artifacts (2026-08-21 to 10-09)
+  visible to every project member.
 
 Rows already present are never rewritten (``ON CONFLICT DO NOTHING``); a
 second run plans nothing.
@@ -51,6 +59,11 @@ _INGEST_ATTEMPTS_SQL = """SELECT j.project_id, j.user_id, j.spec, t.metrics
   FROM jobs j JOIN job_attempts t ON t.job_id = j.job_id
  WHERE j.job_type = 'knowledge_ingest'"""
 _JOB_OWNERS_SQL = "SELECT job_id, user_id FROM jobs WHERE job_id = ANY(%s)"
+_NODE_GRAPHS_SQL = """SELECT DISTINCT project_id, content->>'artifact_id', graph_id
+  FROM knowledge_nodes
+ WHERE project_id = ANY(%s) AND content->>'artifact_id' = ANY(%s)"""
+#: The report lists at most this many graph-unknown artifact ids.
+_UNKNOWN_LISTED = 200
 
 
 @dataclass
@@ -71,6 +84,7 @@ class BackfillPlan:
 
     traced: list[Contribution] = field(default_factory=list)
     untraced: list[Contribution] = field(default_factory=list)
+    graph_unknown: list[str] = field(default_factory=list)
     already: int = 0
 
     def summary(self) -> dict[str, Any]:
@@ -81,6 +95,8 @@ class BackfillPlan:
             "traced": len(self.traced),
             "traced_by_origin": dict(sorted(sources.items())),
             "untraced_placeholders": len(self.untraced),
+            "untraced_graph_unknown": len(self.graph_unknown),
+            "graph_unknown_artifacts": sorted(self.graph_unknown)[:_UNKNOWN_LISTED],
             "artifacts_already_attributed": self.already,
         }
 
@@ -157,51 +173,84 @@ def _metadata_origin(art: _Artifact, owners: dict[str, str]) -> tuple[str, str] 
     return None
 
 
-def _metadata_rows(conn: Any, artifacts: dict[str, _Artifact]) -> list[Contribution]:
+def _node_graphs(conn: Any, artifacts: list[_Artifact]) -> dict[str, set[str]]:
+    """artifact id → the graphs its nodes sit in (``''`` = the default graph)."""
+    if not artifacts:
+        return {}
+    projects = sorted({a.project_id for a in artifacts})
+    ids = [a.artifact_id for a in artifacts]
+    found: dict[str, set[str]] = {}
+    for project_id, artifact_id, graph_id in _fetch(conn, _NODE_GRAPHS_SQL, (projects, ids)):
+        graph = str(graph_id or "") or default_graph_id(str(project_id))
+        found.setdefault(str(artifact_id), set()).add(graph)
+    return found
+
+
+def _metadata_rows(
+    conn: Any, artifacts: list[_Artifact], graphs: dict[str, set[str]]
+) -> list[Contribution]:
+    """Rows the artifacts' own metadata names, in their nodes' graphs. Only
+    for artifacts no ingest job traced: the job's graph is authoritative (a
+    personal-graph upload must not gain a default-graph row)."""
     producers = sorted(
-        {str(a.metadata.get("produced_by_job_id")) for a in artifacts.values()}
-        - {"None", ""}
+        {str(a.metadata.get("produced_by_job_id")) for a in artifacts} - {"None", ""}
     )
     owners = {str(r[0]): str(r[1] or "") for r in _fetch(conn, _JOB_OWNERS_SQL, (producers,))}
     rows: list[Contribution] = []
-    for art in artifacts.values():
+    for art in artifacts:
         named = _metadata_origin(art, owners)
-        if named is not None:
-            rows.append(
-                Contribution(
-                    art.artifact_id,
-                    default_graph_id(art.project_id),
-                    art.project_id,
-                    named[0],
-                    named[1],
-                    art.title,
-                )
-            )
+        if named is None:
+            continue
+        held = graphs.get(art.artifact_id) or {default_graph_id(art.project_id)}
+        rows.extend(
+            Contribution(art.artifact_id, g, art.project_id, named[0], named[1], art.title)
+            for g in sorted(held)
+        )
     return rows
+
+
+def _place_untraced(plan: BackfillPlan, untraced: list[_Artifact], graphs: dict[str, set[str]]) -> None:
+    """A placeholder in each graph an untraced artifact's nodes sit in; an
+    artifact with no node is graph-unknown (listed in the report, not written)."""
+    for art in untraced:
+        held = graphs.get(art.artifact_id)
+        if not held:
+            plan.graph_unknown.append(art.artifact_id)
+            continue
+        plan.untraced.extend(
+            Contribution(art.artifact_id, g, art.project_id, "", PLACEHOLDER_ORIGIN, art.title)
+            for g in sorted(held)
+        )
+
+
+def _existing(conn: Any, artifacts: dict[str, _Artifact]) -> set[tuple[str, str, str]]:
+    """``(artifact, graph, user)`` keys already written for these artifacts."""
+    rows = _fetch(conn, _EXISTING_SQL)
+    return {(str(a), str(g), str(u)) for a, g, u in rows if str(a) in artifacts}
+
+
+def _add_traced(plan: BackfillPlan, rows: list[Contribution], seen: set[tuple[str, str, str]]) -> None:
+    """Each row once, skipping keys already written or planned."""
+    for row in rows:
+        key = (row.artifact_id, row.graph_id, row.user_id)
+        if key not in seen:
+            seen.add(key)
+            plan.traced.append(row)
 
 
 def plan_backfill(conn: Any, projects: list[str] | None = None) -> BackfillPlan:
     """Read everything (or *projects* only); decide what to write (no writes)."""
     artifacts = _artifacts(conn, projects)
-    existing = {
-        (str(a), str(g), str(u))
-        for a, g, u in _fetch(conn, _EXISTING_SQL)
-        if str(a) in artifacts
-    }
+    existing = _existing(conn, artifacts)
     attributed = {key[0] for key in existing}
     plan = BackfillPlan(already=len(attributed & set(artifacts)))
-    seen = set(existing)
-    for row in [*_ingest_rows(conn, artifacts), *_metadata_rows(conn, artifacts)]:
-        key = (row.artifact_id, row.graph_id, row.user_id)
-        if key not in seen:
-            seen.add(key)
-            plan.traced.append(row)
+    traced = _ingest_rows(conn, artifacts)
+    by_job = {row.artifact_id for row in traced} | attributed
+    rest = [a for a in artifacts.values() if a.artifact_id not in by_job]
+    graphs = _node_graphs(conn, rest)
+    _add_traced(plan, [*traced, *_metadata_rows(conn, rest, graphs)], set(existing))
     named = attributed | {row.artifact_id for row in plan.traced}
-    plan.untraced = [
-        Contribution(a.artifact_id, default_graph_id(a.project_id), a.project_id, "", PLACEHOLDER_ORIGIN, a.title)
-        for a in artifacts.values()
-        if a.artifact_id not in named
-    ]
+    _place_untraced(plan, [a for a in rest if a.artifact_id not in named], graphs)
     return plan
 
 

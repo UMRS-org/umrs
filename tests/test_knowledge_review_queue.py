@@ -88,14 +88,14 @@ def test_the_store_reads_only_proposed_rows_of_the_graph():
     _CursorStore(cursor).proposed_rows(_meta(G_A, "proj-a"), limit=5)
     (nodes_sql, params), (edges_sql, _) = cursor.calls
     assert "status = 'proposed'" in nodes_sql and "status = 'proposed'" in edges_sql
-    assert params == (G_A, False, "proj-a", 5)
+    assert params == (G_A, False, "proj-a", None, None, 5)
 
 
 def test_the_default_graph_keeps_the_legacy_rows():
     cursor = _Cursor([[], []])
     default_a = default_graph_id("proj-a")
     _CursorStore(cursor).proposed_rows(_meta(default_a, "proj-a"))
-    assert cursor.calls[0][1] == (default_a, True, "proj-a", 200)
+    assert cursor.calls[0][1] == (default_a, True, "proj-a", None, None, 200)
 
 
 def test_rows_carry_kind_summary_origin_and_run():
@@ -141,8 +141,8 @@ class _FakeQueue:
     def __init__(self) -> None:
         self.read: list[tuple[str, int]] = []
 
-    def proposed_rows(self, graph, *, limit):
-        self.read.append((graph.graph_id, limit))
+    def proposed_rows(self, graph, *, limit, run_id=None):
+        self.read.append((graph.graph_id, limit) if run_id is None else (graph.graph_id, limit, run_id))
         node = {"kind": "node", "id": "art-f1", "run_id": "loop-7", "origin": "loop"}
         return {"nodes": [node], "edges": [], "truncated": False}
 
@@ -172,6 +172,32 @@ def test_a_member_lists_the_proposed_rows_of_their_graph(client):
     assert queue.read == [(G_A, 200), (G_A, 5)]
 
 
+def test_the_route_narrows_to_one_run(client):
+    """Review of K1 part A: a run past the newest-``limit`` window was
+    unreachable, so ``establish --run`` promoted part of it or nothing."""
+    http, queue = client
+    resp = http.get(f"/umrs/knowledge/graphs/{G_A}/proposed?run_id=loop-7", headers=ALICE)
+    assert resp.status_code == 200, resp.text
+    assert queue.read == [(G_A, 200, "loop-7")]
+
+
+def test_the_store_filters_by_the_run_key_row_run_id_reads():
+    cursor = _Cursor([[], []])
+    _CursorStore(cursor).proposed_rows(_meta(G_A, "proj-a"), run_id="loop-7")
+    sql, params = cursor.calls[0]
+    assert params == (G_A, False, "proj-a", "loop-7", "loop-7", 200)
+    for key in ("source_loop", "loop_id", "job_id", "artifact_id"):
+        assert f"content->>'{key}'" in sql
+
+
+def test_a_model_extraction_names_its_origin():
+    """K-1 rows (entities a model extracted from a person's upload) said
+    nothing about where they came from: the inbox printed ``origin=-``."""
+    assert row_origin({"semantic": True, "artifact_id": "art-1"}) == "extracted"
+    assert row_origin({"semantic_type": "entity", "artifact_id": "art-1"}) == "extracted"
+    assert row_origin({"origin_actor": "extracted", "artifact_id": "art-1"}) == "extracted"
+
+
 def test_the_inbox_needs_a_verified_caller(client):
     http, queue = client
     assert http.get(f"/umrs/knowledge/graphs/{G_A}/proposed").status_code == 401
@@ -185,13 +211,21 @@ def test_another_projects_graph_reads_as_not_found(client):
     assert queue.read == []
 
 
-# ── integration: a real Postgres (skipped without a database URL) ────────────
+# ── a real Postgres (skipped without a database URL) ─────────────────────────
+#
+# Not marked ``integration``: the conftest skips that marker unless
+# UMRS_TEST_DB_URL is set, which the CI job does not set; the fixture reads
+# the CI-shape POSTGRES_* variables instead (review of K1 part A).
 
 
 @pytest.fixture()
 def pg_conn(request: pytest.FixtureRequest) -> Any:
     psycopg2 = pytest.importorskip("psycopg2")
-    url = request.config.getoption("--db-url") or os.environ.get("UMRS_TEST_DB_URL")
+    url = (
+        request.config.getoption("--db-url")
+        or os.environ.get("UMRS_TEST_DB_URL")
+        or _ci_postgres_url()
+    )
     if not url:
         pytest.skip("no database URL (--db-url / UMRS_TEST_DB_URL)")
     conn = psycopg2.connect(url)
@@ -200,6 +234,19 @@ def pg_conn(request: pytest.FixtureRequest) -> Any:
     finally:
         conn.rollback()
         conn.close()
+
+
+def _ci_postgres_url() -> str:
+    """The CI-shape Postgres (``POSTGRES_HOST`` …), which the CI job sets;
+    ``UMRS_TEST_DB_URL`` alone left this test skipped there."""
+    host = os.environ.get("POSTGRES_HOST")
+    if not host:
+        return ""
+    return (
+        f"postgresql://{os.environ.get('POSTGRES_USER', 'test')}:"
+        f"{os.environ.get('POSTGRES_PASSWORD', 'test')}@{host}:"
+        f"{os.environ.get('POSTGRES_PORT', '5432')}/{os.environ.get('POSTGRES_DB', 'umrs_test')}"
+    )
 
 
 class _OneConn:
@@ -238,7 +285,6 @@ def _insert_node(cur: Any, node_id: str, graph_id: str, status: str, content: di
     )
 
 
-@pytest.mark.integration
 def test_the_sql_returns_only_proposed_rows_of_the_graph(pg_conn: Any) -> None:
     default_graph = default_graph_id("rq-it")
     with pg_conn.cursor() as cur:
@@ -257,3 +303,25 @@ def test_the_sql_returns_only_proposed_rows_of_the_graph(pg_conn: Any) -> None:
     assert sorted(n["id"] for n in out["nodes"]) == ["rq-legacy", "rq-prop"]
     assert [e["id"] for e in out["edges"]] == ["rq-e"]
     assert next(n for n in out["nodes"] if n["id"] == "rq-prop")["run_id"] == "loop-1"
+
+
+def test_a_run_is_reachable_past_the_newest_rows(pg_conn: Any) -> None:
+    default_graph = default_graph_id("rq-it")
+    with pg_conn.cursor() as cur:
+        _insert_node(cur, "rq-finding", default_graph, "proposed", {"source_loop": "loop-9"})
+        for n in range(5):
+            _insert_node(
+                cur, f"rq-sem-{n}", default_graph, "proposed",
+                {"semantic_type": "entity", "artifact_id": "art-paper"},
+            )
+        cur.execute(
+            "UPDATE knowledge_nodes SET created_at = now() - interval '1 day' "
+            "WHERE node_id = 'rq-finding'"
+        )
+    store = ReviewQueueStore(_OneConn(pg_conn))
+    window = store.proposed_rows(_meta(default_graph, "rq-it"), limit=3)
+    assert "rq-finding" not in {n["id"] for n in window["nodes"]} and window["truncated"]
+    run = store.proposed_rows(_meta(default_graph, "rq-it"), limit=3, run_id="loop-9")
+    assert [n["id"] for n in run["nodes"]] == ["rq-finding"]
+    paper = store.proposed_rows(_meta(default_graph, "rq-it"), run_id="art-paper")
+    assert {n["origin"] for n in paper["nodes"]} == {"extracted"}
