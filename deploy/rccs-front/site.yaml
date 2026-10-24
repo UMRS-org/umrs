@@ -213,6 +213,19 @@ extra:
   slurm_job_info_dir: /lvs0/rccs-dmp/masaru.nagaso/ai4s-platform/umrs/deploy/rccs/jobs
   # Wrapper script for Podman-based serve on compute nodes
   slurm_wrapper_script: /lvs0/rccs-dmp/masaru.nagaso/ai4s-platform/umrs/deploy/rccs/serve-model.slurm
+  knowledge_ingest:
+    # Web sites UMRS may fetch for knowledge ingest (r4 knowledge ingest of a URL or git repo).
+    # "*" = every public web site (maintainer decision 2026-10-25): an agent can already fetch any
+    # public page and save it, so the guards that matter are the address checks below, the
+    # 80/443-only ports, the per-hop redirect checks and the size/time caps, which all stay.
+    # Stricter site: replace "*" with "@recommended" (umrs/src/umrs/knowledge/ingest_domains_recommended.yaml)
+    # and/or explicit entries such as "example.org", "*.example.org" or "host:8443".
+    # Quote every entry: an unquoted *.example.org or * is YAML alias syntax and breaks this file.
+    # A change takes effect at the next converge deploy. Docs: docs/user-manual/27-knowledge-management.md
+    allowed_domains: ["*"]
+    # Never fetched, whatever the list says: this front sits inside RIKEN's network, which is
+    # public (global unicast) address space, so the global-address check alone would admit the intranet.
+    denied_networks: ["134.160.0.0/16"]
 
 # Partition profiles are identical to rccs-cloud — same compute hardware
 partition_profiles:
