@@ -295,3 +295,20 @@ def test_titles_come_from_the_name_the_scientist_gave() -> None:
 
     assert title_for({"source_name": "run3.pdf"}, "knowledge/p/abc123") == "run3.pdf"
     assert title_for({}, "knowledge/p/abc123") == "abc123"
+
+
+def test_backfill_finds_the_database_from_the_db_component_variables(monkeypatch) -> None:
+    """The umrs-front containers set DB_HOST / UMRS_JOBS_DB / DB_SUPERUSER*
+    only; the backfill read UMRS_DATA_CATALOG_DB / DATABASE_URL alone and
+    refused to run there (2026-10-25)."""
+    from umrs.knowledge.contribution_backfill import _db_url
+
+    for var in ("UMRS_DATA_CATALOG_DB", "DATABASE_URL", "DB_PORT", "POSTGRES_PORT", "POSTGRES_DB"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("DB_HOST", "pg.example")
+    monkeypatch.setenv("UMRS_JOBS_DB", "umrs_db")
+    monkeypatch.setenv("DB_SUPERUSER", "u")
+    monkeypatch.setenv("DB_SUPERUSER_PASSWORD", "p")
+
+    assert _db_url(None) == "postgresql://u:p@pg.example:5432/umrs_db"
+    assert _db_url("postgresql://x/y") == "postgresql://x/y"
