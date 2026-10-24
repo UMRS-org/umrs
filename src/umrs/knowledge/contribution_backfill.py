@@ -2,8 +2,9 @@
 
 Usage (dry run by default; ``--apply`` writes; safe to repeat)::
 
+    python -m umrs.knowledge.contribution_backfill            # in a umrs-server container
+    python -m umrs.knowledge.contribution_backfill --apply
     python -m umrs.knowledge.contribution_backfill --db-url postgresql://...
-    python -m umrs.knowledge.contribution_backfill --db-url ... --apply
     python -m umrs.knowledge.contribution_backfill --db-url ... --project opossum
 
 Each artifact gets the contributions its history names:
@@ -35,7 +36,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 from dataclasses import dataclass, field
 from typing import Any
@@ -265,12 +265,20 @@ def apply_backfill(conn: Any, plan: BackfillPlan) -> int:
 
 
 def _db_url(arg: str | None) -> str:
-    return arg or os.environ.get("UMRS_DATA_CATALOG_DB") or os.environ.get("DATABASE_URL", "")
+    """``--db-url``, else the server's own chain: the umrs-front containers
+    set only the DB_* component variables, so reading UMRS_DATA_CATALOG_DB /
+    DATABASE_URL alone left the documented command without a database
+    there (2026-10-25)."""
+    if arg:
+        return arg
+    from umrs.jobs.knowledge_adapters import _resolve_knowledge_dsn
+
+    return _resolve_knowledge_dsn()
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
-    parser.add_argument("--db-url", default=None, help="Postgres URL (else UMRS_DATA_CATALOG_DB / DATABASE_URL)")
+    parser.add_argument("--db-url", default=None, help="Postgres URL (else UMRS_DATA_CATALOG_DB / DATABASE_URL / DB_* variables)")
     parser.add_argument("--apply", action="store_true", help="write the rows (default: dry run)")
     parser.add_argument(
         "--project", action="append", default=None, help="limit to this project (repeatable)"
@@ -278,7 +286,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     url = _db_url(args.db_url)
     if not url:
-        print("no database URL: pass --db-url", file=sys.stderr)
+        print("no database URL: pass --db-url or set DATABASE_URL / DB_* variables", file=sys.stderr)
         return 2
     import psycopg2
 
