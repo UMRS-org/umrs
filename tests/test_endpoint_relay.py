@@ -191,10 +191,17 @@ def test_rccs_nimble_entry_is_kept_alive_on_a_gb10_partition(rccs_roster):
     # The successor window must cover a cold start (~45 min Lustre load).
     assert policy.renew_before_sec >= 3600
     defaults = pr.resolve_model_provision_defaults("Bespoke-Nimble-9B")
-    # ng-dgx-s (8 nodes): the successor starts beside its predecessor. The
-    # 2-node ng-dgx-m1 pin made successors queue behind other users' jobs
-    # (2026-10-08, dgx-spark-fleet-plan §1).
-    assert defaults["partition"] == "ng-dgx-s"
+    # ng-dgx-s (8 nodes) first, so it wins ties; every other GB10 partition
+    # follows, so a successor never queues behind one busy partition (the
+    # 2-node ng-dgx-m1 pin did, 2026-10-08, dgx-spark-fleet-plan §1). UMRS
+    # submits to ONE of them (2026-10-24, earliest --test-only start).
+    import yaml
+
+    candidates = defaults["partition"].split(",")
+    site_candidates = yaml.safe_load(SITE.read_text())["scheduler"]["partition"].split(",")
+    # ng-dgx-m3 last: the step lane's partition.
+    assert (candidates[0], candidates[-1]) == ("ng-dgx-s", "ng-dgx-m3")
+    assert sorted(candidates) == sorted(site_candidates)
     assert (defaults["ttl_sec"], defaults["max_model_len"]) == (0, 8192)
     env = defaults["env_vars"]
     # logprob_token_ids on /v1/completions needs vLLM >= 0.26 (a pinned tag).
@@ -204,12 +211,20 @@ def test_rccs_nimble_entry_is_kept_alive_on_a_gb10_partition(rccs_roster):
     assert env["VLLM_LANGUAGE_MODEL_ONLY"] == "1"
 
 
-def test_ng_dgx_s_is_a_valid_rccs_front_partition_but_not_a_default():
+def test_rccs_front_chooses_among_every_gb10_partition_ng_dgx_s_first_m3_last():
     import yaml
 
     site = yaml.safe_load(SITE.read_text())
-    assert "ng-dgx-s" in site["partition_profiles"]
-    assert "ng-dgx-s" not in site["scheduler"]["partition"].split(",")
+    candidates = site["scheduler"]["partition"].split(",")
+    # 2026-10-24: every GB10 partition is a candidate; RCCS refuses a list at
+    # sbatch, so the site must choose one per submit. Ties go to ng-dgx-s
+    # (singletons on the standalone nodes, pairs kept for pair work) and
+    # never first to ng-dgx-m3, the step lane's only partition.
+    assert candidates[0] == "ng-dgx-s"
+    assert candidates[-1] == site["step_executor"]["partition"] == "ng-dgx-m3"
+    assert {"ng-dgx-m0", "ng-dgx-m1", "ng-dgx-m2", "ng-dgx-m3"} < set(candidates)
+    assert all(cand in site["partition_profiles"] for cand in candidates)
+    assert site["scheduler"]["partition_choice"] == "earliest_start"
     # The relay's deadline comes from the site time_limit; it must sit under
     # the 1-00:00:00 partition maximum.
     assert parse_slurm_duration(site["scheduler"]["time_limit"]) < 24 * 3600

@@ -27,20 +27,61 @@ import logging
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
+from .partition_choice import default_partition, split_partitions
+
 if TYPE_CHECKING:
     from umrs.model_registry.models import ModelEntry
 
 logger = logging.getLogger(__name__)
 
 
+def _site_infrastructure(
+    profile: dict, site_config: Any, gpu_mem_util: float
+) -> dict[str, Any]:
+    """Placement + Slurm sizing fields of a spec (profile first, then site).
+
+    A profile without a partition takes every candidate when the site chooses
+    one per submit (``scheduler.partition_choice: earliest_start``), else the
+    first (2026-10-24). The GPU memory ceiling follows that partition value.
+    """
+    infra: dict[str, Any] = {
+        "partition": profile.get("partition") or "",
+        "slurm_account": profile.get("slurm_account"),
+        "container_image": "",
+        "slurm_time_limit": "96:00:00",
+        "slurm_cpus": 32,
+        "slurm_memory": "1400G",
+        "gpu_memory_utilization": gpu_mem_util,
+    }
+    if not site_config:
+        return infra
+    scheduler = site_config.scheduler
+    infra["container_image"] = getattr(site_config.runtime, "rivault_dir", "") or ""
+    infra["slurm_time_limit"] = getattr(scheduler, "time_limit", "96:00:00")
+    infra["slurm_cpus"] = getattr(scheduler, "cpus", 32)
+    infra["slurm_memory"] = getattr(scheduler, "memory", "1400G")
+    infra["partition"] = infra["partition"] or default_partition(site_config)
+    if not infra["slurm_account"]:
+        infra["slurm_account"] = getattr(scheduler, "account", None)
+    infra["gpu_memory_utilization"] = _cap_gpu_mem_util(
+        gpu_mem_util, site_config, infra["partition"]
+    )
+    return infra
+
+
 def _cap_gpu_mem_util(requested: float, site_config: Any, partition: str) -> float:
     """Apply the partition's ``gpu_mem_util_max`` ceiling (0 = no cap).
 
     Registry serving profiles carry 0.9 by default, so a site that shares the
-    GPU with co-located services needs a ceiling, not a fallback.
+    GPU with co-located services needs a ceiling, not a fallback. A comma
+    list (the job may land on any of them) takes the strictest listed cap.
     """
     profiles = getattr(site_config, "partition_profiles", None) or {}
-    cap = float(getattr(profiles.get(partition), "gpu_mem_util_max", 0) or 0)
+    caps = [
+        float(getattr(profiles.get(part), "gpu_mem_util_max", 0) or 0)
+        for part in split_partitions(partition)
+    ]
+    cap = min((c for c in caps if c > 0), default=0.0)
     if 0 < cap < requested:
         logger.info(
             "gpu_memory_utilization %.2f capped to %.2f by partition %s",
@@ -460,22 +501,7 @@ class DeploymentSpec:
         )
 
         # ── Infrastructure ──
-        partition = profile.get("partition") or ""
-        slurm_account = profile.get("slurm_account")
-        container_image = ""
-        slurm_time_limit = "96:00:00"
-        slurm_cpus = 32
-        slurm_memory = "1400G"
-        if site_config:
-            container_image = getattr(site_config.runtime, "rivault_dir", "") or ""
-            slurm_time_limit = getattr(site_config.scheduler, "time_limit", "96:00:00")
-            slurm_cpus = getattr(site_config.scheduler, "cpus", 32)
-            slurm_memory = getattr(site_config.scheduler, "memory", "1400G")
-            if not partition:
-                partition = site_config.scheduler.partition.split(",")[0]
-            if not slurm_account:
-                slurm_account = getattr(site_config.scheduler, "account", None)
-            gpu_mem_util = _cap_gpu_mem_util(gpu_mem_util, site_config, partition)
+        infra = _site_infrastructure(profile, site_config, gpu_mem_util)
 
         # ── Health ──
         readiness_probe = (
@@ -524,13 +550,7 @@ class DeploymentSpec:
             max_model_len=max_model_len,
             max_num_seqs=max_num_seqs,
             max_num_batched_tokens=max_num_batched_tokens,
-            gpu_memory_utilization=gpu_mem_util,
-            partition=partition,
-            slurm_account=slurm_account,
-            container_image=container_image,
-            slurm_time_limit=slurm_time_limit,
-            slurm_cpus=slurm_cpus,
-            slurm_memory=slurm_memory,
+            **infra,
             readiness_probe=readiness_probe,
             readiness_probe_model=readiness_probe_model,
             readiness_path=readiness_path,

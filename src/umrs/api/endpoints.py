@@ -81,26 +81,27 @@ def _validate_partition_allowed(request_partition: str | None) -> None:
 
     The partition list is site-owned (``site.scheduler.partitions``); a caller
     may run within any LISTED partition but never invent one (avoids silent
-    off-site placement and late sbatch-side failures).
+    off-site placement and late sbatch-side failures). A comma list (the
+    submit picks one of them) is allowed when every element is listed.
     """
-    part = (request_partition or "").strip()
-    if not part:
+    from ..orchestrator.partition_choice import split_partitions
+
+    requested = split_partitions(request_partition)
+    if not requested:
         return
     try:
         from ..orchestrator.site_config import load_site_config
 
-        site = load_site_config()
-        allowed = [
-            p.strip() for p in (site.scheduler.partition or "").split(",") if p.strip()
-        ]
+        allowed = split_partitions(load_site_config().scheduler.partition)
     except Exception:
         allowed = []
-    if allowed and part not in allowed:
+    unknown = [part for part in requested if part not in allowed]
+    if allowed and unknown:
         raise_typed(
             PlatformError.endpoints(
                 "bad_request",
                 (
-                    f"partition '{part}' not in this site's scheduler partitions "
+                    f"partition '{unknown[0]}' not in this site's scheduler partitions "
                     f"({', '.join(allowed)})"
                 ),
             )

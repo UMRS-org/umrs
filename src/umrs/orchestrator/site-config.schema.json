@@ -63,6 +63,11 @@
         "slurm_proxy_path": { "type": "string" },
         "kind": { "type": "string" },
         "partition": { "type": "string" },
+        "partition_choice": {
+          "type": "string",
+          "enum": ["first", "earliest_start"],
+          "description": "How a slurm-remote submit picks one partition from a comma list: first candidate (default) or earliest sbatch --test-only start."
+        },
         "account": { "type": "string" },
         "qos": { "type": "string" },
         "time_limit": { "type": "string" },

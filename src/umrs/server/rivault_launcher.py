@@ -14,6 +14,7 @@ import requests
 logger = logging.getLogger(__name__)
 
 from umrs.inference.loading import EmbeddingModel, load_model
+from umrs.orchestrator import partition_choice as pc
 from umrs.orchestrator.endpoint_registry import (
     EndpointStatus,
     get_registry,
@@ -625,8 +626,57 @@ def get_slurm_node(
 
 
 def _first_site_partition(site):
-    partition = getattr(getattr(site, "scheduler", None), "partition", "")
-    return partition.split(",")[0].strip() if partition else ""
+    """The site's default partition value for a remote sbatch.
+
+    The first candidate, except on a site with ``scheduler.partition_choice:
+    earliest_start``, which keeps every candidate; ``_choose_remote_partition``
+    then narrows that list to one before sbatch (2026-10-24).
+    """
+    return pc.default_partition(site)
+
+
+def _remote_test_only_start(site, sbatch_args, partition):
+    """When Slurm would start this job on ``partition``; None if refused."""
+    command = shlex.join(pc.probe_args(sbatch_args, partition))
+    try:
+        result = _run_remote_slurm_command(site, command, timeout=30)
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        logger.info("Partition %s skipped: --test-only failed: %s", partition, exc)
+        return None
+    output = f"{result.stdout}\n{result.stderr}"
+    parsed = pc.parse_test_only(output) if result.returncode == 0 else None
+    if parsed is None:
+        logger.info("Partition %s skipped: %s", partition, pc.first_line(output))
+        return None
+    return parsed[0]
+
+
+def _choose_remote_partition(site, sbatch_args):
+    """Narrow a ``--partition=a,b`` list to the earliest --test-only start.
+
+    Only on a site with ``scheduler.partition_choice: earliest_start`` (RCCS
+    refuses a list at submit, 2026-10-24); elsewhere a list goes to sbatch
+    as before. Ties follow ``partition_choice.choose`` (fewest recent picks,
+    then list order). When no candidate passes, the first is kept so the
+    real sbatch error surfaces; this legacy path has no quota retry. The
+    on-cluster ``get_slurm_node`` path (slurm/slurm-podman sites) never opts
+    in and keeps its first candidate.
+    """
+    current = next((a for a in sbatch_args if a.startswith("--partition=")), "")
+    candidates = pc.split_partitions(current.partition("=")[2])
+    if len(candidates) <= 1 or not pc.spreads_partitions(site):
+        return sbatch_args
+    starts = {
+        cand: _remote_test_only_start(site, sbatch_args, cand) for cand in candidates
+    }
+    chosen = (pc.choose(candidates, starts) or candidates)[0]
+    logger.info(
+        "Selected Slurm partition %s from %s (earliest start %s)",
+        chosen,
+        ",".join(candidates),
+        starts.get(chosen),
+    )
+    return pc.with_partition(sbatch_args, chosen)
 
 
 def _remote_wrapper_script(site):
@@ -729,9 +779,11 @@ def get_remote_slurm_node(
     if job_id_to_use is not None:
         job_id = int(job_id_to_use)
     else:
-        sbatch_args = _remote_sbatch_args(site, sbatch_env, slurm_overrides)
+        sbatch_args = _choose_remote_partition(
+            site, _remote_sbatch_args(site, sbatch_env, slurm_overrides)
+        )
         command = shlex.join(sbatch_args)
-        logger.info(f"[remote-slurm] {command}")
+        logger.info("[remote-slurm] %s", pc.redact_exports(sbatch_args))
         result = _run_remote_slurm_command(site, command, timeout=60)
         if result.returncode != 0:
             raise RuntimeError(
