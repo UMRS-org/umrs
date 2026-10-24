@@ -471,6 +471,30 @@ def test_body_over_the_cap_is_refused_while_streaming(fake_net, monkeypatch) -> 
     assert "too large" in result.error
 
 
+class _ClosedResponse:
+    """A response http.client (3.11+) already closed: its socket is gone."""
+
+    def __init__(self) -> None:
+        self.egress_sock = SimpleNamespace(settimeout=self._ebadf)
+
+    @staticmethod
+    def _ebadf(_timeout: Any) -> None:
+        raise OSError(9, "Bad file descriptor")
+
+    def isclosed(self) -> bool:
+        return True
+
+    def read1(self, _n: int) -> bytes:
+        return b""
+
+
+def test_a_closed_response_ends_the_read_without_arming_its_socket() -> None:
+    """Python 3.11+ closes the socket at the end of the body; the next read
+    must end the stream, not arm a dead socket (EBADF on CI 2026-10-24)."""
+    budget = egress_fetch._Budget(30, 30)
+    assert egress_fetch._read_chunk(_ClosedResponse(), budget) == b""
+
+
 def test_non_http_scheme_is_refused() -> None:
     result = fetch_url("ftp://docs.example.org/x", allow_domains=["docs.example.org"])
     assert result.content is None
