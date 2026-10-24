@@ -280,7 +280,8 @@ def _resolve_ingest_target(
 # files ride inline_text (small UTF-8) or POST /umrs/knowledge/upload (bytes
 # staged under the caller's project prefix, which submits its own s3_uri job
 # server-side). Remote kinds stay egress-gated by allow_domains.
-REMOTE_INGEST_SOURCE_KINDS = frozenset({"inline_text", "http_url", "git_repo"})
+# K1.6: ``session_turns`` carries chat turns verbatim (the /save verb).
+REMOTE_INGEST_SOURCE_KINDS = frozenset({"inline_text", "http_url", "git_repo", "session_turns"})
 
 
 def _refuse_server_side_source_kinds(sources: list[dict[str, Any]]) -> None:
@@ -298,6 +299,37 @@ def _refuse_server_side_source_kinds(sources: list[dict[str, Any]]) -> None:
                     "inline_text.",
                 )
             )
+
+
+def _session_save(
+    request: Request, sources: list[dict[str, Any]]
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """K1.6 ``/save``: a ``session_turns`` source is validated and scanned
+    here, before anything is queued, and becomes the inline source the job
+    stores; its tier fields join the spec. Other sources pass unchanged."""
+    from umrs.knowledge.session_turns import (
+        SESSION_TURNS_KIND,
+        SessionSaveRefused,
+        plan_session_save,
+    )
+
+    if not any((src or {}).get("kind") == SESSION_TURNS_KIND for src in sources):
+        return sources, {}
+    if len(sources) != 1:
+        raise_typed(
+            PlatformError.knowledge2(
+                "bad_request", "a session_turns source is saved on its own (one source)"
+            )
+        )
+    from umrs.api._knowledge_mutation_guard import request_actor
+
+    try:
+        save = plan_session_save(
+            sources[0], actor=request_actor(request), user_id=_job_owner(request)
+        )
+    except SessionSaveRefused as exc:
+        raise_typed(PlatformError.knowledge2("bad_request", str(exc), reason=exc.code))
+    return [save.source], save.spec_extra
 
 
 def _job_owner(request: Request) -> str:
@@ -348,6 +380,7 @@ async def trigger_ingest(
         )
 
     _refuse_server_side_source_kinds(body.sources or [])
+    sources, save_extra = _session_save(request, body.sources or [])
 
     runtime = get_runtime()
     if runtime is None:
@@ -364,7 +397,6 @@ async def trigger_ingest(
         proposal_id=body.proposal_id,
     )
 
-    sources = body.sources if body.sources else []
     # K1.1(d): no caller list (None or []) travels as None, which the job's
     # resolver reads as "the site list". A caller list only narrows the site
     # list there; it never replaces it (it used to: [] was carried and an
@@ -396,6 +428,9 @@ async def trigger_ingest(
         # D-35 producer leg: agent-originated extractions land their
         # nodes/edges as 'proposed' (the understand chain reads this).
         "origin_actor": request_actor(request),
+        # K1.6: a kept assistant answer lands proposed, a vouched one
+        # established with its establisher (``session_turns.tier_stamp``).
+        **save_extra,
     }
     if body.proposal_id:
         spec["proposal_id"] = body.proposal_id

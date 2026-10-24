@@ -1090,7 +1090,8 @@ def _run_ingest_sync(
 
         # inline_text: content travels in the spec — fixes client-local files
         # for remote gateways (the job runs server-side; local paths fail).
-        if source_kind == "inline_text":
+        # session_turns (K1.6 /save): verbatim chat text, built by the route.
+        if source_kind in _INLINE_KINDS:
             _put_inline_text_sync(
                 job.job_id,
                 attempt.attempt_id,
@@ -1245,6 +1246,17 @@ def _ingest_one_source(
 
 
 _INLINE_TEXT_MAX_BYTES = 2 * 1024 * 1024
+_INLINE_KINDS = frozenset({"inline_text", "session_turns"})
+
+
+def _saved_metadata(src_spec: dict[str, Any]) -> dict[str, Any]:
+    """A ``session_turns`` source's metadata (title, tags, session back-link,
+    ``attested_by_client``): the ingest route builds it; an ``inline_text``
+    source carries none."""
+    meta = src_spec.get("metadata")
+    if src_spec.get("kind") != "session_turns" or not isinstance(meta, dict):
+        return {}
+    return dict(meta)
 
 
 def _put_inline_text_sync(
@@ -1280,7 +1292,10 @@ def _put_inline_text_sync(
             "content_hash": content_hash,
             "kind": _artifact_kind(uri, content),
             "source_ref": storage.key(project_id, content_hash),
-            "metadata": _stamp(content, content_hash, Path(uri).name),
+            "metadata": {
+                **_stamp(content, content_hash, Path(uri).name),
+                **_saved_metadata(src_spec),
+            },
         }
     )
     result.artifact_ids.append(artifact_id)
@@ -1619,6 +1634,7 @@ def _ingest_contributor(job: Job, project_id: str) -> Any:
     its target graph (else the project default), its owner and its actor."""
     from umrs.knowledge.contributions import Contribution, origin_for
     from umrs.knowledge.graph_registry import default_graph_id
+    from umrs.knowledge.session_turns import recorded_origin
 
     user_id = str(getattr(job, "user_id", "") or "")
     return Contribution(
@@ -1626,7 +1642,8 @@ def _ingest_contributor(job: Job, project_id: str) -> Any:
         graph_id=str(job.spec.get("graph_id") or "") or default_graph_id(project_id),
         project_id=project_id,
         user_id=user_id,
-        origin_actor=origin_for(job.spec.get("origin_actor"), user_id),
+        # K1.6: a /save records whether the person kept or vouched for an answer.
+        origin_actor=recorded_origin(job.spec) or origin_for(job.spec.get("origin_actor"), user_id),
     )
 
 
@@ -2320,12 +2337,10 @@ async def _understand_one_artifact(
         result.degraded_reason = "; ".join(
             filter(None, [result.degraded_reason, *dict.fromkeys(notes)])
         )
-    if origin_actor == "agent":
-        # D-35: agent-authored content enters the two-tier graph as
-        # proposed — the establish seam (human) is the only promotion.
-        nodes, edges = _as_proposed_tier(
-            nodes, edges, stamp={"origin_actor": "agent", "job_id": job.job_id}
-        )
+    # D-35: agent-authored content (and, K1.6, a kept assistant answer)
+    # enters the two-tier graph as proposed — the establish seam (human) is
+    # the only promotion; a vouched answer names its establisher.
+    nodes, edges = _tiered_rows(nodes, edges, job, origin_actor)
 
     try:
         for node in nodes:
@@ -2411,6 +2426,33 @@ def _node_id_scope(project_id: str, graph_id: str) -> str:
     if not graph_id or graph_id == default_graph_id(project_id):
         return ""
     return f"{graph_id}-"
+
+
+def _tiered_rows(nodes: list, edges: list, job: Any, origin_actor: str) -> tuple[list, list]:
+    """The rows in the tier the job's spec gives them (``tier_stamp``):
+    proposed and stamped for an agent origin or a kept /save answer; a
+    vouched /save stamps its human-tier rows with the establisher (rows
+    already proposed, e.g. K-1 extractions, keep their own stamp)."""
+    from umrs.knowledge.session_turns import tier_stamp
+
+    proposed, stamp = tier_stamp({**job.spec, "origin_actor": origin_actor}, job.job_id)
+    if proposed:
+        return _as_proposed_tier(nodes, edges, stamp=stamp)
+    if not stamp:
+        return nodes, edges
+    return _stamp_established(nodes, stamp), _stamp_established(edges, stamp)
+
+
+def _stamp_established(rows: list, stamp: dict[str, Any]) -> list:
+    """*stamp* merged into the content of each established row."""
+    import dataclasses
+
+    return [
+        dataclasses.replace(row, content={**(row.content or {}), **stamp})
+        if row.status == "established"
+        else row
+        for row in rows
+    ]
 
 
 def _as_proposed_tier(
@@ -5026,6 +5068,8 @@ def _enqueue_understand_job(
     just-written table). Falls back to the project listing for callers that
     did not collect descriptors first.
     """
+    from umrs.knowledge.session_turns import tier_fields
+
     from .models import JobType
 
     if sources is None:
@@ -5050,6 +5094,8 @@ def _enqueue_understand_job(
                 "graph_id": job.spec.get("graph_id", ""),
                 # D-35 producer leg: agent-originated extractions land proposed.
                 "origin_actor": job.spec.get("origin_actor", ""),
+                # K1.6: a kept (proposed) or vouched (established) /save.
+                **tier_fields(job.spec),
             },
             priority=job.priority,
             max_attempts=3,
