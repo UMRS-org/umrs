@@ -1133,32 +1133,52 @@ class KnowledgeExportEngine:
             return None
 
     async def _list_catalog(self, project_id: str) -> list[dict[str, Any]]:
-        """Fetch catalog entries from the knowledge_catalog table.
+        """The project's data-catalog rows (``catalog_objects``, migration 0054).
 
-        Falls back to empty list if catalog table unavailable.
+        #545 (K1.1(f), 2026-10-24): this read a ``knowledge_catalog`` table no
+        migration creates, so every export logged "relation does not exist"
+        and shipped an empty catalog. Ambient rows are read-gated and stay
+        home. Owner, ACL scope and the source site's S3 refs are not exported:
+        they name people and objects that mean nothing at another site.
+        Falls back to an empty list if the table is unavailable.
         """
         try:
             async with self._store._pool.acquire() as conn:
-                rows = await conn.fetch(
-                    """SELECT id, name, project_id, metadata, created_at
-                       FROM knowledge_catalog
-                       WHERE project_id = $1
-                       ORDER BY created_at""",
-                    project_id,
-                )
-                return [
-                    {
-                        "id": str(r["id"]),
-                        "name": r["name"],
-                        "project_id": r["project_id"],
-                        "metadata": r["metadata"] or {},
-                        "created_at": _iso(r["created_at"]),
-                    }
-                    for r in rows
-                ]
+                rows = await conn.fetch(_CATALOG_EXPORT_SQL, project_id)
+                return [_catalog_export_row(r) for r in rows]
         except Exception as exc:
             logger.warning("Catalog fetch failed (degraded): %s", exc)
             return []
+
+
+_CATALOG_EXPORT_SQL = """SELECT s3_key, project_id, state, summary,
+       deterministic_summary, perception_summary, perception_model, tags,
+       filename_signals, detected_modality, visibility, created_at, updated_at
+  FROM catalog_objects
+ WHERE project_id = $1 AND visibility <> 'ambient'
+ ORDER BY created_at, s3_key"""
+
+
+def _catalog_export_row(r: Any) -> dict[str, Any]:
+    """One ``catalog_objects`` row → ``catalog.jsonl`` (``id``/``name`` kept
+    as the object key for readers of the older row shape)."""
+    return {
+        "id": str(r["s3_key"]),
+        "name": str(r["s3_key"]),
+        "s3_key": str(r["s3_key"]),
+        "project_id": r["project_id"],
+        "state": r["state"],
+        "summary": r["summary"] or "",
+        "deterministic_summary": r["deterministic_summary"] or "",
+        "perception_summary": r["perception_summary"],
+        "perception_model": r["perception_model"],
+        "tags": _json_list(r["tags"]),
+        "filename_signals": _json_list(r["filename_signals"]),
+        "detected_modality": r["detected_modality"] or "unknown",
+        "visibility": r["visibility"],
+        "created_at": _iso(r["created_at"]),
+        "updated_at": _iso(r["updated_at"]),
+    }
 
 
 # ── S3 Upload Helper ───────────────────────────────────────────────────────────

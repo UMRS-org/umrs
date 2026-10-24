@@ -126,6 +126,50 @@ class ExternalSearchRequest(BaseModel):
     project_id: str | None = None
 
 
+EXTERNAL_SEARCH_FLAG = "UMRS_KNOWLEDGE_EXTERNAL_SEARCH"
+
+
+def _external_search_enabled() -> bool:
+    """The site flag (K-13): request-time egress is off unless the site opts in."""
+    return os.environ.get(EXTERNAL_SEARCH_FLAG, "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _refuse_external_search(request: Request, project_id: str) -> None:
+    """K1.1(e) / K-13: ``external/search`` sends the caller's query text to
+    five outside services at request time, outside the KNOWLEDGE_INGEST
+    egress rule (ADR-015). It runs only when the site sets the flag, and only
+    for a project whose ADR-062 ``data_class`` is ``non_sensitive``: a
+    sensitive, unset or unreadable class refuses (fail closed)."""
+    if not _external_search_enabled():
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "external_search_disabled",
+                "message": (
+                    "External academic search is off on this site "
+                    f"({EXTERNAL_SEARCH_FLAG} unset): it sends query text to "
+                    "outside services at request time."
+                ),
+            },
+        )
+    from umrs.shared.project_data_class import data_class_for_project
+
+    pool = getattr(request.app.state, "umrs_db_pool", None)
+    data_class = data_class_for_project(pool, project_id)
+    if data_class != "non_sensitive":
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "external_search_restricted",
+                "message": (
+                    f"Project {project_id!r} is {data_class or 'sensitive (unset)'}: "
+                    "its query text may not leave the site for external search."
+                ),
+                "data_class": data_class or "",
+            },
+        )
+
+
 @router.post("/external/search")
 async def post_external_search(
     req: ExternalSearchRequest,
@@ -142,9 +186,15 @@ async def post_external_search(
     the verified project (401 without it in strict mode), and each search is
     logged with the verified user and project. The body ``project_id`` reads
     no project data.
+
+    K1.1 (2026-10-24, K-13): off unless the site sets
+    ``UMRS_KNOWLEDGE_EXTERNAL_SEARCH``; refused for any project whose
+    ``data_class`` is not ``non_sensitive``. Retire once ``doi:``/``arxiv:``
+    ingest lands inside the KNOWLEDGE_INGEST job (K5).
     """
     from umrs.knowledge.external import ExternalKnowledgeSearcher, ExternalSourceType
 
+    _refuse_external_search(request, caller_project)
     default = ["arxiv", "semantic_scholar", "crossref", "cinii", "jstage"]
     names = req.sources or default
     try:

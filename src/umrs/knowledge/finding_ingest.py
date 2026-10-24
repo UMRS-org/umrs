@@ -277,6 +277,29 @@ def _edge_id(source: str, relation: str, target: str) -> str:
     return "edge-" + _sha256(f"{source}|{relation}|{target}".encode())[:24]
 
 
+def loop_graph_id(loop: ResearchLoop) -> str:
+    """The graph a loop's findings land in: ``metadata.graph_id`` when the
+    loop names one, else its project's default graph (no registry lookup)."""
+    from .graph_registry import default_graph_id
+
+    named = str(loop.metadata.get("graph_id") or "").strip()
+    return named or default_graph_id(loop.project_id)
+
+
+def _as_proposed(
+    loop: ResearchLoop, rows: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """K1.1(b): a loop finding is machine-written, so its graph rows land
+    ``proposed`` with no claimed confidence, in the loop's graph. CONSTITUTION
+    §2: agents propose, humans establish (``establish_node`` is the only
+    promotion; an upsert never promotes an existing row)."""
+    graph_id = loop_graph_id(loop)
+    return [
+        {**row, "status": "proposed", "confidence": 0.0, "graph_id": graph_id}
+        for row in rows
+    ]
+
+
 def _lineage(
     loop: ResearchLoop, artifact_id: str, finding: dict[str, Any], content_hash: str
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -284,7 +307,8 @@ def _lineage(
 
     Node ids follow the ingest chain: an artifact's node id IS its artifact
     id (edge endpoints are FKs into ``knowledge_nodes``); ``node_type`` stays
-    inside the DB CHECK vocabulary (semantic role lives in the label).
+    inside the DB CHECK vocabulary (semantic role lives in the label). Every
+    row is ``proposed`` in the loop's graph (K1.1(b)).
     """
     loop_node = f"loop:{loop.loop_id}"
     nodes: list[dict[str, Any]] = [
@@ -344,7 +368,7 @@ def _lineage(
                 "content": {},
             }
         )
-    return nodes, edges
+    return _as_proposed(loop, nodes), _as_proposed(loop, edges)
 
 
 def _mint_one(
