@@ -11,9 +11,10 @@ Supported kinds:
   - ``git_repo``   -> remote git URL (requires egress grant)
 
 Remote types (``http_url``, ``git_repo``) raise ``EgressDisabledError``
-unless the site allowlist (``extra.knowledge_ingest.allowed_domains``),
-narrowed by any caller ``allow_domains``, is non-empty (K1.1, 2026-10-24:
-the caller's list used to replace the site list).  ``s3_uri`` is treated as a reference -- no egress needed.
+unless the site allowlist (``extra.knowledge_ingest.allowed_domains``,
+expanded by ``ingest_allowlist``: ``@recommended``, ``*``), narrowed by any
+caller ``allow_domains``, is non-empty and admits the URI's host (K1.1,
+2026-10-24: the caller's list used to replace the site list).  ``s3_uri`` is treated as a reference -- no egress needed.
 
 Kind auto-detection via ``detect_kind(uri)``.  Caller may override.
 """
@@ -26,6 +27,13 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
+
+from .egress_fetch import (
+    ALLOWLIST_REMEDY,
+    domain_allowed,
+    intersect_allowlists,
+    not_listed,
+)
 
 if TYPE_CHECKING:
     from umrs.orchestrator.site_config import SiteConfig
@@ -68,15 +76,23 @@ _SKIP_FILE_SUFFIXES: frozenset[str] = frozenset(
 
 
 class EgressDisabledError(RuntimeError):
-    """Raised when a remote ingest source is blocked by egress policy."""
+    """Raised when a remote ingest source is blocked by egress policy.
 
-    def __init__(self, source_kind: str, reason: str = "egress disabled") -> None:
+    The message names the reason and, when the allowlist is what refused,
+    the remedy (2026-10-25: the host, ``r4 knowledge allowlist`` and the
+    site key, never the whole list).
+    """
+
+    def __init__(
+        self,
+        source_kind: str,
+        reason: str = "egress disabled",
+        remedy: str = ALLOWLIST_REMEDY,
+    ) -> None:
         self.source_kind = source_kind  # type: ignore[assignment]
         self.reason = reason  # type: ignore[assignment]
-        super().__init__(
-            f"Egress disabled for {source_kind} source: {reason}. "
-            f"Set 'extra.knowledge_ingest.allowed_domains' in site.yaml to enable."
-        )
+        tail = f"; {remedy}." if remedy else "."
+        super().__init__(f"Egress disabled for {source_kind} source: {reason}{tail}")
 
 
 @dataclass(frozen=True)
@@ -99,6 +115,9 @@ class ResolvedSource:
         default_factory=list
     )  # EgressGuard domain allowlist
     resolved: bool = False  # Whether resolution succeeded
+    # The site's denied_networks (CIDR strings): the fetcher refuses every hop
+    # that resolves into one (2026-10-25: RIKEN's intranet is global unicast).
+    deny_networks: list[str] = field(default_factory=list)
 
     # --- local_dir expansion ---
     files: list[ResolvedFile] = field(default_factory=list)  # Expanded files
@@ -169,21 +188,7 @@ class SourceResolver:
         # narrows it (entries the site list does not admit are dropped); it
         # never replaces it, and no caller list means the site list.
         if kind in ("http_url", "git_repo"):
-            from .egress_fetch import intersect_allowlists
-
-            domains = intersect_allowlists(allow_domains, self._get_allowed_domains())
-            if not domains:
-                raise EgressDisabledError(
-                    kind, "no allowlist configured (site list empty or caller list outside it)"
-                )
-
-            return ResolvedSource(
-                kind=kind,
-                uri=uri,
-                allow_egress=True,
-                allow_domains=domains,
-                resolved=True,
-            )
+            return self._resolve_remote(kind, uri, allow_domains)
 
         # --- local_dir: expand files ---
         if kind == "local_dir":
@@ -207,7 +212,41 @@ class SourceResolver:
 
         # --- unknown kind ---
         logger.warning("Unknown source kind: %s", kind)
-        raise EgressDisabledError(kind, "unknown kind not permitted")
+        raise EgressDisabledError(kind, "unknown kind not permitted", remedy="")
+
+    def _resolve_remote(
+        self, kind: str, uri: str, allow_domains: list[str] | None
+    ) -> ResolvedSource:
+        """The site allowlist (narrowed by the caller's) for a remote source.
+
+        2026-10-25: a host the site list does not admit is refused here, by
+        name, with the remedy; the fetcher re-checks every hop anyway.
+        """
+        site = self._get_allowed_domains()
+        host = _uri_host(uri)
+        if not site:
+            raise EgressDisabledError(kind, _site_refusal(host, "no allowlist configured"))
+        if host and not domain_allowed(host, site):
+            raise EgressDisabledError(kind, not_listed(host))
+        domains = intersect_allowlists(allow_domains, site)
+        if not domains:
+            raise EgressDisabledError(
+                kind,
+                "the request's allow_domains admits none of this site's ingest "
+                "allowlist (it can only narrow it); send no allow_domains to use the "
+                "site list, see 'r4 knowledge allowlist'",
+                remedy="",
+            )
+        from .ingest_allowlist import site_denied_networks
+
+        return ResolvedSource(
+            kind=kind,
+            uri=uri,
+            allow_egress=True,
+            allow_domains=domains,
+            resolved=True,
+            deny_networks=site_denied_networks(self._config),
+        )
 
     def detect_kind(self, uri: str) -> str:
         """Auto-detect source kind from URI / path.
@@ -269,24 +308,16 @@ class SourceResolver:
         return bool(bucket)
 
     def _get_allowed_domains(self) -> list[str]:
-        """Read the site-config knowledge ingest allowlist.
+        """The site-config knowledge ingest allowlist, expanded
+        (``@recommended``, ``*``; ``ingest_allowlist.effective_site_allowlist``).
 
         Returns empty list when config is absent or allowlist is empty.
         """
         if self._config is None:
             return []
+        from .ingest_allowlist import site_allowlist
 
-        try:
-            # SiteConfig stores extra fields in self.extra dict.
-            extra = getattr(self._config, "extra", {})
-            ki = extra.get("knowledge_ingest", {})
-            domains = ki.get("allowed_domains", None)
-            if isinstance(domains, list):
-                return list(domains)
-        except Exception:
-            logger.debug("Failed to read knowledge_ingest allowlist", exc_info=True)
-
-        return []
+        return site_allowlist(self._config)
 
     # --- local resolution ---
 
@@ -379,6 +410,22 @@ class SourceResolver:
             return full.relative_to(root)
         except ValueError:
             return None
+
+
+def _uri_host(uri: str) -> str:
+    """The host of a remote source URI (``""`` when it has none, e.g. the
+    scp form ``git@host:repo``; the fetcher refuses those by scheme)."""
+    from urllib.parse import urlparse
+
+    try:
+        return urlparse(uri).hostname or ""
+    except ValueError:
+        return ""
+
+
+def _site_refusal(host: str, why: str) -> str:
+    """The refusal reason, naming the host when the URI has one."""
+    return f"{not_listed(host)} ({why})" if host else why
 
 
 # --- module-level convenience ---

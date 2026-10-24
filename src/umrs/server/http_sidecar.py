@@ -834,6 +834,21 @@ async def _resume_interrupted_provisions() -> None:
         logger.warning("resuming interrupted provisions failed", exc_info=True)
 
 
+def _announce_ingest_allowlist() -> None:
+    """Log the knowledge-ingest allowlist in force at start (2026-10-25): a
+    misspelt ``@token``, a ``*:port``, a bad denied network and the ``*``
+    warning reach the log at deploy time, not at the first ingest."""
+    try:
+        from umrs.knowledge.ingest_allowlist import (
+            announce_site_allowlist,
+            load_site_config,
+        )
+
+        announce_site_allowlist(load_site_config())
+    except Exception:  # a log line must never stop the server
+        logger.warning("knowledge ingest allowlist: not announced", exc_info=True)
+
+
 def _tag_metrics_source() -> None:
     """Tag all LLM metrics with the operational source (site name)."""
     try:
@@ -926,6 +941,7 @@ def _create_app():
 
         await _wire_a2l_recorder(application)
         _upgrade_loop_store()
+        _announce_ingest_allowlist()
 
         start_janitor()
         logger.info("Janitor started via lifespan hook")

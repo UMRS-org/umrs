@@ -532,6 +532,25 @@ async def _submit_ingest(
     return job_id
 
 
+@router.get("/ingest/allowlist", dependencies=[Depends(get_project_id)])
+async def ingest_allowlist(
+    check: str | None = Query(
+        None, description="A URL or host: would the allowlist admit it? (names only)"
+    ),
+) -> dict[str, Any]:
+    """Which web sites knowledge ingest may fetch on this site (2026-10-25).
+
+    Read-only, for any caller of the knowledge API: ``allow_all`` (the site
+    lists ``*``), the expanded ``entries`` (``@recommended`` resolved), the
+    ``configured`` site entries, ``how_to_change`` and the ``site`` name.
+    ``check`` adds a ``check`` verdict for one URL's host and port; the
+    address, size and content checks run only when a fetch happens.
+    """
+    from umrs.knowledge.ingest_allowlist import allowlist_view, load_site_config
+
+    return allowlist_view(load_site_config(), check)
+
+
 @router.get("/artifacts")
 async def list_artifacts(
     request: Request,

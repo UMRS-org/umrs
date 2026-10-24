@@ -1504,7 +1504,13 @@ def _fetch_and_store_remote(
         return
 
     allow_domains = resolved.allow_domains if resolved.allow_domains else []
-    fetch = fetch_url(url, allow_domains=allow_domains)
+    # 2026-10-25: the site's denied_networks bound every hop too (its own
+    # intranet is public address space, which the global check admits).
+    fetch = fetch_url(
+        url,
+        allow_domains=allow_domains,
+        deny_networks=list(getattr(resolved, "deny_networks", None) or []),
+    )
 
     if not fetch.content:
         result.failed_items.append(

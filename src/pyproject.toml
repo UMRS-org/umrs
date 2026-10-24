@@ -109,6 +109,12 @@ include = ["umrs*"]
 [tool.setuptools]
 py-modules = ["client_umrs", "server_umrs"]
 
+# Data files a non-editable install must carry (the images install from the
+# source tree, editable). 2026-10-25: the recommended knowledge-ingest
+# allowlist ("@recommended" in site.yaml).
+[tool.setuptools.package-data]
+"umrs.knowledge" = ["ingest_domains_recommended.yaml"]
+
 [tool.ruff]
 target-version = "py310"
 

@@ -4,8 +4,10 @@ Supported kinds: ``http_url``, ``git_repo``.
 
 Policy:
   - Fail-closed: empty ``allow_domains`` blocks all remote fetches.
-  - Domain allowlist enforced on every hop, redirects included.
-  - Private, loopback, link-local and metadata addresses refused (K1.1).
+  - Domain allowlist enforced on every hop, redirects included; the entry
+    ``*`` admits every host name, never an address check (2026-10-25).
+  - Private, loopback, link-local and metadata addresses refused (K1.1),
+    and so is every address in the site's ``denied_networks`` (2026-10-25).
   - Content scanned against PII/credential patterns before storage.
 
 Stdlib-only: ``http.client`` over a socket pinned to the checked address.
@@ -170,6 +172,24 @@ _METADATA_ADDRESSES = frozenset(
 )
 
 
+#: The allowlist entry that admits every public host (2026-10-25). Every
+#: network guard below still applies; it never opens a port (``*:8443`` is
+#: refused at load, see ``ingest_allowlist``).
+ALLOW_ALL = "*"
+
+#: The remedy a refused domain names (2026-10-25): the whole allowlist is no
+#: longer printed (``@recommended`` makes it long).
+ALLOWLIST_REMEDY = (
+    "an operator adds it to 'extra.knowledge_ingest.allowed_domains' in site.yaml "
+    "(or \"*\" for every public site); see 'r4 knowledge allowlist'"
+)
+
+
+def not_listed(host: str) -> str:
+    """The refusal for a host the allowlist does not admit."""
+    return f"domain \"{host}\" is not on this site's ingest allowlist"
+
+
 class EgressRefused(Exception):
     """A hop the egress policy refuses (named reason, never fetched)."""
 
@@ -209,8 +229,18 @@ def _normal(text: str) -> str:
     return str(text).strip().lower().rstrip(".")
 
 
+def _entry_admits(name: str, entry: str) -> bool:
+    """One normalised allowlist entry against a normalised host name. Only
+    the bare entry ``*`` admits every host; ``*:8443`` is no host pattern
+    (the site loader drops it, ingest_allowlist.effective_site_allowlist)."""
+    if entry == ALLOW_ALL:
+        return True
+    return _host_matches(name, _split_port(entry)[0])
+
+
 def domain_allowed(host: str, patterns: list[str] | tuple[str, ...]) -> bool:
-    """True when *host* equals a pattern or sits under a ``*.suffix`` one.
+    """True when *host* equals a pattern, sits under a ``*.suffix`` one, or
+    the list holds ``*`` (every host; the address checks still apply).
 
     Case and one trailing dot are ignored. ``*.example.org`` admits
     ``a.example.org`` (and deeper) but not ``example.org`` itself, as in
@@ -220,7 +250,7 @@ def domain_allowed(host: str, patterns: list[str] | tuple[str, ...]) -> bool:
     name = _normal(host)
     if not name:
         return False
-    return any(_host_matches(name, _split_port(_normal(raw))[0]) for raw in patterns)
+    return any(_entry_admits(name, _normal(raw)) for raw in patterns)
 
 
 def port_allowed(host: str, port: int, patterns: list[str] | tuple[str, ...]) -> bool:
@@ -243,16 +273,31 @@ def intersect_allowlists(
 
     ``None`` (the caller gave no list) means the site list. A caller entry
     survives only when the site list admits it, so a caller can narrow the
-    site allowlist but never widen or replace it (ADR-015, K1.1).
+    site allowlist but never widen or replace it (ADR-015, K1.1). With a site
+    ``*`` a caller list narrows to itself (public hosts, ports 80/443 unless
+    the site names the port); no caller list means ``*``.
     """
     site_list = [str(d) for d in site if str(d).strip()]
     if caller is None:
         return site_list
-    return [d for d in caller if str(d) in site_list or domain_allowed(str(d), site_list)]
+    return [d for d in caller if str(d) in site_list or _caller_entry_admitted(str(d), site_list)]
 
 
-def address_refusal(address: str) -> str:
-    """Why *address* may not be fetched, or ``""`` when it is global unicast."""
+def _caller_entry_admitted(entry: str, site_list: list[str]) -> bool:
+    """A caller entry the site list admits: its host, and its port when it
+    names one (a site ``*`` admits any public host on 80/443, never a caller's
+    ``host:8443``: that would open a port the site did not name)."""
+    host, port = _split_port(_normal(entry))
+    if not domain_allowed(host, site_list):
+        return False
+    return port is None or port_allowed(host, port, site_list)
+
+
+def address_refusal(address: str, denied: tuple[Any, ...] = ()) -> str:
+    """Why *address* may not be fetched, or ``""`` when it is global unicast
+    and in none of the *denied* networks (the site's own address space,
+    2026-10-25: RIKEN's intranet is global unicast, so the global check
+    alone admitted it)."""
     import ipaddress
 
     try:
@@ -269,7 +314,34 @@ def address_refusal(address: str) -> str:
             return f"{label.replace('_', '-')} address {ip}"
     if not ip.is_global:
         return f"non-global address {ip}"
+    return _denied_refusal(ip, denied)
+
+
+def _denied_refusal(ip: Any, denied: tuple[Any, ...]) -> str:
+    """The refusal for an address inside one of the site's denied networks."""
+    for network in denied:
+        if network.version == ip.version and ip in network:
+            return f"address {ip} in a denied network ({network}, the site's own)"
     return ""
+
+
+def parse_networks(raw: Any) -> tuple[tuple[Any, ...], list[str]]:
+    """``(networks, refused entries)`` of a ``denied_networks`` value: CIDR
+    strings (``134.160.0.0/16``) or single addresses; anything else is
+    refused by name (the caller logs or fails closed)."""
+    import ipaddress
+
+    values = [raw] if isinstance(raw, str) else raw
+    if not isinstance(values, (list, tuple)):
+        return (), []
+    networks: list[Any] = []
+    refused: list[str] = []
+    for value in values:
+        try:
+            networks.append(ipaddress.ip_network(str(value).strip(), strict=False))
+        except ValueError:
+            refused.append(str(value))
+    return tuple(networks), refused
 
 
 def _resolve_host(host: str, port: int) -> list[str]:
@@ -304,12 +376,15 @@ def _addresses_for(host: str, port: int) -> list[str]:
     return addresses
 
 
-def _check_hop(url: str, domains: list[str]) -> tuple[Any, str]:
+def _check_hop(
+    url: str, domains: list[str], denied: tuple[Any, ...] = ()
+) -> tuple[Any, str]:
     """Validate one hop; return ``(parsed_url, pinned_address)`` or raise.
 
     Every address the name resolves to must be global: one private answer
     among public ones refuses the hop (a rebinding name cannot slip one in).
-    The port must be 80/443 or one the matching allowlist entry names.
+    The port must be 80/443 or one the matching allowlist entry names, and
+    no address may sit in one of the site's *denied* networks.
     """
     from urllib.parse import urlparse
 
@@ -320,10 +395,10 @@ def _check_hop(url: str, domains: list[str]) -> tuple[Any, str]:
     if not host:
         raise EgressRefused("invalid URL: no domain")
     if not domain_allowed(host, domains):
-        raise EgressRefused(f"domain {host!r} not in allowlist {domains}")
+        raise EgressRefused(f"{not_listed(host)}; {ALLOWLIST_REMEDY}")
     addresses = _addresses_for(host, _port(parsed))
     for address in addresses:
-        reason = address_refusal(address)
+        reason = address_refusal(address, denied)
         if reason:
             raise EgressRefused(f"{host!r} resolves to a {reason}")
     port = _port(parsed)
@@ -358,10 +433,12 @@ def _open_connection(
     return _PinnedHTTP(host, port, timeout=timeout)
 
 
-def _request_hop(url: str, domains: list[str], budget: _Budget) -> Any:
+def _request_hop(
+    url: str, domains: list[str], budget: _Budget, denied: tuple[Any, ...] = ()
+) -> Any:
     """Send one GET after the hop check; return the open response (its
     socket kept as ``egress_sock``, so each body read gets the budget)."""
-    parsed, address = _check_hop(url, domains)
+    parsed, address = _check_hop(url, domains, denied)
     conn = _open_connection(
         parsed.scheme, parsed.hostname, _port(parsed), address, budget.left()
     )
@@ -388,10 +465,12 @@ def _next_hop(url: str, resp: Any) -> str:
     return target
 
 
-def _follow(url: str, domains: list[str], budget: _Budget) -> Any:
+def _follow(
+    url: str, domains: list[str], budget: _Budget, denied: tuple[Any, ...] = ()
+) -> Any:
     """GET *url*, re-checking domain and address on EVERY redirect hop."""
     for _hop in range(_MAX_REDIRECTS + 1):
-        resp = _request_hop(url, domains, budget)
+        resp = _request_hop(url, domains, budget, denied)
         if resp.status not in _REDIRECT_CODES:
             return resp
         resp.close()
@@ -454,9 +533,11 @@ def _read_capped(resp: Any, cap: int, budget: _Budget) -> bytes:
     return b"".join(chunks)
 
 
-def _download(url: str, domains: list[str], budget: _Budget) -> FetchResult:
+def _download(
+    url: str, domains: list[str], budget: _Budget, denied: tuple[Any, ...] = ()
+) -> FetchResult:
     """Follow, check the status, read under the cap (raises EgressRefused)."""
-    resp = _follow(url, domains, budget)
+    resp = _follow(url, domains, budget, denied)
     try:
         if resp.status >= 400:
             return FetchResult(
@@ -476,6 +557,7 @@ def fetch_url(
     allow_domains: list[str] | None = None,
     timeout: int | None = None,
     block_patterns: list[str] | None = None,
+    deny_networks: list[str] | None = None,
 ) -> FetchResult:
     """Fetch content from ``url`` under the egress policy, then scan it.
 
@@ -486,25 +568,19 @@ def fetch_url(
         timeout: Per-connect / per-read timeout in seconds (default from
             env); the whole fetch is bounded by ``EGRESS_TOTAL_SEC``.
         block_patterns: Content scan patterns (default PII/credential set).
+        deny_networks: The site's ``denied_networks`` (CIDR strings): no hop
+            may resolve into one (2026-10-25). An unparseable entry refuses
+            the fetch (fail-closed).
 
     Returns:
         FetchResult with content, or ``content=None`` and a named error.
     """
     domains = [str(d) for d in allow_domains] if allow_domains else []
-    if not domains:
-        return FetchResult(
-            url=url,
-            content=None,
-            status_code=None,
-            error="egress blocked: allow_domains is empty (fail-closed)",
-        )
-    try:
-        budget = _Budget(timeout or _EGRESS_TIMEOUT_SEC, _EGRESS_TOTAL_SEC)
-        fetched = _download(url, domains, budget)
-    except EgressRefused as exc:
-        return FetchResult(url=url, content=None, status_code=None, error=f"egress blocked: {exc}")
-    except Exception as exc:  # network faults come back by name
-        return FetchResult(url=url, content=None, status_code=None, error=f"fetch failed: {exc}")
+    denied, bad = parse_networks(deny_networks or [])
+    refusal = _policy_refusal(domains, bad)
+    if refusal:
+        return FetchResult(url=url, content=None, status_code=None, error=refusal)
+    fetched = _fetch_raw(url, domains, timeout, denied)
     if fetched.content is None:
         return fetched
     scan = scan_content(fetched.content, block_patterns=block_patterns)
@@ -517,6 +593,28 @@ def fetch_url(
             error=f"content blocked: {scan.blocked_reason}",
         )
     return fetched
+
+
+def _policy_refusal(domains: list[str], bad_networks: list[str]) -> str:
+    """The fail-closed refusal before any network use, or ``""``."""
+    if not domains:
+        return "egress blocked: allow_domains is empty (fail-closed)"
+    if bad_networks:
+        return f"egress blocked: unparseable denied network {bad_networks[0]!r} (fail-closed)"
+    return ""
+
+
+def _fetch_raw(
+    url: str, domains: list[str], timeout: int | None, denied: tuple[Any, ...]
+) -> FetchResult:
+    """The download under the policy; a refusal or a fault comes back named."""
+    try:
+        budget = _Budget(timeout or _EGRESS_TIMEOUT_SEC, _EGRESS_TOTAL_SEC)
+        return _download(url, domains, budget, denied)
+    except EgressRefused as exc:
+        return FetchResult(url=url, content=None, status_code=None, error=f"egress blocked: {exc}")
+    except Exception as exc:  # network faults come back by name
+        return FetchResult(url=url, content=None, status_code=None, error=f"fetch failed: {exc}")
 
 
 def _utcnow_iso() -> str:

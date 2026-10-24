@@ -438,7 +438,7 @@ def test_redirect_off_the_allowlist_is_refused(fake_net) -> None:
     }
     result = fetch_url("http://docs.example.org/start", allow_domains=["docs.example.org"])
     assert result.content is None
-    assert "not in allowlist" in result.error
+    assert "is not on this site's ingest allowlist" in result.error
 
 
 def test_redirect_to_a_private_name_is_refused(fake_net) -> None:

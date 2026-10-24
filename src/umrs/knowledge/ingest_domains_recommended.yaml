@@ -1,0 +1,183 @@
+# Recommended web sites for knowledge ingest (URL and git repo ingest).
+#
+# A front's site.yaml uses this list with the entry "@recommended":
+#
+#   extra:
+#     knowledge_ingest:
+#       allowed_domains: ["@recommended", "lab.example.org"]
+#
+# Entry forms: "example.org" (that host only), "*.example.org" (every
+# subdomain, not the apex itself, so both are listed where the apex is used),
+# "host:8443" (that host on port 8443; ports 80 and 443 need no entry).
+#
+# Every fetch still passes the network guards, whatever the list says: the
+# host must resolve only to public (global unicast) addresses, the connection
+# goes to the address that was checked, every redirect hop is checked again
+# against the list, the body is capped in size and time, and the content is
+# scanned for credentials and personal data before it is stored.
+#
+# A public address is not always an outside one: RIKEN's own network
+# (134.160.0.0/16, intranet hosts included) is global unicast. So this list
+# names RIKEN's public web sites one by one, never "*.riken.jp", and each
+# front's site.yaml denies the site's own range with
+# extra.knowledge_ingest.denied_networks (review 2026-10-25).
+#
+# DOI links redirect to the publisher's site and every hop is re-checked, so
+# the publishers below must be listed for doi.org links to work. A few DOI
+# chains still fail by design: IEEE and Springer books redirect https DOIs to
+# plain http (an https fetch never goes down to http), and RSC goes through
+# more than 5 redirects. For those, ingest the publisher's https article URL.
+#
+# GitHub, GitLab, Hugging Face, Zenodo and figshare carry user-uploaded
+# content. The content scan and the size caps apply to it like to any other
+# page. Operators who want a stricter list replace "@recommended" with
+# explicit entries. Generic file hosts and paste sites (pastebin, Dropbox,
+# Google Drive and the like) are deliberately not listed.
+#
+# Packaged with umrs (src/pyproject.toml [tool.setuptools.package-data]);
+# read by umrs.knowledge.ingest_allowlist. Changes reach a front at its next
+# converge deploy.
+
+# ── identifiers and indexes ──────────────────────────────────────────────
+- doi.org
+- "*.doi.org"
+- crossref.org
+- "*.crossref.org"
+- openalex.org
+- "*.openalex.org"
+- semanticscholar.org
+- "*.semanticscholar.org"
+- orcid.org
+- "*.orcid.org"
+
+# ── preprints and repositories ───────────────────────────────────────────
+- arxiv.org
+- "*.arxiv.org"
+- biorxiv.org
+- "*.biorxiv.org"
+- medrxiv.org
+- "*.medrxiv.org"
+- chemrxiv.org
+- "*.chemrxiv.org"
+- zenodo.org                 # user-uploaded content
+- "*.zenodo.org"
+- figshare.com               # user-uploaded content
+- "*.figshare.com"
+- osf.io
+- "*.osf.io"
+- datadryad.org
+- "*.datadryad.org"
+- hal.science
+- "*.hal.science"
+
+# ── biomedicine and life science ─────────────────────────────────────────
+- ncbi.nlm.nih.gov           # PubMed, PMC, PubChem
+- "*.ncbi.nlm.nih.gov"
+- europepmc.org
+- "*.europepmc.org"
+- rcsb.org                   # Protein Data Bank
+- "*.rcsb.org"
+- uniprot.org
+- "*.uniprot.org"
+- ebi.ac.uk                  # EMBL-EBI, AlphaFold DB
+- "*.ebi.ac.uk"
+
+# ── materials and chemistry data ─────────────────────────────────────────
+- materialsproject.org
+- "*.materialsproject.org"
+- nist.gov
+- "*.nist.gov"
+- nomad-lab.eu
+- "*.nomad-lab.eu"
+- oqmd.org
+- crystallography.net        # Crystallography Open Database
+- "*.crystallography.net"
+
+# ── publishers (DOI redirect targets) ────────────────────────────────────
+- nature.com
+- "*.nature.com"
+- science.org
+- "*.science.org"
+- sciencedirect.com
+- "*.sciencedirect.com"
+- "*.sciencedirectassets.com"  # ScienceDirect PDF downloads
+- elsevier.com                 # linkinghub.elsevier.com (DOI redirects)
+- "*.elsevier.com"
+- springer.com
+- "*.springer.com"
+- biomedcentral.com
+- "*.biomedcentral.com"
+- wiley.com
+- "*.wiley.com"
+- acs.org
+- "*.acs.org"
+- rsc.org
+- "*.rsc.org"
+- iop.org
+- "*.iop.org"
+- aps.org
+- "*.aps.org"
+- aip.org
+- "*.aip.org"
+- mdpi.com
+- "*.mdpi.com"
+- plos.org
+- "*.plos.org"
+- frontiersin.org
+- "*.frontiersin.org"
+- cell.com
+- "*.cell.com"
+- pnas.org
+- "*.pnas.org"
+- elifesciences.org
+- "*.elifesciences.org"
+- ieee.org
+- "*.ieee.org"
+- acm.org
+- "*.acm.org"
+- tandfonline.com
+- "*.tandfonline.com"
+- cambridge.org
+- "*.cambridge.org"
+- oup.com
+- "*.oup.com"
+- annualreviews.org
+- "*.annualreviews.org"
+
+# ── conference proceedings (computer science, machine learning) ──────────
+- openreview.net
+- aclanthology.org
+- proceedings.mlr.press
+- papers.nips.cc
+- proceedings.neurips.cc
+- jmlr.org
+- "*.jmlr.org"
+
+# ── Japan and RIKEN ──────────────────────────────────────────────────────
+- www.riken.jp               # public sites only: *.riken.jp reaches the intranet
+- www.r-ccs.riken.jp
+- jst.go.jp                  # J-STAGE (www.jstage.jst.go.jp)
+- "*.jst.go.jp"
+- nii.ac.jp                  # CiNii (cir.nii.ac.jp)
+- "*.nii.ac.jp"
+
+# ── code and documentation ───────────────────────────────────────────────
+- github.com                 # user-uploaded content
+- "*.github.com"
+- githubusercontent.com      # user-uploaded content (raw files)
+- "*.githubusercontent.com"
+- gitlab.com                 # user-uploaded content
+- "*.gitlab.com"
+- huggingface.co             # user-uploaded content
+- "*.huggingface.co"
+- readthedocs.io
+- "*.readthedocs.io"
+- docs.python.org
+- pypi.org
+- "*.pypi.org"
+
+# ── reference ────────────────────────────────────────────────────────────
+- wikipedia.org
+- "*.wikipedia.org"
+- wikimedia.org
+- "*.wikimedia.org"
