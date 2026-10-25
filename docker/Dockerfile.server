@@ -43,12 +43,19 @@ RUN if [ -n "${TORCH_INDEX_URL}" ]; then \
         pip install --no-cache-dir --index-url "${TORCH_INDEX_URL}" torch torchvision; \
     fi
 
+# The spaCy stack is pinned to the set that ran in production up to
+# 2026-10-25 (image 968706f0): preshed 3.0.14, picked up by an unpinned
+# rebuild, makes en_core_web_sm fail to load (OverflowError in
+# Tokenizer._flush_specials) and the text-embedding experience lost its
+# text and text-file modalities. tests/test_server_image_spacy_pin.py.
 RUN pip install --no-cache-dir \
     pyzmq boto3 pillow psycopg2-binary asyncpg tabulate pandas jsonschema \
     charset-normalizer requests configparser httpx pyyaml diskcache \
     fastapi "uvicorn[standard]" python-multipart "python-jose[cryptography]" \
     torch torchvision transformers sentence-transformers scikit-learn \
-    spacy langchain langchain-community langchain-openai "bentoml>=1.3.0" \
+    "spacy==3.8.16" "thinc==8.3.13" "preshed==3.0.13" "cymem==2.0.16" \
+    "srsly==2.5.4" "murmurhash==1.0.16" "blis==1.3.3" \
+    langchain langchain-community langchain-openai "bentoml>=1.3.0" \
     opencv-python-headless posix_ipc sysv_ipc "rich>=13.0" \
     "pypdf>=4.0" "python-pptx>=1.0" \
     && (python -c "import spacy" && python -m spacy download en_core_web_sm || true)
