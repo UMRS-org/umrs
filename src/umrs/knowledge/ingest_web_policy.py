@@ -17,7 +17,9 @@ request's ``allow_domains``, which only narrows):
   ``web.domains`` cap, matched like the agent's browse guard (squid
   ``dstdomain``: ``a.org`` that host, ``.a.org`` it and its subdomains).
   Without a cap the person names the sites per request: the request's
-  ``allow_domains``, else the URL's own host (redirects stay on it);
+  ``allow_domains``, else the URL's own host (redirects stay on it); each
+  named entry must be a domain a session open accepts (``a.org`` or
+  ``*.a.org``; no ``*``, no ``*.com``), else the ingest is refused;
 * ``public``: the front list alone.
 
 The result is always intersected with the front list, and every network
@@ -225,8 +227,54 @@ def policy_bound(
     if policy.domains:
         chosen = squid_patterns(policy.domains)
     else:
-        chosen = list(caller or ([host] if host else []))
+        chosen = per_request_patterns(caller, host)
     return intersect_patterns(site, chosen)
+
+
+# ── per-request sites (allowlist with no cap) ──────────────────────────────
+
+
+def _caller_patterns(raw: Any) -> list[str]:
+    """One request ``allow_domains`` entry as fetcher patterns, or ``[]``
+    when a session open would refuse it as a domain (review fix, wave 79).
+
+    ``allow_domains`` holds fetcher patterns (ADR-015): ``a.org`` that host,
+    ``*.a.org`` its subdomains. The domain must pass a session open's
+    ``web.domains`` check (``session_policy.model.normalize_domain``, with
+    ``*.a.org`` checked as ``.a.org``), so ``*``, ``*.com`` and ``com`` are
+    refused. The squid ``.a.org`` form is refused here too: the fetcher would
+    read it as a literal host and fetch nothing.
+    """
+    from umrs.session_policy.model import PolicyError, normalize_domain
+
+    text = _normal(raw) if isinstance(raw, str) else ""
+    if text.startswith("."):
+        return []
+    try:
+        normalize_domain(text[1:] if text.startswith("*.") else text, "allow_domains")
+    except PolicyError:
+        return []
+    return [text]
+
+
+def invalid_caller_domains(caller: Sequence[str] | None) -> list[str]:
+    """The request's ``allow_domains`` entries a session open would refuse."""
+    return [str(raw) for raw in caller or () if not _caller_patterns(raw)]
+
+
+def per_request_patterns(caller: Sequence[str] | None, host: str) -> list[str]:
+    """The sites an uncapped ``allowlist`` request names: its valid
+    ``allow_domains`` (at most ``MAX_DOMAINS``), else the URL's own host."""
+    from umrs.session_policy.model import MAX_DOMAINS
+
+    if not caller:
+        return [host] if host else []
+    if len(caller) > MAX_DOMAINS:
+        return []
+    out: list[str] = []
+    for raw in caller:
+        out.extend(p for p in _caller_patterns(raw) if p not in out)
+    return out
 
 
 # ── refusals ───────────────────────────────────────────────────────────────
@@ -270,6 +318,29 @@ def outside_refusal(policy: IngestWebPolicy, host: str) -> str:
     )
 
 
+def caller_refusal(policy: IngestWebPolicy, caller: Sequence[str] | None) -> str:
+    """Why an uncapped ``allowlist`` refuses the request's ``allow_domains``
+    (entries a session open would refuse, or too many), or ``""``."""
+    from umrs.session_policy.model import MAX_DOMAINS
+
+    if policy.mode != "allowlist" or policy.domains or not caller:
+        return ""
+    if len(caller) > MAX_DOMAINS:
+        return (
+            f"allow_domains names {len(caller)} sites; {_who(policy)} allows "
+            f"allowlist web access only, which takes at most {MAX_DOMAINS} sites"
+        )
+    bad = invalid_caller_domains(caller)
+    if not bad:
+        return ""
+    return (
+        f"allow_domains {', '.join(repr(b) for b in bad)} names no single site: "
+        f"{_who(policy)} allows allowlist web access only (set by "
+        f"{layer_words(policy.set_by)}), so each entry must be a domain as at a "
+        "session open (a.org, or *.a.org for its subdomains; no '*', no '*.com')"
+    )
+
+
 def ingest_refusal(
     policy: IngestWebPolicy,
     site: Sequence[str],
@@ -280,8 +351,11 @@ def ingest_refusal(
     and the network guards are checked by their own code)."""
     if policy.mode == "none":
         return off_refusal(policy)
-    if policy.mode == "public" or not host:
+    if policy.mode == "public":
         return ""
+    refused = caller_refusal(policy, caller)
+    if refused or not host:
+        return refused
     if domain_allowed(host, policy_bound(policy, site, host, caller)):
         return ""
     return outside_refusal(policy, host)
@@ -311,12 +385,15 @@ __all__ = [
     "IngestPolicyUnavailable",
     "IngestRequester",
     "IngestWebPolicy",
+    "caller_refusal",
     "default_rule_store",
     "ingest_refusal",
     "intersect_patterns",
+    "invalid_caller_domains",
     "layer_words",
     "off_refusal",
     "outside_refusal",
+    "per_request_patterns",
     "policy_bound",
     "policy_from_limits",
     "policy_summary",

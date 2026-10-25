@@ -152,6 +152,61 @@ def test_allowlist_without_a_cap_fetches_only_the_named_sites() -> None:
         _resolver(store).resolve("http_url", "https://any.example/x", allow_domains=["doi.org"])
 
 
+_NO_PUBLIC = ("project", "proj-a", "owner", {"web": {"allow": ["none", "allowlist"]}})
+
+
+@pytest.mark.parametrize(
+    "named",
+    [
+        ["*"],
+        ["*.example", "*.com"],
+        ["*.com"],
+        ["com"],
+        ["doi.org", "*"],
+        ["a.org:8443"],
+        [".arxiv.org"],
+    ],
+)
+def test_an_uncapped_allowlist_refuses_a_wildcard_request_list(named) -> None:
+    """Review fix (wave 79): with no domain cap, ``allow_domains`` names the
+    sites as at a session open, so ``*`` or ``*.com`` is no way back to
+    public ingest after the owner removed ``public``."""
+    store = _store(_NO_PUBLIC)
+    with pytest.raises(EgressDisabledError, match="names no single site"):
+        _resolver(store).resolve("http_url", "https://anything.example/x", allow_domains=named)
+
+
+def test_an_uncapped_allowlist_refuses_more_sites_than_a_session_open() -> None:
+    named = [f"s{i}.example.org" for i in range(65)]
+    with pytest.raises(EgressDisabledError, match="at most 64 sites"):
+        _resolver(_store(_NO_PUBLIC)).resolve(
+            "http_url", "https://s1.example.org/x", allow_domains=named
+        )
+
+
+def test_an_uncapped_allowlist_takes_a_host_or_its_subdomains() -> None:
+    store = _store(_NO_PUBLIC)
+    host = _resolver(store).resolve("http_url", "https://arxiv.org/a", allow_domains=["ArXiv.org."])
+    assert host.allow_domains == ["ArXiv.org."]
+    sub = _resolver(store).resolve(
+        "http_url", "https://export.arxiv.org/a", allow_domains=["*.arxiv.org"]
+    )
+    assert sub.allow_domains == ["*.arxiv.org"]
+
+
+def test_the_ingest_route_refuses_a_wildcard_request_list(monkeypatch) -> None:
+    client, specs = _queueing_client(monkeypatch, _store(_NO_PUBLIC))
+    resp = client.post(
+        "/umrs/k2/ingest",
+        json={"sources": [{"kind": "http_url", "uri": "https://any.example/x"}],
+              "allow_domains": ["*"]},
+        headers={"x-user-id": "u-1"},
+    )
+    assert resp.status_code == 403, resp.text
+    assert "names no single site" in resp.text
+    assert specs == []
+
+
 # ── public, no rules, no requester: the front list as before ──────────────
 
 
