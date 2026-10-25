@@ -17,6 +17,10 @@ network when it is public address space (RIKEN's 134.160.0.0/16 is global
 unicast, so the global check alone admitted the intranet; review
 2026-10-25).
 
+Since wave 79 (2026-10-25) the requester's ADR-099 web policy narrows this
+list per project and user (``ingest_web_policy``); the route below reports it
+as ``web_policy`` and its ``check`` applies both.
+
 :func:`effective_site_allowlist` is the one place entries are expanded: the
 ingest resolver (``sources.SourceResolver``) and the read-only route
 ``GET /umrs/k2/ingest/allowlist`` both call it. Refused entries (an unknown
@@ -270,8 +274,39 @@ def load_site_config() -> Any:
         return None
 
 
-def allowlist_view(config: Any, check: str | None = None) -> dict[str, Any]:
-    """What ``GET /umrs/k2/ingest/allowlist`` answers."""
+def _policy_view(policy: Any, entries: list[str]) -> dict[str, Any]:
+    """The ``web_policy`` block: the requester's ADR-099 policy, the entries
+    an ingest may fetch under it (front list ∩ policy; ``None`` when each
+    request names its sites), and one sentence; ``error`` when unreadable."""
+    from .ingest_web_policy import IngestWebPolicy, policy_bound, policy_summary
+
+    if not isinstance(policy, IngestWebPolicy):
+        return {"error": str(policy), "mode": None}
+    view = policy.to_dict()
+    view["entries"] = None if view["per_request"] else policy_bound(policy, entries, "", None)
+    view["summary"] = policy_summary(policy)
+    return view
+
+
+def _policy_check(check: str, entries: list[str], policy: Any) -> dict[str, Any]:
+    """``check_url`` against the front list, then against the policy."""
+    from .ingest_web_policy import IngestWebPolicy, ingest_refusal
+
+    verdict = check_url(check, entries)
+    if policy is None or not verdict["allowed"]:
+        return verdict
+    if not isinstance(policy, IngestWebPolicy):
+        return {**verdict, "allowed": False, "reason": str(policy)}
+    refusal = ingest_refusal(policy, entries, verdict["host"])
+    return {**verdict, "allowed": False, "reason": refusal} if refusal else verdict
+
+
+def allowlist_view(
+    config: Any, check: str | None = None, policy: Any = None
+) -> dict[str, Any]:
+    """What ``GET /umrs/k2/ingest/allowlist`` answers. *policy*: the caller's
+    ADR-099 web policy (``IngestWebPolicy``), the reason it is unreadable
+    (an exception), or ``None`` (the front list alone; wave 79)."""
     configured = configured_entries(config)
     entries = effective_site_allowlist(configured)
     site = str(getattr(config, "name", "") or "unknown")
@@ -283,8 +318,10 @@ def allowlist_view(config: Any, check: str | None = None) -> dict[str, Any]:
         "how_to_change": how_to_change(site),
         "site": site,
     }
+    if policy is not None:
+        view["web_policy"] = _policy_view(policy, entries)
     if check is not None:
-        view["check"] = check_url(check, entries)
+        view["check"] = _policy_check(check, entries, policy)
     return view
 
 

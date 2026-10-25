@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
-from typing import Any
+from typing import Any, NoReturn
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -444,6 +444,7 @@ async def trigger_ingest(
     # list there; it never replaces it (it used to: [] was carried and an
     # empty or arbitrary caller list was the only list consulted).
     allow_domains = body.allow_domains or None
+    _refuse_by_web_policy(request, project_id, sources, allow_domains)
 
     # Unified ingest governance (R6.4): quota + audit before job submit.
     from umrs.api.governance import guard_ingest
@@ -532,23 +533,110 @@ async def _submit_ingest(
     return job_id
 
 
-@router.get("/ingest/allowlist", dependencies=[Depends(get_project_id)])
-async def ingest_allowlist(
+def _ingest_policy_store(request: Request) -> Any:
+    """The ADR-099 rule store: the app's (tests inject
+    ``session_policy_store``), else one over the shared ``umrs_db_pool``,
+    else ``None`` (the knowledge module's default store)."""
+    state = request.app.state
+    store = getattr(state, "session_policy_store", None)
+    if store is not None:
+        return store
+    pool = getattr(state, "umrs_db_pool", None)
+    if pool is None:
+        return None
+    from umrs.session_policy import PolicyRuleStore
+
+    return PolicyRuleStore(pool)
+
+
+def _ingest_web_policy(request: Request, project_id: str, config: Any) -> Any:
+    """The caller's ADR-099 web policy in *project_id*, or the
+    ``IngestPolicyUnavailable`` saying why it cannot be read (wave 79)."""
+    from umrs.knowledge.ingest_web_policy import (
+        IngestPolicyUnavailable,
+        IngestRequester,
+        resolve_ingest_web_policy,
+    )
+
+    try:
+        return resolve_ingest_web_policy(
+            venue=str(getattr(config, "name", "") or ""),
+            requester=IngestRequester(user_id=_job_owner(request), project_id=project_id),
+            store=_ingest_policy_store(request),
+        )
+    except IngestPolicyUnavailable as exc:
+        return exc
+
+
+_REMOTE_KINDS = frozenset({"http_url", "git_repo"})
+
+
+def _web_policy_refusal(policy: Any, refusal: str) -> NoReturn:
+    """The typed 403 for a source the caller's web policy refuses."""
+    off = policy.mode == "none"
+    raise_typed(
+        PlatformError.sessionpolicy(
+            "widening_refused",
+            refusal,
+            field="web.mode" if off else "web.domains",
+            capped_by=policy.set_by if off else policy.domains_set_by,
+        )
+    )
+
+
+def _refuse_by_web_policy(
+    request: Request,
+    project_id: str,
+    sources: list[dict[str, Any]],
+    allow_domains: list[str] | None,
+) -> None:
+    """Refuse before queueing a URL or git ingest the caller's ADR-099 web
+    policy refuses (wave 79): ``none``, or a host outside an ``allowlist``;
+    unreadable rules fail closed. The job re-checks every source and hop."""
+    remote = [str(s.get("uri") or "") for s in sources if (s or {}).get("kind") in _REMOTE_KINDS]
+    if not remote:
+        return
+    from umrs.knowledge.ingest_allowlist import load_site_config, site_allowlist
+    from umrs.knowledge.ingest_web_policy import IngestWebPolicy, ingest_refusal
+    from umrs.knowledge.sources import _uri_host
+
+    config = load_site_config()
+    policy = _ingest_web_policy(request, project_id, config)
+    if not isinstance(policy, IngestWebPolicy):
+        raise_typed(PlatformError.sessionpolicy("unavailable", str(policy)))
+    site = site_allowlist(config)
+    for uri in remote:
+        refusal = ingest_refusal(policy, site, _uri_host(uri), allow_domains)
+        if refusal:
+            _web_policy_refusal(policy, refusal)
+
+
+@router.get("/ingest/allowlist")
+def ingest_allowlist(
+    request: Request,
     check: str | None = Query(
         None, description="A URL or host: would the allowlist admit it? (names only)"
     ),
+    project_id: str = Depends(get_project_id),
 ) -> dict[str, Any]:
-    """Which web sites knowledge ingest may fetch on this site (2026-10-25).
+    """Which web sites knowledge ingest may fetch here, for this caller in
+    this project (2026-10-25).
 
     Read-only, for any caller of the knowledge API: ``allow_all`` (the site
     lists ``*``), the expanded ``entries`` (``@recommended`` resolved), the
     ``configured`` site entries, ``how_to_change`` and the ``site`` name.
-    ``check`` adds a ``check`` verdict for one URL's host and port; the
-    address, size and content checks run only when a fetch happens.
+    ``web_policy`` (wave 79) is the caller's ADR-099 web policy in the
+    project (``mode``, ``domains``, the layer that ``set_by`` each, the
+    ``entries`` an ingest may fetch under both, a ``summary``), or ``error``
+    when the rules cannot be read. ``check`` adds a verdict for one URL's
+    host and port under both; the address, size and content checks run only
+    when a fetch happens.
     """
     from umrs.knowledge.ingest_allowlist import allowlist_view, load_site_config
 
-    return allowlist_view(load_site_config(), check)
+    config = load_site_config()
+    policy = _ingest_web_policy(request, project_id, config)
+    return allowlist_view(config, check, policy)
 
 
 @router.get("/artifacts")

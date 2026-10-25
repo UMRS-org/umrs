@@ -14,7 +14,11 @@ Remote types (``http_url``, ``git_repo``) raise ``EgressDisabledError``
 unless the site allowlist (``extra.knowledge_ingest.allowed_domains``,
 expanded by ``ingest_allowlist``: ``@recommended``, ``*``), narrowed by any
 caller ``allow_domains``, is non-empty and admits the URI's host (K1.1,
-2026-10-24: the caller's list used to replace the site list).  ``s3_uri`` is treated as a reference -- no egress needed.
+2026-10-24: the caller's list used to replace the site list).  A resolver
+built with a ``requester`` (the ingest job's owner and project) also applies
+that person's ADR-099 web policy in that project (``ingest_web_policy``,
+wave 79, 2026-10-25): ``none`` refuses, ``allowlist`` narrows the site list
+to the ``web.domains`` the agent may browse.  ``s3_uri`` is treated as a reference -- no egress needed.
 
 Kind auto-detection via ``detect_kind(uri)``.  Caller may override.
 """
@@ -26,7 +30,7 @@ import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from .egress_fetch import (
     ALLOWLIST_REMEDY,
@@ -37,6 +41,8 @@ from .egress_fetch import (
 
 if TYPE_CHECKING:
     from umrs.orchestrator.site_config import SiteConfig
+
+    from .ingest_web_policy import IngestRequester
 
 logger = logging.getLogger(__name__)
 
@@ -155,8 +161,16 @@ class SourceResolver:
     def __init__(
         self,
         site_config: SiteConfig | None = None,  # type: ignore[name-defined]
+        *,
+        requester: IngestRequester | None = None,
+        policy_store: Any = None,
     ) -> None:
+        """``requester``: whose ADR-099 web policy binds remote sources (the
+        ingest job passes its owner and project; ``None`` = the site list
+        alone). ``policy_store``: the rule store (default: the server's)."""
         self._config = site_config
+        self._requester = requester
+        self._policy_store = policy_store
 
     # --- public API ---
 
@@ -228,7 +242,9 @@ class SourceResolver:
             raise EgressDisabledError(kind, _site_refusal(host, "no allowlist configured"))
         if host and not domain_allowed(host, site):
             raise EgressDisabledError(kind, not_listed(host))
-        domains = intersect_allowlists(allow_domains, site)
+        domains = intersect_allowlists(
+            allow_domains, self._policy_bound(kind, host, site, allow_domains)
+        )
         if not domains:
             raise EgressDisabledError(
                 kind,
@@ -247,6 +263,33 @@ class SourceResolver:
             resolved=True,
             deny_networks=site_denied_networks(self._config),
         )
+
+    def _policy_bound(
+        self, kind: str, host: str, site: list[str], allow_domains: list[str] | None
+    ) -> list[str]:
+        """The site list narrowed by the requester's ADR-099 web policy
+        (wave 79); the site list itself without a requester."""
+        if self._requester is None:
+            return site
+        from .ingest_web_policy import (
+            IngestPolicyUnavailable,
+            ingest_refusal,
+            policy_bound,
+            resolve_ingest_web_policy,
+        )
+
+        try:
+            policy = resolve_ingest_web_policy(
+                venue=str(getattr(self._config, "name", "") or ""),
+                requester=self._requester,
+                store=self._policy_store,
+            )
+        except IngestPolicyUnavailable as exc:
+            raise EgressDisabledError(kind, str(exc), remedy="") from exc
+        refusal = ingest_refusal(policy, site, host, allow_domains)
+        if refusal:
+            raise EgressDisabledError(kind, refusal, remedy="")
+        return policy_bound(policy, site, host, allow_domains)
 
     def detect_kind(self, uri: str) -> str:
         """Auto-detect source kind from URI / path.

@@ -1176,7 +1176,9 @@ def _ingest_one_source(
     from umrs.knowledge.artifact_storage import ArtifactStorage
     from umrs.knowledge.sources import SourceResolver
 
-    resolver = SourceResolver(site_config=_ingest_site_config())
+    resolver = SourceResolver(
+        site_config=_ingest_site_config(), requester=_ingest_requester(job, project_id)
+    )
     resolved = resolver.resolve(source_kind, uri, allow_domains=allow_domains)
     if not resolved.resolved:
         result.failed_items.append(
@@ -1475,6 +1477,16 @@ def _ingest_site_config() -> Any:
     except Exception:  # no config → empty site list → egress refused
         logger.warning("site config unavailable: remote ingest stays disabled", exc_info=True)
         return None
+
+
+def _ingest_requester(job: Job, project_id: str) -> Any:
+    """Whose ADR-099 web policy binds the job's remote sources: its owner in
+    its project (wave 79, 2026-10-25; before, the front list alone did)."""
+    from umrs.knowledge.ingest_web_policy import IngestRequester
+
+    return IngestRequester(
+        user_id=str(getattr(job, "user_id", "") or ""), project_id=project_id
+    )
 
 
 def _fetch_and_store_remote(
