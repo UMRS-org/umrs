@@ -36,6 +36,9 @@ class _Cursor:
         exists = "pg_database" in self._last or "pg_roles" in self._last
         return (1,) if exists else None
 
+    def close(self) -> None:
+        pass
+
 
 class _Conn:
     def __init__(self, log: list[tuple[str, object]], dbname: str) -> None:
@@ -48,6 +51,9 @@ class _Conn:
 
     def close(self) -> None:
         self._log.append((f"close {self.dbname}", None))
+
+    def commit(self) -> None:
+        self._log.append(("commit", None))
 
     def __enter__(self) -> _Conn:
         return self
@@ -99,3 +105,34 @@ def test_every_server_uses_the_same_lock_key(statements) -> None:
     keys = {p for q, p in statements if "pg_advisory_" in q}
     assert keys == {(server_sql.SERVER_BOOTSTRAP_LOCK_KEY,)}
     assert 0 < server_sql.SERVER_BOOTSTRAP_LOCK_KEY < 2**63
+
+
+@pytest.fixture
+def role_statements(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, object]]:
+    log: list[tuple[str, object]] = []
+    cfg = {
+        "host": "127.0.0.1",
+        "port": 5432,
+        "superuser": "umrs",
+        "superuser_password": "x",
+        "user_password": "z",
+    }
+    monkeypatch.setattr(server_sql, "get_db_config", lambda: cfg)
+    monkeypatch.setattr(server_sql, "pg_connect_kwargs", lambda _role: {})
+    monkeypatch.setattr(
+        server_sql.psycopg2, "connect", lambda **kw: _Conn(log, kw.get("dbname", ""))
+    )
+    server_sql.create_db_user("demo_vision")
+    return log
+
+
+def test_experience_role_ddl_runs_under_the_bootstrap_lock(role_statements) -> None:
+    """#559 (2026-10-23): every front re-passwords the shared demo roles at
+    start; unlocked, two fronts' ALTER USER collided and octopus crashed."""
+    lock = _index(role_statements, "pg_advisory_lock(")
+    alter = _index(role_statements, "ALTER USER")
+    unlock = _index(role_statements, "pg_advisory_unlock(")
+    assert lock < _index(role_statements, "pg_roles") < alter < unlock
+    assert unlock < _index(role_statements, "close postgres")
+    keys = {p for q, p in role_statements if "pg_advisory_" in q}
+    assert keys == {(server_sql.SERVER_BOOTSTRAP_LOCK_KEY,)}

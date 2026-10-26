@@ -19,7 +19,7 @@ from typing import Any, Protocol
 from umrs.metrics import METRICS
 
 from .models import AttemptStatus, Job, JobAttempt, JobType
-from .store import JobStore
+from .store import InvalidTransitionError, JobStore
 
 logger = logging.getLogger(__name__)
 
@@ -245,6 +245,17 @@ class AttemptMonitor:
                 self._apply_running(attempt, result)
             # unknown status - no action, wait for next cycle
 
+        except InvalidTransitionError as exc:
+            # Lost race, not a fault: the attempt left the state this cycle's
+            # snapshot saw (cancel, a plan-run/vision writer, boot
+            # reconciliation) before our guarded UPDATE; the store kept the
+            # winner (ops-watch #587/#588, 2026-10-27).
+            METRICS.monitor_check("superseded")
+            logger.info(
+                "Attempt %s changed state before the monitor's update: %s",
+                attempt.attempt_id,
+                exc,
+            )
         except Exception:
             logger.exception(f"Error checking attempt {attempt.attempt_id}")
 

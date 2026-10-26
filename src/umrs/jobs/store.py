@@ -1007,18 +1007,30 @@ class JobStore:
             return [self._row_to_attempt(row) for row in cur.fetchall()]
 
     def get_active_attempts(self) -> list[JobAttempt]:
-        """Get all attempts in SUBMITTED or RUNNING status."""
+        """SUBMITTED/RUNNING attempts of the jobs this site claims.
+
+        Same venue predicate as ``claim_next_jobs``: the four umrs-front
+        servers share umrs_db, and an unscoped read made every front's
+        monitor poll and transition the other fronts' attempts (ops-watch
+        #587/#588, 2026-10-27; 7afb44c1 scoped the claim only).
+        """
         with (
             self._get_conn() as conn,
             conn.cursor(cursor_factory=RealDictCursor) as cur,
         ):
             cur.execute(
                 """
-                    SELECT * FROM job_attempts
-                    WHERE status IN (%s, %s)
-                    ORDER BY created_at ASC
+                    SELECT a.* FROM job_attempts a
+                    JOIN jobs j ON j.job_id = a.job_id
+                    WHERE a.status IN (%s, %s)
+                      AND (j.venue = '' OR j.venue = %s)
+                    ORDER BY a.created_at ASC
                 """,
-                (AttemptStatus.SUBMITTED.value, AttemptStatus.RUNNING.value),
+                (
+                    AttemptStatus.SUBMITTED.value,
+                    AttemptStatus.RUNNING.value,
+                    self.site_name,
+                ),
             )
             return [self._row_to_attempt(row) for row in cur.fetchall()]
 

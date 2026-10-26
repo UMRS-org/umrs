@@ -79,7 +79,9 @@ class CommandHandler(ABC):
         client_id = payload[0] if isinstance(payload, (tuple, list)) and payload else None
         raw_cb = make_status_callback(ctx.task_manager, task_id)
         def callback(status: str, _cid=client_id, _tid=task_id) -> None:
-            logger.info("[TASK] client=%s task_id=%d → %s", _cid, _tid, status)
+            # task_id is None for commands that keep no task row (JOB_LIST,
+            # WORKFLOW_*): %d raised a logging TypeError on every poll (#551).
+            logger.info("[TASK] client=%s task_id=%s → %s", _cid, _tid, status)
             raw_cb(status)
         return task_id, callback
 

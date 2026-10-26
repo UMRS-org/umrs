@@ -167,6 +167,16 @@ def _published_location(job: Any, job_id: str, port: int) -> tuple[str, int] | N
     return None
 
 
+def _log_finalize_failure(error: Exception) -> None:
+    """A backend job that ended before publishing is that job's outcome (the
+    registry row and the caller carry it), not a server defect: one WARNING,
+    no traceback (ops-watch #590). Anything else keeps the traceback."""
+    if isinstance(error, JobEndedBeforePublishing):
+        logger.warning("Provision finalize failed: %s", error)
+        return
+    logger.exception(f"Provision finalize failed: {error}")
+
+
 def _still_queued(job: Any) -> bool:
     """The scheduler still holds the job in its queue (None: a transient
     status miss, bounded by ``_LOCATION_MAX_CONSECUTIVE_ERRORS``)."""
@@ -978,8 +988,8 @@ class OrchestrationService:
                 error=error,
                 provisioning_time_sec=asyncio.get_event_loop().time() - start_time,
             )
-        except Exception as e:
-            logger.exception(f"Provision finalize failed: {e}")
+        except Exception as e:  # noqa: BLE001 — every finalize failure is recorded; the helper logs it
+            _log_finalize_failure(e)
             self._record_failed_attempt(
                 request,
                 job_id,
