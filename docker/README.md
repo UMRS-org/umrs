@@ -91,3 +91,14 @@ the canonical in-container CLI invocation is still `python src/client_umrs.py`.
 - [../Readme.md](../Readme.md)
 - [../doc/admin_guide.md](../doc/admin_guide.md)
 - [../doc/umrs_overview.md](../doc/umrs_overview.md)
+
+## Server image dependency lock (`server-image/`, 2026-10-26)
+
+`Dockerfile.server` (the umrs-front and stand-alone server image) installs
+only `server-image/requirements.lock.txt` (or, with `TORCH_INDEX_URL`, the
+CPU pair `torch-cpu.lock.txt` + `requirements-cpu.lock.txt`) with
+`pip install --no-deps`, then `pip check`, and runs `server-image/smoke.py`
+as its last build step. The locks are exported from the ai4s-platform
+workspace `uv.lock` by `scripts/deps/lockctl.py export`; never edit them by
+hand. Policy, cooldown and monthly refresh: ai4s-platform ADR-100.
+
