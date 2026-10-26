@@ -134,22 +134,28 @@ class Reconciler:
                 # for good (2026-10-09). Safe because a process runs one durable
                 # runtime (durable_job_runtime._start_lock): nothing live waits
                 # in CREATED under another instance id at boot.
+                # Venue-scoped like claim_next_jobs: the fronts share umrs_db,
+                # and another front's live attempts carry another instance id
+                # too (ops-watch #587/#588, 2026-10-27).
                 cur.execute(
                     """
                     SELECT
-                        attempt_id,
-                        job_id,
-                        attempt_no,
-                        umrs_instance_id
-                    FROM job_attempts
-                    WHERE status IN (%s, %s, %s)
-                      AND (umrs_instance_id IS NULL OR umrs_instance_id != %s)
-                    ORDER BY created_at ASC
+                        a.attempt_id,
+                        a.job_id,
+                        a.attempt_no,
+                        a.umrs_instance_id
+                    FROM job_attempts a
+                    JOIN jobs j ON j.job_id = a.job_id
+                    WHERE a.status IN (%s, %s, %s)
+                      AND (j.venue = '' OR j.venue = %s)
+                      AND (a.umrs_instance_id IS NULL OR a.umrs_instance_id != %s)
+                    ORDER BY a.created_at ASC
                 """,
                     (
                         AttemptStatus.CREATED.value,
                         AttemptStatus.SUBMITTED.value,
                         AttemptStatus.RUNNING.value,
+                        getattr(self.job_store, "site_name", ""),
                         self.umrs_instance_id,
                     ),
                 )

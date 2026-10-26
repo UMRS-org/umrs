@@ -40,13 +40,18 @@ groups:
           summary: "UMRS is down"
           description: "UMRS instance {{ $labels.instance }} is unreachable"
 
+      # Failed share of TERMINAL outcomes, with a volume floor (ops-watch #511,
+      # 2026-10-27): the old denominator counted every job event (`submitted`
+      # twice per job, plus retries), so 2 failures in ~4 jobs an hour fired it.
       - alert: JobFailureRateHigh
         expr: |
           (
-            sum(rate(umrs_job_total{event="failed"}[1h]))
+            sum(increase(umrs_job_total{event="failed"}[1h]))
             /
-            sum(rate(umrs_job_total[1h]))
+            clamp_min(sum(increase(umrs_job_total{event=~"completed|failed|lost"}[1h])), 1)
           ) > 0.1
+          and
+          sum(increase(umrs_job_total{event=~"completed|failed|lost"}[1h])) >= 10
         for: 15m
         labels:
           severity: warning

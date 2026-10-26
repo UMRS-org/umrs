@@ -36,6 +36,14 @@ from .planner import (
 
 logger = logging.getLogger(__name__)
 
+
+class WorkflowRunFailed(RuntimeError):
+    """The experiment's workflow ran and ended failed (no endpoint at the
+    venue for a step, the user's workflow failed): an outcome of the run,
+    not a server fault. The loop ends ERROR with the reason and the server
+    logs one WARNING, no traceback (Ops Watch #557, 2026-10-27)."""
+
+
 _LEGACY_DEMO08_WORKFLOW_NAME = "demo08_yield_eval"
 # Kept for FakeWorkflowExecutionPort / docs. Real mode no longer falls back.
 _TOKEN_RE = re.compile(r"[a-z0-9]{3,}", re.IGNORECASE)
@@ -421,13 +429,12 @@ class AutonomousResearchLoop:
                 loop.completed_at = datetime.now(timezone.utc).isoformat()
                 loop.status = LoopStatus.STOPPED
 
+        except WorkflowRunFailed as exc:
+            logger.warning("Research loop %s stopped: %s", loop.loop_id, exc)
+            _mark_failed(loop, exc)
         except Exception as exc:  # the loop's terminal ERROR state is the contract
             logger.exception("Research loop failed")
-            loop.status = LoopStatus.ERROR
-            loop.phase = LoopPhase.FAILED
-            loop.metadata["error"] = str(exc)
-            if not loop.completed_at:
-                loop.completed_at = datetime.now(timezone.utc).isoformat()
+            _mark_failed(loop, exc)
 
         return loop
 
@@ -980,7 +987,7 @@ class AutonomousResearchLoop:
                 or status
                 or "unknown"
             )
-            raise RuntimeError(
+            raise WorkflowRunFailed(
                 f"workflow execution failed (status={status or 'unknown'}): {err}"
             )
 
@@ -1280,6 +1287,15 @@ class AutonomousResearchLoop:
 
 
 # ── Helper Functions ───────────────────────────────────────────────────────
+
+
+def _mark_failed(loop: ResearchLoop, exc: Exception) -> None:
+    """The loop's terminal ERROR state, with the reason the user sees."""
+    loop.status = LoopStatus.ERROR
+    loop.phase = LoopPhase.FAILED
+    loop.metadata["error"] = str(exc)
+    if not loop.completed_at:
+        loop.completed_at = datetime.now(timezone.utc).isoformat()
 
 
 def _previous_hypothesis(loop: ResearchLoop) -> Any | None:

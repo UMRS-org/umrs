@@ -413,7 +413,21 @@ def db_user_exists(conn, username):
         return exists
 
 
+_ROLE_DDL = {
+    True: sql.SQL("ALTER USER {} WITH PASSWORD %s;"),
+    False: sql.SQL("CREATE USER {} WITH PASSWORD %s;"),
+}
+
+
 def create_db_user(username):
+    """Create or re-password a per-experience SQL role (idempotent).
+
+    Every umrs-server-<front> runs this for each configured experience at
+    start and on reload, and the fronts share one Postgres and the demo
+    roles, so it takes the servers' bootstrap lock (ops-watch #559,
+    2026-10-23: concurrent ALTER USER on one role failed "tuple concurrently
+    updated" and umrs-server-octopus crashed at start).
+    """
     cfg = get_db_config()
     conn = psycopg2.connect(
         dbname="postgres",
@@ -424,27 +438,17 @@ def create_db_user(username):
         **pg_connect_kwargs("admin"),
     )
     conn.autocommit = True
-
-    DB_USER_PASSWORD = cfg["user_password"]
-    cur = conn.cursor()
-    if db_user_exists(conn, username):
-        logger.info(f"==> User '{username}' exist in DB")
-        cur.execute(
-            sql.SQL("ALTER USER {} WITH PASSWORD %s;").format(sql.Identifier(username)),
-            (DB_USER_PASSWORD,),
-        )
-        conn.commit()
-        cur.close()
+    try:
+        with _server_bootstrap_lock(conn):
+            exists = bool(db_user_exists(conn, username))
+            with conn.cursor() as cur:
+                cur.execute(
+                    _ROLE_DDL[exists].format(sql.Identifier(username)),
+                    (cfg["user_password"],),
+                )
+        logger.info(f"==> User '{username}' {'exist' if exists else 'created'} in DB")
+    finally:
         conn.close()
-        return
-
-    cur.execute(
-        sql.SQL("CREATE USER {} WITH PASSWORD %s;").format(sql.Identifier(username)),
-        (DB_USER_PASSWORD,),
-    )
-    logger.info(f"==> User '{username}' created in DB")
-    cur.close()
-    conn.close()
 
 
 def drop_db_user(username):

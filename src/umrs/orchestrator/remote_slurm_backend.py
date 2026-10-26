@@ -669,7 +669,8 @@ class RemoteSlurmBackend(SlurmBackend):
 
     async def get_job_status(self, job_id: str) -> JobInfo:
         """Get status of a Slurm job via SSH."""
-        return await self._job_status(job_id, before_ready=False)
+        info = await self._job_status(job_id, before_ready=False)
+        return await self._with_failure_detail(info)
 
     async def get_job_status_before_ready(self, job_id: str) -> JobInfo:
         """Get status for an endpoint that is not READY yet.
@@ -679,7 +680,37 @@ class RemoteSlurmBackend(SlurmBackend):
         lost, and on a cluster without working accounting it is the only
         trace an externally cancelled job leaves.
         """
-        return await self._job_status(job_id, before_ready=True)
+        info = await self._job_status(job_id, before_ready=True)
+        return await self._with_failure_detail(info)
+
+    async def _with_failure_detail(self, info: JobInfo) -> JobInfo:
+        """A FAILED job with no reason gets sacct's State and ExitCode.
+
+        The wrapper's EXIT trap deletes its info file, and the squeue/sacct
+        fallback keeps only the mapped status, so a failed bring-up read
+        "unknown failure" (ops-watch #590, bdrt job 8318, 2026-10-26).
+        """
+        if info.status != JobStatus.FAILED or info.error_message or info.state_reason:
+            return info
+        info.error_message = await self._sacct_failure_detail(info.job_id)
+        return info
+
+    async def _sacct_failure_detail(self, job_id: str) -> str | None:
+        """``Slurm state OUT_OF_MEMORY, exit code 0:125``; None if sacct cannot say."""
+        try:
+            ssh = await self._get_ssh()
+            result = await ssh.run_remote(
+                f"sacct -j {shlex.quote(str(job_id))} -X -n -P -o State,ExitCode"
+            )
+        except Exception as exc:  # noqa: BLE001 — a missing reason never masks the failure
+            logger.debug("sacct failure detail for %s unavailable: %s", job_id, exc)
+            return None
+        lines = (result.stdout or "").strip().splitlines() if result.ok else []
+        if not lines:
+            return None
+        state, _, exit_code = lines[0].partition("|")
+        detail = f"Slurm state {state.strip()}"
+        return f"{detail}, exit code {exit_code.strip()}" if exit_code.strip() else detail
 
     async def _job_status(self, job_id: str, *, before_ready: bool) -> JobInfo:
         # Try job info file first (read remotely).

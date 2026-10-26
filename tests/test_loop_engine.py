@@ -11,6 +11,8 @@ Covers:
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 
 # Splice removed (ADR-053): umrs installed editable in .venv.
@@ -351,3 +353,44 @@ class TestProductionIntegration:
         project.run_research(max_iterations=1, simulate=True)
 
         assert project.phase == ProjectPhase.COMPLETED
+
+
+# ── #557: a workflow run that ends failed is an outcome, not a fault ──────
+
+
+class _FailedRunPort:
+    """A workflow port whose run ends failed (no active endpoint at the venue)."""
+
+    def trigger(self, _name, _params):
+        return "exec-1"
+
+    def wait(self, _execution_id):
+        return {"durable_job_id": "job-1", "status": "failed"}
+
+    def results(self, _execution_id):
+        return {
+            "durable_job_id": "job-1",
+            "status": "failed",
+            "error": "collect_context: routing failed: no matching active endpoint",
+        }
+
+    def cancel(self, _execution_id):
+        pass
+
+
+def test_failed_experiment_run_is_a_warning_not_a_traceback(caplog):
+    """Ops Watch #557: the loop ends ERROR with the reason, logged once as a
+    WARNING without a traceback (was ERROR + traceback per demo run)."""
+    engine = AutonomousResearchLoop(simulated=False, workflow_port=_FailedRunPort())
+    loop = _make_loop(max_iterations=2, metadata={"workflow_name": "wf-demo"})
+    with caplog.at_level(logging.WARNING, logger="umrs.knowledge.loop"):
+        out = engine.run(loop)
+    assert (out.status, out.phase, out.current_iteration) == (
+        LoopStatus.ERROR,
+        LoopPhase.FAILED,
+        1,
+    )
+    assert "routing failed" in out.metadata["error"]
+    records = [r for r in caplog.records if r.name == "umrs.knowledge.loop"]
+    assert records
+    assert {(r.levelno, r.exc_info) for r in records} == {(logging.WARNING, None)}
