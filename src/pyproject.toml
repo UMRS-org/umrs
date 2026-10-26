@@ -69,6 +69,13 @@ server = [
     "sentence-transformers",
     "scikit-learn",
     "spacy",
+    # Known-bad release (2026-10-25): with preshed 3.0.14 en_core_web_sm fails
+    # to load (OverflowError in Tokenizer._flush_specials) and the text
+    # modalities of the rccs Text Embedding experience did not configure.
+    "preshed!=3.0.14",
+    # The asyncpg pool (umrs/api/_asyncpg_pool.py) and the a2l store; the
+    # server image installed it by hand until the image lock (ADR-100).
+    "asyncpg",
     "langchain",
     "langchain-community",
     "langchain-openai",
