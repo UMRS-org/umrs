@@ -61,12 +61,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     openssh-client curl ca-certificates postgresql-client podman \
     && rm -rf /var/lib/apt/lists/*
 
-# Install MinIO Client (mc)
-RUN ARCH=$(dpkg --print-architecture) && \
-    curl -sSL -o /usr/local/bin/mc \
-    "https://dl.min.io/client/mc/release/linux-${ARCH}/mc" \
-    && chmod +x /usr/local/bin/mc \
-    && mc --version || true
+# No MinIO Client (mc) (2026-10-26, ADR-100): dl.min.io answers "410 Gone"
+# for the open-source client, and the old unverified `curl ... || true` had
+# shipped that error page as /usr/local/bin/mc since at least 2026-10-21. The
+# fronts use the SeaweedFS backend (ADR-055); a MinIO-backend site mounts a
+# verified mc binary of its own (docker/README.md).
 
 # Copy Python packages from builder
 COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
