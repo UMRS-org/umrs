@@ -102,3 +102,9 @@ as its last build step. The locks are exported from the ai4s-platform
 workspace `uv.lock` by `scripts/deps/lockctl.py export`; never edit them by
 hand. Policy, cooldown and monthly refresh: ai4s-platform ADR-100.
 
+The image ships no MinIO Client (`mc`) since 2026-10-26: dl.min.io answers
+"410 Gone" for the open-source client, and the old unverified download had
+shipped that error page as `/usr/local/bin/mc`. The fronts use the SeaweedFS
+backend (ADR-055). A site on the MinIO backend mounts a checksum-verified
+`mc` binary at `/usr/local/bin/mc`; `shared/storage/minio.py` calls it by name.
+

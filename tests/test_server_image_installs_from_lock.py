@@ -37,12 +37,22 @@ PIN = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*)(\[[^\]]*\])?==([^\s;]+)")
 URL_PIN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]* @ https://\S+#sha256=[0-9a-f]{64}$")
 
 
-def _run_commands(text: str) -> list[str]:
-    """Shell commands of every RUN instruction, continuations joined."""
+def _runs(text: str) -> list[str]:
+    """Every RUN instruction, continuations joined."""
     joined = re.sub(r"\\\n", " ", text)
-    runs = [line[4:] for line in joined.splitlines() if line.startswith("RUN ")]
+    return [line[4:] for line in joined.splitlines() if line.startswith("RUN ")]
+
+
+def _run_commands(text: str) -> list[str]:
+    """Shell commands of every RUN instruction."""
     separators = r"&&|\|\||;|\bthen\b|\belse\b|\bfi\b"
-    return [part.strip() for run in runs for part in re.split(separators, run)]
+    return [part.strip() for run in _runs(text) for part in re.split(separators, run)]
+
+
+def unverified_downloads(text: str) -> list[str]:
+    """RUN instructions that fetch a file with curl/wget and never check its sha256."""
+    fetch = re.compile(r"\b(curl|wget)\b[^&|;]*\s(-o|-O|--output)\s")
+    return [run for run in _runs(text) if fetch.search(run) and "sha256sum -c" not in run]
 
 
 def pip_installs(text: str) -> list[list[str]]:
@@ -132,6 +142,22 @@ def test_the_build_runs_the_smoke_test_that_loads_the_model():
     assert "RUN python /opt/umrs/server-image-smoke.py" in text
     smoke = SMOKE.read_text()
     assert 'SPACY_MODEL = "en_core_web_sm"' in smoke and "spacy.load(SPACY_MODEL" in smoke
+
+
+def test_the_image_downloads_no_unverified_binary():
+    """dl.min.io answered 410 and `curl -o ... || true` shipped the error page as mc."""
+    assert unverified_downloads(DOCKERFILE.read_text()) == []
+
+
+def test_the_rule_flags_the_old_mc_download():
+    old = (
+        "RUN ARCH=$(dpkg --print-architecture) && \\\n"
+        "    curl -sSL -o /usr/local/bin/mc \\\n"
+        '    "https://dl.min.io/client/mc/release/linux-${ARCH}/mc" \\\n'
+        "    && chmod +x /usr/local/bin/mc \\\n"
+        "    && mc --version || true\n"
+    )
+    assert len(unverified_downloads(old)) == 1
 
 
 def test_the_rule_rejects_the_unpinned_install_of_d41165f5():
