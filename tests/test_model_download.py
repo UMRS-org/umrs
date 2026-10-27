@@ -722,8 +722,12 @@ class TestStagedModelRollback:
 
     @pytest.mark.asyncio
     async def test_execute_download_rolls_back_on_failure(
-        self, mock_model_store, mock_path_validator, sample_job, sample_attempt
+        self, mock_model_store, mock_path_validator, sample_job, sample_attempt, monkeypatch
     ):
+        # Hermetic: the venue check reads the HOST's free space for the target
+        # (here "/"); on the CI runner (data0, root fs under the 20 GiB floor,
+        # 2026-10-27) it refused before the mocked download ever ran.
+        monkeypatch.setenv("UMRS_DOWNLOAD_MIN_FREE_BYTES", "0")
         backend = ModelDownloadBackend(
             model_store=mock_model_store,
             path_validator=mock_path_validator,
@@ -739,6 +743,31 @@ class TestStagedModelRollback:
         ):
             await backend._execute_download(ctx)
 
+        mock_model_store.delete_model.assert_called_once_with("model-1")
+
+    @pytest.mark.asyncio
+    async def test_a_refused_venue_rolls_back_the_staged_entry(
+        self, mock_model_store, mock_path_validator, sample_job, sample_attempt
+    ):
+        """The venue refusal (overlay target, free space under the floor) is a
+        failed download: it must not leave a permanent staging row either."""
+        from umrs.jobs.download_safety import DownloadVenueError
+
+        backend = ModelDownloadBackend(
+            model_store=mock_model_store,
+            path_validator=mock_path_validator,
+            download_registry=DownloadTaskRegistry(),
+        )
+        ctx = backend._create_download_context(sample_job, sample_attempt)
+        mock_model_store.get_model_by_name.return_value = self._staged_entry()
+
+        with patch(
+            "umrs.jobs.download_safety.assert_download_safe",
+            side_effect=DownloadVenueError("only 18 GiB free; floor 20 GiB"),
+        ):
+            await backend._execute_download(ctx)
+
+        assert ctx.progress.status == "failed"
         mock_model_store.delete_model.assert_called_once_with("model-1")
 
 
