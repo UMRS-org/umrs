@@ -178,6 +178,9 @@ class ModelDownloadBackend(OrchestratorBackend):
             ctx.progress.status = "failed"
             ctx.progress.error_message = f"venue: {e}"
             await self.download_registry.update_progress(ctx.attempt_id, ctx.progress)
+            # A refused venue is a failed download too: no permanent staging
+            # row (2026-10-27: data0's root fs under the 20 GiB floor left one).
+            self._rollback_staged_model(ctx)
             return
         await self._execute_download_inner(ctx)
 
