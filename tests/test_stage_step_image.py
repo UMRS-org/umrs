@@ -243,7 +243,7 @@ def lane(tmp_path: Path) -> Lane:
 class TestRefusals:
     @pytest.mark.parametrize(
         ("args", "arch"),
-        [((), "sparc"), (("--arch",), ""), (("--bogus",), "x86_64")],
+        [((), "sparc"), (("--arch",), ""), (("--bogus",), "x86_64"), (("--tmp-dir",), "x86_64")],
     )
     def test_usage_errors_exit_2_with_a_failure_line(self, lane, args, arch):
         proc = lane.run(*args, arch=arch)
@@ -356,6 +356,17 @@ class TestBuild:
         root = re.search(r"--root (/var/tmp/umrs-step-stage\.\w+)/root", lane.log("podman"))
         assert not Path(root.group(1)).exists()
         assert result(proc)["archive"].endswith(f"-{lane.sha[:12]}-aarch64.tar")
+
+    def test_tmp_dir_moves_the_workspace(self, lane):
+        """--tmp-dir (2026-10-28, #611): the front host keeps the wheel +
+        throwaway store off its full root filesystem; default stays /var/tmp
+        (pinned by the throwaway-store test above)."""
+        proc = lane.run("--tmp-dir", str(lane.tmp / "wsroot"))
+        assert proc.returncode == 0, proc.stderr
+        root = re.search(r"--root (\S+)/root", lane.log("podman")).group(1)
+        assert root.startswith(str(lane.tmp / "wsroot"))
+        assert not Path(root).exists()
+        assert list((lane.tmp / "wsroot").iterdir()) == []
 
     def test_podman_builds_the_target_arch_from_the_pinned_commit(self, lane):
         self._arm_build(lane)
