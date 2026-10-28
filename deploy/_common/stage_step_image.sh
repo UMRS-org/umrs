@@ -11,6 +11,7 @@
 # Usage:
 #   stage_step_image.sh --arch aarch64|x86_64 --archive-dir DIR
 #                       [--checkout DIR] [--if-missing] [--authfile FILE]
+#                       [--tmp-dir DIR]
 #     --arch         target machine, as `uname -m` prints it on the nodes
 #     --archive-dir  where umrs-step-<sha12>-<arch>.tar (+ .sha256, .id) go
 #     --checkout     the umrs checkout to build (default: this script's)
@@ -19,12 +20,16 @@
 #                    (this commit, arch, contract label and local name)
 #     --authfile     registry auth file for the base-image pull (an empty {}
 #                    file forces an anonymous pull past stale credentials)
+#     --tmp-dir      workspace root for the wheel + throwaway build store
+#                    (default /var/tmp; created if missing — 2026-10-28, #611:
+#                    the front host builds on a volume with headroom, off its
+#                    91%-full root filesystem)
 #
 # Steps: refuse a checkout with tracked changes; `git archive HEAD src` (so
 # untracked files never reach the image); build the umrs wheel; install it
 # with the hash-pinned docker/step-requirements.txt into a site-packages dir
 # for <arch>-manylinux_2_28 (binary wheels only); `podman build` the COPY-only
-# docker/Containerfile.step in a throwaway store under /var/tmp; refuse the
+# docker/Containerfile.step in a throwaway store under --tmp-dir; refuse the
 # image when a layer it adds holds a file named (case-insensitively) env.*,
 # *.env, .env, .env.*, s3cfg, s3cfg_*, .s3cfg, id_*, *.pem, *.key, .netrc,
 # credentials[.*] or .git-credentials (the base layers are digest-pinned and carry
@@ -48,6 +53,7 @@ ARCHIVE_DIR=""
 CHECKOUT=""
 IF_MISSING=0
 AUTHFILE=""
+TMP_DIR="/var/tmp"
 WS=""
 
 log() { printf 'stage_step_image: %s\n' "$*" >&2; }
@@ -78,6 +84,7 @@ parse_args() {
             --archive-dir) need_value "$@"; ARCHIVE_DIR="$2"; shift 2 ;;
             --checkout) need_value "$@"; CHECKOUT="$2"; shift 2 ;;
             --authfile) need_value "$@"; AUTHFILE="$2"; shift 2 ;;
+            --tmp-dir) need_value "$@"; TMP_DIR="$2"; shift 2 ;;
             --if-missing) IF_MISSING=1; shift ;;
             -h|--help) sed -n '2,/^set -euo/{/^set -euo/!p}' "${BASH_SOURCE[0]}" >&2; exit 0 ;;
             *) fail 2 "unknown option: $1" ;;
@@ -159,7 +166,8 @@ cleanup() {
 # to be touched.
 make_workspace() {
     local mount_program=""
-    WS="$(mktemp -d /var/tmp/umrs-step-stage.XXXXXXXX)"
+    mkdir -p "${TMP_DIR}"
+    WS="$(mktemp -d "${TMP_DIR%/}/umrs-step-stage.XXXXXXXX")"
     trap cleanup EXIT
     mkdir -p "${WS}/root" "${WS}/run" "${WS}/tree" "${WS}/wheel" "${WS}/ctx/site-packages"
     mount_program="$(command -v fuse-overlayfs 2>/dev/null || true)"
