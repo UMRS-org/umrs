@@ -175,6 +175,73 @@ ggplot(long, aes(x = n_label, y = s, fill = part)) +
   )
 
 ggsave("log/batch_speedup.pdf", width = 9, height = 5.5)
-ggsave("log/batch_speedup.png", width = 9, height = 5.5, dpi = 300)
-message("Saved: batch_speedup.pdf / batch_speedup.png")
+message("Saved: batch_speedup.pdf")
 
+
+# ── Data ──────────────────────────────────────────────────────────────────────
+bench <- data.frame(
+  objects_per_users = c(32, 32, 32, 32, 32, 32, 32, 32),
+  n_users = c(1, 2, 4, 8, 16, 32, 64, 128),
+  batch_s = c(6.203, 7.190, 8.362, 13.742, 22.118, 41.103, 103.287, 328.055)
+)
+
+bench$serial_s <- bench$n_users * bench$batch_s[1]   # N × t(1 user)
+bench$speedup  <- bench$serial_s / bench$batch_s
+bench$n_label  <- factor(bench$n_users, levels = bench$n_users)
+
+# ── Reshape: two bars side by side (serial | batch) ───────────────────────────
+long <- pivot_longer(bench, c(serial_s, batch_s),
+                     names_to = "part", values_to = "s")
+long$part <- factor(long$part,
+                    levels = c("serial_s", "batch_s"),
+                    labels = c("Sequential baseline (N × t₁, extrapolated)",
+                               "Batch (measured)"))
+
+# ── Plot ──────────────────────────────────────────────────────────────────────
+ggplot(long, aes(x = n_label, y = s, fill = part)) +
+  geom_col(width = 0.72, position = position_dodge(width = 0.78)) +
+  
+  # Speedup label above the batch bar
+  geom_text(
+    data        = bench,
+    mapping     = aes(x      = n_label,
+                      y      = batch_s,
+                      label  = sprintf("×%.2f", speedup),
+                      colour = n_users == 32),
+    inherit.aes = FALSE,
+    position    = position_nudge(x = 0.2),   # shift right onto the batch bar
+    vjust = -0.4, fontface = "bold", size = 3.5
+  ) +
+  
+  
+  scale_fill_manual(values = c(
+    "Sequential baseline (N \u00d7 t\u2081, extrapolated)" = "#d96828",
+    "Batch (measured)"                                      = "#10c890"
+  )) +
+  scale_colour_manual(
+    values = c("TRUE" = "#d4a000", "FALSE" = "#444444"),
+    guide  = "none"
+  ) +
+  #scale_y_continuous(expand = expansion(mult = c(0, 0.14)),
+  #                   labels = \(x) paste0(x, " s")) +
+  
+  labs(
+    title    = "GPU batch inference: up to 4.83× faster than serial",
+    x    = "Concurrent users (N)",
+    y    = "End-to-end user time (32 x N images)",
+    fill = NULL
+  ) +
+  scale_y_log10()+
+  theme_minimal(base_size = 13) +
+  theme(
+    plot.title         = element_text(face = "bold", size = 14),
+    plot.subtitle      = element_text(colour = "grey50", size = 10,
+                                      margin = margin(b = 10)),
+    legend.position    = "top",
+    legend.text        = element_text(size = 10),
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor   = element_blank()
+  )
+
+ggsave("log/batch_speedup_side.pdf", width = 9, height = 5.5)
+message("Saved: batch_speedup_side.pdf")
