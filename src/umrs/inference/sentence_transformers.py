@@ -1,7 +1,7 @@
 import torch
 from sentence_transformers import SentenceTransformer
 
-from umrs.knowledge.text_embedder import bundled_dir_for
+from umrs.knowledge.bundled_embedder import bundled_dir_for
 from umrs.shared.bounded_load import load_bounded
 from umrs.shared.utils import (
     add_document_prefix,

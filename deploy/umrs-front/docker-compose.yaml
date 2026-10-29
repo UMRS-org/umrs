@@ -214,6 +214,11 @@ services:
       # Issue #635: the HF cache lives on the shared umrs_hf_cache volume
       # (below), so a model downloaded once survives container recreates.
       HF_HOME: /root/.cache/huggingface
+      # A stalled transfer must raise inside the bounded load (and free the
+      # blob lock) instead of hanging: plain HTTP with a read timeout; the
+      # xet path, where the 2026-10-27 stall sat, has no such timeout.
+      HF_HUB_DOWNLOAD_TIMEOUT: "30"
+      HF_HUB_DISABLE_XET: "1"
       PYTHONUNBUFFERED: "1"
     volumes:
       - ../rccs-front/site.yaml:/etc/umrs/site.yaml:ro,z
@@ -259,10 +264,14 @@ services:
       timeout: 3s
       retries: 60
       # Issue #635: /health binds only after boot provisioning, which loads
-      # each modality's embedding model. A load is bounded per model by
+      # each modality's model. The Hugging Face loads on that path
+      # (SentenceTransformer, TransformerEncoder, the openai:// tokenizer,
+      # transformers SAM2/SAM3) are bounded per model by
       # umrs.shared.bounded_load (default 3 x 90 s + 15 s backoff = 285 s);
-      # 600 s covers two cold models. A passing probe ends start_period at
-      # once, so a warm boot is not slowed.
+      # 600 s covers two cold models. Not bounded: MAE/HMAE (local checkpoint
+      # files) and ResNet50 (torchvision weights when no checkpoint is set);
+      # rivault:// and pipeline:// load nothing at boot. A passing probe ends
+      # start_period at once, so a warm boot is not slowed.
       start_period: 600s
     depends_on:
       postgres:
@@ -374,6 +383,11 @@ services:
       # Issue #635: the HF cache lives on the shared umrs_hf_cache volume
       # (below), so a model downloaded once survives container recreates.
       HF_HOME: /root/.cache/huggingface
+      # A stalled transfer must raise inside the bounded load (and free the
+      # blob lock) instead of hanging: plain HTTP with a read timeout; the
+      # xet path, where the 2026-10-27 stall sat, has no such timeout.
+      HF_HUB_DOWNLOAD_TIMEOUT: "30"
+      HF_HUB_DISABLE_XET: "1"
       PYTHONUNBUFFERED: "1"
     volumes:
       - ../ai4s-front/site.yaml:/etc/umrs/site.yaml:ro,z
@@ -511,6 +525,11 @@ services:
       # Issue #635: the HF cache lives on the shared umrs_hf_cache volume
       # (below), so a model downloaded once survives container recreates.
       HF_HOME: /root/.cache/huggingface
+      # A stalled transfer must raise inside the bounded load (and free the
+      # blob lock) instead of hanging: plain HTTP with a read timeout; the
+      # xet path, where the 2026-10-27 stall sat, has no such timeout.
+      HF_HUB_DOWNLOAD_TIMEOUT: "30"
+      HF_HUB_DISABLE_XET: "1"
       PYTHONUNBUFFERED: "1"
     volumes:
       - ../bdrt-front/site.yaml:/etc/umrs/site.yaml:ro,z
@@ -645,6 +664,11 @@ services:
       # Issue #635: the HF cache lives on the shared umrs_hf_cache volume
       # (below), so a model downloaded once survives container recreates.
       HF_HOME: /root/.cache/huggingface
+      # A stalled transfer must raise inside the bounded load (and free the
+      # blob lock) instead of hanging: plain HTTP with a read timeout; the
+      # xet path, where the 2026-10-27 stall sat, has no such timeout.
+      HF_HUB_DOWNLOAD_TIMEOUT: "30"
+      HF_HUB_DISABLE_XET: "1"
       PYTHONUNBUFFERED: "1"
     volumes:
       - ../octopus-front/site.yaml:/etc/umrs/site.yaml:ro,z

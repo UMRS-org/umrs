@@ -213,10 +213,19 @@ def _load_sam3_spec(model_cfg):
     }
 
 
-def _load_openai_spec(model_type, model_cfg, vector_size, return_type):
-    """openai:// pseudo-scheme → remote (vLLM/OpenAI-compatible) compute closure."""
+def _load_hub_tokenizer(model_name):
+    """The openai:// spec's tokenizer, bounded like the local families (issue #635)."""
     from transformers import AutoTokenizer
 
+    from umrs.shared.bounded_load import load_bounded
+
+    return load_bounded(
+        f"tokenizer:{model_name}", lambda: AutoTokenizer.from_pretrained(model_name)
+    )
+
+
+def _load_openai_spec(model_type, model_cfg, vector_size, return_type):
+    """openai:// pseudo-scheme → remote (vLLM/OpenAI-compatible) compute closure."""
     from .openai_api import (
         get_max_tokens_from_vllm,
         is_server_alive,
@@ -226,7 +235,7 @@ def _load_openai_spec(model_type, model_cfg, vector_size, return_type):
     api_key = model_cfg.get("api_key")
     model_name = model_cfg["model_name"]
 
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    tokenizer = _load_hub_tokenizer(model_name)
     max_tokens = get_max_tokens_from_vllm(model_url, model_name, api_key=api_key)
     if max_tokens is None:
         max_tokens = getattr(tokenizer, "model_max_length", 512)
