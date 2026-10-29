@@ -211,6 +211,9 @@ services:
       UMRS_STEP_IMAGE_ARCHIVE_DIR: ${UMRS_RCCS_STEP_IMAGE_ARCHIVE_DIR:-}
       UMRS_STEP_HELPER: ${UMRS_RCCS_STEP_HELPER:-}
       UMRS_STEP_VENUE_SCRIPT: ${UMRS_RCCS_STEP_VENUE_SCRIPT:-}
+      # Issue #635: the HF cache lives on the shared umrs_hf_cache volume
+      # (below), so a model downloaded once survives container recreates.
+      HF_HOME: /root/.cache/huggingface
       PYTHONUNBUFFERED: "1"
     volumes:
       - ../rccs-front/site.yaml:/etc/umrs/site.yaml:ro,z
@@ -234,6 +237,7 @@ services:
       # Writable s3cfg dir for per-user s3cfg generation (shared: both
       # servers use the same object store, so credentials must be identical)
       - umrs_config:/root/.config/umrs
+      - umrs_hf_cache:/root/.cache/huggingface
       # SSH ControlMaster sockets (tmpfs for ephemeral sockets)
       - type: tmpfs
         target: /run/umrs-ssh
@@ -254,7 +258,12 @@ services:
       interval: 5s
       timeout: 3s
       retries: 60
-      start_period: 30s
+      # Issue #635: /health binds only after boot provisioning, which loads
+      # each modality's embedding model. A load is bounded per model by
+      # umrs.shared.bounded_load (default 3 x 90 s + 15 s backoff = 285 s);
+      # 600 s covers two cold models. A passing probe ends start_period at
+      # once, so a warm boot is not slowed.
+      start_period: 600s
     depends_on:
       postgres:
         condition: service_healthy
@@ -362,6 +371,9 @@ services:
       UMRS_STEP_IMAGE_ARCHIVE_DIR: ${UMRS_AI4S_STEP_IMAGE_ARCHIVE_DIR:-}
       UMRS_STEP_HELPER: ${UMRS_AI4S_STEP_HELPER:-}
       UMRS_STEP_VENUE_SCRIPT: ${UMRS_AI4S_STEP_VENUE_SCRIPT:-}
+      # Issue #635: the HF cache lives on the shared umrs_hf_cache volume
+      # (below), so a model downloaded once survives container recreates.
+      HF_HOME: /root/.cache/huggingface
       PYTHONUNBUFFERED: "1"
     volumes:
       - ../ai4s-front/site.yaml:/etc/umrs/site.yaml:ro,z
@@ -381,6 +393,7 @@ services:
       - ${UMRS_VENUE_SESSION_ROOT:-/tmp/umrs-venue-sessions}:${UMRS_VENUE_SESSION_ROOT:-/tmp/umrs-venue-sessions}:z
       # Shared config volume (same object store → same credentials)
       - umrs_config:/root/.config/umrs
+      - umrs_hf_cache:/root/.cache/huggingface
       - type: tmpfs
         target: /run/umrs-ssh
         tmpfs:
@@ -495,6 +508,9 @@ services:
       UMRS_STEP_IMAGE_ARCHIVE_DIR: ${UMRS_BDRT_STEP_IMAGE_ARCHIVE_DIR:-}
       UMRS_STEP_HELPER: ${UMRS_BDRT_STEP_HELPER:-}
       UMRS_STEP_VENUE_SCRIPT: ${UMRS_BDRT_STEP_VENUE_SCRIPT:-}
+      # Issue #635: the HF cache lives on the shared umrs_hf_cache volume
+      # (below), so a model downloaded once survives container recreates.
+      HF_HOME: /root/.cache/huggingface
       PYTHONUNBUFFERED: "1"
     volumes:
       - ../bdrt-front/site.yaml:/etc/umrs/site.yaml:ro,z
@@ -517,6 +533,7 @@ services:
       - ${UMRS_VENUE_SESSION_ROOT:-/tmp/umrs-venue-sessions}:${UMRS_VENUE_SESSION_ROOT:-/tmp/umrs-venue-sessions}:z
       # Shared config volume (same object store → same credentials)
       - umrs_config:/root/.config/umrs
+      - umrs_hf_cache:/root/.cache/huggingface
       - type: tmpfs
         target: /run/umrs-ssh
         tmpfs:
@@ -625,6 +642,9 @@ services:
       UMRS_STEP_IMAGE_ARCHIVE_DIR: ${UMRS_OCTOPUS_STEP_IMAGE_ARCHIVE_DIR:-}
       UMRS_STEP_HELPER: ${UMRS_OCTOPUS_STEP_HELPER:-}
       UMRS_STEP_VENUE_SCRIPT: ${UMRS_OCTOPUS_STEP_VENUE_SCRIPT:-}
+      # Issue #635: the HF cache lives on the shared umrs_hf_cache volume
+      # (below), so a model downloaded once survives container recreates.
+      HF_HOME: /root/.cache/huggingface
       PYTHONUNBUFFERED: "1"
     volumes:
       - ../octopus-front/site.yaml:/etc/umrs/site.yaml:ro,z
@@ -642,6 +662,7 @@ services:
       - ${XDG_RUNTIME_DIR:-/run/user/1000}/podman/podman.sock:/run/podman/podman.sock:z
       - ${UMRS_VENUE_SESSION_ROOT:-/tmp/umrs-venue-sessions}:${UMRS_VENUE_SESSION_ROOT:-/tmp/umrs-venue-sessions}:z
       - umrs_config:/root/.config/umrs
+      - umrs_hf_cache:/root/.cache/huggingface
       - type: tmpfs
         target: /run/umrs-ssh
         tmpfs:
@@ -697,3 +718,7 @@ volumes:
   umrs_s3_data:
     external: true
   umrs_config:
+  # Hugging Face cache shared by the four servers (issue #635): a model the
+  # image does not bundle is downloaded once, not on every recreate. HF's
+  # file locks make concurrent use safe; removing it only costs a re-download.
+  umrs_hf_cache:

@@ -1,6 +1,8 @@
 import torch
 from sentence_transformers import SentenceTransformer
 
+from umrs.knowledge.text_embedder import bundled_dir_for
+from umrs.shared.bounded_load import load_bounded
 from umrs.shared.utils import (
     add_document_prefix,
     add_embeddings_to_chunks_dict,
@@ -18,17 +20,26 @@ def load_sentence_transformers_model(model_name):
         return _model_cache[model_name]
 
     print(f"\t\t\t--> Loading model '{model_name}'...")
+    # Issue #635: bounded (per-attempt deadline, retry with backoff, cooldown)
+    # so a stalled Hugging Face transfer cannot hold boot provisioning past
+    # the compose health window.
+    model = load_bounded(model_name, lambda: _load_sentence_transformer(model_name))
+    _model_cache[model_name] = model
+    return model
+
+
+def _load_sentence_transformer(model_name):
+    """One attempt: the image's bundled copy or the local cache, else download."""
+    source = bundled_dir_for(model_name) or model_name
     try:
-        model = SentenceTransformer(model_name, local_files_only=True)
+        return SentenceTransformer(source, local_files_only=True)
     except Exception:
         print(
             "\t\t\t--> Local cache not available or incomplete. Downloading from Hugging Face..."
         )
-        model = SentenceTransformer(model_name)
+        model = SentenceTransformer(source)
         print("\t\t\t--> Downloaded and cached model.")
-
-    _model_cache[model_name] = model
-    return model
+        return model
 
 
 #  Compute Embeddings for Text
