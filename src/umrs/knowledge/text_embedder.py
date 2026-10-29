@@ -62,6 +62,20 @@ def is_staged(model_dir: str | os.PathLike[str]) -> bool:
     return (path / "config.json").is_file() and (path / "model.safetensors").is_file()
 
 
+def bundled_dir_for(model_name: str) -> str | None:
+    """The image's bundled copy of ``model_name`` when it is the bundle's hub id.
+
+    Issue #635: user configs name ``intfloat/e5-base-v2`` by hub id, so boot
+    provisioning went to the (empty, per-container) HF cache and then the
+    network although the image carries the same revision at
+    :data:`BUNDLED_TEXT_EMBEDDER_DIR`. Any other name, or an image built
+    without the bundle, returns None and keeps the hub path.
+    """
+    if model_name == BUNDLED_TEXT_EMBEDDER_REPO and is_staged(BUNDLED_TEXT_EMBEDDER_DIR):
+        return BUNDLED_TEXT_EMBEDDER_DIR
+    return None
+
+
 def stage(repo: str, dest: str, revision: str | None = None) -> Path:
     """Download ``repo`` into ``dest`` (needs network — build/staging time only)."""
     from huggingface_hub import snapshot_download
