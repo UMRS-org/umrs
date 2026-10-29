@@ -18,6 +18,8 @@ import numpy as np
 import torch
 from PIL import Image
 
+from umrs.shared.bounded_load import load_bounded
+
 logger = logging.getLogger(__name__)
 
 _sam3_cache = {}
@@ -102,27 +104,36 @@ def load_sam3_model(model_name_or_path="facebook/sam3"):
         logger.info("Official SAM3 model loaded successfully")
         return result
 
-    model_type = _detect_model_type(model_name_or_path)
-    logger.info("Detected model type: %s at '%s'", model_type, model_name_or_path)
-
-    if model_type == "sam2":
-        from transformers import Sam2Model, Sam2Processor
-
-        logger.info("Loading SAM2 model '%s' on %s ...", model_name_or_path, device)
-        model = Sam2Model.from_pretrained(model_name_or_path).to(device)
-        processor = Sam2Processor.from_pretrained(model_name_or_path)
-    else:
-        from transformers import Sam3Model, Sam3Processor
-
-        logger.info("Loading SAM3 model '%s' on %s ...", model_name_or_path, device)
-        model = Sam3Model.from_pretrained(model_name_or_path).to(device)
-        processor = Sam3Processor.from_pretrained(model_name_or_path)
-
+    # Issue #635: bounded like the text-embedding families, so a stalled
+    # Hugging Face transfer cannot hold boot provisioning past /health.
+    model, processor = load_bounded(
+        f"sam:{model_name_or_path}", lambda: _load_hub_sam(model_name_or_path, device)
+    )
     model.eval()
     result = (model, processor, device)
     _sam3_cache[model_name_or_path] = result
-    logger.info("SAM model loaded successfully (%s)", model_type)
     return result
+
+
+def _sam_classes(model_type):
+    if model_type == "sam2":
+        from transformers import Sam2Model, Sam2Processor
+
+        return Sam2Model, Sam2Processor
+    from transformers import Sam3Model, Sam3Processor
+
+    return Sam3Model, Sam3Processor
+
+
+def _load_hub_sam(model_name_or_path, device):
+    """One attempt: transformers' SAM2/SAM3 model + processor (may download)."""
+    model_type = _detect_model_type(model_name_or_path)
+    model_cls, processor_cls = _sam_classes(model_type)
+    logger.info("Loading %s model '%s' on %s ...", model_type.upper(), model_name_or_path, device)
+    model = model_cls.from_pretrained(model_name_or_path).to(device)
+    processor = processor_cls.from_pretrained(model_name_or_path)
+    logger.info("SAM model loaded successfully (%s)", model_type)
+    return model, processor
 
 
 def _mask_to_box(mask):

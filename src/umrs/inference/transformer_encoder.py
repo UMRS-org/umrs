@@ -2,7 +2,7 @@ import torch
 from transformers import AutoModel, AutoTokenizer
 from transformers.utils import logging
 
-from umrs.knowledge.text_embedder import bundled_dir_for
+from umrs.knowledge.bundled_embedder import bundled_dir_for
 from umrs.shared.bounded_load import load_bounded
 from umrs.shared.utils import add_embeddings_to_chunks_dict, flatten_text_chunks
 
