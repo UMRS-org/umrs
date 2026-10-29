@@ -202,27 +202,46 @@ class TestOrphanFailureBackoff:
         j._locks = {}
         return j, backend
 
-    def test_first_failure_is_one_error_line(self, caplog):
-        j, _ = self._janitor()
+    @staticmethod
+    def _fail(j, times: int, caplog) -> list[tuple[int, str]]:
         import logging
 
-        with caplog.at_level(logging.WARNING, logger="umrs.orchestrator.janitor"):
-            j._orphan_failures_record_failure(RuntimeError("Connection closed"))
-        assert len([r for r in caplog.records if r.levelno == 40]) == 1
-        message = [r.getMessage() for r in caplog.records if r.levelno == 40][0]
-        assert "streak=1" in message
+        caplog.clear()
+        with caplog.at_level(logging.DEBUG, logger="umrs.orchestrator.janitor"):
+            for _ in range(times):
+                j._orphan_failures_record_failure(RuntimeError("Connection closed"))
+        return [(r.levelno, r.getMessage()) for r in caplog.records]
+
+    def test_first_failure_is_one_warning_line(self, caplog):
+        """ops-watch #639: one SSH banner timeout is transient, not an ERROR."""
+        j, _ = self._janitor()
+        assert self._fail(j, 1, caplog) == [
+            (
+                30,
+                "Orphan cleanup failed (backend=slurm-remote, streak=1): Connection closed",
+            )
+        ]
+
+    def test_streak_below_threshold_warns_then_escalates_to_error(self, caplog):
+        j, _ = self._janitor()
+        records = self._fail(j, 3, caplog)
+        assert [level for level, _ in records] == [30, 30, 40]
+        # One message text at every level: the Ops Watch fingerprint
+        # normalizes the streak number, so the ERROR keeps its issue.
+        assert [message for _, message in records] == [
+            f"Orphan cleanup failed (backend=slurm-remote, streak={n}): Connection closed"
+            for n in (1, 2, 3)
+        ]
 
     def test_backoff_mid_streak_only_at_summary_boundary(self, caplog):
         j, _ = self._janitor()
-        import logging
-
-        with caplog.at_level(logging.WARNING, logger="umrs.orchestrator.janitor"):
-            j._orphan_failures_record_failure(RuntimeError("Connection closed"))
-            j._orphan_failures_record_failure(RuntimeError("Connection closed"))
-            j._orphan_failures_record_failure(RuntimeError("Connection closed"))
-        errors = [r for r in caplog.records if r.levelno == 40]
-        # Only the FIRST failure got an ERROR; the backoff swallows mid streak
-        assert len(errors) == 1
+        records = self._fail(j, 64, caplog)
+        errors = [message for level, message in records if level == 40]
+        # streak 3 escalates; then quiet until each 32-failure summary.
+        assert len(records) == 5
+        assert len(errors) == 3
+        assert "streak=32 consecutive" in errors[1]
+        assert "streak=64 consecutive" in errors[2]
 
     def test_recovery_emits_info_log_with_streak_carried(self, caplog):
         j, _ = self._janitor()
@@ -248,6 +267,8 @@ class TestOrphanFailureBackoff:
             j._orphan_failures_record_failure(RuntimeError("Connection closed"))
             backend.backend_name = "k8s"
             j._orphan_failures_record_failure(RuntimeError("dns lookup timeout"))
-        errors = [r.getMessage() for r in caplog.records if r.levelno == 40]
-        # two different backends → each got its own first-failure ERROR
-        assert len(errors) == 2
+        warnings = [r.getMessage() for r in caplog.records if r.levelno == 30]
+        # two different backends → each got its own first-failure WARNING
+        assert len(warnings) == 2
+        assert "backend=slurm-remote, streak=1" in warnings[0]
+        assert "backend=k8s, streak=1" in warnings[1]
