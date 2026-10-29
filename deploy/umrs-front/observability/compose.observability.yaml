@@ -69,7 +69,12 @@ services:
       - GF_SECURITY_ADMIN_USER=admin
       - GF_SECURITY_ADMIN_PASSWORD=admin
       - GF_USERS_ALLOW_SIGN_UP=false
-      - GF_INSTALL_PLUGINS=grafana-clock-panel,grafana-piechart-panel
+      # No phone-home (ops-watch #638, 2026-10-30): same keys as the parent's
+      # converge template; no GF_INSTALL_PLUGINS (no dashboard uses a plugin,
+      # and run.sh exits when grafana.com is unreachable).
+      - GF_ANALYTICS_CHECK_FOR_UPDATES=false
+      - GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES=false
+      - GF_ANALYTICS_REPORTING_ENABLED=false
     volumes:
       - "/home/mnagaso/deploy/ai4s-platform/observability/grafana/provisioning:/etc/grafana/provisioning:ro,z"
       - "/home/mnagaso/deploy/ai4s-platform/observability/grafana/dashboards:/var/lib/grafana/dashboards:ro,z"
