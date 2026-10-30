@@ -37,6 +37,16 @@ echo "Monitor ready."
 # Lancer les N clients en parallèle
 # Date calculée juste avant le lancement
 echo "Tag: $TAG" >> "$LOG_FILE"
+
+# Identification de la machine (clients ; le serveur peut tourner ailleurs)
+echo "Host: $(uname -a)" >> "$LOG_FILE"
+CPU_MODEL=$(sysctl -n machdep.cpu.brand_string 2>/dev/null \
+    || lscpu 2>/dev/null | sed -n 's/^Model name:[[:space:]]*//p')
+[ -n "$CPU_MODEL" ] && echo "CPU: $CPU_MODEL" >> "$LOG_FILE"
+if command -v nvidia-smi > /dev/null 2>&1; then
+    nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader \
+        | sed 's/^/GPU: /' >> "$LOG_FILE"
+fi
 echo "Started: $(python3 -c 'from datetime import datetime; print(datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3])')" >> "$LOG_FILE"
 
 for i in $(seq 1 "$N"); do
