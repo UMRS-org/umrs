@@ -5,7 +5,7 @@ import json
 import logging
 import os
 import sys
-
+import socket 
 import diskcache
 
 # Add the parent directory of this script (src) to sys.path
@@ -22,7 +22,7 @@ from umrs.admin.daemon_signal import (
     remove_pid_file,
     write_pid_file,
 )
-from umrs.core.MessageQueue import MessageQueue
+from umrs.core.MessageQueue import MessageQueue, DATA_PORT_RANGE
 from umrs.core.TaskCmdStatus import TaskCmd, TaskStatus
 from umrs.core.TaskManager import TaskManager
 from umrs.core.thread_pool import PoolConfig, ServerOverloadedError, ThreadPoolManager
@@ -146,8 +146,13 @@ def perform_initial_config(configure_file, status_store, skip_create_users=False
     except Exception as e:
         # Debug flag is optional; log but do not raise
         print(f"Warning: failed to set debug mode on control queue: {e}")
-    print ("Subscribed to zeroMQ message queue")
 
+    bind_host = "127.0.0.1" if control_mq.tunnel_mode else "*"
+    auth_type = os.environ.get("UMRS_ZMQ_AUTH_TYPE", "none")
+    print(f"Subscribed to zeroMQ message queue on {socket.gethostname()} "
+      f"{bind_host}:{control_mq.port} "
+      f"(data ports {DATA_PORT_RANGE.label}, auth={auth_type})")
+   
     if not skip_create_users:
         for user in users:
             create_s3_sql_users(user, admin_s3_configuration_file)
