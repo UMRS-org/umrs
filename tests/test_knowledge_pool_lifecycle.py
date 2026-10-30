@@ -84,7 +84,6 @@ def test_pool_created_inside_coroutine_and_awaited(monkeypatch: pytest.MonkeyPat
     monkeypatch.setenv("DB_HOST", "127.0.0.1")
     events: list[str] = []
     _attach_fake_asyncpg(monkeypatch, events, _RecordingPool(events, {}))
-    monkeypatch.setattr(ka, "_artifacts_from_store", _no_store_rows)
 
     ka._collect_artifact_ids(_job())
 
@@ -103,7 +102,6 @@ def test_initialized_pool_reaches_fetchval(monkeypatch: pytest.MonkeyPatch) -> N
     _attach_fake_asyncpg(
         monkeypatch, events, _RecordingPool(events, {"artifacts": [dict(_DESCRIPTOR)]})
     )
-    monkeypatch.setattr(ka, "_artifacts_from_store", _no_store_rows)
 
     result = ka._collect_artifact_ids(_job())
 
@@ -118,7 +116,6 @@ def test_pool_closes_on_success(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DB_HOST", "127.0.0.1")
     events: list[str] = []
     _attach_fake_asyncpg(monkeypatch, events, _RecordingPool(events, {}))
-    monkeypatch.setattr(ka, "_artifacts_from_store", _no_store_rows)
 
     ka._collect_artifact_ids(_job())
     assert "close" in events
@@ -129,7 +126,6 @@ def test_pool_closes_on_fetch_exception(monkeypatch: pytest.MonkeyPatch) -> None
     monkeypatch.setenv("DB_HOST", "127.0.0.1")
     events: list[str] = []
     _attach_fake_asyncpg(monkeypatch, events, _RecordingPool(events, boom=True))
-    monkeypatch.setattr(ka, "_artifacts_from_store", _no_store_rows)
 
     ka._collect_artifact_ids(_job())  # failure must not leak the pool either
     assert "close" in events
@@ -144,13 +140,8 @@ def test_jsonb_string_through_initialized_pool(monkeypatch: pytest.MonkeyPatch) 
     events: list[str] = []
     row = json.dumps({"artifacts": [dict(_DESCRIPTOR)]})
     _attach_fake_asyncpg(monkeypatch, events, _RecordingPool(events, row))
-    monkeypatch.setattr(ka, "_artifacts_from_store", _no_store_rows)
 
     result = ka._collect_artifact_ids(_job())
 
     assert result and result[0]["content_hash"] == _DESCRIPTOR["content_hash"]
     assert result[0]["kind"] == "s3_uri"
-
-
-async def _no_store_rows(_pool: object, _project_id: str) -> list[dict]:
-    return []
