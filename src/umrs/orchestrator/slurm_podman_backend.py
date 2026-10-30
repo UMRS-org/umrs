@@ -417,8 +417,28 @@ class SlurmPodmanBackend(OrchestratorBackend):
             job_id=job_id,
             status=status,
             endpoint=endpoint,
+            error_message=await self._failure_detail(job_id, status),
             backend=self.backend_name,
         )
+
+    async def _failure_detail(self, job_id: str, status: JobStatus) -> str | None:
+        """``Slurm state OUT_OF_MEMORY, exit code 0:125`` for a FAILED job.
+
+        Without it a failed bring-up read "unknown failure" upstream (the
+        remote-Slurm backend got the same fix for ops-watch #590; #599 item 1).
+        Best-effort: None when sacct cannot say.
+        """
+        if status != JobStatus.FAILED:
+            return None
+        rc, stdout, _ = await _run_slurm_cli(
+            "sacct", "-j", job_id, "-X", "-n", "-P", "-o", "State,ExitCode"
+        )
+        lines = stdout.decode().strip().splitlines() if rc == 0 else []
+        if not lines:
+            return None
+        state, _, exit_code = lines[0].partition("|")
+        detail = f"Slurm state {state.strip()}"
+        return f"{detail}, exit code {exit_code.strip()}" if exit_code.strip() else detail
 
     async def wait_for_ready(
         self,

@@ -4800,32 +4800,14 @@ async def _artifacts_from_attempt_metrics(
     return results
 
 
-async def _artifacts_from_store(pool: Any, project_id: str) -> list[dict[str, Any]]:
-    """Pull artifact refs from the knowledge_artifacts table."""
-    try:
-        rows = await pool.fetch(
-            "SELECT artifact_id, content_hash, kind, source_ref "
-            "FROM knowledge_artifacts WHERE project_id = $1 "
-            "ORDER BY created_at DESC",
-            project_id,
-        )
-    except Exception:  # noqa: BLE001 — best-effort adapter path, reported not raised
-        return []
-    return [
-        {
-            "artifact_id": r["artifact_id"],
-            "content_hash": r["content_hash"] or "",
-            "kind": r["kind"] or "document",
-            "source_ref": r.get("source_ref", ""),
-        }
-        for r in rows
-    ]
-
-
 def _collect_artifact_ids(job: Any) -> list[dict[str, Any]]:
     """Collect artifact IDs from a successful job's attempt metrics.
 
     Returns a list of dicts with artifact_id, content_hash, kind, source_ref.
+    Only the job's own outputs: the project's stored ``knowledge_artifacts``
+    rows are already acquired, and re-submitting them as ingest sources (kind
+    document/schema, rag:// or content-key refs) failed every one at the source
+    resolver on each workflow success (ops-watch #612-#620, 2026-10-27).
     """
     artifacts: list[dict[str, Any]] = []
     if not _resolve_knowledge_dsn():
@@ -4836,9 +4818,7 @@ def _collect_artifact_ids(job: Any) -> list[dict[str, Any]]:
             if pool is None:
                 return []
             attempts = await _resolve_succeeded_attempts(pool, job)
-            results = await _artifacts_from_attempt_metrics(pool, attempts)
-            results.extend(await _artifacts_from_store(pool, job.project_id))
-            return results
+            return await _artifacts_from_attempt_metrics(pool, attempts)
 
     try:
         collected = _run_coroutine_sync(_collect(), "collect-artifacts")

@@ -304,8 +304,6 @@ def test_collect_artifact_ids_loop_safe(monkeypatch: pytest.MonkeyPatch) -> None
         }
     ]
     monkeypatch.setattr(ka, "_open_pool", _open_pool_ctx(_FakeAsyncpgPool({"artifacts": expected})))
-    # knowledge_artifacts table read: make it return nothing extra.
-    monkeypatch.setattr(ka, "_artifacts_from_store", _noop_store_rows)
 
     job = SimpleNamespace(job_id="j-1", project_id="proj-1", commit_attempt_id="att-1")
 
@@ -321,10 +319,6 @@ def test_collect_artifact_ids_loop_safe(monkeypatch: pytest.MonkeyPatch) -> None
     assert async_result and async_result[0]["source_ref"].startswith(
         "s3://r4-data/jobs/j/attempt_1/"
     )
-
-
-async def _noop_store_rows(_pool: object, _project_id: str) -> list[dict]:
-    return []
 
 
 def test_collect_artifact_ids_accepts_jsonb_string(
@@ -345,7 +339,6 @@ def test_collect_artifact_ids_accepts_jsonb_string(
         "_open_pool",
         _open_pool_ctx(_FakeAsyncpgPool(json.dumps({"artifacts": expected}))),
     )
-    monkeypatch.setattr(ka, "_artifacts_from_store", _noop_store_rows)
     job = SimpleNamespace(job_id="j-1", project_id="proj-1", commit_attempt_id="att-1")
 
     sync_result = ka._collect_artifact_ids(job)

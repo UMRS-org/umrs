@@ -384,6 +384,28 @@ class TestGetJobStatus:
             job = _run(backend.get_job_status("12345"))
 
         assert job.status == JobStatus.STOPPED
+        assert job.error_message is None
+
+    def test_failed_job_carries_the_slurm_state_and_exit_code(self, backend):
+        """#599 item 1: a failed bring-up read "unknown failure" upstream."""
+        squeue_proc = AsyncMock()
+        squeue_proc.communicate.return_value = (b"", b"")
+        squeue_proc.returncode = 0
+        sacct_proc = AsyncMock()
+        sacct_proc.communicate.return_value = (b"FAILED\n", b"")
+        sacct_proc.returncode = 0
+        detail_proc = AsyncMock()
+        detail_proc.communicate.return_value = (b"FAILED|1:0\n", b"")
+        detail_proc.returncode = 0
+
+        with patch(
+            "asyncio.create_subprocess_exec",
+            side_effect=[squeue_proc, sacct_proc, detail_proc],
+        ):
+            job = _run(backend.get_job_status("12345"))
+
+        assert job.status == JobStatus.FAILED
+        assert job.error_message == "Slurm state FAILED, exit code 1:0"
 
 
 # =============================================================================
