@@ -371,7 +371,7 @@ psutil==7.2.2
     #   kantoku
 psycopg2-binary==2.9.13
     # via umrs
-pyasn1==0.6.4
+pyasn1==0.6.5
     # via
     #   python-jose
     #   rsa
@@ -401,7 +401,7 @@ pygments==2.20.0
     #   textual
 pyparsing==3.3.2
     # via pip-requirements-parser
-pypdf==6.21.2
+pypdf==6.21.4
     # via umrs
 python-dateutil==2.9.0.post0
     # via
