@@ -64,6 +64,28 @@ def _owner_source_path(workflow_name: str, owner: str, verified: str | None) -> 
     return source_path
 
 
+def _refuse_unplanned_run(store, workflow_name: str, project_id: str) -> None:
+    """ADR-105 D-4: a project with ``require_plan`` starts runs only through
+    plan -> commit, and a loop iteration commits no plan. RuntimeError by
+    name (this port's convention), before any job exists; an unreadable
+    policy refuses too (fail closed). A store without a pool has no policy."""
+    from umrs.workflow_plans import (
+        PlanPolicyUnavailable,
+        plan_required_message,
+        read_project_plan_policy,
+    )
+
+    try:
+        policy = read_project_plan_policy(getattr(store, "db_pool", None), project_id)
+    except PlanPolicyUnavailable as exc:
+        raise RuntimeError(str(exc)) from exc
+    if policy.require_plan:
+        raise RuntimeError(
+            "research loop run refused: "
+            + plan_required_message(project_id, workflow_name)
+        )
+
+
 class UmrsWorkflowExecutionPort(WorkflowExecutionPort):
     """WorkflowExecutionPort backed by JobStore + execution registry."""
 
@@ -98,6 +120,7 @@ class UmrsWorkflowExecutionPort(WorkflowExecutionPort):
         project_id = str(params.get("project_id") or "research")
         verified = owner_project if owner and owner_project == project_id else None
         source_path = _owner_source_path(workflow_name, owner, verified)
+        _refuse_unplanned_run(self._store, workflow_name, project_id)
         execution_id = f"exec-{uuid4().hex}"
         spec = {
             "workflow_name": workflow_name,

@@ -171,7 +171,11 @@ class WorkflowCommitRequest(BaseModel):
     and ``digest`` exactly as ``.../plan`` returned them."""
 
     signed: dict[str, Any] = Field(..., description="The plan's signed dict, unchanged")
-    digest: str = Field(..., min_length=1, description="The plan's digest")
+    digest: str = Field(
+        ...,
+        pattern=r"^[0-9a-f]{64}$",
+        description="The plan's digest (64 lowercase hex characters)",
+    )
     auto: bool = Field(
         default=False,
         description=(
@@ -1816,14 +1820,18 @@ def _plan_refusal(name: str, http_status: int, message: str) -> NoReturn:
 def _project_plan_policy(project_id: str) -> Any:
     """The project's plan policy over the job store's ``umrs_db`` pool; an
     unreadable policy is a typed 503 (fail closed)."""
-    from ..workflow_plans import PlanPolicyUnavailable, read_project_plan_policy
+    from ..workflow_plans import (
+        POLICY_UNAVAILABLE_MESSAGE,
+        PlanPolicyUnavailable,
+        read_project_plan_policy,
+    )
 
     pool = getattr(get_optional_job_store(), "db_pool", None)
     try:
         return read_project_plan_policy(pool, project_id)
-    except PlanPolicyUnavailable as exc:
-        logger.warning("%s", exc)
-        _plan_refusal("policy_unavailable", 503, str(exc))
+    except PlanPolicyUnavailable:
+        # read_project_plan_policy logged the database error; the reply is generic.
+        _plan_refusal("policy_unavailable", 503, POLICY_UNAVAILABLE_MESSAGE)
 
 
 def _refuse_unplanned_trigger(workflow_name: str, project_id: str) -> None:
@@ -1876,6 +1884,7 @@ def _plan_fields(
         "account": quote.account,
         "gpu_steps": quote.gpu_steps,
         "max_wall_seconds": quote.max_wall_seconds,
+        "max_gpu_hours": quote.max_gpu_hours,
     }
 
 
@@ -1940,7 +1949,7 @@ async def plan_workflow(
         "account": quote.account,
         "gpu_steps": quote.gpu_steps,
         "max_wall_seconds": quote.max_wall_seconds,
-        "max_gpu_hours": quote.max_gpu_hours,
+        "max_gpu_hours": signed["max_gpu_hours"],
         "quota": _plan_quota(resolved.user_id),
         "auto_commit_max_gpu_hours": policy.auto_commit_max_gpu_hours,
         "require_plan": policy.require_plan,

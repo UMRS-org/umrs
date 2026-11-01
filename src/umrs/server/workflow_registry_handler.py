@@ -862,7 +862,7 @@ def _require_plan_refusal(
     pool = getattr(job_backend, "store_pool", None)
     try:
         policy = read_project_plan_policy(pool, project_id)
-    except PlanPolicyUnavailable as exc:
+    except PlanPolicyUnavailable as exc:  # a generic text; the log has the error
         return json.dumps({"status": "error", "message": str(exc)})
     if not policy.require_plan:
         return None

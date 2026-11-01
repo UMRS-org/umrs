@@ -19,7 +19,7 @@ import logging
 from typing import Any, NamedTuple, NoReturn
 
 from fastapi import APIRouter, Depends, Request, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from .jobs import CallerIdentity, get_caller_identity
 from .typed_errors import PlatformError, raise_typed
@@ -704,6 +704,14 @@ class BudgetBody(BaseModel):
         description="True refuses direct triggers: plan then commit is the only way",
     )
 
+    @field_validator("require_plan", mode="before")
+    @classmethod
+    def _require_plan_not_null(cls, value: Any) -> Any:
+        """Omit ``require_plan`` to keep it; an explicit null is an error."""
+        if value is None:
+            raise ValueError("require_plan must be true or false (omit it to keep)")
+        return value
+
 
 _LOOP_CAP_FIELDS = frozenset({"max_gpu_hours", "max_wall_clock_hours"})
 _PLAN_POLICY_FIELDS = frozenset({"auto_commit_max_gpu_hours", "require_plan"})
@@ -727,7 +735,7 @@ def _plan_policy_update(
     }
     if "auto_commit_max_gpu_hours" in named:
         policy["auto_commit_max_gpu_hours"] = body.auto_commit_max_gpu_hours
-    if "require_plan" in named and body.require_plan is not None:
+    if "require_plan" in named:  # never null: the validator refuses it
         policy["require_plan"] = body.require_plan
     return policy
 

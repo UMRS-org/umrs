@@ -81,6 +81,7 @@ def catalog(monkeypatch):
 @pytest.fixture
 def store() -> MagicMock:
     s = MagicMock()
+    s.db_pool = None  # no project_budgets: no plan policy (ADR-105 D-4)
     s.create_job.return_value = "job-port-1"
     s.get_job_with_attempts.return_value = (MagicMock(job_id="job-port-1"), [])
     return s
@@ -236,6 +237,7 @@ def test_trigger_enqueues_the_created_job():
     from umrs.knowledge.umrs_workflow_port import UmrsWorkflowExecutionPort
 
     store = MagicMock()
+    store.db_pool = None  # no project_budgets: no plan policy (ADR-105 D-4)
     store.create_job.return_value = "job-1"
     port = UmrsWorkflowExecutionPort(store)
     execution_id = port.trigger("demo08_yield_eval", {"project_id": "p", "iteration": 1})

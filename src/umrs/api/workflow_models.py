@@ -194,7 +194,10 @@ class WorkflowPlanResponse(_OpenModel):
     )
     max_gpu_hours: float = Field(
         ...,
-        description="Upper bound: sum over GPU steps of max_wall_seconds x gpus / 3600",
+        description=(
+            "Upper bound: sum over GPU steps of max_wall_seconds x gpus / 3600; "
+            "signed, and re-checked on commit"
+        ),
     )
     quota: WorkflowPlanQuota
     auto_commit_max_gpu_hours: float | None = Field(

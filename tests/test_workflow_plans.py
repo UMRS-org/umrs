@@ -41,6 +41,8 @@ from umrs import workflow_plans
 
 SECRET = "plan-test-handshake"
 CODE = "x-platform-error-code"
+KEY_1 = "plan-key-one-0123456789"
+KEY_2 = "plan-key-two-0123456789"
 _STEP_ENV = (
     "UMRS_STEP_EXECUTOR",
     "UMRS_SLURM_STEP_SUBMIT",
@@ -258,11 +260,12 @@ _FIELDS = {
     "account": None,
     "gpu_steps": 1,
     "max_wall_seconds": 3000,
+    "max_gpu_hours": 0.5,
 }
 
 
 def test_sign_and_verify_round_trip(monkeypatch):
-    monkeypatch.setenv("UMRS_SECRET_KEY", "k1")
+    monkeypatch.setenv("UMRS_SECRET_KEY", KEY_1)
     signed, digest, plan_id = sign_plan(_FIELDS, now=1_000.0)
     assert list(signed) == list(SIGNED_FIELDS)
     assert signed["expires_at"] == "1970-01-01T00:31:40Z"  # 1000 + 900 s
@@ -272,16 +275,16 @@ def test_sign_and_verify_round_trip(monkeypatch):
 
 @pytest.mark.parametrize("field", SIGNED_FIELDS)
 def test_tampering_any_signed_field_breaks_the_digest(monkeypatch, field):
-    monkeypatch.setenv("UMRS_SECRET_KEY", "k1")
+    monkeypatch.setenv("UMRS_SECRET_KEY", KEY_1)
     signed, digest, _ = sign_plan(_FIELDS)
     tampered = {**signed, field: "tampered"}
     assert not verify_plan(tampered, digest)
 
 
 def test_another_key_does_not_verify(monkeypatch):
-    monkeypatch.setenv("UMRS_SECRET_KEY", "k1")
+    monkeypatch.setenv("UMRS_SECRET_KEY", KEY_1)
     signed, digest, _ = sign_plan(_FIELDS)
-    monkeypatch.setenv("UMRS_SECRET_KEY", "k2")
+    monkeypatch.setenv("UMRS_SECRET_KEY", KEY_2)
     assert not verify_plan(signed, digest)
     assert not verify_plan(signed, 123) and not verify_plan("x", digest)
 
@@ -291,8 +294,34 @@ def test_without_secret_a_per_process_key_signs(monkeypatch):
     monkeypatch.setattr(workflow_plans, "_process_key", None)
     signed, digest, _ = sign_plan(_FIELDS)
     assert verify_plan(signed, digest)
-    monkeypatch.setenv("UMRS_SECRET_KEY", "k1")
+    monkeypatch.setenv("UMRS_SECRET_KEY", KEY_1)
     assert not verify_plan(signed, digest)
+
+
+@pytest.mark.parametrize("weak", [" ", "   \t", "short-key", "x" * 15])
+def test_a_blank_or_short_secret_is_never_the_key(monkeypatch, weak):
+    monkeypatch.setattr(workflow_plans, "_process_key", None)
+    monkeypatch.delenv("UMRS_SECRET_KEY", raising=False)
+    signed, digest, _ = sign_plan(_FIELDS)
+    monkeypatch.setenv("UMRS_SECRET_KEY", weak)
+    assert verify_plan(signed, digest)  # still the per-process key
+
+
+def test_the_secret_is_stripped(monkeypatch):
+    monkeypatch.setenv("UMRS_SECRET_KEY", f"  {KEY_1}\n")
+    signed, digest, _ = sign_plan(_FIELDS)
+    monkeypatch.setenv("UMRS_SECRET_KEY", KEY_1)
+    assert verify_plan(signed, digest)
+
+
+def test_a_non_ascii_digest_does_not_verify():
+    signed, _, _ = sign_plan(_FIELDS)
+    assert not verify_plan(signed, "é" * 64)
+
+
+def test_max_gpu_hours_is_signed():
+    assert "max_gpu_hours" in SIGNED_FIELDS
+    assert "max_gpu_hours" in workflow_plans.STALE_FIELDS
 
 
 def test_expiry():
@@ -509,6 +538,32 @@ def test_a_new_version_makes_the_plan_stale(wf):
     assert store.jobs == {}
 
 
+def test_the_plan_signs_max_gpu_hours(wf):
+    client, _store, _ = wf
+    plan = _plan(client)
+    assert plan["signed"]["max_gpu_hours"] == plan["max_gpu_hours"] == 0.5
+
+
+def test_more_gpus_per_step_make_the_plan_stale(wf, monkeypatch):
+    client, store, _ = wf
+    plan = _plan(client)
+    monkeypatch.setenv("UMRS_SLURM_GPUS", "2")  # same GPU steps, twice the hours
+    r = _commit(client, plan)
+    assert (r.status_code, r.headers[CODE]) == (409, "workflows.plan_stale")
+    assert r.json()["detail"].startswith("the plan no longer matches (max_gpu_hours changed)")
+    assert store.jobs == {}
+
+
+@pytest.mark.parametrize("bad", ["é" * 64, "upper", "short"])
+def test_a_malformed_digest_is_a_422_not_a_500(wf, bad):
+    client, store, _ = wf
+    plan = _plan(client)
+    digest = {"upper": plan["digest"].upper(), "short": plan["digest"][:-1]}.get(bad, bad)
+    r = _commit(client, {"signed": plan["signed"], "digest": digest})
+    assert r.status_code == 422
+    assert store.jobs == {}
+
+
 def test_a_lane_change_makes_the_plan_stale(wf, monkeypatch):
     client, store, _ = wf
     plan = _plan(client)
@@ -591,7 +646,61 @@ def test_an_unreadable_policy_fails_closed(wf):
     store.db_pool.broken = True
     r = client.post("/umrs/workflows/relax/trigger", json={"parameters": {}}, headers=_h())
     assert (r.status_code, r.headers[CODE]) == (503, "workflows.policy_unavailable")
+    assert "database is down" not in r.text  # logged, never answered
     assert store.jobs == {}
+
+
+def test_an_unreadable_policy_on_zmq_keeps_the_error_in_the_log(wf):
+    from umrs.server.job_tracking_handler import DurableJobCommandBackend
+    from umrs.server.workflow_registry_handler import _handle_run_workflow
+
+    _client, store, _ = wf
+    store.db_pool.broken = True
+    payload = json.dumps({"workflow_name": "relax", "params": {"project_id": "proj-a"}})
+    reply = _handle_run_workflow("alice", payload, DurableJobCommandBackend(store))
+    assert json.loads(reply)["status"] == "error"
+    assert "database is down" not in reply
+
+
+# ── require_plan on the research loop's port ──────────────────────────────
+
+
+def _loop_port(policy_row: tuple | None, *, broken: bool = False):
+    from umrs.knowledge.umrs_workflow_port import UmrsWorkflowExecutionPort
+
+    store = _Store()
+    if policy_row is not None:
+        store.db_pool.policies["proj-a"] = policy_row
+    store.db_pool.broken = broken
+    return UmrsWorkflowExecutionPort(store), store
+
+
+@pytest.fixture
+def owned_source(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "umrs.knowledge.umrs_workflow_port._owner_source_path",
+        lambda *_a: str(tmp_path),
+    )
+
+
+def test_the_loop_port_refuses_a_require_plan_project(owned_source):
+    port, store = _loop_port((None, True))
+    with pytest.raises(RuntimeError, match="requires a plan"):
+        port.trigger_as("relax", {"project_id": "proj-a"}, owner="alice")
+    assert store.jobs == {}
+
+
+def test_the_loop_port_fails_closed_on_an_unreadable_policy(owned_source):
+    port, store = _loop_port(None, broken=True)
+    with pytest.raises(RuntimeError, match="plan policy is unavailable"):
+        port.trigger_as("relax", {"project_id": "proj-a"}, owner="alice")
+    assert store.jobs == {}
+
+
+def test_the_loop_port_runs_without_require_plan(owned_source):
+    port, store = _loop_port((2.0, False))
+    assert port.trigger_as("relax", {"project_id": "proj-a"}, owner="alice")
+    assert len(store.jobs) == 1
 
 
 def test_require_plan_refuses_the_zmq_run_workflow(wf):
@@ -670,6 +779,16 @@ def test_budget_put_of_plan_fields_keeps_the_loop_caps_and_vice_versa():
         headers=alice,
     )
     assert store.get_budget("p-plan")["auto_commit_max_gpu_hours"] is None
+
+
+def test_budget_put_refuses_a_null_require_plan():
+    from test_api_projects import _headers
+
+    store, client = _budget_client()
+    r = client.put(
+        "/umrs/projects/p-plan/budget", json={"require_plan": None}, headers=_headers("alice")
+    )
+    assert r.status_code == 422
 
 
 def test_budget_put_refuses_a_negative_threshold_and_non_owners():

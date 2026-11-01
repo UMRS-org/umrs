@@ -137,6 +137,7 @@ def _port():
     from umrs.knowledge.umrs_workflow_port import UmrsWorkflowExecutionPort
 
     store = MagicMock()
+    store.db_pool = None  # no project_budgets: no plan policy (ADR-105 D-4)
     store.create_job.return_value = "job-1"
     return UmrsWorkflowExecutionPort(store), store
 

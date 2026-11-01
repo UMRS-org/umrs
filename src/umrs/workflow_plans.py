@@ -41,6 +41,10 @@ _KEY_LABEL = b"umrs-workflow-plan-v1"
 _ISO_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 _DEFAULT_STEP_SECONDS = 3600.0
 _TRUE_HINTS = ("1", "true", "yes")
+#: A shorter ``UMRS_SECRET_KEY`` is treated as unset (never a key).
+MIN_SECRET_CHARS = 16
+#: Generic text for an unreadable policy: the database error is logged only.
+POLICY_UNAVAILABLE_MESSAGE = "the project's plan policy is unavailable; try again"
 
 #: The fields a plan signs, in the order the response lists them.
 SIGNED_FIELDS: tuple[str, ...] = (
@@ -55,6 +59,7 @@ SIGNED_FIELDS: tuple[str, ...] = (
     "account",
     "gpu_steps",
     "max_wall_seconds",
+    "max_gpu_hours",
     "expires_at",
 )
 #: A commit re-resolves these; any change refuses it as stale.
@@ -65,6 +70,7 @@ STALE_FIELDS: tuple[str, ...] = (
     "account",
     "gpu_steps",
     "max_wall_seconds",
+    "max_gpu_hours",
 )
 
 _process_key: bytes | None = None
@@ -85,14 +91,23 @@ def _per_process_key() -> bytes:
         if _process_key is None:
             _process_key = secrets.token_bytes(32)
             logger.warning(
-                "UMRS_SECRET_KEY is not set: workflow plans are signed with a "
-                "per-process key and do not survive a restart"
+                "UMRS_SECRET_KEY is not set (or shorter than %d characters): "
+                "workflow plans are signed with a per-process key and do not "
+                "survive a restart",
+                MIN_SECRET_CHARS,
             )
         return _process_key
 
 
+def _configured_secret() -> str:
+    """``UMRS_SECRET_KEY`` stripped; a value under :data:`MIN_SECRET_CHARS`
+    (a blank, a placeholder) counts as unset, so it never becomes the key."""
+    secret = os.environ.get("UMRS_SECRET_KEY", "").strip()
+    return secret if len(secret) >= MIN_SECRET_CHARS else ""
+
+
 def _signing_key() -> bytes:
-    secret = os.environ.get("UMRS_SECRET_KEY", "")
+    secret = _configured_secret()
     if secret:
         return hmac.new(secret.encode("utf-8"), _KEY_LABEL, hashlib.sha256).digest()
     return _per_process_key()
@@ -128,10 +143,9 @@ def verify_plan(signed: Any, digest: Any) -> bool:
     if not isinstance(signed, dict) or not isinstance(digest, str):
         return False
     try:
-        expected = plan_digest(signed)
-    except (TypeError, ValueError):
+        return hmac.compare_digest(plan_digest(signed), digest)
+    except (TypeError, ValueError):  # a non-ASCII digest, an unencodable dict
         return False
-    return hmac.compare_digest(expected, digest)
 
 
 def plan_expired(signed: dict[str, Any], *, now: float | None = None) -> bool:
@@ -411,9 +425,12 @@ def read_project_plan_policy(pool: Any, project_id: str) -> PlanPolicy:
     try:
         row = _fetch_policy_row(pool, project_id)
     except Exception as exc:  # any database failure fails closed
-        raise PlanPolicyUnavailable(
-            f"plan policy of project '{project_id}' is unreadable: {exc}"
-        ) from exc
+        # The database text stays in the log, never in a reply.
+        logger.warning("plan policy of project %r is unreadable: %s", project_id, exc)
+        raise PlanPolicyUnavailable(POLICY_UNAVAILABLE_MESSAGE) from exc
+    if not isinstance(row, (tuple, list)) and row is not None:
+        logger.warning("plan policy of project %r: unexpected row %r", project_id, row)
+        raise PlanPolicyUnavailable(POLICY_UNAVAILABLE_MESSAGE)
     return _policy_from_row(row)
 
 
