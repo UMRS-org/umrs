@@ -335,10 +335,18 @@ class _BudgetConn(_Conn):
         super()._handle(sql, params, cur)
 
     def _handle_budget(self, sql, params, cur: _Cursor):
+        # Row: (pid, gpu, wall, updated_at, auto_commit_max_gpu_hours,
+        # require_plan) — 0131 added the last two; ON CONFLICT updates only
+        # the columns the INSERT names, as Postgres does.
         verb = sql.lstrip().upper()
         if verb.startswith("INSERT"):
-            pid, gpu, wall = params
-            self.budgets[pid] = (pid, float(gpu), float(wall), None)
+            pid = params[0]
+            row = list(self.budgets.get(pid) or (pid, 0.0, 0.0, None, None, False))
+            if "require_plan" in sql:
+                row[4], row[5] = params[1], bool(params[2])
+            else:
+                row[1], row[2] = float(params[1]), float(params[2])
+            self.budgets[pid] = tuple(row)
             cur._result = []
         else:
             row = self.budgets.get(params[0])

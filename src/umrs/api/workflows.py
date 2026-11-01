@@ -16,9 +16,10 @@ import logging
 import os
 import shutil
 import tempfile
+from dataclasses import dataclass
 from itertools import islice
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 from fastapi import (
     APIRouter,
@@ -49,6 +50,8 @@ from ..server.file_handling import (
 from ..server.job_tracking_handler import DurableJobCommandBackend
 from ..server.workflow_registry_handler import (
     _resolve_workflow_catalog_entry,
+    _workflow_run_context,
+    commit_workflow_run,
     handle_workflow_command,
     register_workflow,
     resolve_workflow_for_caller,
@@ -69,9 +72,11 @@ from .workflow_auth import (
     workflow_job_status,
 )
 from .workflow_models import (
+    WorkflowCommitResponse,
     WorkflowDescribeResponse,
     WorkflowExecutionResponse,
     WorkflowListResponse,
+    WorkflowPlanResponse,
     WorkflowResultsResponse,
     WorkflowTriggerResponse,
 )
@@ -132,6 +137,48 @@ class WorkflowTriggerRequest(BaseModel):
         if "parameters" not in data and isinstance(data.get("params"), dict):
             return data
         return data
+
+
+class WorkflowPlanRequest(BaseModel):
+    """``POST /umrs/workflows/{name}/plan`` body (ADR-105 D-4): the trigger's
+    inputs; nothing runs and nothing is stored."""
+
+    user_id: str | None = Field(
+        default=None, min_length=1, description="Caller (MVP mode only)"
+    )
+    parameters: dict[str, Any] = Field(
+        default_factory=dict, description="Runtime parameters"
+    )
+    input_files: list[str] | None = Field(
+        default=None, description="Optional input file keys"
+    )
+    project_id: str | None = Field(
+        default=None,
+        description="Project context (MVP mode only; strict uses verified headers)",
+    )
+
+    def as_trigger(self) -> WorkflowTriggerRequest:
+        return WorkflowTriggerRequest(
+            user_id=self.user_id,
+            parameters=dict(self.parameters),
+            input_files=self.input_files,
+            project_id=self.project_id,
+        )
+
+
+class WorkflowCommitRequest(BaseModel):
+    """``POST /umrs/workflows/{name}/commit`` body: a plan's ``signed`` dict
+    and ``digest`` exactly as ``.../plan`` returned them."""
+
+    signed: dict[str, Any] = Field(..., description="The plan's signed dict, unchanged")
+    digest: str = Field(..., min_length=1, description="The plan's digest")
+    auto: bool = Field(
+        default=False,
+        description=(
+            "An unattended commit: refused unless the project's auto-commit "
+            "threshold is set and the re-resolved max_gpu_hours is within it"
+        ),
+    )
 
 
 class WorkflowUploadResponse(BaseModel):
@@ -1600,23 +1647,110 @@ async def trigger_workflow(
     x_r4_session_id: str | None = Header(None, alias="x-r4-session-id"),
     memberships: frozenset[str] = Depends(get_verified_memberships),
 ):
+    """Start a run. Refused (typed 403 ``workflows.plan_required``) when the
+    project requires plan -> commit (ADR-105 D-4).
+    # auth: verified
+    """
     _require_verified_workflow_identity(
         x_user_id, x_verified_project_id, x_verified_is_admin, x_verified_hmac
     )
-    user_id = _verified_workflow_user(request.user_id or "", x_user_id)
+    caller = _WorkflowHeaders(
+        x_user_id, x_verified_project_id, x_verified_is_admin, x_verified_hmac
+    )
+    resolved = _resolve_trigger(workflow_name, request, caller, memberships)
+    _refuse_unplanned_trigger(workflow_name, resolved.project_id)
+    return _dispatch_trigger(workflow_name, resolved, x_r4_session_id)
+
+
+# ---------------------------------------------------------------------------
+# Plan -> commit (ADR-105 D-4): a plan is signed, never stored
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _WorkflowHeaders:
+    """The gateway-verified identity headers of one workflow request."""
+
+    x_user_id: str | None
+    x_verified_project_id: str | None
+    x_verified_is_admin: str | None
+    x_verified_hmac: str | None
+
+    @property
+    def is_admin(self) -> bool:
+        return _header_str(self.x_verified_is_admin) == "true"
+
+    def identity_verified(self) -> bool:
+        """Wave-6 F1: verified only when presence AND (strict mode) the HMAC
+        hold; legacy unsigned paths stay False, so the durable layer never
+        uprates a forged tuple into ``gateway_verified`` truth."""
+        user, project = (
+            _header_str(self.x_user_id),
+            _header_str(self.x_verified_project_id),
+        )
+        if not (user and project):
+            return False
+        if not _strict_auth_mode():
+            return True
+        from ._verified_headers import handshake_secret, verified_headers_trusted
+
+        return verified_headers_trusted(
+            strict=True,
+            secret=handshake_secret(),
+            presented_hmac=_header_str(self.x_verified_hmac),
+            user_id=user,
+            project_id=project,
+            is_admin=self.is_admin,
+        )
+
+
+@dataclass(frozen=True)
+class _ResolvedTrigger:
+    """A trigger's verified caller, parameters and catalog entry."""
+
+    user_id: str
+    params: dict[str, Any]
+    entry: dict[str, Any]
+    is_admin: bool
+    identity_verified: bool
+
+    @property
+    def project_id(self) -> str:
+        """The project the durable job is recorded under (``default`` when
+        none), as ``workflow_registry_handler._workflow_project_id``."""
+        value = self.params.get("project_id")
+        return value.strip() if isinstance(value, str) and value.strip() else "default"
+
+
+def _resolve_trigger(
+    workflow_name: str,
+    request: WorkflowTriggerRequest,
+    caller: _WorkflowHeaders,
+    memberships: frozenset[str] | None,
+) -> _ResolvedTrigger:
+    """Identity, project authorization, owner-scoped resolution and the full
+    parameter-schema validation: the one path trigger, plan and commit share.
+    Each route also calls ``_require_verified_workflow_identity`` itself, so
+    the H-1 scope guard sees the resolver in the handler."""
+    _require_verified_workflow_identity(
+        caller.x_user_id,
+        caller.x_verified_project_id,
+        caller.x_verified_is_admin,
+        caller.x_verified_hmac,
+    )
+    user_id = _verified_workflow_user(request.user_id or "", caller.x_user_id)
     params = _verified_workflow_params(
         request.resolved_params(),
-        x_verified_project_id,
+        caller.x_verified_project_id,
         memberships,
-        x_verified_is_admin,
+        caller.x_verified_is_admin,
     )
-    # ADR-074 D-8: owner-scoped, the same resolution the run below uses.
-    is_admin = _header_str(x_verified_is_admin) == "true"
+    # ADR-074 D-8: owner-scoped, the same resolution the run uses.
     entry = resolve_workflow_for_caller(
         workflow_name,
         user_id,
-        is_admin=is_admin,
-        caller_project=_header_str(x_verified_project_id),
+        is_admin=caller.is_admin,
+        caller_project=_header_str(caller.x_verified_project_id),
     )
     if entry is None:
         raise_typed(
@@ -1624,46 +1758,313 @@ async def trigger_workflow(
                 "not_found", f"Workflow '{workflow_name}' not found"
             )
         )
-    describe = _describe_workflow_entry(entry)
-    schema = describe.get("parameter_schema", {})
+    schema = _describe_workflow_entry(entry).get("parameter_schema", {})
     _validate_params_against_schema(params, schema)
+    return _ResolvedTrigger(
+        user_id, params, entry, caller.is_admin, caller.identity_verified()
+    )
+
+
+def _dispatch_trigger(
+    workflow_name: str,
+    resolved: _ResolvedTrigger,
+    session_header: Any,
+    *,
+    idempotency_key: str | None = None,
+) -> dict[str, Any]:
+    """RUN_WORKFLOW through the registry handler; a plan commit carries its
+    plan id as the durable job's idempotency key."""
     store = get_optional_job_store()
     job_backend = DurableJobCommandBackend(store) if store is not None else None
-    # Wave-6 F1: identity only marked verified when presence AND (strict mode,
-    # when active) HMAC trust was established. The mouth-to-mouth mark stays
-    # False for legacy unsigned paths so the durable layer never uprates a
-    # forged tuple into `gateway_verified` truth.
-    identity_verified = bool(
-        _header_str(x_user_id) and _header_str(x_verified_project_id)
-    )
-    if identity_verified and _strict_auth_mode():
-        from ._verified_headers import handshake_secret, verified_headers_trusted
-
-        identity_verified = verified_headers_trusted(
-            strict=True,
-            secret=handshake_secret(),
-            presented_hmac=_header_str(x_verified_hmac),
-            user_id=_header_str(x_user_id),
-            project_id=_header_str(x_verified_project_id),
-            is_admin=_header_str(x_verified_is_admin) == "true",
+    payload = json.dumps(
+        _run_workflow_payload(
+            workflow_name, resolved.params, resolved.identity_verified, session_header
         )
-    raw = handle_workflow_command(
-        TaskCmd.RUN_WORKFLOW,
-        user_id,
-        json.dumps(
-            _run_workflow_payload(
-                workflow_name, params, identity_verified, x_r4_session_id
-            )
-        ),
-        job_backend=job_backend,
-        # Wave-6 F1: the durable trust bridge reflects the verified flag,
-        # never hardcoded True. Under strict mode + missing/invalid HMAC,
-        # `_identity_verified` is False, so this no longer uprates a forged
-        # tuple into `gateway_verified` truth downstream.
-        trusted_identity=identity_verified,
-        caller_is_admin=is_admin,
     )
-    return _parse_command_response(raw, action="trigger")
+    # Wave-6 F1: the durable trust bridge reflects the verified flag, never
+    # hardcoded True.
+    if idempotency_key is None:
+        raw = handle_workflow_command(
+            TaskCmd.RUN_WORKFLOW,
+            resolved.user_id,
+            payload,
+            job_backend=job_backend,
+            trusted_identity=resolved.identity_verified,
+            caller_is_admin=resolved.is_admin,
+        )
+        return _parse_command_response(raw, action="trigger")
+    raw = commit_workflow_run(
+        resolved.user_id,
+        payload,
+        job_backend,
+        trusted_identity=resolved.identity_verified,
+        caller_is_admin=resolved.is_admin,
+        idempotency_key=idempotency_key,
+    )
+    return _parse_command_response(raw, action="commit")
+
+
+def _plan_refusal(name: str, http_status: int, message: str) -> NoReturn:
+    """A typed ``workflows.<name>`` refusal of the plan/commit family."""
+    raise_typed(
+        PlatformError(
+            code=f"workflows.{name}", message=message, http_status=http_status
+        )
+    )
+
+
+def _project_plan_policy(project_id: str) -> Any:
+    """The project's plan policy over the job store's ``umrs_db`` pool; an
+    unreadable policy is a typed 503 (fail closed)."""
+    from ..workflow_plans import PlanPolicyUnavailable, read_project_plan_policy
+
+    pool = getattr(get_optional_job_store(), "db_pool", None)
+    try:
+        return read_project_plan_policy(pool, project_id)
+    except PlanPolicyUnavailable as exc:
+        logger.warning("%s", exc)
+        _plan_refusal("policy_unavailable", 503, str(exc))
+
+
+def _refuse_unplanned_trigger(workflow_name: str, project_id: str) -> None:
+    from ..workflow_plans import plan_required_message
+
+    if _project_plan_policy(project_id).require_plan:
+        _plan_refusal(
+            "plan_required", 403, plan_required_message(project_id, workflow_name)
+        )
+
+
+def _quote_resolved(workflow_name: str, resolved: _ResolvedTrigger) -> Any:
+    """The run's quote; a workflow this site cannot run is a typed 409."""
+    from ..workflow_plans import quote_workflow
+
+    try:
+        source_path, workflow_json, _ = _workflow_run_context(
+            workflow_name,
+            resolved.user_id,
+            source_path=str(resolved.entry.get("source_path") or ""),
+        )
+    except ValueError as exc:
+        raise_typed(PlatformError.workflows("not_found", str(exc)), cause=exc)
+    quote = quote_workflow(workflow_json, source_path)
+    if quote.refusal:
+        _plan_refusal("lane_unavailable", 409, quote.refusal)
+    return quote
+
+
+_PLATFORM_PARAM_KEYS = ("input_files", "project_id")
+
+
+def _plan_fields(
+    workflow_name: str, resolved: _ResolvedTrigger, quote: Any
+) -> dict[str, Any]:
+    """The values a plan signs (``workflow_plans.SIGNED_FIELDS`` minus
+    ``expires_at``)."""
+    params = resolved.params
+    return {
+        "project_id": resolved.project_id,
+        "user_id": resolved.user_id,
+        "workflow_name": workflow_name,
+        "version": resolved.entry.get("version"),
+        "parameters": {
+            k: v for k, v in params.items() if k not in _PLATFORM_PARAM_KEYS
+        },
+        "input_files": params.get("input_files"),
+        "lane": quote.lane,
+        "partition": quote.partition,
+        "account": quote.account,
+        "gpu_steps": quote.gpu_steps,
+        "max_wall_seconds": quote.max_wall_seconds,
+    }
+
+
+def _plan_quota(user_id: str) -> dict[str, Any]:
+    """The caller's agent units (reported; a workflow run is not one)."""
+    from .agent_quota import agent_max_processes, count_active_agent_units
+
+    pool = getattr(get_optional_job_store(), "db_pool", None)
+    try:
+        active: int | None = count_active_agent_units(pool, user_id=user_id)
+    except Exception:  # a report, never a refusal
+        logger.warning("agent unit count failed for %s", user_id, exc_info=True)
+        active = None
+    return {"active_units": active, "max_units": agent_max_processes()}
+
+
+@router.post(
+    "/{workflow_name}/plan",
+    operation_id="workflow_plan",
+    response_model=WorkflowPlanResponse,
+    response_model_exclude_unset=True,
+)
+async def plan_workflow(
+    workflow_name: str,
+    request: WorkflowPlanRequest,
+    x_user_id: str | None = Header(None),
+    x_verified_project_id: str | None = Header(None),
+    x_verified_is_admin: str | None = Header(None),
+    x_verified_hmac: str | None = Header(None),
+    memberships: frozenset[str] = Depends(get_verified_memberships),
+):
+    """Resolve and sign a run plan (ADR-105 D-4). The same identity,
+    authorization, resolution and parameter validation as trigger; nothing
+    is written (no job, no catalog change). Commit before ``expires_at``.
+    # auth: verified
+    """
+    from ..workflow_plans import sign_plan
+
+    _require_verified_workflow_identity(
+        x_user_id, x_verified_project_id, x_verified_is_admin, x_verified_hmac
+    )
+    caller = _WorkflowHeaders(
+        x_user_id, x_verified_project_id, x_verified_is_admin, x_verified_hmac
+    )
+    resolved = _resolve_trigger(
+        workflow_name, request.as_trigger(), caller, memberships
+    )
+    quote = _quote_resolved(workflow_name, resolved)
+    policy = _project_plan_policy(resolved.project_id)
+    signed, digest, plan_id = sign_plan(_plan_fields(workflow_name, resolved, quote))
+    return {
+        "status": "ok",
+        "plan_id": plan_id,
+        "digest": digest,
+        "expires_at": signed["expires_at"],
+        "signed": signed,
+        "workflow_name": workflow_name,
+        "version": signed["version"],
+        "steps": [step.to_dict() for step in quote.steps],
+        "lane": quote.lane,
+        "partition": quote.partition,
+        "account": quote.account,
+        "gpu_steps": quote.gpu_steps,
+        "max_wall_seconds": quote.max_wall_seconds,
+        "max_gpu_hours": quote.max_gpu_hours,
+        "quota": _plan_quota(resolved.user_id),
+        "auto_commit_max_gpu_hours": policy.auto_commit_max_gpu_hours,
+        "require_plan": policy.require_plan,
+        "auto_commit_allowed": policy.auto_commit_allows(quote.max_gpu_hours),
+    }
+
+
+def _verified_plan(workflow_name: str, body: WorkflowCommitRequest) -> dict[str, Any]:
+    """The signed dict once its digest, expiry and workflow hold."""
+    from ..workflow_plans import plan_expired, verify_plan
+
+    signed = body.signed
+    if not verify_plan(signed, body.digest):
+        _plan_refusal("plan_invalid", 403, "plan signature does not verify")
+    if plan_expired(signed):
+        _plan_refusal(
+            "plan_expired",
+            409,
+            f"plan expired at {signed.get('expires_at')}; plan again",
+        )
+    if signed.get("workflow_name") != workflow_name:
+        _plan_refusal("plan_mismatch", 403, "the plan was made for another workflow")
+    return signed
+
+
+def _trigger_from_plan(signed: dict[str, Any]) -> WorkflowTriggerRequest:
+    """The trigger request a plan was made from (its signed inputs)."""
+    parameters = dict(signed.get("parameters") or {})
+    if signed.get("input_files") is not None:
+        parameters["input_files"] = signed["input_files"]
+    project = signed.get("project_id")
+    return WorkflowTriggerRequest(
+        user_id=signed.get("user_id") or None,
+        parameters=parameters,
+        project_id=None if project in (None, "", "default") else project,
+    )
+
+
+def _refuse_foreign_plan(signed: dict[str, Any], resolved: _ResolvedTrigger) -> None:
+    if signed.get("user_id") != resolved.user_id:
+        _plan_refusal("plan_mismatch", 403, "the plan was made for another user")
+    if signed.get("project_id") != resolved.project_id:
+        _plan_refusal("plan_mismatch", 403, "the plan was made for another project")
+
+
+def _refuse_stale_plan(signed: dict[str, Any], fresh: dict[str, Any]) -> None:
+    from ..workflow_plans import stale_fields
+
+    changed = stale_fields(signed, fresh)
+    if changed:
+        _plan_refusal(
+            "plan_stale",
+            409,
+            f"the plan no longer matches ({', '.join(changed)} changed); plan again",
+        )
+
+
+def _refuse_auto_commit(project_id: str, max_gpu_hours: float) -> None:
+    """Fail closed: an ``auto`` commit needs a threshold the quote is within."""
+    policy = _project_plan_policy(project_id)
+    if policy.auto_commit_allows(max_gpu_hours):
+        return
+    limit = policy.auto_commit_max_gpu_hours
+    threshold = "no auto-commit threshold" if limit is None else f"threshold {limit:g}"
+    _plan_refusal(
+        "auto_commit_refused",
+        403,
+        (
+            f"auto commit refused: project '{project_id}' has {threshold} GPU hours; "
+            f"this plan's max_gpu_hours is {max_gpu_hours:g}"
+        ),
+    )
+
+
+@router.post(
+    "/{workflow_name}/commit",
+    operation_id="workflow_commit",
+    response_model=WorkflowCommitResponse,
+    response_model_exclude_unset=True,
+)
+async def commit_workflow(
+    workflow_name: str,
+    request: WorkflowCommitRequest,
+    x_user_id: str | None = Header(None),
+    x_verified_project_id: str | None = Header(None),
+    x_verified_is_admin: str | None = Header(None),
+    x_verified_hmac: str | None = Header(None),
+    x_r4_session_id: str | None = Header(None, alias="x-r4-session-id"),
+    memberships: frozenset[str] = Depends(get_verified_memberships),
+):
+    """Start the run a plan describes (ADR-105 D-4): verify the signature,
+    expiry and caller, re-resolve (a changed target is ``plan_stale``), check
+    ``auto`` against the project's threshold, then trigger with the plan id
+    as the idempotency key: a second commit answers the run already started.
+    The project's ``require_plan`` does not apply here.
+    # auth: verified
+    """
+    _require_verified_workflow_identity(
+        x_user_id, x_verified_project_id, x_verified_is_admin, x_verified_hmac
+    )
+    caller = _WorkflowHeaders(
+        x_user_id, x_verified_project_id, x_verified_is_admin, x_verified_hmac
+    )
+    signed = _verified_plan(workflow_name, request)
+    resolved = _resolve_trigger(
+        workflow_name, _trigger_from_plan(signed), caller, memberships
+    )
+    _refuse_foreign_plan(signed, resolved)
+    quote = _quote_resolved(workflow_name, resolved)
+    _refuse_stale_plan(signed, _plan_fields(workflow_name, resolved, quote))
+    if request.auto:
+        _refuse_auto_commit(resolved.project_id, quote.max_gpu_hours)
+    if get_optional_job_store() is None:
+        _plan_refusal(
+            "commit_unavailable", 503, "a plan commit needs the durable job store"
+        )
+    from ..workflow_plans import plan_id_for
+
+    plan_id = plan_id_for(request.digest)
+    payload = _dispatch_trigger(
+        workflow_name, resolved, x_r4_session_id, idempotency_key=plan_id
+    )
+    payload["plan_id"] = plan_id
+    return payload
 
 
 # ---------------------------------------------------------------------------

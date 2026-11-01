@@ -351,6 +351,12 @@ class DurableJobCommandBackend:
         self._job_store = job_store
         self._db_pool = db_pool
 
+    @property
+    def store_pool(self) -> Any:
+        """The job store's ``umrs_db`` pool (None for a store without one):
+        the RUN_WORKFLOW path reads the project's plan policy over it."""
+        return getattr(self._job_store, "db_pool", None)
+
     def close(self) -> None:
         if self._db_pool is not None:
             self._db_pool.closeall()

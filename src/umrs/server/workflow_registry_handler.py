@@ -729,6 +729,31 @@ def _launch_workflow_from_catalog(
     return record, source_path, step_count
 
 
+def _workflow_run_job_payload(
+    params: dict[str, Any], spec: dict[str, Any], idempotency_key: str | None
+) -> str:
+    """The internal submit's payload; a plan commit carries its plan id as
+    the idempotency key (ADR-105 D-4), so a retried commit enqueues once."""
+    payload: dict[str, Any] = {
+        "project_id": _workflow_project_id(params),
+        "job_type": "workflow_run",
+        "spec": spec,
+        "max_attempts": 4,
+        "restart_policy": "on_crash",
+    }
+    if idempotency_key:
+        payload["idempotency_key"] = idempotency_key
+    return json.dumps(payload)
+
+
+def _job_execution_id(job: dict[str, Any], execution_id: str) -> str:
+    """The run's execution id: the job's own (an idempotent re-submit answers
+    the existing job, whose spec names the run it started), else *execution_id*."""
+    spec = job.get("spec") if isinstance(job.get("spec"), dict) else {}
+    existing = spec.get("execution_id")
+    return existing if isinstance(existing, str) and existing else execution_id
+
+
 def _submit_durable_workflow_run(
     *,
     client_id: str,
@@ -740,6 +765,7 @@ def _submit_durable_workflow_run(
     job_backend: DurableJobCommandBackend,
     verified_project: str | None = None,
     origin_session_id: Any = None,
+    idempotency_key: str | None = None,
 ) -> str:
     spec: dict[str, Any] = {
         "workflow_name": workflow_name,
@@ -760,16 +786,7 @@ def _submit_durable_workflow_run(
 
     stamp_origin_session(spec, origin_session_id)
     raw = job_backend.submit_workflow_run(
-        client_id,
-        json.dumps(
-            {
-                "project_id": _workflow_project_id(params),
-                "job_type": "workflow_run",
-                "spec": spec,
-                "max_attempts": 4,
-                "restart_policy": "on_crash",
-            }
-        ),
+        client_id, _workflow_run_job_payload(params, spec, idempotency_key)
     )
     try:
         data = json.loads(raw)
@@ -783,23 +800,78 @@ def _submit_durable_workflow_run(
 
     job = data.get("job") if isinstance(data.get("job"), dict) else {}
     durable_job_id = job.get("job_id")
+    run_id = _job_execution_id(job, execution_id)
+    body: dict[str, Any] = {
+        "status": "ok",
+        "action": "run-workflow",
+        "workflow_name": workflow_name,
+        "source_path": source_path,
+        "steps": step_count,
+        "params": params,
+        "execution_id": run_id,
+        "durable_job_id": durable_job_id,
+        "durable_job": job,
+        "message": (
+            f"Workflow '{workflow_name}' execution queued as durable job "
+            f"{durable_job_id or '<unknown>'} ({step_count} steps)"
+        ),
+    }
+    if run_id != execution_id:
+        # The idempotency key matched an existing job: no new run started.
+        body["existing_run"] = True
+    return json.dumps(body, default=str)
+
+
+def _run_workflow_request(payload_str: str) -> tuple[dict[str, Any], str | None]:
+    """(payload, error JSON): the RUN_WORKFLOW payload, shape-checked."""
+    try:
+        payload = json.loads(payload_str) if payload_str else {}
+    except json.JSONDecodeError:
+        return {}, json.dumps({"status": "error", "message": "Invalid JSON payload"})
+    if not isinstance(payload, dict) or not payload.get("workflow_name"):
+        return {}, json.dumps(
+            {"status": "error", "message": "workflow_name is required"}
+        )
+    if not isinstance(payload.get("params", {}), dict):
+        return {}, json.dumps(
+            {"status": "error", "message": "workflow params must be an object"}
+        )
+    return payload, None
+
+
+def _require_plan_refusal(
+    workflow_name: str,
+    params: dict[str, Any],
+    job_backend: DurableJobCommandBackend | None,
+) -> str | None:
+    """Error JSON when the run's project requires plan -> commit (ADR-105
+    D-4) or its policy is unreadable (fail closed); None otherwise.
+
+    The project is the one the durable job is recorded under
+    (``params.project_id``, ``default`` when absent). Without a durable
+    store there is no policy table, so nothing is refused.
+    """
+    from umrs.workflow_plans import (
+        PlanPolicyUnavailable,
+        plan_required_message,
+        read_project_plan_policy,
+    )
+
+    project_id = _workflow_project_id(params)
+    # Duck-typed: a backend without the property (a stub) has no policy table.
+    pool = getattr(job_backend, "store_pool", None)
+    try:
+        policy = read_project_plan_policy(pool, project_id)
+    except PlanPolicyUnavailable as exc:
+        return json.dumps({"status": "error", "message": str(exc)})
+    if not policy.require_plan:
+        return None
     return json.dumps(
         {
-            "status": "ok",
-            "action": "run-workflow",
-            "workflow_name": workflow_name,
-            "source_path": source_path,
-            "steps": step_count,
-            "params": params,
-            "execution_id": execution_id,
-            "durable_job_id": durable_job_id,
-            "durable_job": job,
-            "message": (
-                f"Workflow '{workflow_name}' execution queued as durable job "
-                f"{durable_job_id or '<unknown>'} ({step_count} steps)"
-            ),
-        },
-        default=str,
+            "status": "error",
+            "code": "workflows.plan_required",
+            "message": plan_required_message(project_id, workflow_name),
+        }
     )
 
 
@@ -810,6 +882,7 @@ def _handle_run_workflow(
     *,
     trusted_identity: bool = False,
     caller_is_admin: bool = False,
+    idempotency_key: str | None = None,
 ) -> str:
     """Trigger execution of a registered workflow.
 
@@ -819,21 +892,21 @@ def _handle_run_workflow(
 
     Resolution is owner-scoped (ADR-074 D-8): the caller's own workflow or a
     ``system`` one; another owner's only when ``caller_is_admin``.
+
+    ``idempotency_key`` is set only by :func:`commit_workflow_run` (a
+    verified plan commit, ADR-105 D-4): that run skips the project's
+    ``require_plan`` refusal, which every other caller (HTTP trigger,
+    run-definition trigger, ZMQ ``RUN_WORKFLOW``) gets.
     """
-    try:
-        payload = json.loads(payload_str) if payload_str else {}
-    except json.JSONDecodeError:
-        return json.dumps({"status": "error", "message": "Invalid JSON payload"})
-
-    workflow_name = payload.get("workflow_name", "")
+    payload, error = _run_workflow_request(payload_str)
+    if error:
+        return error
+    workflow_name = payload["workflow_name"]
     params = payload.get("params", {})
-
-    if not workflow_name:
-        return json.dumps({"status": "error", "message": "workflow_name is required"})
-    if not isinstance(params, dict):
-        return json.dumps(
-            {"status": "error", "message": "workflow params must be an object"}
-        )
+    if idempotency_key is None:
+        refusal = _require_plan_refusal(workflow_name, params, job_backend)
+        if refusal:
+            return refusal
 
     identity_verified = trusted_identity and bool(payload.get("_identity_verified"))
     caller_project = _verified_caller_project(params, identity_verified)
@@ -860,6 +933,7 @@ def _handle_run_workflow(
             job_backend=job_backend,
             verified_project=caller_project,
             origin_session_id=payload.get("_origin_session_id"),
+            idempotency_key=idempotency_key,
         )
 
     record, source_path, step_count = _launch_workflow_from_catalog(
@@ -884,6 +958,42 @@ def _handle_run_workflow(
         },
         default=str,
     )
+
+
+def commit_workflow_run(
+    client_id: str,
+    payload_str: str,
+    job_backend: DurableJobCommandBackend | None,
+    *,
+    trusted_identity: bool,
+    caller_is_admin: bool,
+    idempotency_key: str,
+) -> str:
+    """RUN_WORKFLOW for a verified plan commit (ADR-105 D-4).
+
+    Server-side only (the HTTP commit route, after the plan's signature,
+    expiry, caller and staleness checks); no ZMQ payload reaches it. The
+    plan id is the durable job's idempotency key, so a durable store is
+    required: without one a retried commit would start a second run. The
+    HTTP request's correlation id stays in scope (no ZMQ scope is opened).
+    """
+    if job_backend is None or not idempotency_key:
+        return json.dumps(
+            {"status": "error", "message": "a plan commit needs the durable job store"}
+        )
+    payload_str = _drop_untrusted_identity_claim(payload_str, trusted_identity)
+    try:
+        return _handle_run_workflow(
+            client_id,
+            payload_str,
+            job_backend,
+            trusted_identity=trusted_identity,
+            caller_is_admin=caller_is_admin,
+            idempotency_key=idempotency_key,
+        )
+    except Exception as exc:  # as _dispatch_workflow_command
+        logger.exception("workflow plan commit failed")
+        return json.dumps({"status": "error", "message": str(exc)})
 
 
 def _drop_untrusted_identity_claim(payload_str: str, trusted_identity: bool) -> str:

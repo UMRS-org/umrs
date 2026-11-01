@@ -75,7 +75,8 @@ class _ProjectsConn:
 
     def add(self, pid: str, owner: str) -> None:
         self.projects[pid] = (pid, pid, owner, "active", None, None, None, "sensitive", "", "[]")
-        self.budgets[pid] = (pid, 8.0, 3.0, None)
+        # 0131 (ADR-105 D-4) added auto_commit_max_gpu_hours, require_plan.
+        self.budgets[pid] = (pid, 8.0, 3.0, None, None, False)
 
 
 class _ProjectsCursor:

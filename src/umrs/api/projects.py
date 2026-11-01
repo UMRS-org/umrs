@@ -224,10 +224,12 @@ class ProjectStore:
         return row
 
     def get_budget(self, project_id: str) -> dict[str, Any]:
-        """Budget row for the project (zeros = uncapped when absent)."""
+        """Budget row for the project (zeros = uncapped when absent; no
+        auto-commit threshold and ``require_plan`` false, ADR-105 D-4)."""
         cur = self._conn.cursor()
         cur.execute(
-            "SELECT project_id, max_gpu_hours, max_wall_clock_hours, updated_at"
+            "SELECT project_id, max_gpu_hours, max_wall_clock_hours, updated_at,"
+            " auto_commit_max_gpu_hours, require_plan"
             " FROM project_budgets WHERE project_id = %s",
             (project_id,),
         )
@@ -238,13 +240,43 @@ class ProjectStore:
                 "max_gpu_hours": 0.0,
                 "max_wall_clock_hours": 0.0,
                 "updated_at": None,
+                "auto_commit_max_gpu_hours": None,
+                "require_plan": False,
             }
         return {
             "project_id": row[0],
             "max_gpu_hours": float(row[1]),
             "max_wall_clock_hours": float(row[2]),
             "updated_at": row[3].isoformat() if row[3] else None,
+            "auto_commit_max_gpu_hours": None if row[4] is None else float(row[4]),
+            "require_plan": bool(row[5]),
         }
+
+    def set_plan_policy(
+        self,
+        project_id: str,
+        *,
+        auto_commit_max_gpu_hours: float | None,
+        require_plan: bool,
+    ) -> dict[str, Any]:
+        """Upsert the plan -> commit policy (ADR-105 D-4, migration 0131):
+        the loop caps of an existing row are kept; a new row starts uncapped."""
+        if auto_commit_max_gpu_hours is not None and auto_commit_max_gpu_hours < 0:
+            raise ValueError("auto_commit_max_gpu_hours must be >= 0")
+        self.get(project_id)  # raises ProjectNotFound — no orphan budgets
+        cur = self._conn.cursor()
+        cur.execute(
+            """INSERT INTO project_budgets (project_id, auto_commit_max_gpu_hours,
+                                          require_plan, updated_at)
+               VALUES (%s, %s, %s, NOW())
+               ON CONFLICT (project_id) DO UPDATE SET
+                   auto_commit_max_gpu_hours = EXCLUDED.auto_commit_max_gpu_hours,
+                   require_plan = EXCLUDED.require_plan,
+                   updated_at = NOW()""",
+            (project_id, auto_commit_max_gpu_hours, bool(require_plan)),
+        )
+        self._conn.commit()
+        return self.get_budget(project_id)
 
     def set_budget(
         self,
@@ -648,10 +680,56 @@ def patch_project(
 
 
 class BudgetBody(BaseModel):
-    """Loop budget caps (0 = uncapped; ADR-067)."""
+    """Loop budget caps (0 = uncapped; ADR-067) and the plan -> commit
+    policy (ADR-105 D-4).
+
+    The loop caps are written as before (an omitted cap is 0), except by a
+    body that names only plan fields. The plan fields are written only when
+    named: an omitted one keeps its stored value, and
+    ``auto_commit_max_gpu_hours: null`` clears the threshold.
+    """
 
     max_gpu_hours: float = Field(default=0.0, ge=0.0)
     max_wall_clock_hours: float = Field(default=0.0, ge=0.0)
+    auto_commit_max_gpu_hours: float | None = Field(
+        default=None,
+        ge=0.0,
+        description=(
+            "GPU hours under which a commit flagged `auto` may start a run "
+            "(null = no threshold: every `auto` commit is refused)"
+        ),
+    )
+    require_plan: bool | None = Field(
+        default=None,
+        description="True refuses direct triggers: plan then commit is the only way",
+    )
+
+
+_LOOP_CAP_FIELDS = frozenset({"max_gpu_hours", "max_wall_clock_hours"})
+_PLAN_POLICY_FIELDS = frozenset({"auto_commit_max_gpu_hours", "require_plan"})
+
+
+def _writes_loop_caps(body: BudgetBody) -> bool:
+    named = body.model_fields_set
+    return bool(named & _LOOP_CAP_FIELDS) or not (named & _PLAN_POLICY_FIELDS)
+
+
+def _plan_policy_update(
+    body: BudgetBody, current: dict[str, Any]
+) -> dict[str, Any] | None:
+    """The policy to store (named fields over *current*), or None."""
+    named = body.model_fields_set & _PLAN_POLICY_FIELDS
+    if not named:
+        return None
+    policy = {
+        "auto_commit_max_gpu_hours": current.get("auto_commit_max_gpu_hours"),
+        "require_plan": bool(current.get("require_plan")),
+    }
+    if "auto_commit_max_gpu_hours" in named:
+        policy["auto_commit_max_gpu_hours"] = body.auto_commit_max_gpu_hours
+    if "require_plan" in named and body.require_plan is not None:
+        policy["require_plan"] = body.require_plan
+    return policy
 
 
 @router.get("/{project_id}/budget")
@@ -675,7 +753,8 @@ def put_project_budget(
     store: ProjectStore = Depends(_store_dep),
     identity: CallerIdentity = Depends(get_caller_identity),
 ) -> dict[str, Any]:
-    """Set loop budget caps — owner-or-admin; 0 clears the cap. A caller who
+    """Set loop budget caps — owner-or-admin; 0 clears the cap — and the
+    plan -> commit policy (ADR-105 D-4; see ``BudgetBody``). A caller who
     cannot read the project gets "not found", as on GET (H-1, 2026-10-18).
     # auth: verified
     """
@@ -686,11 +765,16 @@ def put_project_budget(
                 "forbidden", "only the owner or an admin may set budgets"
             )
         )
-    budget = store.set_budget(
-        project_id,
-        max_gpu_hours=body.max_gpu_hours,
-        max_wall_clock_hours=body.max_wall_clock_hours,
-    )
+    budget = store.get_budget(project_id)
+    if _writes_loop_caps(body):
+        budget = store.set_budget(
+            project_id,
+            max_gpu_hours=body.max_gpu_hours,
+            max_wall_clock_hours=body.max_wall_clock_hours,
+        )
+    policy = _plan_policy_update(body, budget)
+    if policy is not None:
+        budget = store.set_plan_policy(project_id, **policy)
     return {"status": "ok", "budget": budget}
 
 

@@ -139,8 +139,9 @@ class TestTrustedIdentityBridgeConsistency:
     def test_source_binds_trusted_identity_to_verified_flag(self) -> None:
         import inspect
 
-        src = inspect.getsource(workflows.trigger_workflow)
-        assert "trusted_identity=identity_verified" in src
+        # ADR-105 S3: trigger and commit dispatch through _dispatch_trigger.
+        src = inspect.getsource(workflows._dispatch_trigger)
+        assert src.count("trusted_identity=resolved.identity_verified") == 2
         assert "trusted_identity=True" not in src
 
     def test_identity_verified_false_when_strict_rejects(
