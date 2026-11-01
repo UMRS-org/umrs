@@ -232,7 +232,9 @@ def _reconciler(monkeypatch, job: Job) -> tuple[Reconciler, list, list]:
     rec = Reconciler(store)
     moves: list = []
     monkeypatch.setattr(rec, "_fail_job", lambda jid, _reason: moves.append(("fail", jid)) or True)
-    monkeypatch.setattr(rec, "_requeue_job", lambda jid, _when: moves.append(("requeue", jid)))
+    monkeypatch.setattr(
+        rec, "_requeue_job", lambda jid, _when: moves.append(("requeue", jid)) or True
+    )
     return rec, fired, moves
 
 
@@ -244,6 +246,12 @@ def test_lost_attempt_that_ends_the_job_fires_lost(monkeypatch):
     assert "exhausted retries" in fired[0][1]
 
 
+def _job_id_and_guard(rest: list, jobs: dict) -> tuple[str, list]:
+    ids = [i for i, value in enumerate(rest) if isinstance(value, str) and value in jobs]
+    at = ids[0]
+    return rest[at], rest[at + 1 :]
+
+
 class _JobsCursor:
     """``UPDATE jobs ... WHERE job_id = %s [AND status = %s]`` on a dict."""
 
@@ -252,7 +260,10 @@ class _JobsCursor:
         self._row = None
 
     def execute(self, _sql, params):
-        new_status, job_id, *guard = params
+        # (status, job_id, guard) for _fail_job; (status, next_run, job_id,
+        # guard) for _requeue_job; the unguarded pre-fix SQL lacks the guard.
+        new_status, *rest = params
+        job_id, guard = _job_id_and_guard(rest, self._jobs)
         current = self._jobs.get(job_id)
         self._row = None
         if current is None or (guard and current != guard[0]):
@@ -283,15 +294,36 @@ class _JobsPool:
         pass
 
 
-def _guarded_reconciler(monkeypatch, status_after_read: str):
-    """The reconciler reads the job RUNNING; by the time it fails it, the
-    row holds ``status_after_read`` (a concurrent cancel committed)."""
-    rec, fired, _ = _reconciler(monkeypatch, _job(max_attempts=1))
+def _guarded_reconciler(monkeypatch, status_after_read: str, max_attempts: int = 1):
+    """The reconciler reads the job RUNNING; by the time it fails or
+    requeues it, the row holds ``status_after_read`` (a concurrent cancel
+    committed)."""
+    rec, fired, _ = _reconciler(monkeypatch, _job(max_attempts=max_attempts))
     pool = _JobsPool({"job-1": status_after_read})
     rec.job_store.db_pool = pool
-    # the real, guarded _fail_job (the _reconciler helper stubs it)
+    # the real, guarded transitions (the _reconciler helper stubs them)
     monkeypatch.setattr(rec, "_fail_job", Reconciler._fail_job.__get__(rec))
+    monkeypatch.setattr(rec, "_requeue_job", Reconciler._requeue_job.__get__(rec))
     return rec, fired, pool
+
+
+def test_a_concurrently_cancelled_job_is_never_requeued(monkeypatch):
+    """A cancel that committed between the reconciler's read and its requeue
+    must win: the unguarded UPDATE set CANCELLED back to QUEUED, so the
+    cancelled job ran again."""
+    rec, fired, pool = _guarded_reconciler(monkeypatch, JobStatus.CANCELLED.value, max_attempts=3)
+    result = ReconcileResult()
+    rec._process_stale_attempt("att-1", "job-1", 1, "old", result)
+    assert pool.jobs["job-1"] == JobStatus.CANCELLED.value
+    assert result.requeued_jobs == [] and fired == []
+
+
+def test_a_still_running_lost_job_with_retries_is_requeued(monkeypatch):
+    rec, fired, pool = _guarded_reconciler(monkeypatch, JobStatus.RUNNING.value, max_attempts=3)
+    result = ReconcileResult()
+    rec._process_stale_attempt("att-1", "job-1", 1, "old", result)
+    assert pool.jobs["job-1"] == JobStatus.QUEUED.value
+    assert result.requeued_jobs == ["job-1"] and fired == []
 
 
 def test_a_concurrently_cancelled_job_is_not_overwritten_and_emits_no_lost(monkeypatch):

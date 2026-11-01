@@ -204,17 +204,29 @@ class Reconciler:
 
         # Check if we should retry
         if job.can_retry(attempt_no):
-            # Calculate backoff delay
-            next_run = datetime.utcnow()  # Run immediately on crash recovery
-
-            # Requeue the job
-            self._requeue_job(job_id, next_run)
-            result.requeued_jobs.append(job_id)
-            METRICS.retry_attempt("reconciler")
-            METRICS.reconciler_items("requeued")
-            logger.info(f"Requeued job {job_id} (attempt {attempt_no} was lost)")
+            self._requeue_lost_job(job_id, attempt_no, result)
         else:
             self._fail_lost_job(job_id, attempt_id, attempt_no, result)
+
+    def _requeue_lost_job(
+        self, job_id: str, attempt_no: int, result: ReconcileResult
+    ) -> None:
+        """Retries left: RUNNING → QUEUED, guarded like :meth:`_fail_lost_job`.
+
+        A cancel (or completion) that committed after this job was read wins:
+        the job is not requeued, so a cancelled job never runs again.
+        """
+        # Calculate backoff delay
+        next_run = datetime.utcnow()  # Run immediately on crash recovery
+
+        # Requeue the job
+        if not self._requeue_job(job_id, next_run):
+            logger.info(f"Job {job_id} left RUNNING concurrently; not requeued")
+            return
+        result.requeued_jobs.append(job_id)
+        METRICS.retry_attempt("reconciler")
+        METRICS.reconciler_items("requeued")
+        logger.info(f"Requeued job {job_id} (attempt {attempt_no} was lost)")
 
     def _fail_lost_job(
         self, job_id: str, attempt_id: str, attempt_no: int, result: ReconcileResult
@@ -256,11 +268,12 @@ class Reconciler:
             job.spec.get("target_path", "<missing>"),
         )
 
-    def _requeue_job(self, job_id: str, next_run: datetime) -> None:
+    def _requeue_job(self, job_id: str, next_run: datetime) -> bool:
         """
         Requeue a job for scheduling.
 
-        Transitions: RUNNING → QUEUED
+        Transitions: RUNNING → QUEUED, guarded: True only when the row was
+        still RUNNING (a concurrent cancel is never resurrected).
         """
         conn = self.job_store.db_pool.getconn()
         try:
@@ -272,11 +285,14 @@ class Reconciler:
                         active_attempt_id = NULL,
                         next_run_at = %s,
                         last_state_change_at = NOW()
-                    WHERE job_id = %s
+                    WHERE job_id = %s AND status = %s
+                    RETURNING job_id
                 """,
-                    (JobStatus.QUEUED.value, next_run, job_id),
+                    (JobStatus.QUEUED.value, next_run, job_id, JobStatus.RUNNING.value),
                 )
+                updated = cur.fetchone() is not None
                 conn.commit()
+                return updated
         except Exception:
             conn.rollback()
             raise
