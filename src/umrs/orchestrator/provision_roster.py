@@ -275,6 +275,31 @@ def roster_entries() -> list[dict[str, Any]]:
     return entries
 
 
+ROLE_ALIAS_PREFIX = "svc-"
+
+
+def is_role_alias(name: str | None) -> bool:
+    """ADR-106 D-1: role aliases are the fixed ``svc-*`` names clients call."""
+    return bool(name) and str(name).startswith(ROLE_ALIAS_PREFIX)
+
+
+def role_alias_models(alias: str) -> tuple[str, ...]:
+    """The models whose roster entries carry the role alias ``alias``.
+
+    Several entries may hold one alias during an upgrade roll (ADR-106 D-4):
+    the old model and its successor both serve it until the old replicas
+    retire. Roster order; empty for a non-role name or an unknown alias.
+    """
+    if not is_role_alias(alias):
+        return ()
+    models: list[str] = []
+    for entry in roster_entries():
+        model = entry.get("model")
+        if alias in (entry.get("aliases") or ()) and model and model not in models:
+            models.append(str(model))
+    return tuple(models)
+
+
 def resolve_model_recipe(
     model: str, variant: str | None = None
 ) -> dict[str, Any] | None:

@@ -22,7 +22,7 @@ import re
 from typing import TYPE_CHECKING
 
 import httpx
-from fastapi import APIRouter, Depends, Query, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse
 
 from umrs.api._proxy_timeouts import ProxyTimeouts, resolve_proxy_timeouts
@@ -43,6 +43,7 @@ from umrs.orchestrator.endpoint_registry import (
     RegisteredEndpoint,
     get_registry,
 )
+from umrs.orchestrator.provision_roster import is_role_alias, role_alias_models
 from umrs.server.correlation import get_request_id
 
 if TYPE_CHECKING:
@@ -137,6 +138,10 @@ def _json_body(body: bytes) -> dict | None:
 def _model_needs_rewrite(req_model: str | None, endpoint: RegisteredEndpoint) -> bool:
     if not req_model:
         return False
+    if is_role_alias(req_model):
+        # ADR-106 D-1: a role alias always reaches the engine as the backing
+        # model's served name.
+        return True
     return req_model in _recognized_model_names(
         endpoint
     ) and req_model != _upstream_model_name(endpoint)
@@ -215,6 +220,66 @@ def _served_model_fallback(
     return None
 
 
+_LIVE_STATUSES = [EndpointStatus.READY, EndpointStatus.DEGRADED]
+
+
+def _routable_rows(
+    registry: EndpointRegistry,
+    project_id: str,
+    caller: EndpointCaller | None,
+    models: tuple[str, ...],
+    exclude: frozenset[str] = frozenset(),
+) -> list[RegisteredEndpoint]:
+    """READY/DEGRADED rows serving one of ``models`` that the caller may use.
+
+    With a caller, ADR-078 decides (own project, or shared with the caller);
+    without one, only the caller's project. DRAINING rows are never routable.
+    """
+    wanted = set(models)
+    rows = [
+        ep
+        for ep in registry.list_all(status_filter=_LIVE_STATUSES)
+        if ep.job_id not in exclude
+        and (ep.model in wanted or ep.metadata.get("served_model_name") in wanted)
+    ]
+    if caller is None:
+        return [ep for ep in rows if ep.project_id == project_id]
+    return usable_endpoints(rows, caller)
+
+
+def _least_loaded(rows: list[RegisteredEndpoint]) -> RegisteredEndpoint | None:
+    return min(rows, key=lambda e: e.active_requests) if rows else None
+
+
+def _alias_endpoint(
+    registry: EndpointRegistry,
+    project_id: str,
+    model: str,
+    caller: EndpointCaller | None,
+) -> RegisteredEndpoint | None:
+    """ADR-106 D-1: a role alias routes to the least-loaded replica of any
+    model whose roster entry carries it (old and new during an upgrade)."""
+    models = role_alias_models(model)
+    if not models:
+        return None
+    return _least_loaded(_routable_rows(registry, project_id, caller, models))
+
+
+def _shared_fallback(
+    registry: EndpointRegistry,
+    caller: EndpointCaller | None,
+    model: str,
+    base_model: str,
+    variant: str | None,
+) -> RegisteredEndpoint | None:
+    """ADR-078: endpoints of other projects whose access list admits the caller."""
+    if caller is None:
+        return None
+    return registry.select_shared_endpoint(
+        caller, base_model, variant=variant
+    ) or registry.select_shared_endpoint(caller, model)
+
+
 def _discover_endpoint(
     registry: EndpointRegistry,
     project_id: str,
@@ -224,53 +289,38 @@ def _discover_endpoint(
     """
     Discover a ready endpoint for (project_id, model).
 
-    Uses least-connections selection when multiple endpoints exist for
-    the same model. Falls back to first-match if select_endpoint returns
-    None (e.g. no ready endpoints).
-
-    If the model name contains a variant suffix (e.g. "DeepSeek-V4-Pro-128k"),
-    the variant is extracted and used to filter candidates.
+    Tried in order, first hit wins: least-connections selection with a
+    parsed variant suffix (e.g. "DeepSeek-V4-Pro-128k"), then the exact
+    name, the variant-suffixed, served-name and pool-variant fallbacks, a
+    role alias (ADR-106 D-1), and endpoints shared with the caller (ADR-078).
 
     Raises HTTPException if no endpoint is available.
     """
-    # Try variant-aware selection first
     base_model, variant = _parse_variant_from_model(model)
-    endpoint = registry.select_endpoint(
-        project_id, base_model, variant=variant, strategy="least_connections"
-    )
-
-    if not endpoint:
-        # Try exact model name (no variant parsing)
-        endpoint = registry.select_endpoint(
+    strategies = (
+        lambda: registry.select_endpoint(
+            project_id, base_model, variant=variant, strategy="least_connections"
+        ),
+        lambda: registry.select_endpoint(
             project_id, model, strategy="least_connections"
-        )
-
-    if not endpoint:
-        endpoint = _variant_suffixed_fallback(registry, project_id, model)
-
-    if not endpoint:
-        endpoint = _served_model_fallback(registry, project_id, model, base_model)
-
-    if not endpoint:
-        endpoint = _variant_pool_match(registry, project_id, model)
-
-    if not endpoint and caller is not None:
-        # ADR-078: the caller's own project first, then endpoints of other
-        # projects whose access list admits the caller (user/group/system).
-        endpoint = registry.select_shared_endpoint(
-            caller, base_model, variant=variant
-        ) or registry.select_shared_endpoint(caller, model)
-
-    if not endpoint:
-        raise_typed(
-            PlatformError.llm(
-                "unavailable",
-                f"No active endpoint for model '{model}'. "
-                "Try again later or provision an endpoint.",
-            ),
-        )
-
-    return endpoint
+        ),
+        lambda: _variant_suffixed_fallback(registry, project_id, model),
+        lambda: _served_model_fallback(registry, project_id, model, base_model),
+        lambda: _variant_pool_match(registry, project_id, model),
+        lambda: _alias_endpoint(registry, project_id, model, caller),
+        lambda: _shared_fallback(registry, caller, model, base_model, variant),
+    )
+    for strategy in strategies:
+        endpoint = strategy()
+        if endpoint:
+            return endpoint
+    raise_typed(
+        PlatformError.llm(
+            "unavailable",
+            f"No active endpoint for model '{model}'. "
+            "Try again later or provision an endpoint.",
+        ),
+    )
 
 
 def _rewrite_model_name(body: bytes, endpoint: RegisteredEndpoint) -> bytes:
@@ -437,6 +487,8 @@ async def _proxy_streaming(
     load for the entire streaming duration.
     """
     client, response = await _open_stream(request, upstream_url, headers, body)
+    if response.status_code in _RETRYABLE_STATUS:
+        return await _close_failed_stream(client, response, registry, job_id)
 
     # Keep the last few chunks for usage extraction (streaming).
     # Only the tail matters — the final SSE event carries ``usage``.
@@ -500,6 +552,38 @@ async def _proxy_streaming(
         _yield(),
         status_code=response.status_code,
         media_type=response.headers.get("content-type", "text/event-stream"),
+    )
+
+
+# ADR-106 D-5: upstream answers that mean "this replica cannot serve now";
+# the one-shot failover retries them on another replica before any byte has
+# reached the caller.
+_RETRYABLE_STATUS = frozenset({502, 503, 504})
+
+
+async def _close_failed_stream(
+    client: httpx.AsyncClient,
+    response: httpx.Response,
+    registry: EndpointRegistry | None,
+    job_id: str | None,
+) -> Response:
+    """A failed upstream reply to a streaming request, read and closed now.
+
+    Nothing has been sent to the caller yet, so the reply is returned whole
+    (and the failover may still retry): left as an unstarted stream it would
+    never close the client nor release the replica's request count.
+    """
+    try:
+        content = await response.aread()
+    finally:
+        await response.aclose()
+        await client.aclose()
+        if registry and job_id:
+            registry.decrement_requests(job_id)
+    return Response(
+        content=content,
+        status_code=response.status_code,
+        media_type=response.headers.get("content-type"),
     )
 
 
@@ -655,17 +739,24 @@ async def _proxy_to_litellm(
         registry.increment_requests(endpoint.job_id)
 
     if is_streaming:
-        return await _proxy_streaming(
-            request,
-            upstream_url,
-            headers,
-            body,
-            usage_record=usage_record,
-            timer=timer,
-            registry=registry,
-            job_id=endpoint.job_id,
-            model=endpoint.model or "",
-        )
+        try:
+            return await _proxy_streaming(
+                request,
+                upstream_url,
+                headers,
+                body,
+                usage_record=usage_record,
+                timer=timer,
+                registry=registry,
+                job_id=endpoint.job_id,
+                model=endpoint.model or "",
+            )
+        except HTTPException:
+            # The stream never opened, so its generator will never release
+            # the count taken above (a leak the drain check would wait on).
+            if registry:
+                registry.decrement_requests(endpoint.job_id)
+            raise
     try:
         return await _proxy_oneshot(
             request,
@@ -805,6 +896,81 @@ def _variant_pool_match(
     return None
 
 
+def _alternate_endpoint(
+    registry: EndpointRegistry,
+    project_id: str,
+    model: str,
+    caller: EndpointCaller | None,
+    failed: RegisteredEndpoint,
+) -> RegisteredEndpoint | None:
+    """Another replica for the failover: the same backing model as the one
+    that failed, or any model behind the requested role alias."""
+    models = role_alias_models(model) or (failed.model,)
+    exclude = frozenset({failed.job_id})
+    return _least_loaded(_routable_rows(registry, project_id, caller, models, exclude))
+
+
+async def _first_attempt(
+    request: Request,
+    registry: EndpointRegistry,
+    endpoint: RegisteredEndpoint,
+    path: str,
+    caller: CallerIdentity,
+) -> tuple[Response | None, HTTPException | None]:
+    """The first proxy attempt: its response, or the retryable error it raised."""
+    try:
+        response = await _proxy_to_litellm(
+            request, endpoint, path, caller.user_id, caller.project_id, registry=registry
+        )
+    except HTTPException as exc:
+        if exc.status_code not in _RETRYABLE_STATUS:
+            raise
+        return None, exc
+    return response, None
+
+
+async def _proxy_with_failover(
+    request: Request,
+    registry: EndpointRegistry,
+    endpoint: RegisteredEndpoint,
+    path: str,
+    caller: CallerIdentity,
+    endpoint_caller: EndpointCaller,
+    model: str,
+) -> tuple[Response, RegisteredEndpoint]:
+    """Proxy, and retry ONCE on another replica when the first one fails
+    before any byte reached the caller (ADR-106 D-5).
+
+    Retried: connect errors and timeouts while opening (502/504) and an
+    upstream 502/503/504 status. Never retried: anything after a stream
+    started, and every other status (those are the model's answer).
+    """
+    response, error = await _first_attempt(request, registry, endpoint, path, caller)
+    if response is not None and response.status_code not in _RETRYABLE_STATUS:
+        return response, endpoint
+    alternate = _alternate_endpoint(
+        registry, caller.project_id, model, endpoint_caller, endpoint
+    )
+    if alternate is None:
+        if error is not None:
+            raise error
+        return response, endpoint
+    logger.warning(
+        "LLM failover: %s failed before the first byte; retrying on %s",
+        endpoint.job_id,
+        alternate.job_id,
+    )
+    retried = await _proxy_to_litellm(
+        request,
+        alternate,
+        path,
+        caller.user_id,
+        caller.project_id,
+        registry=registry,
+    )
+    return retried, alternate
+
+
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
@@ -822,22 +988,22 @@ async def chat_completions(
     Discovers endpoint from local registry (no HTTP hop), proxies to LiteLLM.
     """
     caller = _verified_caller(request)
-    user_id, project_id = caller.user_id, caller.project_id
+    project_id = caller.project_id
     body = await _json_object_body(request)
     model = _extract_model(body)
 
     logger.info("Chat completion: project=%s, model=%s", project_id, model)
 
-    endpoint = _discover_endpoint(
-        registry, project_id, model, _endpoint_caller(request, caller)
-    )
-    response = await _proxy_to_litellm(
+    endpoint_caller = _endpoint_caller(request, caller)
+    endpoint = _discover_endpoint(registry, project_id, model, endpoint_caller)
+    response, endpoint = await _proxy_with_failover(
         request,
+        registry,
         endpoint,
         "v1/chat/completions",
-        user_id,
-        project_id,
-        registry=registry,
+        caller,
+        endpoint_caller,
+        model,
     )
 
     # Mark used inline (direct registry call, no HTTP round-trip)
@@ -853,20 +1019,20 @@ async def completions(
 ):
     """OpenAI-compatible completions endpoint (legacy)."""
     caller = _verified_caller(request)
-    user_id, project_id = caller.user_id, caller.project_id
+    project_id = caller.project_id
     body = await _json_object_body(request)
     model = _extract_model(body)
 
-    endpoint = _discover_endpoint(
-        registry, project_id, model, _endpoint_caller(request, caller)
-    )
-    response = await _proxy_to_litellm(
+    endpoint_caller = _endpoint_caller(request, caller)
+    endpoint = _discover_endpoint(registry, project_id, model, endpoint_caller)
+    response, endpoint = await _proxy_with_failover(
         request,
+        registry,
         endpoint,
         "v1/completions",
-        user_id,
-        project_id,
-        registry=registry,
+        caller,
+        endpoint_caller,
+        model,
     )
     registry.mark_used(endpoint.job_id)
 
@@ -1090,20 +1256,20 @@ async def embeddings(
 ):
     """OpenAI-compatible embeddings endpoint."""
     caller = _verified_caller(request)
-    user_id, project_id = caller.user_id, caller.project_id
+    project_id = caller.project_id
     body = await _json_object_body(request)
     model = _extract_model(body)
 
-    endpoint = _discover_endpoint(
-        registry, project_id, model, _endpoint_caller(request, caller)
-    )
-    response = await _proxy_to_litellm(
+    endpoint_caller = _endpoint_caller(request, caller)
+    endpoint = _discover_endpoint(registry, project_id, model, endpoint_caller)
+    response, endpoint = await _proxy_with_failover(
         request,
+        registry,
         endpoint,
         "v1/embeddings",
-        user_id,
-        project_id,
-        registry=registry,
+        caller,
+        endpoint_caller,
+        model,
     )
     registry.mark_used(endpoint.job_id)
 

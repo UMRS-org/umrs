@@ -66,6 +66,9 @@ class EndpointStatus(str, Enum):
     STARTING = "starting"  # Resources allocated, container starting
     READY = "ready"  # Endpoint is responding to /v1/models
     DEGRADED = "degraded"  # Endpoint has issues but may still work
+    # ADR-106 D-5: finishing in-flight requests, takes no new ones; one-way
+    # (only retire or failure moves it on).
+    DRAINING = "draining"
     EXPIRED = "expired"  # Past expires_at, pending cleanup
     FAILED = "failed"  # Job failed, pending cleanup
     TERMINATED = "terminated"  # Explicitly stopped
@@ -588,9 +591,37 @@ class EndpointRegistry:
             self._persist(endpoint)
             return endpoint
 
+    def _draining(self, job_id: str) -> RegisteredEndpoint | None:
+        """The row when it is DRAINING (a probe must not bring it back)."""
+        with self._lock:
+            endpoint = self._by_job_id.get(job_id)
+        if endpoint is not None and endpoint.status == EndpointStatus.DRAINING:
+            return endpoint
+        return None
+
+    def mark_draining(self, job_id: str) -> RegisteredEndpoint | None:
+        """Stop routing new requests to this endpoint (ADR-106 D-5).
+
+        In-flight requests finish; ``in_flight`` reports them, and the
+        relay retires the job once it is drained or the drain times out.
+        """
+        return self.update_status(job_id, EndpointStatus.DRAINING)
+
+    def in_flight(self, job_id: str) -> int:
+        """Requests this server is proxying to the endpoint right now."""
+        with self._lock:
+            endpoint = self._by_job_id.get(job_id)
+            return endpoint.active_requests if endpoint else 0
+
     def mark_ready(self, job_id: str) -> RegisteredEndpoint | None:
-        """Mark endpoint as ready (passed readiness check)."""
-        return self.update_status(job_id, EndpointStatus.READY)
+        """Mark endpoint as ready (passed readiness check).
+
+        A DRAINING row stays DRAINING: drain is one-way (ADR-106 D-5), so a
+        late readiness probe never puts a retiring job back into selection.
+        """
+        return self._draining(job_id) or self.update_status(
+            job_id, EndpointStatus.READY
+        )
 
     def mark_degraded(self, job_id: str) -> RegisteredEndpoint | None:
         """Mark endpoint as degraded (reachable but unhealthy).
@@ -600,9 +631,12 @@ class EndpointRegistry:
         model not in /v1/models, chat probe HTTP error but endpoint alive.
         Degraded endpoints are still ``is_usable`` (they may serve partial
         traffic), and the durable checker will re-poll on the next cycle
-        to attempt a recovery transition to READY.
+        to attempt a recovery transition to READY. A DRAINING row stays
+        DRAINING (ADR-106 D-5).
         """
-        return self.update_status(job_id, EndpointStatus.DEGRADED)
+        return self._draining(job_id) or self.update_status(
+            job_id, EndpointStatus.DEGRADED
+        )
 
     def mark_failed(self, job_id: str, error: str) -> RegisteredEndpoint | None:
         """Mark endpoint as failed."""
