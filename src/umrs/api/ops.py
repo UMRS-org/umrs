@@ -643,6 +643,10 @@ class ConnectInfoResponse(BaseModel):
     # allowlist, so the workstation classifies sources exactly as the
     # venue-start and lease gates do (UMRS_INSTITUTIONAL_PROVIDER_HOSTS).
     institutional_provider_hosts: list[str] = []
+    # ADR-106 D-9: the service-tier role aliases this front serves
+    # (role -> "svc-<role>") plus an ordered "fallback" list. Absent when the
+    # front's roster carries no role alias.
+    default_models: dict[str, Any] | None = None
 
 
 @router.get(
@@ -702,8 +706,31 @@ def ops_connect_info(
         x_user_id, x_verified_project_id, x_verified_is_admin, x_verified_hmac
     )
     _add_connect_info_extras(result, s3cfg_user or None)
+    default_models = connect_info_default_models()
+    if default_models:
+        result["default_models"] = default_models
 
     return result
+
+
+#: ADR-106 D-1: the roles a service tier can fill, in advertisement order.
+SERVICE_ROLES = ("chat", "fast", "decision", "vision", "ocr", "embed", "rerank", "asr")
+
+
+def connect_info_default_models() -> dict[str, Any]:
+    """ADR-106 D-9: role -> alias for every ``svc-*`` alias this front's
+    roster carries, plus ``fallback`` from ``UMRS_DEFAULT_MODEL_FALLBACK``
+    (comma-separated, in order). Empty when there is neither."""
+    from umrs.orchestrator.provision_roster import role_alias_models
+
+    models: dict[str, Any] = {
+        role: f"svc-{role}" for role in SERVICE_ROLES if role_alias_models(f"svc-{role}")
+    }
+    raw = os.environ.get("UMRS_DEFAULT_MODEL_FALLBACK", "")
+    fallback = [name.strip() for name in raw.split(",") if name.strip()]
+    if fallback:
+        models["fallback"] = fallback
+    return models
 
 
 def _connect_info_services() -> dict[str, str]:
