@@ -199,6 +199,29 @@ def _budget_exhausted_marker(attempt_id: str, exit_reason: str | None) -> bool:
     return True
 
 
+# ADR-105 D-5: job-terminal listeners. One process holds several JobStore
+# instances (the scheduler's, the HTTP sidecar's, the ZMQ durable backend's,
+# the vision route's); a listener registered process-wide fires for every
+# one of them, so a cancel through the REST route and a success seen by the
+# scheduler's monitor reach the same emitter. Per-store listeners
+# (``JobStore.add_job_terminal_listener``) fire too.
+JOB_TERMINAL_STATES = ("succeeded", "failed", "cancelled", "lost")
+_PROCESS_TERMINAL_LISTENERS: list[Any] = []
+
+
+def register_process_job_terminal_listener(fn: Any) -> None:
+    """Fire ``fn(job, state, attempt_or_none, exit_reason)`` on every terminal
+    transition of every JobStore in this process (idempotent)."""
+    if fn not in _PROCESS_TERMINAL_LISTENERS:
+        _PROCESS_TERMINAL_LISTENERS.append(fn)
+
+
+def unregister_process_job_terminal_listener(fn: Any) -> None:
+    """Drop a process-wide listener (tests; a no-op when absent)."""
+    if fn in _PROCESS_TERMINAL_LISTENERS:
+        _PROCESS_TERMINAL_LISTENERS.remove(fn)
+
+
 def configured_site_name() -> str:
     """This process's site name (``site.yaml`` ``name``), "" without one.
 
@@ -323,6 +346,8 @@ class JobStore:
         # Called after mark_attempt_succeeded / mark_attempt_failed.
         self._post_success_callback: Any = None
         self._post_failure_callback: Any = None
+        # ADR-105 D-5: fan-out terminal listeners (beside the auto-ingest pair).
+        self._terminal_listeners: list[Any] = []
 
     def _resolve_venue(self, spec: dict[str, Any]) -> str:
         """Cluster-set venue resolution (WP-14).
@@ -370,6 +395,57 @@ class JobStore:
         """
         self._post_success_callback = on_succeeded
         self._post_failure_callback = on_failed
+
+    def add_job_terminal_listener(self, fn: Any) -> None:
+        """Register a terminal-transition listener on this store (ADR-105 D-5).
+
+        ``fn(job, state, attempt_or_none, exit_reason)`` is called best-effort
+        (an exception is logged, never raised) once per terminal transition:
+        ``succeeded``, ``failed`` (only when not requeued), ``cancelled``, and
+        ``lost`` (a lost attempt whose job then fails without a retry). The
+        auto-ingest pair (``set_post_completion_callbacks``) is unchanged.
+        """
+        if fn not in self._terminal_listeners:
+            self._terminal_listeners.append(fn)
+
+    def fire_job_terminal(
+        self,
+        job_id: str,
+        state: str,
+        attempt_id: str | None = None,
+        exit_reason: str = "",
+    ) -> None:
+        """Call every terminal listener (store + process) for one transition.
+
+        Best-effort by contract: a listener, or loading the job for it, never
+        blocks or fails the transition that already committed.
+        """
+        # getattr: harnesses build stores without __init__ (object.__new__).
+        own = getattr(self, "_terminal_listeners", ())
+        listeners = [*own, *_PROCESS_TERMINAL_LISTENERS]
+        if not listeners:
+            return
+        try:
+            job = self.get_job(job_id)
+        except Exception as exc:  # noqa: BLE001 — listeners never block a terminal state
+            logger.warning("terminal listeners skipped for job %s: %s", job_id, exc)
+            return
+        attempt = self._attempt_or_none(attempt_id)
+        for fn in listeners:
+            try:
+                fn(job, state, attempt, exit_reason)
+            except Exception as exc:  # noqa: BLE001 — best-effort by contract
+                logger.warning(
+                    "terminal listener failed for job %s (%s): %s", job_id, state, exc
+                )
+
+    def _attempt_or_none(self, attempt_id: str | None) -> Any:
+        if not attempt_id:
+            return None
+        try:
+            return self.get_attempt(attempt_id)
+        except Exception:  # noqa: BLE001 — the attempt is optional context
+            return None
 
     def _ensure_schema(self) -> None:
         """Ensure database schema exists."""
@@ -1187,6 +1263,7 @@ class JobStore:
 
             # Invoke post-success hook (best-effort, non-blocking)
             self._invoke_post_success(attempt_id, job_id)
+        self.fire_job_terminal(job_id, "succeeded", attempt_id, "success")
 
     def _record_attempt_timing(
         self, attempt_id: str, phase: str, when: datetime
@@ -1487,16 +1564,23 @@ class JobStore:
             # P7a: persist manifest for the failed attempt (best-effort)
             self._persist_attempt_manifest(attempt_id, job_id)
 
-            # Invoke post-failure hook when job itself failed (no retry).
-            if not requeued and self._post_failure_callback:
-                try:
-                    job = self.get_job(job_id)
-                    self._post_failure_callback(job, attempt_no, exit_reason)
-                except Exception as exc:  # noqa: BLE001 — post-failure hook must never block the terminal state
-                    logger.warning(
-                        "Post-failure hook failed for job %s: %s", job_id, exc
-                    )
+            # Invoke post-failure hooks when job itself failed (no retry).
+            if not requeued:
+                self._invoke_post_failure(job_id, attempt_no, exit_reason)
+                self.fire_job_terminal(job_id, "failed", attempt_id, exit_reason)
             return requeued
+
+    def _invoke_post_failure(
+        self, job_id: str, attempt_no: int, exit_reason: str
+    ) -> None:
+        """Best-effort post-failure hook dispatch (the auto-ingest pair)."""
+        if not self._post_failure_callback:
+            return
+        try:
+            job = self.get_job(job_id)
+            self._post_failure_callback(job, attempt_no, exit_reason)
+        except Exception as exc:  # noqa: BLE001 — post-failure hook must never block the terminal state
+            logger.warning("Post-failure hook failed for job %s: %s", job_id, exc)
 
     def mark_attempt_lost(
         self,
@@ -1507,7 +1591,10 @@ class JobStore:
         Mark attempt as LOST (UMRS crash recovery).
 
         Transitions: SUBMITTED/RUNNING → LOST
-        Does NOT automatically requeue - caller must handle that.
+        Does NOT automatically requeue - caller must handle that. The job's
+        own terminal transition (and so the ``lost`` terminal listener call)
+        belongs to that caller: the reconciler fires it when the job then
+        fails without a retry (ADR-105 D-5).
         """
         now = datetime.now(timezone.utc).replace(tzinfo=None)
 
@@ -1691,6 +1778,7 @@ class JobStore:
                 conn.commit()
                 logger.info(f"Cancelled job {job_id}: {reason}")
                 METRICS.job_cancelled("durable")
+        self.fire_job_terminal(job_id, "cancelled", None, reason)
 
     def reopen_client_job(self, job_id: str) -> list[str]:
         """Make a client-hosted job ready for its client's next attempt.

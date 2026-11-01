@@ -7,15 +7,18 @@ Provides:
 - GET /umrs/jobs/{job_id} - Get job details with attempts
 - POST /umrs/jobs/{job_id}/cancel - Cancel a job
 - POST /umrs/jobs/{job_id}/retry - Force retry a job
+- GET /umrs/jobs/events - The caller's job-terminal events after a cursor
+  (ADR-105 D-5)
 """
 
+import asyncio
 import logging
 import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from ..api.endpoint_policy import (
@@ -24,6 +27,11 @@ from ..api.endpoint_policy import (
     _spec_targets,
 )
 from ..jobs.cancel_gateway import register_store_getter as _register_store_getter
+from ..jobs.job_events import (
+    JOB_EVENT_KIND_PREFIX,
+    stamp_origin_session,
+    valid_session_id,
+)
 from ..jobs.models import (
     Job,
     JobAttempt,
@@ -521,6 +529,34 @@ class JobListResponse(BaseModel):
     offset: int
 
 
+class JobEvent(BaseModel):
+    """One job-terminal event (a ``platform_notifications`` row, ADR-105 D-5)."""
+
+    id: int = Field(..., description="Row id; the cursor for the next read")
+    kind: str = Field(
+        ..., description="job.succeeded|job.failed|job.cancelled|job.lost"
+    )
+    title: str = Field("", description="One-line summary")
+    detail: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "job_id, job_type, status, execution_id, session_id, "
+            "exit_reason, finished_at"
+        ),
+    )
+    created_at: str | None = None
+    project_id: str = ""
+
+
+class JobEventsResponse(BaseModel):
+    """A cursor page of the caller's job events (ascending by id)."""
+
+    events: list[JobEvent]
+    cursor: int = Field(
+        ..., description="Last returned id (or `after` when none): the next `after`"
+    )
+
+
 class JobCreateResponse(BaseModel):
     """Response for job creation."""
 
@@ -649,6 +685,7 @@ async def create_job(
     x_verified_project_id: str | None = Header(None),
     x_verified_is_admin: str | None = Header(None),
     x_verified_hmac: str | None = Header(None),
+    x_r4_session_id: str | None = Header(None, alias="x-r4-session-id"),
     store: JobStore = Depends(get_job_store),
 ) -> JobCreateResponse:
     """
@@ -689,6 +726,9 @@ async def create_job(
 
         # Build spec dict
         spec = request.spec.model_dump(exclude_none=True)
+        # ADR-105 D-5: the calling session tags its own job (client-asserted
+        # lineage; event reads stay scoped to the verified caller).
+        stamp_origin_session(spec, x_r4_session_id)
         project_id, user_id, is_admin = _resolve_job_create_identity_primitive(
             x_user_id,
             request.project_id,
@@ -1018,6 +1058,131 @@ async def list_jobs(
         limit=limit,
         offset=offset,
     )
+
+
+_events_unwired_logged = False
+
+
+def _job_events_pool(request: Request) -> Any:
+    """The umrs_db pool, or None (logged once) when this process has none."""
+    global _events_unwired_logged
+    pool = getattr(request.app.state, "umrs_db_pool", None)
+    if pool is None and not _events_unwired_logged:
+        _events_unwired_logged = True
+        logger.warning("GET /umrs/jobs/events: no umrs_db pool; answering empty")
+    return pool
+
+
+def _job_event_session_filter(kind_prefix: str, session_id: str | None) -> str | None:
+    """Validate the read filters; the session id filter, or None."""
+    if not kind_prefix.startswith(JOB_EVENT_KIND_PREFIX):
+        raise_typed(
+            PlatformError.jobs(
+                "bad_request", f"kind_prefix must start with {JOB_EVENT_KIND_PREFIX!r}"
+            )
+        )
+    if session_id is None:
+        return None
+    sid = valid_session_id(session_id)
+    if sid is None:
+        raise_typed(PlatformError.jobs("bad_request", "malformed session_id"))
+    return sid
+
+
+def _read_job_events(
+    pool: Any, caller: CallerIdentity, query: dict[str, Any]
+) -> tuple[list[dict[str, Any]], int]:
+    """One cursor page (or, with ``tail``, the scope's newest id)."""
+    from ..platform_notifications import NotificationStore
+
+    scope = {
+        "user_id": caller.user_id,
+        "project_id": caller.project_id,
+        "kind_prefix": query["kind_prefix"],
+    }
+    conn = pool.getconn()
+    try:
+        store = NotificationStore(conn)
+        if query["tail"]:
+            return [], store.max_id(**scope)
+        rows = store.list_after(
+            **scope,
+            after=query["after"],
+            session_id=query["session_id"],
+            limit=query["limit"],
+        )
+        return rows, (int(rows[-1]["id"]) if rows else query["after"])
+    finally:
+        _end_read(conn)
+        pool.putconn(conn)
+
+
+def _end_read(conn: Any) -> None:
+    """Close the read transaction before the connection goes back."""
+    try:
+        conn.rollback()
+    except Exception:  # a dead connection is the pool's to replace
+        logger.debug("job events: rollback after read failed", exc_info=True)
+
+
+def _job_event(row: dict[str, Any]) -> JobEvent:
+    return JobEvent(
+        id=int(row["id"]),
+        kind=str(row.get("kind") or ""),
+        title=str(row.get("title") or ""),
+        detail=dict(row.get("detail") or {}),
+        created_at=row.get("created_at"),
+        project_id=str(row.get("project_id") or ""),
+    )
+
+
+@router.get(
+    "/events",
+    operation_id="job_events",
+    response_model=JobEventsResponse,
+    summary="The caller's job-terminal events after a cursor",
+    description=(
+        "ADR-105 D-5: durable job.succeeded|failed|cancelled|lost events for "
+        "the verified caller in the verified project, ascending by id. Pass the "
+        "returned cursor as the next `after`; `tail=true` returns no events and "
+        "the current newest id, so a new watcher starts at now."
+    ),
+)
+async def job_events(
+    request: Request,
+    after: int = Query(0, ge=0, description="Return events with id > after"),
+    limit: int = Query(50, ge=1, le=100, description="Max events to return"),
+    session_id: str | None = Query(
+        None, max_length=128, description="Only events of jobs this session started"
+    ),
+    kind_prefix: str = Query(
+        JOB_EVENT_KIND_PREFIX, max_length=64, description="Kind prefix (job.*)"
+    ),
+    tail: bool = Query(False, description="Return the newest id, no events"),
+    caller: CallerIdentity = Depends(get_caller_identity),
+) -> JobEventsResponse:
+    """Cursor read of the caller's own job events (never another user's).
+    # auth: verified
+    """
+    sid = _job_event_session_filter(kind_prefix, session_id)
+    pool = _job_events_pool(request)
+    if pool is None:
+        return JobEventsResponse(events=[], cursor=after)
+    query = {
+        "after": after,
+        "limit": limit,
+        "session_id": sid,
+        "kind_prefix": kind_prefix,
+        "tail": tail,
+    }
+    try:
+        rows, cursor = await asyncio.to_thread(_read_job_events, pool, caller, query)
+    except Exception as exc:  # noqa: BLE001 — a store fault is a typed 503
+        logger.warning("job events read failed: %s", exc)
+        raise_typed(
+            PlatformError.jobs("unavailable", "Job events unavailable"), cause=exc
+        )
+    return JobEventsResponse(events=[_job_event(r) for r in rows], cursor=cursor)
 
 
 @router.get(

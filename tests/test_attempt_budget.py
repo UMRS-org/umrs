@@ -147,6 +147,12 @@ class _BudgetStore:
     def _reconcile_fan_out_parent(self, *_a, **_kw):  # harness stub
         pass
 
+    def _invoke_post_failure(self, *_a, **_kw):  # harness stub
+        pass
+
+    def fire_job_terminal(self, *_a, **_kw):  # harness stub (ADR-105 D-5)
+        pass
+
     def _row_to_job(self, row):
         from umrs.jobs.models import Job, JobStatus, JobType, RestartPolicy
 

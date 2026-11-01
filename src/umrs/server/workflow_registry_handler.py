@@ -739,6 +739,7 @@ def _submit_durable_workflow_run(
     step_count: int,
     job_backend: DurableJobCommandBackend,
     verified_project: str | None = None,
+    origin_session_id: Any = None,
 ) -> str:
     spec: dict[str, Any] = {
         "workflow_name": workflow_name,
@@ -754,6 +755,10 @@ def _submit_durable_workflow_run(
     }
     if verified_project:
         spec[VERIFIED_PROJECT_SPEC_KEY] = verified_project
+    # ADR-105 D-5: the triggering session tags its own durable job.
+    from umrs.jobs.job_events import stamp_origin_session
+
+    stamp_origin_session(spec, origin_session_id)
     raw = job_backend.submit_workflow_run(
         client_id,
         json.dumps(
@@ -854,6 +859,7 @@ def _handle_run_workflow(
             step_count=step_count,
             job_backend=job_backend,
             verified_project=caller_project,
+            origin_session_id=payload.get("_origin_session_id"),
         )
 
     record, source_path, step_count = _launch_workflow_from_catalog(

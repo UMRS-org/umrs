@@ -182,6 +182,12 @@ class JobService:
                 exc,
             )
 
+        # ADR-105 D-5: pushed job events (platform_notifications rows),
+        # beside auto-ingest; a wiring fault only logs.
+        from .job_events import install_job_event_listener
+
+        install_job_event_listener()
+
         # Run boot reconciliation
         result = reconcile_on_startup(self._job_store)
         logger.info(f"Boot reconciliation: {result}")

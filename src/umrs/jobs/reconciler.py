@@ -215,9 +215,10 @@ class Reconciler:
             logger.info(f"Requeued job {job_id} (attempt {attempt_no} was lost)")
         else:
             # No more retries - mark job as failed
-            self._fail_job(
-                job_id, f"exhausted retries after crash (last attempt: {attempt_no})"
-            )
+            reason = f"exhausted retries after crash (last attempt: {attempt_no})"
+            self._fail_job(job_id, reason)
+            # ADR-105 D-5: the lost attempt ended the job — tell the listeners.
+            self.job_store.fire_job_terminal(job_id, "lost", attempt_id, reason)
             result.failed_jobs.append(job_id)
             METRICS.job_failed("reconciler")
             METRICS.reconciler_items("failed_exhausted")

@@ -15,6 +15,18 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+#: The cursor read's page cap (ADR-105 D-5: ``GET /umrs/jobs/events``).
+LIST_AFTER_MAX = 100
+
+_ROW_COLUMNS = "id, kind, title, detail, user_id, project_id, created_at, read_at"
+
+
+def like_prefix(prefix: str) -> str:
+    """``prefix`` as a LIKE pattern matching only rows that start with it
+    (``%``, ``_`` and the escape character are literal)."""
+    escaped = prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return escaped + "%"
+
 
 class NotificationStore:
     """psycopg2-backed durable notification rows (0109)."""
@@ -58,8 +70,13 @@ class NotificationStore:
         project_id: str | None = None,
         unread_only: bool = False,
         limit: int = 100,
+        exclude_kind_prefix: str | None = None,
     ) -> list[dict[str, Any]]:
-        """Newest-first; optional owner/project/unread filters."""
+        """Newest-first; optional owner/project/unread filters.
+
+        ``exclude_kind_prefix`` drops one kind family (the dashboard bell
+        leaves out the ``job.*`` cursor-read events: never stamped read,
+        they would stay unread forever, ADR-105 D-5)."""
         where = []
         params: list[Any] = []
         if user_id:
@@ -70,6 +87,9 @@ class NotificationStore:
             params.append(project_id)
         if unread_only:
             where.append("read_at IS NULL")
+        if exclude_kind_prefix:
+            where.append("kind NOT LIKE %s")
+            params.append(like_prefix(exclude_kind_prefix))
         clause = (" WHERE " + " AND ".join(where)) if where else ""
         cur = self._conn.cursor()
         cur.execute(
@@ -79,6 +99,50 @@ class NotificationStore:
             (*params, limit),
         )
         return [self._row_dict(r) for r in cur.fetchall()]
+
+    def list_after(
+        self,
+        *,
+        user_id: str,
+        project_id: str,
+        after: int,
+        kind_prefix: str = "job.",
+        session_id: str | None = None,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """Durable cursor read (ADR-105 D-5): one owner's rows in one project
+        with ``id > after`` whose kind starts with ``kind_prefix``, ascending
+        by id (the BIGSERIAL id is the cursor; ``read_at`` is never used, so
+        several consumers can share a session). ``session_id`` narrows to
+        rows whose ``detail.session_id`` matches; ``limit`` is capped at
+        :data:`LIST_AFTER_MAX`."""
+        where = ["user_id = %s", "project_id = %s", "id > %s", "kind LIKE %s"]
+        params: list[Any] = [user_id, project_id, int(after), like_prefix(kind_prefix)]
+        if session_id:
+            where.append("detail->>'session_id' = %s")
+            params.append(session_id)
+        capped = max(1, min(int(limit), LIST_AFTER_MAX))
+        cur = self._conn.cursor()
+        cur.execute(
+            f"SELECT {_ROW_COLUMNS} FROM platform_notifications"
+            f" WHERE {' AND '.join(where)} ORDER BY id ASC LIMIT %s",
+            (*params, capped),
+        )
+        return [self._row_dict(r) for r in cur.fetchall()]
+
+    def max_id(
+        self, *, user_id: str, project_id: str, kind_prefix: str = "job."
+    ) -> int:
+        """The newest row id in one owner's scope (0 when none): a new cursor
+        consumer starts here instead of replaying history (``tail``)."""
+        cur = self._conn.cursor()
+        cur.execute(
+            "SELECT COALESCE(MAX(id), 0) FROM platform_notifications"
+            " WHERE user_id = %s AND project_id = %s AND kind LIKE %s",
+            (user_id, project_id, like_prefix(kind_prefix)),
+        )
+        row = cur.fetchone()
+        return int(row[0]) if row and row[0] is not None else 0
 
     def mark_read(self, notification_id: int) -> dict[str, Any] | None:
         """Stamp read_at (idempotent); None when the id is unknown."""
@@ -120,6 +184,11 @@ def set_emitter(pool: Any) -> None:
     """Install (or reset) the emitter pool — the api layer wires it at boot."""
     global _EMITTER
     _EMITTER = pool
+
+
+def emitter_wired() -> bool:
+    """True when :func:`set_emitter` installed a pool in this process."""
+    return _EMITTER is not None
 
 
 def notify(

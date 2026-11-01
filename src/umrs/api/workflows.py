@@ -996,6 +996,7 @@ async def trigger_run_definition(
     x_verified_project_id: str | None = Header(None),
     x_verified_is_admin: str | None = Header(None),
     x_verified_hmac: str | None = Header(None),
+    x_r4_session_id: str | None = Header(None, alias="x-r4-session-id"),
     memberships: frozenset[str] = Depends(get_verified_memberships),
 ):
     """Replay one persisted (workflow_name, params) — exact same inputs.
@@ -1018,6 +1019,7 @@ async def trigger_run_definition(
         x_verified_project_id=x_verified_project_id,
         x_verified_is_admin=x_verified_is_admin,
         x_verified_hmac=x_verified_hmac,
+        x_r4_session_id=x_r4_session_id,
         memberships=memberships,
     )
 
@@ -1560,6 +1562,28 @@ async def upload_workflow(
     )
 
 
+def _run_workflow_payload(
+    workflow_name: str,
+    params: dict[str, Any],
+    identity_verified: bool,
+    session_header: Any,
+) -> dict[str, Any]:
+    """The RUN_WORKFLOW payload; a well-formed ``x-r4-session-id`` rides as
+    ``_origin_session_id`` so the durable job carries ``spec.origin.session_id``
+    (ADR-105 D-5). Absent or malformed: the payload is unchanged."""
+    from ..jobs.job_events import valid_session_id
+
+    payload: dict[str, Any] = {
+        "workflow_name": workflow_name,
+        "params": params,
+        "_identity_verified": identity_verified,
+    }
+    sid = valid_session_id(session_header)
+    if sid is not None:
+        payload["_origin_session_id"] = sid
+    return payload
+
+
 @router.post(
     "/{workflow_name}/trigger",
     operation_id="workflow_run",
@@ -1573,6 +1597,7 @@ async def trigger_workflow(
     x_verified_project_id: str | None = Header(None),
     x_verified_is_admin: str | None = Header(None),
     x_verified_hmac: str | None = Header(None),
+    x_r4_session_id: str | None = Header(None, alias="x-r4-session-id"),
     memberships: frozenset[str] = Depends(get_verified_memberships),
 ):
     _require_verified_workflow_identity(
@@ -1626,11 +1651,9 @@ async def trigger_workflow(
         TaskCmd.RUN_WORKFLOW,
         user_id,
         json.dumps(
-            {
-                "workflow_name": workflow_name,
-                "params": params,
-                "_identity_verified": identity_verified,
-            }
+            _run_workflow_payload(
+                workflow_name, params, identity_verified, x_r4_session_id
+            )
         ),
         job_backend=job_backend,
         # Wave-6 F1: the durable trust bridge reflects the verified flag,

@@ -959,8 +959,13 @@ async def get_notifications(
     def _load():
         conn = pool.getconn()
         try:
+            # job.* rows are cursor-read events (ADR-105 D-5), never
+            # stamped read: the bell would hold them unread forever.
             return NotificationStore(conn).list(
-                project_id=_project_filter(scope), unread_only=True, limit=50
+                project_id=_project_filter(scope),
+                unread_only=True,
+                limit=50,
+                exclude_kind_prefix="job.",
             )
         finally:
             pool.putconn(conn)

@@ -115,6 +115,11 @@ def _init_job_store(db_pool):
         logger.warning(
             "Job store unavailable in HTTP sidecar — /umrs/jobs/* will return 503"
         )
+    # ADR-105 D-5: REST cancels reach the job-event emitter too (process-wide,
+    # idempotent and best-effort; the scheduler's boot installs it as well).
+    from umrs.jobs.job_events import install_job_event_listener
+
+    install_job_event_listener()
 
 
 def _init_model_store(app, db_pool):
