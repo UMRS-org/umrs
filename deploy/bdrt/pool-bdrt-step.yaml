@@ -107,6 +107,7 @@ endpoints:
     aliases:
       - qwen38-27b-nvfp4
       - unsloth/Qwen3.8-27B-NVFP4
+      - svc-fast  # ADR-106 D-1 role alias (2026-11-01)
     tier: system
     node_count: 1
     partition: spark
@@ -761,6 +762,9 @@ endpoints:
     aliases:
       - glm-5.3-flash-nvfp4
       - GLM-5.3-Flash-NVFP4
+      # ADR-106 D-2: GLM keeps svc-chat until DeepSeek-V4.1-Flash-1017 passes
+      # its go-live checks; then the alias moves to that entry (upgrade roll).
+      - svc-chat
     tier: system
     node_count: 2
     partition: edge-double

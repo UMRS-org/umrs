@@ -78,6 +78,8 @@ endpoints:
   # Stage first: r4 model stage nvidia/Qwen3.8-27B-NVFP4 --name Qwen3.8-27B-NVFP4
   - name: qwen3.8-27b-nvfp4
     model: Qwen3.8-27B-NVFP4
+    # ADR-106 D-1 role alias (2026-11-01): routing only, resolves to READY replicas.
+    aliases: [svc-fast]
     # No partition (2026-10-24, was ng-dgx-m0): the job takes the site
     # candidate list and UMRS submits it to the earliest-starting one.
     node_count: 1
@@ -114,6 +116,8 @@ endpoints:
   # (no gap).
   - name: bespoke-nimble-9b
     model: Bespoke-Nimble-9B
+    # ADR-106 D-1 role alias (2026-11-01): routing only, resolves to READY replicas.
+    aliases: [svc-decision]
     # Candidates, ng-dgx-s first (8 standalone nodes; preferred on ties),
     # ng-dgx-m3 last (the step lane's partition).
     # 2026-10-24: one partition per job, the earliest sbatch --test-only
