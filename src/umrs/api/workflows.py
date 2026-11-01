@@ -16,6 +16,7 @@ import logging
 import os
 import shutil
 import tempfile
+from itertools import islice
 from pathlib import Path
 from typing import Any
 
@@ -31,7 +32,10 @@ from fastapi import (
     UploadFile,
     status,
 )
+from jsonschema.exceptions import SchemaError, ValidationError
+from jsonschema.validators import Draft202012Validator, validator_for
 from pydantic import BaseModel, Field, model_validator
+from referencing.exceptions import Unresolvable
 
 from ..core.TaskCmdStatus import TaskCmd
 from ..core.zmq_correlation import dumps_with_correlation_id
@@ -63,6 +67,13 @@ from .workflow_auth import (
     resolve_execution_context,
     strict_auth_mode,
     workflow_job_status,
+)
+from .workflow_models import (
+    WorkflowDescribeResponse,
+    WorkflowExecutionResponse,
+    WorkflowListResponse,
+    WorkflowResultsResponse,
+    WorkflowTriggerResponse,
 )
 
 logger = logging.getLogger(__name__)
@@ -202,31 +213,120 @@ def _describe_workflow_entry(entry: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+#: Keys the platform puts into the run parameters itself: ``input_files``
+#: (from the trigger body) and ``project_id`` (body, or the verified header).
+#: A workflow schema that does not declare them never sees them, so an
+#: ``additionalProperties: false`` schema keeps accepting the runs it did
+#: before full validation (ADR-105 D-3; the r4 pre-check mirrors this rule).
+_PLATFORM_INJECTED_PARAMS = frozenset({"input_files", "project_id"})
+#: At most this many schema violations go back in one refusal.
+_MAX_SCHEMA_ERRORS = 20
+
+
+def _schema_declared_names(schema: dict[str, Any]) -> set[str]:
+    """Top-level parameter names a schema declares (properties or required)."""
+    properties = schema.get("properties")
+    required = schema.get("required")
+    names = set(properties) if isinstance(properties, dict) else set()
+    if isinstance(required, list):
+        names |= {name for name in required if isinstance(name, str)}
+    return names
+
+
+def _params_validation_view(
+    params: dict[str, Any], schema: dict[str, Any]
+) -> dict[str, Any]:
+    """*params* without the platform-injected keys the schema does not declare."""
+    declared = _schema_declared_names(schema)
+    return {
+        key: value
+        for key, value in params.items()
+        if key in declared or key not in _PLATFORM_INJECTED_PARAMS
+    }
+
+
+def _missing_required_params(
+    params: dict[str, Any], schema: dict[str, Any]
+) -> list[str]:
+    """Top-level ``required`` names absent from *params* (the pre-D-3 check)."""
+    if schema.get("type") != "object":
+        return []
+    required = schema.get("required")
+    if not isinstance(required, list):
+        return []
+    return [name for name in required if isinstance(name, str) and name not in params]
+
+
+def _schema_error_path(error: ValidationError) -> str:
+    """RFC 6901 JSON Pointer to the offending value ("" is the whole object)."""
+    return "".join(
+        "/" + str(part).replace("~", "~0").replace("/", "~1")
+        for part in error.absolute_path
+    )
+
+
+def _schema_violations(
+    params: dict[str, Any], schema: dict[str, Any]
+) -> list[dict[str, str]] | None:
+    """Up to ``_MAX_SCHEMA_ERRORS`` ``{path, message}`` rows; ``None`` when the
+    workflow's own schema cannot be used (invalid, or an unresolvable $ref)."""
+    validator_cls = validator_for(schema, default=Draft202012Validator)
+    try:
+        validator_cls.check_schema(schema)
+        found = list(islice(validator_cls(schema).iter_errors(params), _MAX_SCHEMA_ERRORS))
+    except (SchemaError, Unresolvable) as exc:
+        logger.warning(
+            "Workflow parameter_schema is not valid JSON Schema (%s); "
+            "falling back to the required-keys check",
+            getattr(exc, "message", exc),
+        )
+        return None
+    rows = [{"path": _schema_error_path(err), "message": err.message} for err in found]
+    return sorted(rows, key=lambda row: (row["path"], row["message"]))
+
+
+def _parameters_invalid_message(missing: list[str], errors: list[dict[str, str]]) -> str:
+    if missing:
+        return f"Missing required workflow parameters: {', '.join(missing)}"
+    first = errors[0]
+    where = f" at '{first['path']}'" if first["path"] else ""
+    return f"Workflow parameters do not match the workflow schema{where}: {first['message']}"
+
+
 def _validate_params_against_schema(
     params: dict[str, Any],
     schema: dict[str, Any],
 ) -> None:
-    """Minimal JSON-schema enforcement for required top-level properties."""
-    if schema.get("type") != "object":
+    """Full JSON Schema validation of the run parameters (ADR-105 D-3).
+
+    The refusal is the typed 400 ``workflow_parameters_invalid`` with
+    ``missing`` (top-level required names, the pre-D-3 contract) and
+    ``errors`` (``{path, message}`` rows). A workflow whose own schema is not
+    valid JSON Schema is not blocked: the old required-keys check applies.
+    """
+    if not isinstance(schema, dict):
         return
-    required = schema.get("required")
-    if not isinstance(required, list):
+    view = _params_validation_view(params, schema)
+    errors = _schema_violations(view, schema)
+    if errors is None:
+        errors = []
+        missing = _missing_required_params(params, schema)
+    else:
+        missing = _missing_required_params(view, schema)
+    if not (missing or errors):
         return
-    missing = [
-        name for name in required if isinstance(name, str) and name not in params
-    ]
-    if missing:
-        raise_typed(
-            PlatformError.workflows2(
-                "bad_request",
-                {
-                    "error": "validation_error",
-                    "code": "workflow_parameters_invalid",
-                    "message": f"Missing required workflow parameters: {', '.join(missing)}",
-                    "missing": missing,
-                },
-            ),
-        )
+    raise_typed(
+        PlatformError.workflows2(
+            "bad_request",
+            {
+                "error": "validation_error",
+                "code": "workflow_parameters_invalid",
+                "message": _parameters_invalid_message(missing, errors),
+                "missing": missing,
+                "errors": errors,
+            },
+        ),
+    )
 
 
 def _parse_command_response(raw: str, *, action: str) -> dict[str, Any]:
@@ -589,7 +689,12 @@ def _list_workflows_payload(
     return {key: value for key, value in pairs if value is not None}
 
 
-@router.get("")
+@router.get(
+    "",
+    operation_id="workflow_list",
+    response_model=WorkflowListResponse,
+    response_model_exclude_unset=True,
+)
 async def list_workflows(
     scope: str | None = Query(None, description="Optional workflow scope filter"),
     name: str | None = Query(None, description="Optional workflow-name filter"),
@@ -1035,7 +1140,12 @@ async def delete_workflow(
     }
 
 
-@router.get("/{workflow_name}")
+@router.get(
+    "/{workflow_name}",
+    operation_id="workflow_describe",
+    response_model=WorkflowDescribeResponse,
+    response_model_exclude_unset=True,
+)
 async def describe_workflow(
     workflow_name: str,
     x_user_id: str | None = Header(None),
@@ -1354,7 +1464,12 @@ async def upload_workflow(
     )
 
 
-@router.post("/{workflow_name}/trigger")
+@router.post(
+    "/{workflow_name}/trigger",
+    operation_id="workflow_run",
+    response_model=WorkflowTriggerResponse,
+    response_model_exclude_unset=True,
+)
 async def trigger_workflow(
     workflow_name: str,
     request: WorkflowTriggerRequest,
@@ -1437,7 +1552,12 @@ async def trigger_workflow(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/executions/{execution_id}")
+@router.get(
+    "/executions/{execution_id}",
+    operation_id="workflow_status",
+    response_model=WorkflowExecutionResponse,
+    response_model_exclude_unset=True,
+)
 async def get_execution_status(
     execution_id: str,
     identity: CallerIdentity = Depends(get_caller_identity),
@@ -1457,7 +1577,12 @@ async def get_execution_status(
     return {"status": "ok", "execution": _execution_payload_from_job(job)}
 
 
-@router.get("/executions/{execution_id}/results")
+@router.get(
+    "/executions/{execution_id}/results",
+    operation_id="workflow_results",
+    response_model=WorkflowResultsResponse,
+    response_model_exclude_unset=True,
+)
 async def get_execution_results(
     execution_id: str,
     identity: CallerIdentity = Depends(get_caller_identity),
@@ -1513,7 +1638,12 @@ async def get_execution_results(
     }
 
 
-@router.post("/executions/{execution_id}/cancel")
+@router.post(
+    "/executions/{execution_id}/cancel",
+    operation_id="workflow_cancel",
+    response_model=WorkflowExecutionResponse,
+    response_model_exclude_unset=True,
+)
 async def cancel_execution(
     execution_id: str,
     identity: CallerIdentity = Depends(get_caller_identity),

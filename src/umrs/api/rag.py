@@ -516,7 +516,7 @@ def _query_facade() -> str:
     return value if value in ("auto", "spine", "endpoint") else "spine"
 
 
-@router.post("/query", response_model=RAGQueryResponse)
+@router.post("/query", operation_id="rag_query", response_model=RAGQueryResponse)
 async def query_rag(
     request_body: RAGQueryRequest,
     request: Request,
@@ -684,7 +684,7 @@ async def _query_via_endpoint(
         )
 
 
-@router.post("/upload", response_model=UploadResponse)
+@router.post("/upload", operation_id="rag_upload", response_model=UploadResponse)
 async def upload_document(
     request: Request,
     file: UploadFile = File(...),
@@ -810,7 +810,9 @@ def _documents_from(payload: Any) -> list[dict[str, Any]]:
     return [doc for doc in payload if isinstance(doc, dict)]
 
 
-@router.get("/documents", response_model=list[DocumentInfo])
+@router.get(
+    "/documents", operation_id="rag_list_documents", response_model=list[DocumentInfo]
+)
 async def list_documents(
     request: Request,
     registry: EndpointRegistry = Depends(get_registry),

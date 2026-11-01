@@ -958,6 +958,7 @@ def _parse_job_type_filter(job_type: str | None) -> JobType | None:
 
 @router.get(
     "",
+    operation_id="job_list",
     response_model=JobListResponse,
     summary="List jobs",
     description="List jobs with optional filters by project, status, and type.",
@@ -1021,6 +1022,7 @@ async def list_jobs(
 
 @router.get(
     "/{job_id}",
+    operation_id="job_status",
     response_model=JobResponse,
     summary="Get job details",
     description="Get detailed information about a job including all attempts.",
@@ -1114,6 +1116,7 @@ async def list_job_manifests(
 
 @router.post(
     "/{job_id}/cancel",
+    operation_id="job_cancel",
     response_model=JobActionResponse,
     summary="Cancel a job",
     description="Cancel a job. Stops scheduling further attempts but does not kill running backend jobs.",
@@ -1449,6 +1452,7 @@ async def reproduce_job(
 
 @router.post(
     "/{job_id}/retry",
+    operation_id="job_retry",
     response_model=JobActionResponse,
     summary="Retry a job",
     description="Force retry a failed or cancelled job. Admin operation.",
