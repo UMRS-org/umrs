@@ -162,39 +162,57 @@ endpoints:
   # Model paths come from the model registry (`r4 model register`) except
   # for the TensorFold entry, whose prepared files are named below.
 
-  # ── DeepSeek-V4.1-Flash-1017 → svc-chat (2 nodes, QSFP m pairs) ──────
-  #  MiaAI-Lab TensorFold recipe @0e7d421e through tensorfold_runner.sh.
-  #  The engine refuses to start below TF_MIN_AVAIL_GIB (112) free on either
-  #  node: plan §10.1 V-1 measures an exclusive m-pair job first. The
-  #  site's 0.78 vLLM cap does not apply (TensorFold reads MemAvailable).
-  #  m3 stays the ADR-074 step lane; m0/m2 hold the two replicas, m1 is
-  #  the respawn spare. The image reaches each node as an archive
-  #  (RIVAULT_IMAGE_ARCHIVE_DIR/tensorfold-dsv41-exl3-tp2-0e7d421e-arm64.tar).
-  #  Engram is read from Lustre (TF_ENGRAM_SUB); add TF_ENGRAM_DIR once V-4
-  #  shows ~203 GB of node-local disk on the m nodes.
-  - name: deepseek-v4.1-flash-1017
-    model: DeepSeek-V4.1-Flash-1017
-    aliases: [svc-chat, deepseek-v4.1-flash]
+  # ── DeepSeek-V4-Flash → svc-chat (2 nodes, QSFP m pairs, vLLM TP=2) ──
+  #  Maintainer, 2026-11-01: DeepSeek-V4.1-Flash-1017 (TensorFold) cannot run
+  #  here. The engine refuses below 112 GiB free per node, and an idle,
+  #  exclusive ng-dgx-m node has ~99-100 GiB (measured: 18.5 GB unreclaimable
+  #  kernel slab, Lustre client; root-only). So rccs svc-chat is the previous
+  #  release of the same family, DeepSeek-V4-Flash, on the vLLM recipe proven on
+  #  bdrt (Spark Arena, 37.8 tok/s on 2x Spark). V4.1 serves bdrt.
+  #  Fit under the rccs 0.78 cap: checkpoint 148.7 GiB / 2 = 74.4 GiB per rank,
+  #  budget 0.78 x 119.7 = 93.4 GiB, so ~19 GiB per rank for MLA KV (fp8) +
+  #  activations + MTP. Context and seqs start below the bdrt recipe's.
+  #  Fabric: the QSFP link is enP2p1s0f1np1 (192.168.1.x/24) on m1 and m2
+  #  (probed 2026-11-01); m3 stays the ADR-074 step lane.
+  #  Weights: hf download deepseek-ai/DeepSeek-V4-Flash @60d8d707 into
+  #  the model root below (local-dir layout).
+  - name: deepseek-v4-flash
+    model: DeepSeek-V4-Flash
+    aliases: [svc-chat, deepseek-v4-flash]
     partition: ng-dgx-m0,ng-dgx-m2,ng-dgx-m1
     node_count: 2
-    max_model_len: 262144
+    max_model_len: 131072
     access: [system]
     env_vars:
-      RIVAULT_NATIVE_LLM_RUNNER: "tensorfold-dsv41"
-      TF_IMAGE: "localhost/tensorfold-dsv41:exl3-tp2-0e7d421e"
-      TF_HF_CACHE: "/lvs0/rccs-dmp/masaru.nagaso/umrs_models/hf"
-      TF_MODEL_SUB: "hub/models--Mia-AiLab--DeepSeek-V4.1-Flash-1017-EXL3-EAQ-v1-2.9-bpw/snapshots/45ee5d0fd106c94a3d77f721e09cbb2f50e5a16b"
-      TF_DATA_SUB: "tensorfold-dsv41/45ee5d0f"
-      TF_KIT_SUB: "tensorfold-dsv41/kit-abe07c7d"
-      TF_ENGRAM_SUB: "hub/models--deepseek-ai--DeepSeek-V4.1-Flash-1017/snapshots/1bae0e1088993b9b82de08f59de5be5a34e42170"
-      TF_WORKER_CACHE_DIR: "/lvs0/rccs-dmp/masaru.nagaso/umrs_models/hf/tensorfold-dsv41/45ee5d0f/rank-cache-1"
-      TF_CONTEXT: "262144"
-      TF_PARALLEL: "4"
-      # The QSFP link's name is not recorded for rccs (fleet plan R6); "auto"
-      # takes the first up link with a RoCE device and an IPv4 and logs it.
-      # Pin it here once V-9 has named it.
-      TF_FABRIC_IFACE: "auto"
-      RIVAULT_PROFILES: "harness litellm-db"
+      VLLM_HOST_MODEL_PATH: "/lvs0/rccs-dmp/masaru.nagaso/umrs_models/DeepSeek-V4-Flash"
+      VLLM_PATH_TO_HUGGINGFACE: "/lvs0/rccs-dmp/masaru.nagaso/umrs_models"
+      VLLM_MAX_MODEL_LEN: "131072"
+      VLLM_GPU_MEM_UTIL: "0.78"
+      VLLM_TP: "2"
+      VLLM_TENSOR_PARALLEL_SIZE: "2"
+      NCCL_SOCKET_IFNAME: "enP2p1s0f1np1"
+      # GB10 unified memory: Ray's monitor counts CPU+GPU and would SIGTERM the
+      # worker during the 74 GiB/rank load (same as bdrt).
+      RAY_memory_monitor_refresh_ms: "0"
+      RIVAULT_MN_MEMORY_CAP: "96g"
+      MAX_JOBS: "4"
+      # Official image, CUDA 13.0.2 (matches the 580.x driver), DeepSeek-V4
+      # stack native at this tag; never :latest.
+      VLLM_DOCKER_IMAGE: "docker.io/vllm/vllm-openai:v0.26.0"
+      VLLM_TOOL_CALL_PARSER: "deepseek_v4"
+      VLLM_REASONING_PARSER: "deepseek_v4"
+      VLLM_TRUST_REMOTE_CODE: "1"
+      VLLM_SPECULATIVE_CONFIG: '{"method":"mtp","num_speculative_tokens":2}'
+      VLLM_EXTRA_ARGS: >-
+        --max-num-seqs 8
+        --max-num-batched-tokens 6144
+        --tokenizer-mode deepseek_v4
+        --kv-cache-dtype fp8
+        --enable-prefix-caching
+        --max-cudagraph-capture-size 8
+        --compilation-config {"cudagraph_mode":"FULL_AND_PIECEWISE","custom_ops":["all"]}
+      RCCS_SKIP_CDI: "1"
+      RIVAULT_PROFILES: "harness vllm litellm-db"
 
   # ── Qwen3.6-35B-A3B-NVFP4 → svc-vision (1 node) ──────────────────────
   #  Figures, plots, microscopy; multimodal KG anchors. 35B/3B MoE, Apache-2.0.
