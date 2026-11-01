@@ -90,7 +90,9 @@ async def refresh_deadlines(policies, endpoints, now: datetime) -> None:
         await _read_deadline(backend, endpoint, now)
 
 
-async def _provision(policy: KeepAlivePolicy, action: RelayAction) -> None:
+async def _provision(
+    policy: KeepAlivePolicy, action: RelayAction, now: datetime
+) -> None:
     from ..api.endpoints import ProvisionRequest, provision_endpoint
 
     request = ProvisionRequest(
@@ -99,6 +101,7 @@ async def _provision(policy: KeepAlivePolicy, action: RelayAction) -> None:
         tier="system",
         ttl_sec=0,
         prefer_warm=False,  # the successor must not short-circuit to the old endpoint
+        readiness_probe=policy.readiness_probe,  # ADR-106 D-7 (None = provision default)
     )
     result = await provision_endpoint(
         request=request,
@@ -108,6 +111,12 @@ async def _provision(policy: KeepAlivePolicy, action: RelayAction) -> None:
         registry=get_registry(),
     )
     job_id = getattr(result, "job_id", None)
+    if policy.service and job_id:
+        # ADR-106 D-4: the replica remembers the recipe it was built from;
+        # a later change to the entry makes it due for an upgrade roll.
+        from ..orchestrator.service_controller import DIGEST_KEY
+
+        get_registry().update_metadata(str(job_id), {DIGEST_KEY: policy.digest})
     logger.info(
         "endpoint relay: provisioned %s for %s (%s) job=%s",
         policy.model,
@@ -117,7 +126,26 @@ async def _provision(policy: KeepAlivePolicy, action: RelayAction) -> None:
     )
 
 
-async def _retire(action: RelayAction) -> None:
+async def _drain(
+    policy: KeepAlivePolicy, action: RelayAction, now: datetime
+) -> None:
+    """ADR-106 D-5: stop routing new requests; retire follows once drained."""
+    from ..orchestrator.service_controller import DRAINING_SINCE_KEY
+
+    registry = get_registry()
+    registry.mark_draining(str(action.job_id))
+    registry.update_metadata(str(action.job_id), {DRAINING_SINCE_KEY: now.isoformat()})
+    logger.info(
+        "endpoint relay: draining %s job=%s (%s)",
+        action.model,
+        action.job_id,
+        action.reason,
+    )
+
+
+async def _retire(
+    policy: KeepAlivePolicy, action: RelayAction, now: datetime
+) -> None:
     from ..api.endpoints import deprovision_endpoint
 
     await deprovision_endpoint(
@@ -149,15 +177,15 @@ async def run_relay_once(now: datetime | None = None) -> list[RelayAction]:
         for action in plan_relay(policy, endpoints, walltime_sec=walltime, now=now):
             attempted.append(action)
             try:
-                if action.action == "provision":
-                    await _provision(policy, action)
-                else:
-                    await _retire(action)
+                await _EXECUTORS[action.action](policy, action, now)
             except Exception as exc:  # noqa: BLE001 - one failure must not stop the loop
                 logger.warning(
                     "endpoint relay: %s %s failed: %s", action.action, action.model, exc
                 )
     return attempted
+
+
+_EXECUTORS = {"provision": _provision, "drain": _drain, "retire": _retire}
 
 
 class EndpointRelay:

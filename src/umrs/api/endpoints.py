@@ -2153,6 +2153,37 @@ async def refresh_endpoint(
     return EndpointResponse(**refreshed.to_dict())
 
 
+@router.post(
+    "/{job_id}/roll",
+    response_model=EndpointResponse,
+    summary="Replace a service replica without an outage (admin)",
+    description="""
+    ADR-106 D-4: mark one replica of a service-tier model `roll_requested`.
+    The replica controller then replaces it like any due replica: a surge
+    successor first (or a drain when no spare capacity exists and enough
+    other replicas serve), then drain, then retire. Nothing is stopped here.
+    """,
+)
+async def roll_endpoint(
+    job_id: str,
+    is_admin: bool = Depends(_caller_is_admin),
+    registry: EndpointRegistry = Depends(get_registry),
+) -> EndpointResponse:
+    """Request a rolling replacement of one service replica."""
+    from ..orchestrator.service_controller import ROLL_KEY
+
+    if not is_admin:
+        raise_typed(
+            PlatformError.auth("admin_required", "Admin token required to roll a replica")
+        )
+    endpoint = registry.update_metadata(job_id, {ROLL_KEY: True})
+    if endpoint is None:
+        raise_typed(
+            PlatformError.endpoints("not_found", f"Endpoint not found: {job_id}"),
+        )
+    return EndpointResponse(**endpoint.to_dict())
+
+
 @router.put(
     "/{job_id}/used",
     response_model=EndpointResponse,

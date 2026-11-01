@@ -69,7 +69,13 @@ DEGRADED_GRACE_SEC = 900
 
 @dataclass(frozen=True)
 class KeepAlivePolicy:
-    """One roster entry's ``keep_alive`` block, resolved."""
+    """One roster entry's ``keep_alive`` (or ADR-106 ``service``) block, resolved.
+
+    A ``service`` block (``service=True``) is planned by
+    ``service_controller.plan_service``: N replicas, drain before retire,
+    planned and upgrade rolls. A ``keep_alive`` block keeps the original
+    one-model relay below, unchanged.
+    """
 
     model: str
     project_id: str
@@ -77,13 +83,24 @@ class KeepAlivePolicy:
     renew_before_sec: int = 7200
     handover_grace_sec: int = 300
     walltime_sec: int | None = None  # None = the site's scheduler.time_limit
+    service: bool = False
+    replicas: int = 1
+    min_available: int = 1
+    max_surge: int = 1
+    drain_timeout_sec: int = 900
+    max_age_sec: int | None = None
+    digest: str = ""  # the serving recipe's identity (an upgrade roll when it changes)
+    # ADR-106 D-7: what READY means for this role. None = the provision
+    # default ("chat": a real completion after warm-up); embedding, rerank and
+    # OCR replicas cannot answer a chat probe, so they name "models".
+    readiness_probe: str | None = None
 
 
 @dataclass(frozen=True)
 class RelayAction:
     """One step the executor performs."""
 
-    action: Literal["provision", "retire"]
+    action: Literal["provision", "retire", "drain"]
     model: str
     project_id: str
     reason: str
@@ -130,23 +147,78 @@ def _positive(value: Any, default: int) -> int:
     return parsed if parsed > 0 else default
 
 
+#: Entry keys that do not change what a replica serves: editing them never
+#: starts an upgrade roll (aliases are routing; the blocks are lifecycle).
+_DIGEST_IGNORED = frozenset(
+    {"aliases", "service", "keep_alive", "_recipe_file", "_recipe_hash", "name"}
+)
+
+
+def entry_digest(entry: dict[str, Any]) -> str:
+    """The identity of what an entry serves (model, engine, env, sizing)."""
+    import hashlib
+    import json
+
+    material = {k: v for k, v in entry.items() if k not in _DIGEST_IGNORED}
+    canonical = json.dumps(material, sort_keys=True, default=str)
+    return hashlib.sha256(canonical.encode()).hexdigest()[:16]
+
+
+def _non_negative(value: Any, default: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed >= 0 else default
+
+
+def _service_fields(block: dict[str, Any], entry: dict[str, Any]) -> dict[str, Any]:
+    """The ADR-106 ``service`` block's replica, roll and drain settings."""
+    max_age = block.get("max_age")
+    replicas = _positive(block.get("replicas"), 1)
+    return {
+        "service": True,
+        "replicas": replicas,
+        "min_available": min(_non_negative(block.get("min_available"), 1), replicas),
+        "max_surge": _non_negative(block.get("max_surge"), 1),
+        "drain_timeout_sec": _positive(block.get("drain_timeout_sec"), 900),
+        "max_age_sec": parse_slurm_duration(max_age) if max_age else None,
+        "digest": entry_digest(entry),
+        "readiness_probe": str(block.get("readiness_probe") or "").strip() or None,
+    }
+
+
+def _lifecycle_block(entry: dict[str, Any]) -> tuple[dict[str, Any] | None, bool]:
+    """The entry's ``service`` block (ADR-106) or else its ``keep_alive`` block."""
+    service = entry.get("service")
+    if isinstance(service, dict):
+        return service, True
+    keep_alive = entry.get("keep_alive")
+    return (keep_alive if isinstance(keep_alive, dict) else None), False
+
+
+def _common_fields(block: dict[str, Any]) -> dict[str, Any]:
+    walltime = block.get("walltime")
+    return {
+        "user": str(block.get("user") or "").strip() or None,
+        "renew_before_sec": _positive(block.get("renew_before_sec"), 7200),
+        "handover_grace_sec": _positive(block.get("handover_grace_sec"), 300),
+        "walltime_sec": parse_slurm_duration(walltime) if walltime else None,
+    }
+
+
 def _policy_from_entry(entry: dict[str, Any]) -> KeepAlivePolicy | None:
-    block = entry.get("keep_alive")
+    block, is_service = _lifecycle_block(entry)
     model = str(entry.get("model") or "")
-    if not isinstance(block, dict) or not model:
+    if block is None or not model:
         return None
     project_id = str(block.get("project_id") or "").strip()
     if not project_id:
         logger.warning("keep_alive for %s has no project_id; relay skipped", model)
         return None
-    walltime = block.get("walltime")
+    extra = _service_fields(block, entry) if is_service else {}
     return KeepAlivePolicy(
-        model=model,
-        project_id=project_id,
-        user=str(block.get("user") or "").strip() or None,
-        renew_before_sec=_positive(block.get("renew_before_sec"), 7200),
-        handover_grace_sec=_positive(block.get("handover_grace_sec"), 300),
-        walltime_sec=parse_slurm_duration(walltime) if walltime else None,
+        model=model, project_id=project_id, **_common_fields(block), **extra
     )
 
 
@@ -327,6 +399,10 @@ def plan_relay(
     now: datetime,
 ) -> list[RelayAction]:
     """Relay actions for one policy given the registry rows (pure)."""
+    if policy.service:
+        from .service_controller import plan_service
+
+        return plan_service(policy, endpoints, walltime_sec=walltime_sec, now=now)
     walltime = policy.walltime_sec or walltime_sec
     fleet = _fleet(policy, endpoints, walltime, now)
     return _plan_live(policy, fleet, walltime, now) + _stale_retirements(policy, fleet)
