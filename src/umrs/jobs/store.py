@@ -1564,11 +1564,14 @@ class JobStore:
             # P7a: persist manifest for the failed attempt (best-effort)
             self._persist_attempt_manifest(attempt_id, job_id)
 
-            # Invoke post-failure hooks when job itself failed (no retry).
+            # Invoke post-failure hook when job itself failed (no retry).
             if not requeued:
                 self._invoke_post_failure(job_id, attempt_no, exit_reason)
-                self.fire_job_terminal(job_id, "failed", attempt_id, exit_reason)
-            return requeued
+        # ADR-105 D-5: listeners run after the pooled connection is returned
+        # (inside the block, an exhausted pool would drop the event).
+        if not requeued:
+            self.fire_job_terminal(job_id, "failed", attempt_id, exit_reason)
+        return requeued
 
     def _invoke_post_failure(
         self, job_id: str, attempt_no: int, exit_reason: str

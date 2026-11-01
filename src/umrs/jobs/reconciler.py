@@ -214,15 +214,27 @@ class Reconciler:
             METRICS.reconciler_items("requeued")
             logger.info(f"Requeued job {job_id} (attempt {attempt_no} was lost)")
         else:
-            # No more retries - mark job as failed
-            reason = f"exhausted retries after crash (last attempt: {attempt_no})"
-            self._fail_job(job_id, reason)
-            # ADR-105 D-5: the lost attempt ended the job — tell the listeners.
-            self.job_store.fire_job_terminal(job_id, "lost", attempt_id, reason)
-            result.failed_jobs.append(job_id)
-            METRICS.job_failed("reconciler")
-            METRICS.reconciler_items("failed_exhausted")
-            logger.warning(f"Job {job_id} failed - no more retries after crash")
+            self._fail_lost_job(job_id, attempt_id, attempt_no, result)
+
+    def _fail_lost_job(
+        self, job_id: str, attempt_id: str, attempt_no: int, result: ReconcileResult
+    ) -> None:
+        """No more retries: RUNNING → FAILED, then the ``lost`` event.
+
+        The transition is guarded: a cancel (or completion) that committed
+        after this job was read wins, and then nothing is overwritten and no
+        ``lost`` event fires (ADR-105 D-5 review U3).
+        """
+        reason = f"exhausted retries after crash (last attempt: {attempt_no})"
+        if not self._fail_job(job_id, reason):
+            logger.info(f"Job {job_id} left RUNNING concurrently; not failed")
+            return
+        # ADR-105 D-5: the lost attempt ended the job — tell the listeners.
+        self.job_store.fire_job_terminal(job_id, "lost", attempt_id, reason)
+        result.failed_jobs.append(job_id)
+        METRICS.job_failed("reconciler")
+        METRICS.reconciler_items("failed_exhausted")
+        logger.warning(f"Job {job_id} failed - no more retries after crash")
 
     def _record_model_download_recovery(
         self,
@@ -271,11 +283,12 @@ class Reconciler:
         finally:
             self.job_store.db_pool.putconn(conn)
 
-    def _fail_job(self, job_id: str, reason: str) -> None:
+    def _fail_job(self, job_id: str, reason: str) -> bool:
         """
         Mark a job as failed (no more retries).
 
-        Transitions: RUNNING → FAILED
+        Transitions: RUNNING → FAILED, guarded: True only when the row was
+        still RUNNING (a concurrent cancel/complete is never overwritten).
         """
         conn = self.job_store.db_pool.getconn()
         try:
@@ -286,11 +299,14 @@ class Reconciler:
                         status = %s,
                         active_attempt_id = NULL,
                         last_state_change_at = NOW()
-                    WHERE job_id = %s
+                    WHERE job_id = %s AND status = %s
+                    RETURNING job_id
                 """,
-                    (JobStatus.FAILED.value, job_id),
+                    (JobStatus.FAILED.value, job_id, JobStatus.RUNNING.value),
                 )
+                updated = cur.fetchone() is not None
                 conn.commit()
+                return updated
         except Exception:
             conn.rollback()
             raise

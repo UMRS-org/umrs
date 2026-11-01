@@ -105,10 +105,15 @@ def _store(monkeypatch, job: Job, rows: list) -> tuple[JobStore, dict]:
     monkeypatch.setattr(JobStore, "_ensure_schema", lambda _self: None)
     store = JobStore(MagicMock(), "inst")
     conn = _StoreConn(rows)
+    held = {"n": 0}
 
     @contextmanager
     def _get_conn():
-        yield conn
+        held["n"] += 1
+        try:
+            yield conn
+        finally:
+            held["n"] -= 1
 
     @contextmanager
     def _lock(_conn, _job_id, *, tries=1):
@@ -123,7 +128,12 @@ def _store(monkeypatch, job: Job, rows: list) -> tuple[JobStore, dict]:
     monkeypatch.setattr(store, "_row_to_job", lambda _row: job)
     monkeypatch.setattr(store, "get_job", lambda _id: job)
     monkeypatch.setattr(store, "get_attempt", lambda _id: attempt)
-    calls: dict[str, list] = {"ingest_ok": [], "ingest_fail": [], "listener": []}
+    calls: dict[str, list] = {
+        "ingest_ok": [],
+        "ingest_fail": [],
+        "listener": [],
+        "held_at_listener": [],
+    }
     store.set_post_completion_callbacks(
         on_succeeded=lambda j, a: calls["ingest_ok"].append((j.job_id, a.attempt_id)),
         on_failed=lambda j, n, r: calls["ingest_fail"].append((j.job_id, n, r)),
@@ -133,7 +143,28 @@ def _store(monkeypatch, job: Job, rows: list) -> tuple[JobStore, dict]:
             (j.job_id, state, getattr(a, "attempt_id", None), reason)
         )
     )
+    store.add_job_terminal_listener(lambda *_a: calls["held_at_listener"].append(held["n"]))
     return store, calls
+
+
+def _fail_rows() -> list:
+    return [{"job_id": "job-1", "attempt_no": 1}, {"job_id": "job-1"}]
+
+
+@pytest.mark.parametrize("path", ["succeeded", "failed", "cancelled"])
+def test_listeners_run_after_the_pooled_connection_is_returned(monkeypatch, path):
+    """Review U2: inside ``with self._get_conn()`` an exhausted pool would
+    drop the event (the listener needs a connection of its own)."""
+    if path == "failed":
+        store, calls = _store(monkeypatch, _job(max_attempts=1), _fail_rows())
+        store.mark_attempt_failed("att-1", "oom")
+    elif path == "succeeded":
+        store, calls = _store(monkeypatch, _job(), [("job-1",)])
+        store.mark_attempt_succeeded("att-1")
+    else:
+        store, calls = _store(monkeypatch, _job(), [("job-1",)])
+        store.cancel_job("job-1")
+    assert calls["held_at_listener"] == [0]
 
 
 def test_succeeded_fires_ingest_and_listener(monkeypatch):
@@ -144,16 +175,14 @@ def test_succeeded_fires_ingest_and_listener(monkeypatch):
 
 
 def test_terminal_failure_fires_ingest_and_listener(monkeypatch):
-    rows = [{"job_id": "job-1", "attempt_no": 1}, {"job_id": "job-1"}]
-    store, calls = _store(monkeypatch, _job(max_attempts=1), rows)
+    store, calls = _store(monkeypatch, _job(max_attempts=1), _fail_rows())
     assert store.mark_attempt_failed("att-1", "oom") is False
     assert calls["ingest_fail"] == [("job-1", 1, "oom")]
     assert calls["listener"] == [("job-1", "failed", "att-1", "oom")]
 
 
 def test_requeued_failure_fires_nothing(monkeypatch):
-    rows = [{"job_id": "job-1", "attempt_no": 1}, {"job_id": "job-1"}]
-    store, calls = _store(monkeypatch, _job(max_attempts=3), rows)
+    store, calls = _store(monkeypatch, _job(max_attempts=3), _fail_rows())
     assert store.mark_attempt_failed("att-1", "node died") is True
     assert calls["ingest_fail"] == [] and calls["listener"] == []
 
@@ -202,7 +231,7 @@ def _reconciler(monkeypatch, job: Job) -> tuple[Reconciler, list, list]:
     store.add_job_terminal_listener(lambda _j, s, _a, r: fired.append((s, r)))
     rec = Reconciler(store)
     moves: list = []
-    monkeypatch.setattr(rec, "_fail_job", lambda jid, _reason: moves.append(("fail", jid)))
+    monkeypatch.setattr(rec, "_fail_job", lambda jid, _reason: moves.append(("fail", jid)) or True)
     monkeypatch.setattr(rec, "_requeue_job", lambda jid, _when: moves.append(("requeue", jid)))
     return rec, fired, moves
 
@@ -213,6 +242,75 @@ def test_lost_attempt_that_ends_the_job_fires_lost(monkeypatch):
     assert moves == [("fail", "job-1")]
     assert [s for s, _ in fired] == ["lost"]
     assert "exhausted retries" in fired[0][1]
+
+
+class _JobsCursor:
+    """``UPDATE jobs ... WHERE job_id = %s [AND status = %s]`` on a dict."""
+
+    def __init__(self, jobs):
+        self._jobs = jobs
+        self._row = None
+
+    def execute(self, _sql, params):
+        new_status, job_id, *guard = params
+        current = self._jobs.get(job_id)
+        self._row = None
+        if current is None or (guard and current != guard[0]):
+            return
+        self._jobs[job_id] = new_status
+        self._row = (job_id,)
+
+    def fetchone(self):
+        return self._row
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        return False
+
+
+class _JobsPool:
+    def __init__(self, jobs):
+        self.jobs = jobs
+
+    def getconn(self):
+        conn = MagicMock()
+        conn.cursor.return_value = _JobsCursor(self.jobs)
+        return conn
+
+    def putconn(self, _conn):
+        pass
+
+
+def _guarded_reconciler(monkeypatch, status_after_read: str):
+    """The reconciler reads the job RUNNING; by the time it fails it, the
+    row holds ``status_after_read`` (a concurrent cancel committed)."""
+    rec, fired, _ = _reconciler(monkeypatch, _job(max_attempts=1))
+    pool = _JobsPool({"job-1": status_after_read})
+    rec.job_store.db_pool = pool
+    # the real, guarded _fail_job (the _reconciler helper stubs it)
+    monkeypatch.setattr(rec, "_fail_job", Reconciler._fail_job.__get__(rec))
+    return rec, fired, pool
+
+
+def test_a_concurrently_cancelled_job_is_not_overwritten_and_emits_no_lost(monkeypatch):
+    """Review U3: cancel_job committed (and fired ``cancelled``) between the
+    reconciler's read and its fail; the unguarded UPDATE turned CANCELLED
+    into FAILED and fired ``lost`` as well."""
+    rec, fired, pool = _guarded_reconciler(monkeypatch, JobStatus.CANCELLED.value)
+    result = ReconcileResult()
+    rec._process_stale_attempt("att-1", "job-1", 1, "old", result)
+    assert pool.jobs["job-1"] == JobStatus.CANCELLED.value
+    assert fired == [] and result.failed_jobs == []
+
+
+def test_a_still_running_lost_job_fails_and_emits_lost(monkeypatch):
+    rec, fired, pool = _guarded_reconciler(monkeypatch, JobStatus.RUNNING.value)
+    result = ReconcileResult()
+    rec._process_stale_attempt("att-1", "job-1", 1, "old", result)
+    assert pool.jobs["job-1"] == JobStatus.FAILED.value
+    assert [s for s, _ in fired] == ["lost"] and result.failed_jobs == ["job-1"]
 
 
 def test_lost_attempt_that_requeues_fires_nothing(monkeypatch):
@@ -635,3 +733,21 @@ def test_trigger_without_header_keeps_spec(workflow_client):
     assert r.status_code == 200, r.text
     (job,) = store.jobs.values()
     assert "origin" not in job.spec
+
+
+# ── migration 0130: the cursor read's index ────────────────────────────────
+
+
+def test_0130_indexes_the_cursor_read_and_follows_0129():
+    from umrs import migrations
+
+    path = migrations.MIGRATIONS_DIR / "0130_platform_notifications_cursor_index.sql"
+    versions = [version for version, _ in migrations.get_migration_files()]
+    assert versions.count("0130") == 1
+    assert versions.index("0130") == versions.index("0129") + 1
+    code = " ".join(
+        line for line in path.read_text().splitlines() if not line.lstrip().startswith("--")
+    )
+    assert "CREATE INDEX IF NOT EXISTS platform_notifications_user_project_id_idx" in code
+    assert "ON platform_notifications (user_id, project_id, id)" in code
+    assert "WHERE" not in code  # not partial: job.* rows are never read_at-stamped
