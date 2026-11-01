@@ -717,14 +717,33 @@ def ops_connect_info(
 SERVICE_ROLES = ("chat", "fast", "decision", "vision", "ocr", "embed", "rerank", "asr")
 
 
-def connect_info_default_models() -> dict[str, Any]:
-    """ADR-106 D-9: role -> alias for every ``svc-*`` alias this front's
-    roster carries, plus ``fallback`` from ``UMRS_DEFAULT_MODEL_FALLBACK``
-    (comma-separated, in order). Empty when there is neither."""
+def _served_models(registry: Any) -> set[str]:
+    """Model and served names with a READY/DEGRADED endpoint on this front."""
+    from umrs.orchestrator.endpoint_registry import EndpointStatus
+
+    rows = registry.list_all(status_filter=[EndpointStatus.READY, EndpointStatus.DEGRADED])
+    names = {ep.model for ep in rows}
+    names |= {str(ep.metadata.get("served_model_name")) for ep in rows if ep.metadata.get("served_model_name")}
+    return names
+
+
+def connect_info_default_models(registry: Any = None) -> dict[str, Any]:
+    """ADR-106 D-9: role -> alias for every ``svc-*`` alias of this front's
+    roster that has a live replica, plus ``fallback`` from
+    ``UMRS_DEFAULT_MODEL_FALLBACK`` (comma-separated, in order).
+
+    A role whose models are not running is not advertised: R4 fills a
+    user's default model from this map at login, and must never be pointed
+    at a model nobody serves (e.g. a roster entry not yet staged).
+    """
+    from umrs.orchestrator.endpoint_registry import get_registry
     from umrs.orchestrator.provision_roster import role_alias_models
 
+    served = _served_models(registry or get_registry())
     models: dict[str, Any] = {
-        role: f"svc-{role}" for role in SERVICE_ROLES if role_alias_models(f"svc-{role}")
+        role: f"svc-{role}"
+        for role in SERVICE_ROLES
+        if served.intersection(role_alias_models(f"svc-{role}"))
     }
     raw = os.environ.get("UMRS_DEFAULT_MODEL_FALLBACK", "")
     fallback = [name.strip() for name in raw.split(",") if name.strip()]

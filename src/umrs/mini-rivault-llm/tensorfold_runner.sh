@@ -52,12 +52,16 @@
 #   TF_PREFILL_INTERLEAVE_MS 250  TF_CONNECT_S 1800 (ours; upstream 300)
 #   TF_MIN_AVAIL_GIB 112  TF_MIN_AVAIL_WAIT_S 120
 #   TF_MEMGUARD_GIB 2.5  TF_MEMGUARD_HARD_GIB 1  TF_MEMGUARD_HOLD_S 4
-#   TF_FABRIC_IFACE       default VLLM_FABRIC_IFACE, then enp1s0f1np1
+#   TF_FABRIC_IFACE       default VLLM_FABRIC_IFACE, then enp1s0f1np1; "auto" =
+#                         the first up link with a RoCE device and an IPv4 (rccs
+#                         QSFP pairs; the chosen name is logged per node)
+#   RIVAULT_IMAGE_ARCHIVE_DIR  site image archives (missing images load from here)
 #   TF_IB_HCA / TF_GID_INDEX   override the sysfs discovery (both nodes)
 #   TF_EXTRA_SERVE_ARGS / TF_EXTRA_FOLLOW_ARGS   extra rank 0 / rank 1 flags
 #   VLLM_API_KEY          the wrapper's engine key (written to a 0600 file)
 
 TF_R0_NAME="rivault-tf-r0"
+TF_VENUE_SH="${TF_VENUE_SH:-$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/venue.sh}"
 TF_R1_NAME="rivault-tf-r1"
 TF_KEY_IN_CONTAINER="/run/secrets/tensorfold-api-key"
 
@@ -114,6 +118,16 @@ tf_ipv4_gid() {
 # shellcheck disable=SC2016  # expands on the node
 TF_PROBE_SCRIPT='
 dev="$1"
+if [ "$dev" = auto ]; then
+  dev=""
+  for d in /sys/class/net/*; do
+    n=${d##*/}
+    [ -e "$d/device/infiniband" ] || continue
+    [ "$(cat "$d/operstate" 2>/dev/null)" = up ] || continue
+    ip -4 -o addr show dev "$n" 2>/dev/null | grep -q inet || continue
+    dev=$n; break
+  done
+fi
 ip=$(ip -4 -o addr show dev "$dev" 2>/dev/null | awk "{sub(/\\/.*/, \"\", \$4); print \$4; exit}")
 hca=$(ls "/sys/class/net/$dev/device/infiniband" 2>/dev/null | head -1)
 gid="-"
@@ -127,7 +141,7 @@ if [ -n "$ip" ] && [ -n "$hca" ]; then
   done
 fi
 mem=$(awk "/^MemAvailable:/ {print int(\$2/1048576)}" /proc/meminfo)
-echo "${ip:--} ${hca:--} ${gid} ${mem:-0} $(ulimit -Hl)"
+echo "${ip:--} ${hca:--} ${gid} ${mem:-0} $(ulimit -Hl) ${dev:--}"
 '
 
 tf_probe_node() {
@@ -137,9 +151,10 @@ tf_probe_node() {
 
 # Parse one probe line into TF_NODE_{IP,HCA,GID,MEM,MEMLOCK}[rank].
 tf_record_probe() {
-    local rank="$1" line="$2" ip hca gid mem memlock
-    read -r ip hca gid mem memlock <<< "${line}"
+    local rank="$1" line="$2" ip hca gid mem memlock dev
+    read -r ip hca gid mem memlock dev <<< "${line}"
     TF_NODE_IP[rank]="${ip}"
+    TF_NODE_IFACE[rank]="${dev:-${TF_FABRIC_IFACE}}"
     TF_NODE_HCA[rank]="${TF_IB_HCA:-${hca}}"
     TF_NODE_GID[rank]="${TF_GID_INDEX:-${gid}}"
     TF_NODE_MEM[rank]="${mem:-0}"
@@ -227,7 +242,7 @@ tf_engine_env() {
 # NCCL over the fabric link for rank $1 (upstream rank_nccl_env).
 tf_nccl_env() {
     local rank="$1"
-    TF_NCCL_ENV=( "NCCL_SOCKET_IFNAME=${TF_FABRIC_IFACE}" "NCCL_CUMEM_ENABLE=0" )
+    TF_NCCL_ENV=( "NCCL_SOCKET_IFNAME=${TF_NODE_IFACE[rank]:-${TF_FABRIC_IFACE}}" "NCCL_CUMEM_ENABLE=0" )
     if [[ "${TF_RDMA}" == 1 ]]; then
         TF_NCCL_ENV+=( "NCCL_IB_HCA=${TF_NODE_HCA[rank]}" "NCCL_IB_GID_INDEX=${TF_NODE_GID[rank]}"
                        "TF_RDMA_GID_INDEX=${TF_NODE_GID[rank]}" )
@@ -374,12 +389,21 @@ tf_check_image() {
         return 1
     fi
     for node in "${RAY_NODES[@]}"; do
-        if ! srun --nodes=1 --ntasks=1 --nodelist="${node}" --overlap \
-            podman image exists "${TF_IMAGE}"; then
-            echo "[rivault] FATAL: ${TF_IMAGE} is not staged on ${node}" >&2
+        if ! tf_ensure_image_on "${node}"; then
+            echo "[rivault] FATAL: ${TF_IMAGE} is not staged on ${node} (nor in ${RIVAULT_IMAGE_ARCHIVE_DIR:-the archive dir})" >&2
             return 1
         fi
     done
+}
+
+# Present on the node, or loaded there from the site's image archive
+# (venue.sh rivault_ensure_image; RCCS node image stores are node-local, so a
+# localhost/* image reaches a node only as <dir>/<name>-<tag>-<arch>.tar).
+# shellcheck disable=SC2016  # expands on the node
+tf_ensure_image_on() {
+    srun --nodes=1 --ntasks=1 --nodelist="$1" --overlap bash -c \
+        'source "$1" && rivault_ensure_image "$2" "$3"' _ \
+        "${TF_VENUE_SH}" "${TF_IMAGE}" "${RIVAULT_IMAGE_ARCHIVE_DIR:-}"
 }
 
 # rc 1 unless every prepared path exists (checked on the worker: NFS is shared,
@@ -433,13 +457,13 @@ tf_repoint_litellm() {
 }
 
 start_tensorfold() {
-    declare -g -a TF_NODE_IP=() TF_NODE_HCA=() TF_NODE_GID=() TF_NODE_MEM=() TF_NODE_MEMLOCK=()
+    declare -g -a TF_NODE_IP=() TF_NODE_IFACE=() TF_NODE_HCA=() TF_NODE_GID=() TF_NODE_MEM=() TF_NODE_MEMLOCK=()
     declare -g -a RAY_NODES=()
     tf_defaults
     tf_preflight || return 1
     tf_await_memory || return 1
     HEAD_IP="${TF_NODE_IP[0]}"
-    echo "[rivault] TensorFold fabric: ${RAY_NODES[0]}=${TF_NODE_IP[0]} (${TF_NODE_HCA[0]} gid ${TF_NODE_GID[0]}), ${RAY_NODES[1]}=${TF_NODE_IP[1]} (${TF_NODE_HCA[1]} gid ${TF_NODE_GID[1]})"
+    echo "[rivault] TensorFold fabric: ${RAY_NODES[0]}=${TF_NODE_IP[0]} via ${TF_NODE_IFACE[0]}, ${RAY_NODES[1]} via ${TF_NODE_IFACE[1]} (${TF_NODE_HCA[0]} gid ${TF_NODE_GID[0]}), ${RAY_NODES[1]}=${TF_NODE_IP[1]} (${TF_NODE_HCA[1]} gid ${TF_NODE_GID[1]})"
     tf_write_key_file
     tf_launch_ranks
 }

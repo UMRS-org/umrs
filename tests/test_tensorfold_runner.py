@@ -40,7 +40,11 @@ exec "$@"
 _PODMAN = r"""#!/bin/bash
 echo "podman $*" >> "$STUB_DIR/calls.log"
 case "$1 $2" in
-  "image exists") [ "${STUB_IMAGE_PRESENT:-1}" = 1 ]; exit $? ;;
+  "image exists") [ "${STUB_IMAGE_PRESENT:-1}" = 1 ] || [ -f "$STUB_DIR/loaded" ]; exit $? ;;
+  "load -i") touch "$STUB_DIR/loaded"; echo "Loaded image: $IMAGE_REF"; exit 0 ;;
+esac
+case "$1" in
+  pull) exit 125 ;;
 esac
 exit 0
 """
@@ -297,3 +301,31 @@ def test_wrapper_dispatches_and_supervises_tensorfold() -> None:
     assert "podman container exists rivault-tf-r0" in text
     assert '[ "$name" = "rivault-tf-r0" ]' in text
     assert "tensorfold_stop" in text[text.index("cleanup_stack() {") :]
+
+
+def test_missing_image_loads_from_the_site_archive(env: dict[str, str], tmp_path: Path) -> None:
+    """RCCS node image stores are node-local: a localhost/* image reaches a
+    node only as <archive dir>/<name>-<tag>-<arch>.tar (venue.sh)."""
+    archive_dir = tmp_path / "images"
+    archive_dir.mkdir()
+    arch = {"aarch64": "arm64", "x86_64": "amd64"}.get(os.uname().machine, os.uname().machine)
+    (archive_dir / f"tensorfold-dsv41-exl3-tp2-7c9bf5d36350-{arch}.tar").write_text("x")
+    env.update(STUB_IMAGE_PRESENT="0", RIVAULT_IMAGE_ARCHIVE_DIR=str(archive_dir), IMAGE_REF=env["TF_IMAGE"])
+    res = _run(env, "start_tensorfold")
+    loads = [c for c in _calls(env) if c.startswith("podman load -i")]
+    assert (res.returncode, len(loads) >= 1) == (0, True), res.stderr
+
+
+def test_auto_fabric_uses_each_nodes_probed_link(env: dict[str, str]) -> None:
+    env["TF_FABRIC_IFACE"] = "auto"
+    env["PROBE_A"] = "10.10.0.1 roceA 3 118 unlimited enP2p1s0f1np1"
+    env["PROBE_B"] = "10.10.0.2 roceB 4 117 unlimited enp1s0f1np1"
+    res = _run(env, "start_tensorfold")
+    runs = {c.split()[4]: c for c in _calls(env) if c.startswith("podman run -d --name")}
+    facts = (
+        res.returncode,
+        "NCCL_SOCKET_IFNAME=enP2p1s0f1np1" in runs.get("rivault-tf-r0", ""),
+        "NCCL_SOCKET_IFNAME=enp1s0f1np1" in runs.get("rivault-tf-r1", ""),
+        "TF_TP_MASTER=10.10.0.1" in runs.get("rivault-tf-r0", ""),
+    )
+    assert facts == (0, True, True, True), res.stderr
