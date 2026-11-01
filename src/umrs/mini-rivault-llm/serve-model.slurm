@@ -1333,6 +1333,10 @@ cleanup_stack() {
                 "${VLLM_MOET_VENV}/bin/ray" stop --force >/dev/null 2>&1 || true
         done
     fi
+    # TensorFold pair (ADR-106 D-8): both ranks and their memguards.
+    if [[ "${RIVAULT_NATIVE_LLM_RUNNER:-}" == "tensorfold-dsv41" ]] && declare -F tensorfold_stop >/dev/null; then
+        tensorfold_stop
+    fi
     # Stop standalone multi-node vLLM (host-network container, not on the bridge)
     podman rm -f rivault-vllm-mn >/dev/null 2>&1 || true
     podman rm -f rivault-ray-head >/dev/null 2>&1 || true
@@ -1708,6 +1712,21 @@ _MULTI_NODE=0
 if [[ "${RIVAULT_NATIVE_LLM_RUNNER:-}" == "glm52-vllm-moet" ]]; then
     _MULTI_NODE=1
     start_native_glm52 || exit 1
+elif [[ "${RIVAULT_NATIVE_LLM_RUNNER:-}" == "tensorfold-dsv41" ]]; then
+    # ADR-106 D-8: the TensorFold engine adapter (DeepSeek-V4.1-Flash-1017 on
+    # two GB10). Both ranks run as detached rootless-podman containers; the
+    # head rank is the engine the monitor below watches and respawns.
+    _MULTI_NODE=1
+    # shellcheck disable=SC1091  # shipped beside this wrapper
+    source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/tensorfold_runner.sh"
+    start_tensorfold || exit 1
+    _launch_engine_mn() { tf_launch_ranks; }
+    RIVAULT_PROFILES="$(echo "${RIVAULT_PROFILES}" | tr ' ' '\n' | grep -vxE 'vllm|vision-bentoml' | tr '\n' ' ')"
+    _profile_flags=""
+    for _p in ${RIVAULT_PROFILES}; do
+        _profile_flags="${_profile_flags} --profile ${_p}"
+    done
+    tf_repoint_litellm "./litellm_fs/config.yaml.${uuid}"
 elif [[ "${SLURM_JOB_NUM_NODES:-${SLURM_NNODES:-1}}" -gt 1 ]]; then
     _MULTI_NODE=1
     echo "[rivault] Multi-node allocation: ${SLURM_JOB_NUM_NODES:-${SLURM_NNODES}} nodes"
@@ -2526,6 +2545,8 @@ _sidecars_respawn() {
 _engine_container_name() {
     if podman container exists rivault-vllm-mn 2>/dev/null; then
         echo "rivault-vllm-mn"
+    elif podman container exists rivault-tf-r0 2>/dev/null; then
+        echo "rivault-tf-r0"
     elif podman container exists "rivault-${SLURM_JOB_ID}_vllm_1" 2>/dev/null; then
         echo "rivault-${SLURM_JOB_ID}_vllm_1"
     fi
@@ -2546,7 +2567,9 @@ _engine_is_dead() {
 # and the recreate then hits the name in use), dependents removed first.
 _engine_recreate() {
     local name="$1"
-    if [ "$name" = "rivault-vllm-mn" ]; then
+    if [ "$name" = "rivault-vllm-mn" ] || [ "$name" = "rivault-tf-r0" ]; then
+        # rivault-tf-r0: the TensorFold pair restarts as a pair (a lone rank
+        # exits within ~15 s of losing its peer); tf_launch_ranks removes both.
         podman rm -f "$name" >/dev/null 2>&1 || true
         _launch_engine_mn
     else

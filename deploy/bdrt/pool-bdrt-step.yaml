@@ -815,6 +815,56 @@ endpoints:
       # Single staged copy is enough: bdrt $HOME is shared NFS.
       RCCS_SKIP_CDI: "1"
 
+  # ── DeepSeek-V4.1-Flash-1017 (2 nodes → spark-double, TensorFold) ─────
+  #  ADR-106 (2026-11-01, maintainer choice for `svc-chat`). The only
+  #  2x DGX Spark route is the MiaAI-Lab recipe (github.com/MiaAI-Lab/
+  #  DeepSeek-v4.1-Flash-1017-2x-DGX-Sparks @0e7d421e): TensorFold engine,
+  #  Mia-AiLab EXL3 EAQ v1 2.9-bpw weights, TP=2 over the CX-7 link. Served
+  #  through the wrapper's TensorFold adapter (tensorfold_runner.sh), not
+  #  vLLM, so no VLLM_* engine flags apply here.
+  #  Fit: ~98.9 GiB of weights per rank; the adapter refuses to start below
+  #  TF_MIN_AVAIL_GIB (112) free on either node, so this pair runs alone.
+  #  Staging (owner leg, once; docs/development/service-model-fleet-plan-
+  #  2026-11-01.md §10.2): image built on a Spark from the recipe's
+  #  zig/Dockerfile and tagged localhost/… on BOTH nodes; weights + Engram
+  #  shards 47/48 + kit + prepared data dir under the shared HF cache; a
+  #  node-local Engram copy on BOTH nodes (NFS reads cut prefill 2-3x).
+  #  Not `svc-chat` yet: GLM-5.3-Flash keeps the alias until the go-live
+  #  checks G1/G2/G4/G5/G6 pass (plan §0.1).
+  - name: deepseek-v4.1-flash-1017
+    model: DeepSeek-V4.1-Flash-1017
+    aliases:
+      - deepseek-v4.1-flash
+      - deepseek-v4.1-flash-1017
+    tier: system
+    node_count: 2
+    partition: spark-double
+    max_model_len: 262144
+    env_vars:
+      RIVAULT_NATIVE_LLM_RUNNER: "tensorfold-dsv41"
+      # Recipe image, built per its zig/Dockerfile (TF fbbc9713, inputs
+      # 59402086, kit abe07c7d) and staged on both nodes; never pulled.
+      TF_IMAGE: "localhost/tensorfold-dsv41:exl3-tp2-0e7d421e"
+      TF_HF_CACHE: "/home/mnagaso/umrs_models"
+      TF_MODEL_SUB: "hub/models--Mia-AiLab--DeepSeek-V4.1-Flash-1017-EXL3-EAQ-v1-2.9-bpw/snapshots/45ee5d0fd106c94a3d77f721e09cbb2f50e5a16b"
+      TF_DATA_SUB: "tensorfold-dsv41/45ee5d0f"
+      TF_KIT_SUB: "tensorfold-dsv41/kit-abe07c7d"
+      TF_ENGRAM_SUB: "hub/models--deepseek-ai--DeepSeek-V4.1-Flash-1017/snapshots/1bae0e1088993b9b82de08f59de5be5a34e42170"
+      # Node-local copy of Engram shards 47/48 (~203 GB) on both nodes;
+      # path confirmed by the plan §10.1 V-4 probe before first launch.
+      TF_ENGRAM_DIR: "/var/tmp/umrs-tf/engram-1bae0e10"
+      TF_WORKER_CACHE_DIR: "/home/mnagaso/umrs_models/tensorfold-dsv41/45ee5d0f/rank-cache-1"
+      # 262144 (not upstream's 1M): R4 contexts fit, and the head keeps
+      # headroom (upstream issue #17 killed rank 0 at 655K).
+      TF_CONTEXT: "262144"
+      TF_PARALLEL: "4"
+      TF_FABRIC_IFACE: "enp1s0f1np1"
+      # Same batch-path workaround as glm-5.3-flash on this cluster.
+      RIVAULT_USERNS_MODE: "host"
+      # Native kernel overlay (fuse-overlayfs breakage on dgx-spark-1).
+      CONTAINERS_STORAGE_CONF: "/home/mnagaso/.config/containers/storage-native.conf"
+      RCCS_SKIP_CDI: "1"
+
   # ── Qwen3.8-Flash-Next-NVFP4-bdrt (2 nodes → edge-double, DUAL recipe) ─
   #  Recipe: github.com/MiaAI-Lab/Qwen3.8-Flash-Next-Dual-DGX-Sparks —
   #  vendor-verified dual-Spark shape: TP2 + EP + MTP3, fp8 KV via the
