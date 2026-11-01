@@ -2169,7 +2169,9 @@ async def roll_endpoint(
     is_admin: bool = Depends(_caller_is_admin),
     registry: EndpointRegistry = Depends(get_registry),
 ) -> EndpointResponse:
-    """Request a rolling replacement of one service replica."""
+    """Request a rolling replacement of one service replica (admin only).
+    # auth: verified
+    """
     from ..orchestrator.service_controller import ROLL_KEY
 
     if not is_admin:
