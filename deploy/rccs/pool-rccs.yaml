@@ -165,13 +165,16 @@ endpoints:
   # ── DeepSeek-V4-Flash → svc-chat (2 nodes, QSFP m pairs, vLLM TP=2) ──
   #  Maintainer, 2026-11-01: DeepSeek-V4.1-Flash-1017 (TensorFold) cannot run
   #  here. The engine refuses below 112 GiB free per node, and an idle,
-  #  exclusive ng-dgx-m node has ~99-100 GiB (measured: 18.5 GB unreclaimable
-  #  kernel slab, Lustre client; root-only). So rccs svc-chat is the previous
+  #  exclusive ng-dgx-m node (one GB10, 121.6 GiB; a pair = 256 GB) reports
+  #  ~100 GiB MemAvailable, with ~37 GiB of Lustre-client kernel slab.
+  #  Re-measured 2026-11-02 under pressure: the slab shrinks to a ~15 GiB
+  #  floor, so one job gets ~105 GiB of RAM before the 16 GiB swap file
+  #  takes over; still short of 112. So rccs svc-chat is the previous
   #  release of the same family, DeepSeek-V4-Flash, on the vLLM recipe proven on
   #  bdrt (Spark Arena, 37.8 tok/s on 2x Spark). V4.1 serves bdrt.
   #  Fit under the rccs 0.78 cap: checkpoint 148.7 GiB / 2 = 74.4 GiB per rank,
-  #  budget 0.78 x 119.7 = 93.4 GiB, so ~19 GiB per rank for MLA KV (fp8) +
-  #  activations + MTP. Context and seqs start below the bdrt recipe's.
+  #  budget 0.78 x 121.6 = 94.8 GiB (inside the ~105 GiB a job can get), so
+  #  ~20 GiB per rank for MLA KV (fp8) + activations + MTP. Context and seqs start below the bdrt recipe's.
   #  Fabric: the QSFP link is enP2p1s0f1np1 (192.168.1.x/24) on m1 and m2
   #  (probed 2026-11-01); m3 stays the ADR-074 step lane.
   #  Weights: hf download deepseek-ai/DeepSeek-V4-Flash @60d8d707 into
