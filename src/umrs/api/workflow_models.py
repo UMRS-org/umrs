@@ -55,8 +55,10 @@ class WorkflowDescribeResponse(_OpenModel):
         description="Free-form JSON Schema the trigger parameters must satisfy",
     )
     steps: list[Any] | None = None
-    requirements: list[Any] | None = None
-    triggers: list[Any] | None = None
+    # Passed through from the uploaded workflow.json unvalidated: a malformed
+    # upload ("triggers": {}) must not turn describe into a 500.
+    requirements: Any = None
+    triggers: Any = None
 
 
 class WorkflowTriggerResponse(_OpenModel):

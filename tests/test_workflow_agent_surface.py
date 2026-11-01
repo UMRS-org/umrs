@@ -68,9 +68,7 @@ def test_valid_params_pass():
 def test_type_mismatch_is_refused_with_path():
     detail = _refusal({"bucket": "b", "steps": "three"}, _SCHEMA)
     assert detail["missing"] == []
-    assert detail["errors"] == [
-        {"path": "/steps", "message": "'three' is not of type 'integer'"}
-    ]
+    assert detail["errors"] == [{"path": "/steps", "message": "'three' is not of type 'integer'"}]
     assert "/steps" in detail["message"]
 
 
@@ -291,9 +289,7 @@ def test_agent_operations_carry_a_response_schema(openapi_spec):
 
 def test_no_other_route_reuses_an_agent_operation_id(openapi_spec):
     counts = Counter(op for op, _m, _p in _operations(openapi_spec))
-    assert {name: counts[name] for name in AGENT_OPERATIONS} == dict.fromkeys(
-        AGENT_OPERATIONS, 1
-    )
+    assert {name: counts[name] for name in AGENT_OPERATIONS} == dict.fromkeys(AGENT_OPERATIONS, 1)
 
 
 # ── D-1: response models keep today's payloads byte-for-byte in content ───
@@ -391,9 +387,7 @@ def test_list_route_serialises_handler_payload_unchanged(client):
         "workflows": [{"name": "relax", "scope": "user"}],
         "undeclared": {"k": [1, None]},
     }
-    with patch(
-        "umrs.api.workflows.handle_workflow_command", return_value=json.dumps(payload)
-    ):
+    with patch("umrs.api.workflows.handle_workflow_command", return_value=json.dumps(payload)):
         response = client.get("/umrs/workflows", headers=_auth_headers())
     assert response.status_code == 200
     assert response.json() == payload
@@ -402,9 +396,7 @@ def test_list_route_serialises_handler_payload_unchanged(client):
 def test_trigger_route_does_not_add_absent_keys(client, tmp_path):
     _register_strict_workflow(tmp_path)
     payload = {"status": "ok", "execution_id": "wf-9", "legacy_field": "x"}
-    with patch(
-        "umrs.api.workflows.handle_workflow_command", return_value=json.dumps(payload)
-    ):
+    with patch("umrs.api.workflows.handle_workflow_command", return_value=json.dumps(payload)):
         response = client.post(
             "/umrs/workflows/relax/trigger",
             headers=_auth_headers(),
@@ -412,3 +404,69 @@ def test_trigger_route_does_not_add_absent_keys(client, tmp_path):
         )
     assert response.status_code == 200
     assert response.json() == payload
+
+
+# ── Review fixes (ADR-105 S1): ReDoS, text scalars, recursion, malformed fields ──
+
+
+def test_backtracking_pattern_is_not_evaluated():
+    """A user schema's regex never runs on the server (it would hold the GIL)."""
+    import time
+
+    schema = {"type": "object", "properties": {"s": {"type": "string", "pattern": "^(a+)+$"}}}
+    start = time.monotonic()
+    # 28 chars: ~6 s when the regex runs (it grows ~4x per 2 chars), instant now.
+    _validate_params_against_schema({"s": "a" * 28 + "!"}, schema)
+    assert time.monotonic() - start < 1.0
+
+
+def test_a_parameter_named_pattern_is_still_validated():
+    schema = {"type": "object", "properties": {"pattern": {"type": "integer"}}}
+    detail = _refusal({"pattern": [1]}, schema)
+    assert [row["path"] for row in detail["errors"]] == ["/pattern"]
+
+
+def test_pattern_properties_level_drops_its_additional_properties_check():
+    schema = {
+        "type": "object",
+        "patternProperties": {"^x_": {"type": "integer"}},
+        "additionalProperties": False,
+    }
+    _validate_params_against_schema({"x_dim": 3}, schema)
+
+
+def test_text_scalars_are_validated_as_their_declared_type():
+    """`r4 workflow run --param steps=3` sends text; it passed before D-3."""
+    schema = {
+        "type": "object",
+        "properties": {
+            "steps": {"type": "integer"},
+            "dry": {"type": "boolean"},
+            "r": {"type": "number"},
+        },
+        "required": ["steps"],
+    }
+    _validate_params_against_schema({"steps": "3", "dry": "false", "r": "0.5"}, schema)
+    detail = _refusal({"steps": "three"}, schema)
+    assert [row["path"] for row in detail["errors"]] == ["/steps"]
+
+
+def test_recursive_schema_falls_back_instead_of_500():
+    schema = {"type": "object", "$ref": "#", "required": ["bucket"]}
+    _validate_params_against_schema({"bucket": "b"}, schema)
+    assert _refusal({}, schema)["missing"] == ["bucket"]
+
+
+def test_mcp_tools_is_a_platform_injected_key():
+    schema = {
+        "type": "object",
+        "properties": {"a": {"type": "string"}},
+        "additionalProperties": False,
+    }
+    _validate_params_against_schema({"a": "x", "mcp_tools": ["m.t"]}, schema)
+
+
+def test_describe_tolerates_malformed_triggers_and_requirements():
+    payload = {"status": "ok", "workflow_name": "w", "triggers": {}, "requirements": {"gpu": 1}}
+    dumped = WorkflowDescribeResponse.model_validate(payload).model_dump(exclude_unset=True)
+    assert dumped["triggers"] == {} and dumped["requirements"] == {"gpu": 1}

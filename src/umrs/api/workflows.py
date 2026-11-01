@@ -218,9 +218,99 @@ def _describe_workflow_entry(entry: dict[str, Any]) -> dict[str, Any]:
 #: A workflow schema that does not declare them never sees them, so an
 #: ``additionalProperties: false`` schema keeps accepting the runs it did
 #: before full validation (ADR-105 D-3; the r4 pre-check mirrors this rule).
-_PLATFORM_INJECTED_PARAMS = frozenset({"input_files", "project_id"})
+#: ``mcp_tools`` is what ``r4 workflow run --mcp-tool`` injects.
+_PLATFORM_INJECTED_PARAMS = frozenset({"input_files", "project_id", "mcp_tools"})
 #: At most this many schema violations go back in one refusal.
 _MAX_SCHEMA_ERRORS = 20
+
+#: Regex keywords are not evaluated on the server: workflow authors are
+#: ordinary users and Python ``re`` holds the GIL, so one backtracking
+#: ``pattern`` would stall the sidecar for everyone (ReDoS; review of
+#: ADR-105 S1). A level with ``patternProperties`` also loses its
+#: ``additionalProperties`` / ``unevaluatedProperties`` check, which depends
+#: on the patterns, so no valid run is refused for it.
+_REGEX_KEYWORDS = ("pattern", "patternProperties")
+_PATTERN_DEPENDENT = ("additionalProperties", "unevaluatedProperties")
+#: Keywords whose value is a map of name -> subschema.
+_SCHEMA_MAPS = ("properties", "$defs", "definitions", "dependentSchemas")
+#: Keywords whose value is a subschema or a list of subschemas.
+_SCHEMA_SLOTS = (
+    "items",
+    "prefixItems",
+    "additionalItems",
+    "contains",
+    "not",
+    "if",
+    "then",
+    "else",
+    "allOf",
+    "anyOf",
+    "oneOf",
+    "additionalProperties",
+    "unevaluatedProperties",
+    "unevaluatedItems",
+    "propertyNames",
+)
+_SCALAR_PARSERS: dict[str, Any] = {
+    "integer": int,
+    "number": float,
+    "boolean": lambda text: {"true": True, "false": False}[text.strip().lower()],
+}
+
+
+def _regex_free(node: Any) -> Any:
+    """A copy of a schema (or list of schemas) without regex keywords."""
+    if isinstance(node, list):
+        return [_regex_free(item) for item in node]
+    if not isinstance(node, dict):
+        return node
+    return _regex_free_children(_without_regex_keywords(node))
+
+
+def _without_regex_keywords(node: dict[str, Any]) -> dict[str, Any]:
+    drop = set(_REGEX_KEYWORDS)
+    if "patternProperties" in node:
+        drop |= set(_PATTERN_DEPENDENT)
+    return {key: value for key, value in node.items() if key not in drop}
+
+
+def _regex_free_children(out: dict[str, Any]) -> dict[str, Any]:
+    for key in _SCHEMA_MAPS:
+        if isinstance(out.get(key), dict):
+            out[key] = {name: _regex_free(sub) for name, sub in out[key].items()}
+    for key in _SCHEMA_SLOTS:
+        if key in out:
+            out[key] = _regex_free(out[key])
+    return out
+
+
+def _coerce_scalar(value: Any, spec: Any) -> Any:
+    """A string parsed as the scalar type *spec* declares (else *value*)."""
+    if not isinstance(value, str) or not isinstance(spec, dict):
+        return value
+    declared = spec.get("type")
+    for name in declared if isinstance(declared, list) else [declared]:
+        parser = _SCALAR_PARSERS.get(name)
+        try:
+            return parser(value) if parser else value
+        except (ValueError, KeyError):
+            continue
+    return value
+
+
+def _coerced_view(params: dict[str, Any], schema: dict[str, Any]) -> dict[str, Any]:
+    """Top-level string values coerced to their declared scalar type.
+
+    ``r4 workflow run --param k=v`` and the TUI's trigger line send every
+    value as text; before D-3 only ``required`` was checked, so those runs
+    passed. Validation sees the coerced copy; the run gets *params* unchanged.
+    """
+    properties = schema.get("properties")
+    if not isinstance(properties, dict):
+        return params
+    return {
+        key: _coerce_scalar(value, properties.get(key)) for key, value in params.items()
+    }
 
 
 def _schema_declared_names(schema: dict[str, Any]) -> set[str]:
@@ -273,8 +363,12 @@ def _schema_violations(
     validator_cls = validator_for(schema, default=Draft202012Validator)
     try:
         validator_cls.check_schema(schema)
-        found = list(islice(validator_cls(schema).iter_errors(params), _MAX_SCHEMA_ERRORS))
-    except (SchemaError, Unresolvable) as exc:
+        checked = _regex_free(schema)
+        view = _coerced_view(params, checked)
+        found = list(
+            islice(validator_cls(checked).iter_errors(view), _MAX_SCHEMA_ERRORS)
+        )
+    except (SchemaError, Unresolvable, RecursionError) as exc:
         logger.warning(
             "Workflow parameter_schema is not valid JSON Schema (%s); "
             "falling back to the required-keys check",
@@ -285,7 +379,9 @@ def _schema_violations(
     return sorted(rows, key=lambda row: (row["path"], row["message"]))
 
 
-def _parameters_invalid_message(missing: list[str], errors: list[dict[str, str]]) -> str:
+def _parameters_invalid_message(
+    missing: list[str], errors: list[dict[str, str]]
+) -> str:
     if missing:
         return f"Missing required workflow parameters: {', '.join(missing)}"
     first = errors[0]
