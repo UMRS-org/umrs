@@ -5,10 +5,7 @@ __pycache__/
 
 # Demo result/output images (auto-generated, not source)
 demos/*/results/
-demos_private/*/results/
 demos/*/.upload_staging/
-demos_private/*/.upload_staging/
-demos/14_opossum_analysis/sample_videos/
 # Demo test data images (large CT scans — stage only .gitkeep)
 demos/*/test_data/*.png
 demos/*/test_data/*.jpg
@@ -61,7 +58,6 @@ __pycache__/
 *.tar.gz
 *.csv
 !demos/sample_data/**/*.csv
-demos_sp8/internal_genAI/
 
 # Test/build artifact (policy 2026-09-16): knowledge-export outputs land under
 # UMRS_KB_EXPORT_DIR pinned per-suite in tests/conftest.py; never tracked.

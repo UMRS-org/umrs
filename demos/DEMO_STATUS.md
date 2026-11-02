@@ -11,8 +11,6 @@
 | Suite       | Passed | Failed | Skipped | Exit |
 |-------------|--------|--------|---------|------|
 | Public (`demos/`)    | 11     | 8      | 12      | 1    |
-| Private (`demos_private/`) | 0      | 4      | 0       | 1    |
-| Jens (`demos_sp8/`) | 0      | 2      | 0       | 1    |
 
 All failures share a common root cause: **the server cannot provision the
 S3 config for the demo user** because `umrs reload` returns
@@ -65,23 +63,9 @@ failing it.
 
 ---
 
-## Private Demos (`demos_private/`)
+## Private and SPring-8 demos
 
-| #  | Demo                          | Result  | Notes                                              |
-|----|-------------------------------|---------|----------------------------------------------------|
-| 04 | HMAE Inference                | FAILED  | `upload_dir` times out                             |
-| 09 | Defect Analysis               | FAILED  | `upload_dir` times out                             |
-| 10 | HMAE Full Pipeline            | FAILED  | `upload_dir` times out                             |
-| 14 | Opossum Analysis              | FAILED  | `upload_dir` times out + local analysis incomplete |
-
----
-
-## Jens Demos (`demos_sp8/`)
-
-| #  | Demo                          | Result  | Notes                                              |
-|----|-------------------------------|---------|----------------------------------------------------|
-| 11 | SAM3 Direct                   | FAILED  | `upload_dir` times out (step 4)                    |
-| 12 | HMAE Direct                   | FAILED  | `upload_dir` times out (step 4/mae)                |
+(2026-11-03: these suites and their result rows moved to a separate private repository with the demos.)
 
 ---
 
@@ -195,9 +179,6 @@ treating the server config as invalid but not crashing discovery.
 
    ```bash
    cd umrs/demos && # See step-by-step commands in each demo's README
-   cd umrs/demos_private && # See step-by-step commands in each demo's README
-   cd umrs/demos_sp8/11_sam3_direct && # See step-by-step commands in the demo README
-   cd umrs/demos_sp8/12_hmae_direct && # See step-by-step commands in the demo README
    ```
 
 4. **The code bug fix in `loaded_config_profiles.py` should be

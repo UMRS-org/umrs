@@ -22,7 +22,7 @@ Submodule-specific: [../../MERGE_CONSTITUTION.md](../../MERGE_CONSTITUTION.md),
 ## ABSOLUTE RULE: the client runs LOCALLY, never on the remote
 
 UMRS is a local-client / remote-server system. The `umrs` and `r4` CLIs and
-ALL demo scripts (`demos/`, `demos_private/`) run on the **local machine**,
+ALL demo scripts (`demos/`) run on the **local machine**,
 never via SSH on a login node or the front-end.
 
 - ❌ NEVER `ssh <host> 'bash demos/…/run_demo.sh'` or `ssh <host> 'source .venv/bin/activate && …'`

@@ -693,7 +693,7 @@ both stacks:
 }
 ```
 
-An example user config is at `src/umrs_cfg_example/umrs/users/jens_vision.json`.
+The example user config for this stack moved to the private demo repository (2026-11-03); the JSON above is the part that matters.
 
 ### Verification
 
@@ -707,7 +707,5 @@ env = cfg.to_env()
 print('VISION_STACK:', env.get('VISION_STACK', '(not set — using default umrs)'))
 "
 
-# 2. Run isolated Jens SAM3 demo (from local Mac, with UMRS server using Jens stack)
-source .venv/bin/activate
-bash demos_sp8/11_sam3_direct/run_demo.sh
+# 2. The isolated direct-stack demos moved to the private demo repository (2026-11-03).
 ```

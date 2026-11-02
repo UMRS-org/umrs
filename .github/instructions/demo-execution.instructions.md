@@ -1,6 +1,6 @@
 ---
 description: "CRITICAL: How to run UMRS demos and interact with the UMRS system. Load for ANY task involving demos, testing, validation, or client operations."
-applyTo: "demos/**,demos_private/**,deploy/**,src/client_umrs.py,src/umrs/client/**,src/umrs/shared/connection_profiles.py"
+applyTo: "demos/**,deploy/**,src/client_umrs.py,src/umrs/client/**,src/umrs/shared/connection_profiles.py"
 ---
 
 # UMRS Demo Execution & Client Architecture
@@ -84,8 +84,6 @@ bash demos/run_all.sh
 # All public demos, skip vision (no GPU needed)
 bash demos/run_all.sh --skip-vision
 
-# Private demos (one at a time)
-bash demos_private/04_hmae_inference/run_demo.sh
 ```
 
 ### 4. Environment Variables (optional overrides)
@@ -213,27 +211,7 @@ These operations DO use SSH because they manage SERVER-SIDE infrastructure:
 
 ## Private Demos
 
-Private demos in `demos_private/` follow the same local execution model:
-
-| Demo | Requires | Test data source |
-|------|----------|-----------------|
-| 04 HMAE Inference | Vision service on Slurm | `tmp/hmae/images` or custom |
-| 09 Defect Analysis | SAM3 + HMAE services | `tmp/hmae/images` or custom |
-| 10 HMAE Full Pipeline | HMAE service | `tmp/hmae/images` or custom |
-| 14 Opossum Analysis | Opossum engine | `tmp/opossum/data/` |
-
-The Jens direct demos were removed from the active repository surface. Private
-demos now assume the UMRS-mediated path only.
-
-## Isolated Jens Demos
-
-Jens-specific direct VisionFrontend demos live in `demos_sp8/` and are not
-part of the active public or private demo suites.
-
-| Demo | Requires | Test data source |
-|------|----------|-----------------|
-| 11 SAM3 Direct | VisionFrontend at `:3000` | `tmp/hmae/images` or custom |
-| 12 HMAE Direct | VisionFrontend at `:3000` | `tmp/hmae/images` or custom |
+2026-11-03: the private demos — HMAE 04/10, defect analysis 09, opossum 14, the SPring-8 direct demos — moved to a separate private repository held by the maintainer; they are no longer in this tree. They follow the same local execution model as `demos/`.
 
 ## Two Venvs — Don't Confuse Them
 

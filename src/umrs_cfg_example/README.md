@@ -16,7 +16,6 @@ as `deploy/rccs/setup_client.sh`, or copied manually into `~/.config/umrs/`.
   users/
     user1.json
     user2.json
-    spring8.json
   tmp/
 ```
 

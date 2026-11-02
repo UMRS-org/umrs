@@ -94,16 +94,14 @@ demos/                       ← Demo scripts (15 directories: 00–14)
   06_server_maintenance/     ← Server maintenance (recompute, update, check, reload)
   07_model_registry/         ← Model registry operations
   08_user_model/             ← User-scoped model management + custom workflows
-  09_defect_analysis/        ← Custom defect analysis workflows with step scripts
-  10_hmae_full_pipeline/     ← Full HMAE pipeline (workflow.json + steps/)
   11_job_submission/         ← Job submission & cancellation
   12_pipeline_sdk/           ← Pipeline SDK demo (text_analysis_pipeline.py)
   13_plugins/                ← Plugin system demo (word_count_plugin.py)
-  14_opossum_analysis/       ← Opossum motion analysis (canonical)
+  (2026-11-03: the private demos — HMAE 04/10, defect analysis 09, opossum 14, the SPring-8 direct demos — moved to a separate private repository held by the maintainer; they are no longer in this tree.)
 
 deploy/rccs-cloud/           ← Production deployment (RCCS Cloud login node)
   demos/                     ← Deployment-level demo wrappers (00–10)
-    00_health_check.sh … 10_opossum_analysis.sh
+    00_health_check.sh … (deployment-level wrappers)
   docker-compose.yml         ← MinIO + PostgreSQL (podman, rootless)
   serve-model.slurm          ← Model serving Slurm wrapper
   ssh_tunnel.sh              ← SSH tunnel management (ports 5555, 5556, 9000, 8081)
@@ -149,7 +147,7 @@ Note: Vision serving (BentoML) runs via the `vision-bentoml` profile in `src/umr
 |---|---|---|
 | `RIVAULT_DIR` | host env / slurm | path to rivault/ on compute node |
 | `VLLM_PATH_TO_HUGGINGFACE` | wrapper slurm | `${RIVAULT_DIR}/models` (NOT /models which is ai-login internal) |
-| `HMAE_MODEL_PATH` | wrapper slurm | `/home/mnagaso/hmae-sample` (checkpoint dir mount source) |
+| `HMAE_MODEL_PATH` | wrapper slurm | site-specific checkpoint dir (mount source; set in the site profile) |
 | `HMAE_CONFIG_PATH` | serve-model.yaml | `/models/hmae/infer_hmae_vit_b.yaml` (inside container) |
 | `HMAE_CHECKPOINT` | serve-model.yaml | `/models/hmae/latest_checkpoint.pth` (inside container) |
 | `RIVAULT_PROFILES` | wrapper slurm (exported) | space-separated list of compose profiles; default `harness vllm vision-bentoml` |
@@ -294,14 +292,14 @@ services:
 | `features` | Encoder-only (CLS + patch tokens) | `*_features.pt` |
 
 ### Model Files Location
-- **Checkpoint**: `/home/mnagaso/hmae-sample/latest_checkpoint.pth` (1.3GB)
-- **Config**: `/home/mnagaso/hmae-sample/infer_hmae_vit_b.yaml`
-- **Test images**: `/home/mnagaso/hmae-sample/spring8concrete/volume_*.png` (6 files, 8192×8192 grayscale CT)
+- **Checkpoint**: `${HMAE_MODEL_PATH}/latest_checkpoint.pth`
+- **Config**: `${HMAE_MODEL_PATH}/infer_hmae_vit_b.yaml`
+- **Test images**: site-specific; the weights and sample data are not in this repository
 - These are bind-mounted into container at `/models/hmae/` via `HMAE_MODEL_PATH`
 
 ### Known Gotchas
 - `latest_checkpoint.pth` was originally `640` permissions — rootless podman sub-UID can't read it.
-  **Fix**: `chmod 644 /home/mnagaso/hmae-sample/latest_checkpoint.pth`
+  **Fix**: `chmod 644 ${HMAE_MODEL_PATH}/latest_checkpoint.pth`
 - Git LFS tracked `best_model.pth` but was never committed on the current branch — no checkpoint from git
 - Config's `checkpoint_path` default (`./checkpoints/latest_checkpoint.pth`) is overridden by service.py from env var `HMAE_CHECKPOINT`
 
@@ -342,9 +340,9 @@ services:
 - Fix: Wrapped entire task body in `try/except Exception as exc: return {"error": str(exc), ...}` like `sam3_segment` does
 
 ### 3. Checkpoint permissions (640 → 644)
-- Bug: `/home/mnagaso/hmae-sample/latest_checkpoint.pth` had `640` (owner-read only)
-- Rootless podman containers run as a sub-UID that is not in the `mnagaso` group
-- Fix: `chmod 644 /home/mnagaso/hmae-sample/latest_checkpoint.pth`
+- Bug: `${HMAE_MODEL_PATH}/latest_checkpoint.pth` had `640` (owner-read only)
+- Rootless podman containers run as a sub-UID that is not in the owner's group
+- Fix: `chmod 644 ${HMAE_MODEL_PATH}/latest_checkpoint.pth`
 
 ### 4. rivault.py infinite loop on job failure
 - Bug: `get_slurm_node()` and `extract_node_address()` had while loops with no timeout
@@ -418,7 +416,7 @@ curl -sf "http://localhost:11434/vision/healthz"
 
 ### Test images on compute node
 ```
-/home/mnagaso/hmae-sample/spring8concrete/volume_{170,180,190,200,210,220}.png
+${HMAE_MODEL_PATH}/<test images>   # site-specific, not in this repository
 ```
 
 ---
@@ -473,7 +471,6 @@ cd demos/01_health_check && bash run_demo.sh
 | 11 | Job Submission | yes | — | job submit/cancel with --keep-alive |
 | 12 | Pipeline SDK | no | — | local TextAnalysisPipeline |
 | 13 | Plugins | no | — | local plugin execution demo |
-| 14 | Opossum Analysis | yes* | user1-textfiles | video motion analysis (*local fallback) |
 
 ### Demo 03 — SAM3 Segmentation
 ```bash

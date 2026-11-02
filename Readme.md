@@ -66,7 +66,7 @@ src/
     tui/, tui_v2/, cli/          operator TUIs and CLI
 deploy/                          site deployment roots (umrs-front, rccs, rccs-front, ai4s, bdrt, bdrt-front, octopus, octopus-front, hpbd-atom, local, templates)
 docker/                          local standalone stack (server + Postgres + object store)
-demos/, demos_private/, demos_sp8/   demo suites
+demos/                           demo suite (private demos live in a separate private repository, 2026-11-03)
 doc/, docs/                      documentation (see map below)
 tests/                           5,1xx tests (2026-09-21)
 ```
