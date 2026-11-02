@@ -37,6 +37,17 @@ def test_recipe_engine_knobs_ride_the_env(defaults):
     assert "--kv-cache-dtype fp8" in env["VLLM_EXTRA_ARGS"]
 
 
+def test_launch_uses_the_rccs_lustre_copy(defaults):
+    # The model registry is shared by every front and stores bdrt's path for
+    # this name; the launcher prefers VLLM_HOST_MODEL_PATH (serve-model.slurm),
+    # so rccs must name its own copy or svc-fast starts on a missing path.
+    env = defaults["env_vars"]
+    assert (
+        env["VLLM_HOST_MODEL_PATH"] == "/lvs0/rccs-dmp/masaru.nagaso/umrs_models/Qwen3.8-27B-NVFP4"
+    )
+    assert env["VLLM_PATH_TO_HUGGINGFACE"] == "/lvs0/rccs-dmp/masaru.nagaso/umrs_models"
+
+
 def test_legacy_plan_builds(monkeypatch):
     from umrs.orchestrator.serving_spec import SiteSpec
 

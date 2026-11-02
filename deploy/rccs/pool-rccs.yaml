@@ -86,6 +86,11 @@ endpoints:
     gpu_count: 1
     max_model_len: 262144
     env_vars:
+      # rccs copy (2026-11-02): the model registry is shared by every front and
+      # stores bdrt's path for this name, so rccs points at its own Lustre copy
+      # (unsloth/Qwen3.8-27B-NVFP4 @f0b7c9e7, same checkpoint) here.
+      VLLM_HOST_MODEL_PATH: "/lvs0/rccs-dmp/masaru.nagaso/umrs_models/Qwen3.8-27B-NVFP4"
+      VLLM_PATH_TO_HUGGINGFACE: "/lvs0/rccs-dmp/masaru.nagaso/umrs_models"
       # Recipe-pinned image (multi-arch; arm64 manifest present). The stock
       # release predates the gated-delta-net MTP fix the recipe relies on.
       VLLM_DOCKER_IMAGE: "docker.io/vllm/vllm-openai:qwen38"
