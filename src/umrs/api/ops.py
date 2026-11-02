@@ -647,6 +647,10 @@ class ConnectInfoResponse(BaseModel):
     # (role -> "svc-<role>") plus an ordered "fallback" list. Absent when the
     # front's roster carries no role alias.
     default_models: dict[str, Any] | None = None
+    # ADR-106 D-10 (2026-11-03): the served model names behind each live role,
+    # so a client can tell the user which model did the work. Absent when no
+    # role is live.
+    role_models: dict[str, list[str]] | None = None
 
 
 @router.get(
@@ -709,6 +713,7 @@ def ops_connect_info(
     default_models = connect_info_default_models()
     if default_models:
         result["default_models"] = default_models
+        result["role_models"] = connect_info_role_models()
 
     return result
 
@@ -750,6 +755,19 @@ def connect_info_default_models(registry: Any = None) -> dict[str, Any]:
     if fallback:
         models["fallback"] = fallback
     return models
+
+
+def connect_info_role_models(registry: Any = None) -> dict[str, list[str]]:
+    """ADR-106 D-10: role -> the served model names behind its live alias
+    (display only; routing still goes through the ``svc-*`` alias)."""
+    from umrs.orchestrator.endpoint_registry import get_registry
+    from umrs.orchestrator.provision_roster import role_alias_models
+
+    served = _served_models(registry or get_registry())
+    names = {
+        role: sorted(served.intersection(role_alias_models(f"svc-{role}"))) for role in SERVICE_ROLES
+    }
+    return {role: models for role, models in names.items() if models}
 
 
 def _connect_info_services() -> dict[str, str]:

@@ -72,3 +72,12 @@ def test_nothing_running_means_no_key(monkeypatch) -> None:
     registry = _registry(down=("glm-5.3-flash",))
     monkeypatch.setattr(er, "get_registry", lambda: registry)
     assert "default_models" not in ops.ops_connect_info(x_user_id=None)
+
+
+def test_role_models_name_the_live_backing_models() -> None:
+    # ADR-106 D-10 (2026-11-03): R4 tells the user which model did the work.
+    registry = _registry("glm-5.3-flash", "Bespoke-Nimble-9B", down=("Qwen3-Embedding-0.6B",))
+    assert ops.connect_info_role_models(registry) == {
+        "chat": ["glm-5.3-flash"],
+        "decision": ["Bespoke-Nimble-9B"],
+    }
