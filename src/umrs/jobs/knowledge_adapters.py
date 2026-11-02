@@ -2776,9 +2776,15 @@ def _detect_graph_payload(text: str) -> dict[str, Any] | None:
 
 
 def _is_chat_endpoint(ep: Any) -> bool:
-    """A registry row that serves chat (not an embedding or vision service)."""
+    """A registry row that serves general chat: ``llm``/``vlm``, no service kind
+    naming a vision or embedding service (rerankers, OCR and embedders are not
+    chat models, 2026-11-02)."""
+    from umrs.model_registry.models import CHAT_MODEL_TYPES, normalized_model_type
+
     meta = getattr(ep, "metadata", None) or {}
-    kind = f"{meta.get('model_type', '')} {meta.get('service_kind', '')}".lower()
+    if normalized_model_type(meta.get("model_type")) not in CHAT_MODEL_TYPES:
+        return False
+    kind = str(meta.get("service_kind") or "").lower()
     return not any(word in kind for word in ("vision", "embed"))
 
 

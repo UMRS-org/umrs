@@ -306,7 +306,7 @@ def _find_text_endpoint(project_id: str) -> Any | None:
     configured = os.getenv("UMRS_DATA_CATALOG_SUMMARY_MODEL")
     fallback = None
     for ep in _usable_endpoints(project_id):
-        if _is_bentoml(ep) or ep.metadata.get("model_type") == "embedding":
+        if _is_bentoml(ep) or not _is_chat_model(ep):
             continue
         if configured and ep.model == configured:
             return ep
@@ -329,12 +329,31 @@ def _usable_endpoints(project_id: str) -> list[Any]:
         return []
 
 
+def _is_chat_model(endpoint: Any) -> bool:
+    """``llm``/``vlm`` (or unset): rerankers, OCR and embedders never summarize."""
+    from umrs.model_registry.models import CHAT_MODEL_TYPES, normalized_model_type
+
+    return (
+        normalized_model_type((endpoint.metadata or {}).get("model_type"))
+        in CHAT_MODEL_TYPES
+    )
+
+
 def _is_vision_capable(endpoint: Any) -> bool:
+    """Image understanding: ``vision``/``vlm`` types, or a chat model flagged
+    ``supports_vision``. OCR extracts text and does not caption (2026-11-02)."""
+    from umrs.model_registry.models import (
+        IMAGE_UNDERSTANDING_TYPES,
+        normalized_model_type,
+    )
+
     metadata = endpoint.metadata or {}
-    if metadata.get("model_type") == "vision":
+    model_type = normalized_model_type(metadata.get("model_type"))
+    if model_type in IMAGE_UNDERSTANDING_TYPES:
         return True
     capabilities = metadata.get("capabilities")
-    return bool(isinstance(capabilities, dict) and capabilities.get("supports_vision"))
+    flagged = isinstance(capabilities, dict) and capabilities.get("supports_vision")
+    return bool(flagged) and _is_chat_model(endpoint)
 
 
 def _is_bentoml(endpoint: Any) -> bool:

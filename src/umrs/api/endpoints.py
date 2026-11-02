@@ -32,6 +32,7 @@ from fastapi import (
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..model_registry.capabilities import endpoint_limit_metadata
+from ..model_registry.models import MODELS_PROBE_TYPES
 from ..orchestrator import provision_failure_cap
 from ..orchestrator.caller_roots import (
     apply_caller_roots_env,
@@ -1740,7 +1741,9 @@ def _resolve_readiness_probe_mode(
     model_type = _resolve_model_type(model_name, entry)
     if _is_bentoml_vision_service(model_name, entry, serving_backend=serving_backend):
         return "http"
-    if model_type == "embedding":
+    # Pooling runners (embedding, reranker) have no chat route, and an OCR
+    # model needs an image to answer: probe them with GET /v1/models.
+    if model_type in MODELS_PROBE_TYPES:
         return "models"
     return "chat"
 
@@ -2176,7 +2179,9 @@ async def roll_endpoint(
 
     if not is_admin:
         raise_typed(
-            PlatformError.auth("admin_required", "Admin token required to roll a replica")
+            PlatformError.auth(
+                "admin_required", "Admin token required to roll a replica"
+            )
         )
     endpoint = registry.update_metadata(job_id, {ROLL_KEY: True})
     if endpoint is None:

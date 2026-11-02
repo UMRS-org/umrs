@@ -73,12 +73,43 @@ class ModelType(Enum):
 
     - LLM: Large language model for text generation (vLLM)
     - EMBEDDING: Embedding model for vector representations
-    - VISION: Vision model for image analysis (SAM3, HMAE, etc.)
+    - VISION: Vision model for image analysis (SAM3, HMAE, etc.; BentoML)
+    - RERANKER: Cross-encoder reranker / scorer (vLLM pooling runner)
+    - OCR: Document OCR model (e.g. PaddleOCR-VL; vLLM, page -> text)
+    - VLM: Vision-language model (vLLM; chat with image inputs)
+
+    Added 2026-11-02 (ADR-106 service tier): ``reranker``, ``ocr`` and
+    ``vlm``. Their behaviour comes from the sets below, not from scattered
+    string checks.
     """
 
     LLM = "llm"
     EMBEDDING = "embedding"
     VISION = "vision"
+    RERANKER = "reranker"
+    OCR = "ocr"
+    VLM = "vlm"
+
+
+#: Every valid ``model_type`` value (the DB CHECK constraint mirrors it).
+MODEL_TYPE_VALUES: tuple[str, ...] = tuple(t.value for t in ModelType)
+
+#: Types whose endpoints are general chat models: background jobs (knowledge
+#: extraction, catalog summaries) may pick them as their chat model.
+CHAT_MODEL_TYPES: frozenset[str] = frozenset({"llm", "vlm"})
+
+#: Types whose readiness is probed with ``GET /v1/models``: pooling runners
+#: (no chat route) and OCR (needs an image to answer meaningfully).
+MODELS_PROBE_TYPES: frozenset[str] = frozenset({"embedding", "reranker", "ocr"})
+
+#: Types that accept image inputs for general understanding (perception
+#: captions). OCR extracts text and is deliberately not in this set.
+IMAGE_UNDERSTANDING_TYPES: frozenset[str] = frozenset({"vision", "vlm"})
+
+
+def normalized_model_type(value: object) -> str:
+    """A metadata/registry ``model_type`` as a lowercase string; ``llm`` when unset."""
+    return str(value or "llm").strip().lower() or "llm"
 
 
 class ModelStatus(Enum):

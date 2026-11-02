@@ -7,7 +7,7 @@ import re
 from umrs.core.TaskCmdStatus import TaskCmd
 
 PING_TIMEOUT_MS_DEFAULT = 2000
-MODEL_TYPE_CHOICES = ("llm", "embedding", "vision")
+MODEL_TYPE_CHOICES = ("llm", "embedding", "vision", "reranker", "ocr", "vlm")
 MODEL_SCOPE_CHOICES = ("system", "project", "user")
 WORKFLOW_SCOPE_CHOICES = ("system", "user")
 JOB_TYPE_CHOICES = ("endpoint_provision", "index_build", "cleanup")
