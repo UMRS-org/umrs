@@ -66,6 +66,67 @@ os.environ.setdefault(
     f"{os.environ.get('TMPDIR', '/tmp')}/umrs-test-kb-exports/{os.getpid()}",
 )
 
+# Per-worker database under pytest-xdist (2026-11-03). About 30 test files
+# TRUNCATE or DELETE in the CI test database, so parallel workers sharing it
+# would race. Each xdist worker clones the migrated database once
+# (CREATE DATABASE ... TEMPLATE) and points POSTGRES_DB at its clone: every
+# DSN in src and tests derives from POSTGRES_DB. No-op without xdist, without
+# a CI-shaped POSTGRES_* env, or when that server is unreachable.
+_CLONE_RETRIES = 60
+
+
+def _create_clone(cur, clone: str, template: str) -> None:
+    """CREATE DATABASE clone TEMPLATE template, waiting out a busy template."""
+    import time
+
+    from psycopg2 import errors, sql
+
+    statement = sql.SQL("CREATE DATABASE {} TEMPLATE {}").format(
+        sql.Identifier(clone), sql.Identifier(template)
+    )
+    for attempt in range(_CLONE_RETRIES):
+        try:
+            cur.execute(statement)
+            return
+        except errors.ObjectInUse:  # another worker is cloning the same template
+            if attempt == _CLONE_RETRIES - 1:
+                raise
+            time.sleep(0.5)
+
+
+def _clone_database_for_xdist_worker() -> None:
+    worker = os.environ.get("PYTEST_XDIST_WORKER", "")
+    template = os.environ.get("POSTGRES_DB", "")
+    if not worker or not template or not os.environ.get("POSTGRES_HOST"):
+        return
+    import psycopg2
+    from psycopg2 import sql
+
+    try:
+        conn = psycopg2.connect(
+            host=os.environ["POSTGRES_HOST"],
+            port=os.environ.get("POSTGRES_PORT", "5432"),
+            user=os.environ.get("POSTGRES_USER", "postgres"),
+            password=os.environ.get("POSTGRES_PASSWORD", ""),
+            dbname="postgres",
+            connect_timeout=5,
+        )
+    except psycopg2.OperationalError:
+        return  # no server: the DB tests skip or fail as in a serial run
+    clone = f"{template}_{worker}"
+    conn.autocommit = True
+    try:
+        with conn.cursor() as cur:
+            drop = sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)")
+            cur.execute(drop.format(sql.Identifier(clone)))
+            _create_clone(cur, clone, template)
+    finally:
+        conn.close()
+    os.environ["POSTGRES_DB"] = clone
+
+
+_clone_database_for_xdist_worker()
+
 # Demo/onboarding files that wrap argparse at module scope: collecting them
 # at test time makes pytest's argument parser abort with SystemExit — see the
 # `usage: __main__.py [-h] [-c CONFIG]` INTERNALERROR in full-suite runs.
