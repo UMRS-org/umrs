@@ -2126,6 +2126,26 @@ RAYEOF
         exit 1
     fi
 
+    # Worker launch mode (2026-11-03). `detached` (crun sites, bdrt): a short
+    # step starts the container with -d and short steps poll it; the node's
+    # user systemd adopts the container's pause process and conmon, and a
+    # cluster step-killer there ends every step after ~60 s (2026-07-25).
+    # `step` (runc sites, rccs-cloud): no user systemd session, so a detached
+    # container's pause process dies with its short step (job 454955:
+    # "invalid internal status"), but no step-killer either (probe job
+    # 455210: an 11-min step survived and short steps saw its container). One
+    # long-lived step per worker node then prepares the venue, resets the
+    # pause process and runs the worker in the foreground for the job's life.
+    # RIVAULT_MN_WORKER_MODE overrides; the default follows the OCI runtime.
+    _mn_worker_mode="${RIVAULT_MN_WORKER_MODE:-}"
+    if [[ -z "${_mn_worker_mode}" ]]; then
+        _mn_worker_mode=detached
+        [[ "${RIVAULT_PARTITION_OCI_RUNTIME:-}" == "runc" ]] && _mn_worker_mode=step
+    fi
+    echo "[rivault] Multi-node worker launch mode: ${_mn_worker_mode}"
+    # The worker container's shell command (the NVML self-check, then Ray).
+    _mn_worker_sh="export PATH=/usr/local/bin:\$PATH; python3 -m pip install -q --no-index --find-links /root/.cache/huggingface/ray_aarch64_env/wheels ray 2>/dev/null || python3 -m pip install -q ray; python3 -c 'import pynvml; pynvml.nvmlInit(); assert pynvml.nvmlDeviceGetCount() > 0' && exec ray start --address='${RAY_ADDRESS}' --num-gpus='${_gpus_per_node}' --object-store-memory=1073741824 --block"
+
     # Start Ray workers on the remaining nodes (one task per node).
     for ((i=1; i<${#RAY_NODES[@]}; i++)); do
         wnode="${RAY_NODES[$i]}"
@@ -2149,11 +2169,26 @@ RAYEOF
             # node-locally before any podman invocation. runroot follows
             # XDG_RUNTIME_DIR, so the worker uses its own node-local run dir;
             # runroot adoption is a no-op while any container runs on the node.
-            srun --nodes=1 --ntasks=1 --nodelist="${wnode}" --overlap bash -c \
-                "source '${SCRIPT_DIR}/venue.sh' && rivault_venue_prepare '${SLURM_JOB_ID:-${uuid}}' '${RIVAULT_CGROUP_MANAGER:-cgroupfs}'" \
-                >/dev/null 2>&1 \
-                || echo "[rivault] WARN: worker venue prepare failed on ${wnode}; podman will use inherited paths" >&2
+            if [[ "${_mn_worker_mode}" != "step" ]]; then
+                srun --nodes=1 --ntasks=1 --nodelist="${wnode}" --overlap bash -c \
+                    "source '${SCRIPT_DIR}/venue.sh' && rivault_venue_prepare '${SLURM_JOB_ID:-${uuid}}' '${RIVAULT_CGROUP_MANAGER:-cgroupfs}'" \
+                    >/dev/null 2>&1 \
+                    || echo "[rivault] WARN: worker venue prepare failed on ${wnode}; podman will use inherited paths" >&2
+            fi
             for _wattempt in 1 2 3 4 5; do
+              if [[ "${_mn_worker_mode}" == "step" ]]; then
+                # One long-lived step owns the pause process and the worker
+                # container; it returns when the worker exits, then the
+                # post-mortem below runs and the loop relaunches it.
+                _wcmd="$(printf '%q ' podman run --name rivault-ray-worker --replace --network host --shm-size=4g \
+                    --security-opt seccomp=unconfined --entrypoint /bin/sh \
+                    -e "LD_LIBRARY_PATH=/usr/lib/aarch64-linux-gnu" \
+                    -e "TRITON_LIBCUDA_PATH=/usr/lib/aarch64-linux-gnu" \
+                    "${_mn_vllm_args[@]}" "${VLLM_IMAGE}" -c "${_mn_worker_sh}")"
+                srun --nodes=1 --ntasks=1 --nodelist="${wnode}" --overlap bash -c \
+                    "source '${SCRIPT_DIR}/venue.sh' && rivault_venue_prepare '${SLURM_JOB_ID:-${uuid}}' '${RIVAULT_CGROUP_MANAGER:-cgroupfs}' >/dev/null 2>&1; podman system migrate >/dev/null 2>&1; exec ${_wcmd}" \
+                    || true
+              else
                 # Reset any stale rootless-podman pause process on the worker
                 # node. A leftover pause process from a previous job makes every
                 # podman invocation fail with: "invalid internal status, try
@@ -2217,6 +2252,7 @@ RAYEOF
                         break
                     fi
                 done
+              fi
                 # POST-MORTEM before --replace destroys the evidence: the dying
                 # container's exit state, its last log lines, and the user
                 # journal (who sent the SIGTERM — conmon/systemd scope teardown

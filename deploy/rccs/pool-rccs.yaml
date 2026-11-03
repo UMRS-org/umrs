@@ -81,8 +81,11 @@ endpoints:
     service: {project_id: default, user: mnagaso, replicas: 1, max_surge: 1}
     # ADR-106 D-1 role alias (2026-11-01): routing only, resolves to READY replicas.
     aliases: [svc-fast]
-    # No partition (2026-10-24, was ng-dgx-m0): the job takes the site
-    # candidate list and UMRS submits it to the earliest-starting one.
+    # ng-dgx-s only (2026-11-03, maintainer: "ng-dgx-m* partitions are dual
+    # dgx"): single-node service models keep off the m pairs, which two-node
+    # svc-chat replicas need whole. Was the site candidate list (2026-10-24),
+    # which put it on ng-dgx-m0-08 (job 454877).
+    partition: ng-dgx-s
     node_count: 1
     gpu_count: 1
     max_model_len: 262144
@@ -168,6 +171,8 @@ endpoints:
   # 455105, 454870, 455099, 455102) and carry blocks. DeepSeek (svc-chat)
   # does not: its two-node launch on rccs is blocked (see its entry).
   # Nimble keeps its keep_alive relay until M-3.
+  # Placement: single-node roles run on ng-dgx-s only; each ng-dgx-m* partition
+  # is a dual-DGX pair kept whole for two-node svc-chat (maintainer 2026-11-03).
   # Model paths come from the model registry (`r4 model register`) except
   # for the TensorFold entry, whose prepared files are named below.
 
@@ -212,11 +217,11 @@ endpoints:
       # the Ray worker never starts. The vLLM 0.78 budget is the guard.
       # The multi-node path also needs the site's userns mode spelled out:
       # podman 4.9.3 rejects the keep-id:uid default on the worker node.
-      # OPEN (2026-11-03, job 454955): with both fixes the worker container
-      # starts, but its rootless pause process lives in the srun step's cgroup
-      # (no user systemd session on rccs nodes) and dies with the step, so the
-      # worker never joins Ray (1/2 GPUs; vLLM placement group times out).
-      # Two-node serving on rccs needs a different worker launch first.
+      # Worker launch (2026-11-03): rccs has no user systemd session, so a
+      # detached worker's pause process died with its short srun step (job
+      # 454955: worker never joined Ray). The launcher now runs each worker in
+      # one long-lived step on runc partitions (`step` mode; probe job 455210:
+      # no step-killer on rccs).
       RIVAULT_USERNS_MODE: "host"
       MAX_JOBS: "4"
       # Official image, CUDA 13.0.2 (matches the 580.x driver), DeepSeek-V4
@@ -243,7 +248,7 @@ endpoints:
     model: Qwen3.6-35B-A3B-NVFP4
     service: {project_id: default, user: mnagaso, replicas: 1, max_surge: 1}
     aliases: [svc-vision]
-    partition: ng-dgx-s,ng-dgx-m1
+    partition: ng-dgx-s
     node_count: 1
     gpu_count: 1
     max_model_len: 65536
@@ -267,7 +272,7 @@ endpoints:
     service:
       {project_id: default, user: mnagaso, replicas: 1, max_surge: 1, readiness_probe: models}
     aliases: [svc-embed]
-    partition: ng-dgx-s,ng-dgx-m1
+    partition: ng-dgx-s
     node_count: 1
     gpu_count: 1
     max_model_len: 32768
@@ -287,7 +292,7 @@ endpoints:
     service:
       {project_id: default, user: mnagaso, replicas: 1, max_surge: 1, readiness_probe: models}
     aliases: [svc-rerank]
-    partition: ng-dgx-s,ng-dgx-m1
+    partition: ng-dgx-s
     node_count: 1
     gpu_count: 1
     max_model_len: 32768
@@ -307,7 +312,7 @@ endpoints:
     service:
       {project_id: default, user: mnagaso, replicas: 1, max_surge: 1, readiness_probe: models}
     aliases: [svc-ocr]
-    partition: ng-dgx-s,ng-dgx-m1
+    partition: ng-dgx-s
     node_count: 1
     gpu_count: 1
     max_model_len: 16384

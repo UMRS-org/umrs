@@ -45,3 +45,23 @@ def test_launcher_skips_a_memory_cap_on_runc():
     )
     assert guard, "the runc guard must come before the --memory arguments"
     assert guard.start() < text.index('--memory="${RIVAULT_MN_MEMORY_CAP}"')
+
+
+def test_runc_partitions_default_to_the_long_step_worker_mode():
+    """rccs (runc, no user systemd) runs each worker in one long-lived step
+    (probe job 455210); crun sites keep the detached launch."""
+    text = SLURM.read_text(encoding="utf-8")
+    assert '_mn_worker_mode="${RIVAULT_MN_WORKER_MODE:-}"' in text
+    assert '[[ "${RIVAULT_PARTITION_OCI_RUNTIME:-}" == "runc" ]] && _mn_worker_mode=step' in text
+
+
+def test_step_mode_owns_venue_pause_process_and_container_in_one_step():
+    text = SLURM.read_text(encoding="utf-8")
+    step = text[text.index('if [[ "${_mn_worker_mode}" == "step" ]]; then') :]
+    step = step[: step.index("              else")]
+    # One srun whose bash prepares the venue, resets the pause process and
+    # execs the foreground worker: nothing podman-related in a short step.
+    assert step.count("srun ") == 1
+    assert "rivault_venue_prepare" in step and "podman system migrate" in step
+    assert "exec ${_wcmd}" in step
+    assert " -d " not in step

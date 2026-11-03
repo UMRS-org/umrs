@@ -43,3 +43,13 @@ def test_blocked_or_relayed_models_have_no_service_block():
     assert "DeepSeek-V4-Flash" not in policies
     nimble = policies.get("Bespoke-Nimble-9B")
     assert nimble is None or nimble.service is False
+
+
+def test_single_node_roles_stay_off_the_dual_dgx_m_pairs():
+    """Each ng-dgx-m* partition is a dual-DGX pair kept whole for two-node
+    svc-chat (maintainer 2026-11-03); single-node roles run on ng-dgx-s."""
+    entries = yaml.safe_load(POOL.read_text(encoding="utf-8"))["endpoints"]
+    single = [e for e in entries if "service" in e]
+    assert single
+    for entry in single:
+        assert entry["partition"] == "ng-dgx-s", entry["name"]
