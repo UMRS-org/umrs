@@ -202,7 +202,18 @@ endpoints:
       # GB10 unified memory: Ray's monitor counts CPU+GPU and would SIGTERM the
       # worker during the 74 GiB/rank load (same as bdrt).
       RAY_memory_monitor_refresh_ms: "0"
-      RIVAULT_MN_MEMORY_CAP: "96g"
+      # No RIVAULT_MN_MEMORY_CAP here (measured 2026-11-03, jobs 454924/454939):
+      # rccs is rootless runc without cgroup delegation, so any container
+      # memory limit fails ("rootless needs no limits + no cgrouppath") and
+      # the Ray worker never starts. The vLLM 0.78 budget is the guard.
+      # The multi-node path also needs the site's userns mode spelled out:
+      # podman 4.9.3 rejects the keep-id:uid default on the worker node.
+      # OPEN (2026-11-03, job 454955): with both fixes the worker container
+      # starts, but its rootless pause process lives in the srun step's cgroup
+      # (no user systemd session on rccs nodes) and dies with the step, so the
+      # worker never joins Ray (1/2 GPUs; vLLM placement group times out).
+      # Two-node serving on rccs needs a different worker launch first.
+      RIVAULT_USERNS_MODE: "host"
       MAX_JOBS: "4"
       # Official image, CUDA 13.0.2 (matches the 580.x driver), DeepSeek-V4
       # stack native at this tag; never :latest.

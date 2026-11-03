@@ -2024,7 +2024,13 @@ RAYEOF
     # MemorySwapMax=0) reproduces that behaviour per container. Opt-in via the
     # roster env `RIVAULT_MN_MEMORY_CAP` (e.g. "110g"); unset → no cap (preserves
     # existing behaviour for other multi-node endpoints / non-GB10 nodes).
-    if [[ -n "${RIVAULT_MN_MEMORY_CAP:-}" ]]; then
+    # Rootless runc without cgroup delegation (rccs-cloud GB10, podman 4.9.3)
+    # refuses ANY container limit ("rootless needs no limits + no cgrouppath";
+    # 2026-11-03, jobs 454924/454939): a cap there kills the Ray worker, so it
+    # is skipped with a note instead. crun sites (bdrt) keep it.
+    if [[ -n "${RIVAULT_MN_MEMORY_CAP:-}" && "${RIVAULT_PARTITION_OCI_RUNTIME:-}" == "runc" ]]; then
+        echo "[rivault] multi-node: RIVAULT_MN_MEMORY_CAP=${RIVAULT_MN_MEMORY_CAP} ignored on a runc partition (rootless runc cannot apply container limits)" >&2
+    elif [[ -n "${RIVAULT_MN_MEMORY_CAP:-}" ]]; then
         _mn_vllm_args+=( --memory="${RIVAULT_MN_MEMORY_CAP}" --memory-swap="${RIVAULT_MN_MEMORY_CAP}" )
     fi
     if [[ "${_mn_tok_host}" != "/dev/null" ]]; then
