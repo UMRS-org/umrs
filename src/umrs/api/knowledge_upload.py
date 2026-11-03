@@ -29,6 +29,7 @@ from fastapi import (
     APIRouter,
     Depends,
     File,
+    Form,
     Request,
     UploadFile,
 )
@@ -152,6 +153,7 @@ async def _submit_upload_ingest(
     target_graph_id: str,
     user_id: str = "",
     origin_actor: str = "user",
+    provenance: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Submit the KNOWLEDGE_INGEST job against the staged key (503 on no runtime).
 
@@ -181,6 +183,8 @@ async def _submit_upload_ingest(
                 "uri": f"s3://{bucket}/{staged_key}",
                 "filename": basename,
                 "content_type": content_type,
+                # ADR-108 D-6: validated again where the artifact is stored.
+                **({"provenance": provenance} if provenance else {}),
             }
         ],
         "allow_domains": [],
@@ -226,6 +230,7 @@ async def knowledge_upload(
     request: Request,
     file: UploadFile = File(...),
     graph_id: str | None = None,
+    provenance: str | None = Form(None),
     project_id: str = Depends(get_project_id),
 ) -> dict[str, Any]:
     """Stage bytes → central durable ingest (dual-corpus dwell contract).
@@ -295,4 +300,20 @@ async def knowledge_upload(
         target_graph_id=target_graph_id,
         user_id=user_id,
         origin_actor=request_actor(request),
+        provenance=_form_provenance(provenance),
     )
+
+
+def _form_provenance(raw: str | None) -> dict[str, Any] | None:
+    """The upload's ``provenance`` form field (JSON), bounded; None when
+    absent or malformed (never a refused upload)."""
+    import json
+
+    from umrs.knowledge.client_provenance import clean_provenance
+
+    if not raw:
+        return None
+    try:
+        return clean_provenance(json.loads(raw))
+    except ValueError:
+        return None

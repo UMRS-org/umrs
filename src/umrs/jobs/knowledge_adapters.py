@@ -1075,64 +1075,29 @@ def _run_ingest_sync(
     project_id: str,
     allow_domains: list[str] | None,
 ) -> tuple[str, list[dict[str, Any]]]:
-    from umrs.knowledge.artifact_storage import ArtifactStorage
 
     result = KnowledgeIngestResult()
     success_ids: list[str] = []
     success_descs: list[dict[str, Any]] = []
 
+    from umrs.knowledge.client_provenance import attach_provenance
+
     for src_spec in source_refs:
-        source_kind = src_spec.get("kind", "local_file")
-        uri = src_spec.get("uri", src_spec.get("path", ""))
-        if not uri:
-            result.failed_items.append({"source": source_kind, "error": "no uri/path"})
-            continue
-
-        # inline_text: content travels in the spec — fixes client-local files
-        # for remote gateways (the job runs server-side; local paths fail).
-        # session_turns (K1.6 /save): verbatim chat text, built by the route.
-        if source_kind in _INLINE_KINDS:
-            _put_inline_text_sync(
-                job.job_id,
-                attempt.attempt_id,
-                ArtifactStorage(s3_client, bucket),
-                project_id,
-                src_spec,
-                f"art-{uuid.uuid4().hex[:12]}",
-                result,
-                success_ids,
-                success_descs,
-            )
-            continue
-
-        try:
-            _ingest_one_source(
-                job,
-                attempt,
-                s3_client,
-                bucket,
-                project_id,
-                source_kind,
-                uri,
-                allow_domains,
-                result,
-                success_ids,
-                success_descs,
-            )
-        except Exception as exc:  # noqa: BLE001 — best-effort adapter path, reported not raised
-            logger.warning(
-                "knowledge_ingest source failed: kind=%s uri=%s error=%s",
-                source_kind,
-                uri,
-                exc,
-            )
-            result.failed_items.append(
-                {
-                    "source": source_kind,
-                    "uri": uri,
-                    "error": str(exc),
-                }
-            )
+        start = len(success_descs)
+        _ingest_source(
+            job,
+            attempt,
+            s3_client,
+            bucket,
+            project_id,
+            allow_domains,
+            src_spec,
+            result,
+            success_ids,
+            success_descs,
+        )
+        # ADR-108 D-6: where the file came from on the workstation.
+        attach_provenance(success_descs[start:], src_spec)
 
     # Store artifact metadata in Postgres. Full descriptors (content_hash +
     # source_ref S3 key + kind) are required by the chained
@@ -1157,6 +1122,67 @@ def _run_ingest_sync(
         f"artifacts={len(success_ids)}|failed={len(result.failed_items)}"
     )
     return result_str, success_descs
+
+
+def _ingest_source(
+    job: Job,
+    attempt: JobAttempt,
+    s3_client: Any,
+    bucket: str,
+    project_id: str,
+    allow_domains: list[str] | None,
+    src_spec: dict[str, Any],
+    result: KnowledgeIngestResult,
+    success_ids: list[str],
+    success_descs: list[dict[str, Any]],
+) -> None:
+    """One ingest source: inline text stored directly, any other kind
+    resolved and stored; a failure is reported in ``result``, not raised."""
+    from umrs.knowledge.artifact_storage import ArtifactStorage
+
+    source_kind = src_spec.get("kind", "local_file")
+    uri = src_spec.get("uri", src_spec.get("path", ""))
+    if not uri:
+        result.failed_items.append({"source": source_kind, "error": "no uri/path"})
+        return
+    # inline_text: content travels in the spec — fixes client-local files
+    # for remote gateways (the job runs server-side; local paths fail).
+    # session_turns (K1.6 /save): verbatim chat text, built by the route.
+    if source_kind in _INLINE_KINDS:
+        _put_inline_text_sync(
+            job.job_id,
+            attempt.attempt_id,
+            ArtifactStorage(s3_client, bucket),
+            project_id,
+            src_spec,
+            f"art-{uuid.uuid4().hex[:12]}",
+            result,
+            success_ids,
+            success_descs,
+        )
+        return
+    try:
+        _ingest_one_source(
+            job,
+            attempt,
+            s3_client,
+            bucket,
+            project_id,
+            source_kind,
+            uri,
+            allow_domains,
+            result,
+            success_ids,
+            success_descs,
+        )
+    except Exception as exc:  # noqa: BLE001 — best-effort adapter path, reported not raised
+        logger.warning(
+            "knowledge_ingest source failed: kind=%s uri=%s error=%s",
+            source_kind,
+            uri,
+            exc,
+        )
+        result.failed_items.append({"source": source_kind, "uri": uri, "error": str(exc)})
 
 
 def _ingest_one_source(
