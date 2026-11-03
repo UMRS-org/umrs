@@ -80,6 +80,9 @@ class EndpointStatus(str, Enum):
 # bring-up runs with the row still PROVISIONING).
 STARTING_AT_KEY = "starting_at"
 LEFT_QUEUE_AT_KEY = "left_queue_at"
+# When the row turned FAILED / TERMINATED / EXPIRED (2026-11-03): the
+# janitor's retention clock for ended rows starts here.
+ENDED_AT_KEY = "ended_at"
 
 
 def _utc_now_iso() -> str:
@@ -95,6 +98,50 @@ def _naive_utc(raw: Any) -> datetime | None:
     if value.tzinfo is not None:
         value = value.astimezone(timezone.utc).replace(tzinfo=None)
     return value
+
+
+#: Statuses of a row that only records an attempt that has ended.
+ENDED_STATUSES = (
+    EndpointStatus.FAILED,
+    EndpointStatus.TERMINATED,
+    EndpointStatus.EXPIRED,
+)
+
+#: The metadata stamp a status transition writes.
+_TRANSITION_STAMPS = {
+    EndpointStatus.STARTING: STARTING_AT_KEY,
+    **{status: ENDED_AT_KEY for status in ENDED_STATUSES},
+}
+
+
+def _stamp_transition(endpoint: Any, old_status: Any, status: Any) -> None:
+    """Stamp when a row turned STARTING or ended (only on a real transition).
+
+    Re-review N4 (2026-10-23): the stuck reap ages a STARTING row from its
+    stamp, not from created_at (which includes queue time). 2026-11-03: the
+    ended-row retention ages a FAILED / TERMINATED / EXPIRED row from its.
+    """
+    key = _TRANSITION_STAMPS.get(status)
+    if key and old_status != status:
+        endpoint.metadata[key] = _utc_now_iso()
+
+
+def ended_since(endpoint: Any) -> datetime:
+    """When an ended row ended: its stamp, else its latest known time.
+
+    Rows that ended before the stamp existed (2026-11-03) fall back to the
+    newest of ``created_at``, ``ready_at`` and ``last_used_at``, an upper
+    bound on when they could have failed.
+    """
+    stamped = _naive_utc((endpoint.metadata or {}).get(ENDED_AT_KEY))
+    if stamped is not None:
+        return stamped
+    times = [
+        value
+        for value in (endpoint.created_at, endpoint.ready_at, endpoint.last_used_at)
+        if isinstance(value, datetime)
+    ]
+    return max(times)
 
 
 @dataclass
@@ -534,10 +581,7 @@ class EndpointRegistry:
                 endpoint.consecutive_failures = 0
             elif status == EndpointStatus.FAILED:
                 endpoint.consecutive_failures += 1
-            elif status == EndpointStatus.STARTING and old_status != status:
-                # Re-review N4 (2026-10-23): the stuck reap ages a STARTING row
-                # from here, not from created_at (which includes queue time).
-                endpoint.metadata[STARTING_AT_KEY] = _utc_now_iso()
+            _stamp_transition(endpoint, old_status, status)
 
             # Persist status change
             self._persist(endpoint)

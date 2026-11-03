@@ -2439,16 +2439,29 @@ def _endpoint_is_healthy(ep: Any) -> bool:
     return ep.is_usable
 
 
+#: The health bucket of each status. DRAINING (retiring, still finishing its
+#: requests) and EXPIRED (being torn down) are in none: they count only in
+#: the total. 2026-11-03: PROVISIONING / STARTING were in no bucket either
+#: (bdrt reported a provisioning row as "provisioning 0"), and DEGRADED (its
+#: engine probe fails, janitor R-HC1) did not make the front degraded.
+_HEALTH_BUCKETS = {
+    EndpointStatus.READY: "healthy",
+    EndpointStatus.PENDING: "provisioning",
+    EndpointStatus.PROVISIONING: "provisioning",
+    EndpointStatus.STARTING: "provisioning",
+    EndpointStatus.DEGRADED: "unhealthy",
+    EndpointStatus.FAILED: "unhealthy",
+    EndpointStatus.TERMINATED: "unhealthy",
+}
+
+
 def _health_counts(endpoints: list) -> dict[str, int]:
     """Healthy / unhealthy / provisioning counts by endpoint status."""
     counts = {"healthy": 0, "unhealthy": 0, "provisioning": 0}
     for ep in endpoints:
-        if ep.status == EndpointStatus.READY:
-            counts["healthy"] += 1
-        elif ep.status == EndpointStatus.PENDING:
-            counts["provisioning"] += 1
-        elif ep.status in (EndpointStatus.FAILED, EndpointStatus.TERMINATED):
-            counts["unhealthy"] += 1
+        bucket = _HEALTH_BUCKETS.get(ep.status)
+        if bucket:
+            counts[bucket] += 1
     return counts
 
 

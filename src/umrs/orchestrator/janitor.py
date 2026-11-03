@@ -4,6 +4,8 @@ Janitor: Background cleanup task.
 Responsibilities:
 - U-111: Idle timeout teardown (TTL enforcement)
 - U-112: Orphan job cleanup (stale/stuck jobs)
+- Ended-row retention: FAILED / TERMINATED / EXPIRED rows leave the
+  registry after ``failed_retention_sec`` (2026-11-03)
 
 This runs as a background task in the UMRS service.
 """
@@ -19,7 +21,13 @@ from typing import Any
 
 from .base import OrchestratorBackend
 from .detection import detect_backend
-from .endpoint_registry import EndpointRegistry, EndpointStatus, get_registry
+from .endpoint_registry import (
+    ENDED_STATUSES,
+    EndpointRegistry,
+    EndpointStatus,
+    ended_since,
+    get_registry,
+)
 from .factory import get_orchestrator, resolve_configured_backend_name
 from .provision_failure_cap import REAPED_STUCK_MARK, record_reaped_stuck
 
@@ -52,6 +60,35 @@ def _stuck_since(endpoint: Any) -> datetime:
     if endpoint.status == EndpointStatus.STARTING and starting_at is not None:
         return starting_at
     return _stamp(endpoint, "left_queue_at") or endpoint.created_at
+
+
+def _service_hold_digests() -> set[str] | None:
+    """Recipe digests of this front's ADR-106 ``service`` entries; None if unreadable."""
+    from .endpoint_relay import keep_alive_policies
+    from .provision_roster import roster_entries
+
+    try:
+        policies = keep_alive_policies(roster_entries())
+    except Exception as exc:  # noqa: BLE001 - fail safe: keep every hold
+        logger.warning("Ended-row retention: roster unreadable, holds kept: %s", exc)
+        return None
+    return {policy.digest for policy in policies if policy.service and policy.digest}
+
+
+def _is_service_hold(endpoint: Any, digests: set[str] | None) -> bool:
+    """A FAILED replica of a service's current recipe: it holds the upgrade.
+
+    ADR-106 D-4: while a canary of the new recipe is FAILED the controller
+    stops the roll and the old replicas keep serving, so the row stays until
+    the recipe changes. Unknown digests (roster unreadable) keep every row
+    that carries one.
+    """
+    from .service_controller import DIGEST_KEY
+
+    digest = (endpoint.metadata or {}).get(DIGEST_KEY)
+    if endpoint.status != EndpointStatus.FAILED or not digest:
+        return False
+    return digests is None or digest in digests
 
 
 def _cancel_durable_lineage(endpoint: Any) -> None:
@@ -121,6 +158,14 @@ class JanitorConfig:
     enable_stuck_cleanup: bool = True
     enable_liveness_cleanup: bool = True
 
+    # Ended-row retention (2026-11-03). Nothing removed FAILED / TERMINATED
+    # rows, so every failed provision stayed in the registry for good and
+    # kept the front's /umrs/endpoints/health "degraded" (rccs and bdrt on
+    # the README status since 2026-11-02). The audit trail keeps the
+    # attempt (provision failure cap); the row goes after this long.
+    enable_failed_retention: bool = True
+    failed_retention_sec: int = 21600
+
     # R-HC1: READY-side engine probe. The backend job-status check (ghost
     # pruning) only sees Slurm allocation state; a rivault allocation can
     # outlive its own engine stack (vllm/litellm exits) for days while the
@@ -167,6 +212,11 @@ class JanitorConfig:
             == "true",
             enable_liveness_cleanup=os.getenv("JANITOR_ENABLE_LIVENESS", "true").lower()
             == "true",
+            enable_failed_retention=os.getenv(
+                "JANITOR_ENABLE_FAILED_RETENTION", "true"
+            ).lower()
+            == "true",
+            failed_retention_sec=int(os.getenv("JANITOR_FAILED_RETENTION_SEC", "21600")),
             enable_engine_probe=os.getenv("JANITOR_ENABLE_ENGINE_PROBE", "true").lower()
             == "true",
             engine_probe_degrade_after=max(
@@ -194,6 +244,7 @@ class CleanupResult:
     stuck_cleaned: int = 0
     orphans_cleaned: int = 0
     ghosts_pruned: int = 0
+    ended_pruned: int = 0
     engines_degraded: int = 0
     engines_recovered: int = 0
     errors: list[str] = None
@@ -210,6 +261,7 @@ class CleanupResult:
             + self.stuck_cleaned
             + self.orphans_cleaned
             + self.ghosts_pruned
+            + self.ended_pruned
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -220,6 +272,7 @@ class CleanupResult:
             "stuck_cleaned": self.stuck_cleaned,
             "orphans_cleaned": self.orphans_cleaned,
             "ghosts_pruned": self.ghosts_pruned,
+            "ended_pruned": self.ended_pruned,
             "engines_degraded": self.engines_degraded,
             "engines_recovered": self.engines_recovered,
             "total_cleaned": self.total_cleaned,
@@ -356,7 +409,40 @@ class Janitor:
             orphan_result = await self._cleanup_orphans()
             result.orphans_cleaned = orphan_result
 
+        if self.config.enable_failed_retention:
+            result.ended_pruned = self._cleanup_ended()
+
         return result
+
+    def _cleanup_ended(self) -> int:
+        """Remove FAILED / TERMINATED / EXPIRED rows past the retention.
+
+        The attempt already ended (its job was cleaned up when it failed),
+        so only the row goes. A FAILED canary that holds an ADR-106 upgrade
+        stays (:func:`_is_service_hold`).
+        """
+        endpoints = self.registry.list_all(status_filter=list(ENDED_STATUSES))
+        if not endpoints:
+            return 0
+        now = datetime.now(timezone.utc).replace(tzinfo=None)  # rows are naive UTC
+        cutoff = now - timedelta(seconds=self.config.failed_retention_sec)
+        digests = _service_hold_digests()
+        pruned = 0
+        for endpoint in endpoints:
+            if ended_since(endpoint) > cutoff or _is_service_hold(endpoint, digests):
+                continue
+            logger.info(
+                "Removing ended endpoint %s/%s (job_id=%s, status=%s) after retention",
+                endpoint.project_id,
+                endpoint.model,
+                endpoint.job_id,
+                endpoint.status.value,
+            )
+            self.registry.remove(endpoint.job_id)
+            pruned += 1
+            if pruned >= self.config.batch_size:
+                break
+        return pruned
 
     async def _cleanup_ghost_ready(self) -> int:
         """Remove READY/DEGRADED endpoints whose backend jobs are no longer alive.
