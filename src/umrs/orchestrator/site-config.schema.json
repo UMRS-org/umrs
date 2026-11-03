@@ -68,6 +68,10 @@
           "enum": ["first", "earliest_start"],
           "description": "How a slurm-remote submit picks one partition from a comma list: first candidate (default) or earliest sbatch --test-only start."
         },
+        "preferred_partitions": {
+          "type": "string",
+          "description": "Comma list of candidates that win an earliest-start tie before the recent-pick spreading (rccs: ng-dgx-s); a preferred candidate that starts later still loses."
+        },
         "account": { "type": "string" },
         "qos": { "type": "string" },
         "time_limit": { "type": "string" },
