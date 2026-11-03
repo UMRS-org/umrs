@@ -408,7 +408,10 @@ class RemoteSlurmBackend(SlurmBackend):
         # One partition per submission (RCCS refuses a list); the probes run
         # through the same ssh as the real submit.
         ranked = await self._rank_partitions(
-            ssh, [*sbatch_args, shlex.quote(wrapper_script)], candidates
+            ssh,
+            [*sbatch_args, shlex.quote(wrapper_script)],
+            candidates,
+            pc.preferred_partitions(site),
         )
 
         # Build environment exports + sacct attribution for the job. The cap
@@ -468,7 +471,11 @@ class RemoteSlurmBackend(SlurmBackend):
         return candidates
 
     async def _rank_partitions(
-        self, ssh: Any, sbatch_args: list[str], candidates: list[str]
+        self,
+        ssh: Any,
+        sbatch_args: list[str],
+        candidates: list[str],
+        preferred: frozenset[str] = frozenset(),
     ) -> list[str]:
         """Candidates ranked by `sbatch --test-only` start, earliest first.
 
@@ -489,7 +496,7 @@ class RemoteSlurmBackend(SlurmBackend):
 
         starts = await asyncio.gather(*(_probe(cand) for cand in candidates))
         by_name = dict(zip(candidates, starts, strict=True))
-        ranked = pc.choose(candidates, by_name)
+        ranked = pc.choose(candidates, by_name, preferred)
         if not ranked:
             logger.info(
                 "No Slurm partition of %s passed --test-only; submitting in "

@@ -81,11 +81,10 @@ endpoints:
     service: {project_id: default, user: mnagaso, replicas: 1, max_surge: 1}
     # ADR-106 D-1 role alias (2026-11-01): routing only, resolves to READY replicas.
     aliases: [svc-fast]
-    # ng-dgx-s only (2026-11-03, maintainer: "ng-dgx-m* partitions are dual
-    # dgx"): single-node service models keep off the m pairs, which two-node
-    # svc-chat replicas need whole. Was the site candidate list (2026-10-24),
-    # which put it on ng-dgx-m0-08 (job 454877).
-    partition: ng-dgx-s
+    # ng-dgx-s preferred, m partitions as a fallback (2026-11-03, see the
+    # placement note above the service tier). The site candidate list put it
+    # on ng-dgx-m0-08 (job 454877) without the preference.
+    partition: ng-dgx-s,ng-dgx-m1,ng-dgx-m2,ng-dgx-m0,ng-dgx-m3
     node_count: 1
     gpu_count: 1
     max_model_len: 262144
@@ -127,14 +126,15 @@ endpoints:
     model: Bespoke-Nimble-9B
     # ADR-106 D-1 role alias (2026-11-01): routing only, resolves to READY replicas.
     aliases: [svc-decision]
-    # ng-dgx-s only (maintainer 2026-11-03: "if nimble fits -s partition,
-    # nimble should be run on -s node always"). A 9B model fits one GB10, and
-    # each ng-dgx-m* partition is a dual-DGX pair kept whole for two-node
-    # svc-chat. Was the GB10 candidate list (2026-10-24), so a relay successor
-    # could pick any partition; on ng-dgx-s it now waits for an s node
-    # (8 standalone nodes). Fallback venue: the bdrt replica
-    # (deploy/bdrt/pool-bdrt-step.yaml).
-    partition: ng-dgx-s
+    # ng-dgx-s whenever an s node starts as early as any other; an m
+    # partition only as a fallback (maintainer 2026-11-03: "if nimble fits -s
+    # partition, nimble should be run on -s node always ... if no -s
+    # partitions are free, to use -m is fallback acceptable"). The rccs front
+    # prefers ng-dgx-s on start ties (rccs-front/site.yaml
+    # preferred_partitions) and moves to the next candidate on a
+    # per-partition quota refusal; ng-dgx-m3 (the step lane) last. Fallback
+    # venue: the bdrt replica (deploy/bdrt/pool-bdrt-step.yaml).
+    partition: ng-dgx-s,ng-dgx-m1,ng-dgx-m2,ng-dgx-m0,ng-dgx-m3
     node_count: 1
     gpu_count: 1
     max_model_len: 8192
@@ -170,8 +170,11 @@ endpoints:
   # 455105, 454870, 455099, 455102) and carry blocks. DeepSeek (svc-chat)
   # does not: its two-node launch on rccs is blocked (see its entry).
   # Nimble keeps its keep_alive relay until M-3.
-  # Placement: single-node roles run on ng-dgx-s only; each ng-dgx-m* partition
-  # is a dual-DGX pair kept whole for two-node svc-chat (maintainer 2026-11-03).
+  # Placement (maintainer 2026-11-03): single-node roles run on ng-dgx-s
+  # whenever an s node starts as early as any other (rccs-front/site.yaml
+  # preferred_partitions); an m partition is the fallback when s is full or
+  # its per-user quota refuses. Each ng-dgx-m* partition is a dual-DGX pair
+  # that two-node svc-chat needs whole.
   # Model paths come from the model registry (`r4 model register`) except
   # for the TensorFold entry, whose prepared files are named below.
 
@@ -247,7 +250,7 @@ endpoints:
     model: Qwen3.6-35B-A3B-NVFP4
     service: {project_id: default, user: mnagaso, replicas: 1, max_surge: 1}
     aliases: [svc-vision]
-    partition: ng-dgx-s
+    partition: ng-dgx-s,ng-dgx-m1,ng-dgx-m2,ng-dgx-m0,ng-dgx-m3
     node_count: 1
     gpu_count: 1
     max_model_len: 65536
@@ -271,7 +274,7 @@ endpoints:
     service:
       {project_id: default, user: mnagaso, replicas: 1, max_surge: 1, readiness_probe: models}
     aliases: [svc-embed]
-    partition: ng-dgx-s
+    partition: ng-dgx-s,ng-dgx-m1,ng-dgx-m2,ng-dgx-m0,ng-dgx-m3
     node_count: 1
     gpu_count: 1
     max_model_len: 32768
@@ -291,7 +294,7 @@ endpoints:
     service:
       {project_id: default, user: mnagaso, replicas: 1, max_surge: 1, readiness_probe: models}
     aliases: [svc-rerank]
-    partition: ng-dgx-s
+    partition: ng-dgx-s,ng-dgx-m1,ng-dgx-m2,ng-dgx-m0,ng-dgx-m3
     node_count: 1
     gpu_count: 1
     max_model_len: 32768
@@ -311,7 +314,7 @@ endpoints:
     service:
       {project_id: default, user: mnagaso, replicas: 1, max_surge: 1, readiness_probe: models}
     aliases: [svc-ocr]
-    partition: ng-dgx-s
+    partition: ng-dgx-s,ng-dgx-m1,ng-dgx-m2,ng-dgx-m0,ng-dgx-m3
     node_count: 1
     gpu_count: 1
     max_model_len: 16384

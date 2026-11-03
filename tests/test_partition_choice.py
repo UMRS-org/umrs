@@ -544,3 +544,31 @@ def test_launcher_submit_log_hides_export_values(monkeypatch, caplog):
     assert "sk-abc" in seen[0]
     assert "[remote-slurm]" in caplog.text
     assert "sk-abc" not in caplog.text
+
+
+def test_a_preferred_partition_wins_a_tie_over_recent_picks():
+    # rccs (2026-11-03): ng-dgx-s wins whenever it starts as early as an m pair,
+    # even if it was picked more often recently.
+    t = datetime(2026, 11, 3, 18)
+    starts = dict.fromkeys(["ng-dgx-m1", "ng-dgx-s", "ng-dgx-m2"], t)
+    load = {"ng-dgx-s": 3}
+    assert (
+        pc.rank_by_start(["ng-dgx-m1", "ng-dgx-s", "ng-dgx-m2"], starts, load, {"ng-dgx-s"})[0]
+        == "ng-dgx-s"
+    )
+    assert pc.rank_by_start(["ng-dgx-m1", "ng-dgx-s", "ng-dgx-m2"], starts, load)[0] == "ng-dgx-m1"
+
+
+def test_a_preferred_partition_that_starts_later_falls_back():
+    early, late = datetime(2026, 11, 3, 18), datetime(2026, 11, 3, 19)
+    starts = {"ng-dgx-s": late, "ng-dgx-m1": early}
+    assert pc.rank_by_start(["ng-dgx-s", "ng-dgx-m1"], starts, {}, {"ng-dgx-s"}) == [
+        "ng-dgx-m1",
+        "ng-dgx-s",
+    ]
+
+
+def test_preferred_partitions_come_from_the_site_scheduler():
+    site = SimpleNamespace(scheduler=SimpleNamespace(preferred_partitions="ng-dgx-s, ng-dgx-x"))
+    assert pc.preferred_partitions(site) == frozenset({"ng-dgx-s", "ng-dgx-x"})
+    assert pc.preferred_partitions(SimpleNamespace(scheduler=SimpleNamespace())) == frozenset()

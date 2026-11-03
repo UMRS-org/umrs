@@ -669,7 +669,9 @@ def _choose_remote_partition(site, sbatch_args):
     starts = {
         cand: _remote_test_only_start(site, sbatch_args, cand) for cand in candidates
     }
-    chosen = (pc.choose(candidates, starts) or candidates)[0]
+    chosen = (
+        pc.choose(candidates, starts, pc.preferred_partitions(site)) or candidates
+    )[0]
     logger.info(
         "Selected Slurm partition %s from %s (earliest start %s)",
         chosen,

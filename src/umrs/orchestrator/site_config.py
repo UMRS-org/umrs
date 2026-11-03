@@ -70,6 +70,9 @@ class SchedulerConfig:
     # retry on the next one when a per-partition quota refuses the submit
     # (orchestrator/partition_choice.py; RCCS rejects lists, 2026-10-24).
     partition_choice: str = "first"
+    # Candidates that win an earliest-start tie before recent-pick spreading
+    # (comma list; partition_choice.preferred_partitions). rccs: ng-dgx-s.
+    preferred_partitions: str = ""
     account: str = ""  # Slurm account
     qos: str = ""  # Slurm QoS
     time_limit: str = "04:00:00"  # Default wall-clock

@@ -45,11 +45,18 @@ def test_blocked_or_relayed_models_have_no_service_block():
     assert nimble is None or nimble.service is False
 
 
-def test_single_node_roles_stay_off_the_dual_dgx_m_pairs():
-    """Each ng-dgx-m* partition is a dual-DGX pair kept whole for two-node
-    svc-chat (maintainer 2026-11-03); single-node roles run on ng-dgx-s."""
+FRONT_SITE = POOL.parents[1] / "rccs-front/site.yaml"
+
+
+def test_single_node_roles_prefer_ng_dgx_s_with_m_as_fallback():
+    """Maintainer 2026-11-03: single-node roles on -s always, -m only as a
+    fallback. Each entry lists ng-dgx-s first (m3, the step lane, last), and
+    the rccs front prefers ng-dgx-s on start ties."""
     entries = yaml.safe_load(POOL.read_text(encoding="utf-8"))["endpoints"]
-    single = [e for e in entries if "service" in e]
-    assert single
+    single = [e for e in entries if "service" in e or e["model"] == "Bespoke-Nimble-9B"]
+    assert len(single) == 6
     for entry in single:
-        assert entry["partition"] == "ng-dgx-s", entry["name"]
+        candidates = entry["partition"].split(",")
+        assert (candidates[0], candidates[-1]) == ("ng-dgx-s", "ng-dgx-m3"), entry["name"]
+    scheduler = yaml.safe_load(FRONT_SITE.read_text(encoding="utf-8"))["scheduler"]
+    assert scheduler["preferred_partitions"] == "ng-dgx-s"

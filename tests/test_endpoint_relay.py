@@ -208,9 +208,12 @@ def test_rccs_nimble_entry_is_kept_alive_on_a_gb10_partition(rccs_roster):
     # The successor window must cover a cold start (~45 min Lustre load).
     assert policy.renew_before_sec >= 3600
     defaults = pr.resolve_model_provision_defaults("Bespoke-Nimble-9B")
-    # ng-dgx-s only (maintainer 2026-11-03): Nimble fits one GB10, and each
-    # ng-dgx-m* partition is a dual-DGX pair kept whole for two-node svc-chat.
-    assert defaults["partition"] == "ng-dgx-s"
+    # ng-dgx-s first (preferred on ties by the rccs front), every other GB10
+    # partition as a fallback so a successor never waits behind a full s
+    # partition or its quota; ng-dgx-m3 (the step lane) last (2026-11-03).
+    candidates = defaults["partition"].split(",")
+    assert (candidates[0], candidates[-1]) == ("ng-dgx-s", "ng-dgx-m3")
+    assert {"ng-dgx-m0", "ng-dgx-m1", "ng-dgx-m2"} < set(candidates)
     assert (defaults["ttl_sec"], defaults["max_model_len"]) == (0, 8192)
     env = defaults["env_vars"]
     # logprob_token_ids on /v1/completions needs vLLM >= 0.26 (a pinned tag).

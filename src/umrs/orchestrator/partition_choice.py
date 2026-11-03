@@ -29,7 +29,7 @@ from __future__ import annotations
 import re
 import threading
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Collection, Mapping
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -63,6 +63,15 @@ def spreads_partitions(site: Any) -> bool:
     scheduler = getattr(site, "scheduler", None)
     choice = getattr(scheduler, "partition_choice", PARTITION_CHOICE_FIRST)
     return str(choice or "").strip() == PARTITION_CHOICE_EARLIEST
+
+
+def preferred_partitions(site: Any) -> frozenset[str]:
+    """``scheduler.preferred_partitions``: candidates that win a start tie
+    over every other candidate, before the recent-pick spreading (rccs:
+    ng-dgx-s, so single-node jobs keep the dual-DGX m pairs free and use an
+    m partition only when no s node starts as early; 2026-11-03)."""
+    raw = getattr(getattr(site, "scheduler", None), "preferred_partitions", "") or ""
+    return frozenset(split_partitions(str(raw)))
 
 
 def default_partition(site: Any) -> str:
@@ -103,11 +112,14 @@ def rank_by_start(
     candidates: list[str],
     starts: Mapping[str, datetime | None],
     load: Mapping[str, int] | None = None,
+    preferred: Collection[str] = (),
 ) -> list[str]:
     """Candidates with a start time, earliest first; refused ones dropped.
 
-    Starts within ``TIE_TOLERANCE_SEC`` of the earliest tie; a tie goes to the
-    lower ``load`` (recent picks), then to the configured order.
+    Starts within ``TIE_TOLERANCE_SEC`` of the earliest tie; a tie goes to a
+    ``preferred`` partition first, then to the lower ``load`` (recent picks),
+    then to the configured order. A preferred partition that starts later
+    than the tie window does not win: the job falls back to the earliest.
     """
     known = {cand: start for cand in candidates if (start := starts.get(cand))}
     if not known:
@@ -116,9 +128,10 @@ def rank_by_start(
     window = timedelta(seconds=TIE_TOLERANCE_SEC)
     counts = load or {}
 
-    def _key(cand: str) -> tuple[datetime, int]:
+    def _key(cand: str) -> tuple[datetime, bool, int]:
         start = known[cand]
-        return (earliest if start - earliest <= window else start, counts.get(cand, 0))
+        bucket = earliest if start - earliest <= window else start
+        return (bucket, cand not in preferred, counts.get(cand, 0))
 
     return sorted(known, key=_key)
 
@@ -166,13 +179,17 @@ class RecentPicks:
 recent_picks = RecentPicks()
 
 
-def choose(candidates: list[str], starts: Mapping[str, datetime | None]) -> list[str]:
+def choose(
+    candidates: list[str],
+    starts: Mapping[str, datetime | None],
+    preferred: Collection[str] = (),
+) -> list[str]:
     """Rank by start (ties: fewest recent picks) and record the winner.
 
     Ranking and recording happen without an await in between, so concurrent
     submits in one event loop see each other's picks.
     """
-    ranked = rank_by_start(candidates, starts, recent_picks.counts())
+    ranked = rank_by_start(candidates, starts, recent_picks.counts(), preferred)
     if ranked:
         recent_picks.note(ranked[0])
     return ranked

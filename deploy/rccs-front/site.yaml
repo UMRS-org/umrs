@@ -38,6 +38,11 @@ scheduler:
   # (the step lane's only partition, step_executor.partition below).
   partition: ng-dgx-s,ng-dgx-m0,ng-dgx-m1,ng-dgx-m2,ng-dgx-m3
   partition_choice: earliest_start
+  # ng-dgx-s wins a start tie before the recent-pick spreading (maintainer
+  # 2026-11-03: single-node work on -s always; -m only as a fallback when no
+  # -s node starts as early, or on an -s quota refusal). Each ng-dgx-m*
+  # partition is a dual-DGX pair that two-node svc-chat needs whole.
+  preferred_partitions: ng-dgx-s
   account: cloud-users
   qos: ""
   time_limit: "23:00:00"  # ng-dgx-m* max is 1-00:00:00; 23h gives clean RIVAULT_JOB_TIMEOUT exit headroom
