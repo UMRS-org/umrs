@@ -203,7 +203,7 @@ def _nimble_actions(actions):
 
 
 def test_rccs_nimble_entry_is_kept_alive_on_a_gb10_partition(rccs_roster):
-    (policy,) = [p for p in keep_alive_policies(pr.roster_entries()) if not p.service]
+    (policy,) = keep_alive_policies(pr.roster_entries())
     assert (policy.model, policy.project_id) == ("Bespoke-Nimble-9B", "default")
     # The successor window must cover a cold start (~45 min Lustre load).
     assert policy.renew_before_sec >= 3600
