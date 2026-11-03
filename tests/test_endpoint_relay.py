@@ -178,15 +178,32 @@ def test_policies_require_a_project():
 
 
 @pytest.fixture
-def rccs_roster(monkeypatch):
-    monkeypatch.setenv(pr.ROSTER_ENV_VAR, str(POOL))
+def rccs_roster(monkeypatch, tmp_path):
+    """The real rccs roster without its service-block entries: these tests
+    pin Nimble's keep_alive relay, and since 2026-11-03 the roster also keeps
+    fast/vision/embed/rerank/ocr up through the service controller
+    (tests/test_rccs_service_blocks.py covers those)."""
+    import yaml
+
+    data = yaml.safe_load(POOL.read_text(encoding="utf-8"))
+    data["endpoints"] = [e for e in data["endpoints"] if "service" not in e]
+    path = tmp_path / "pool-rccs-relay.yaml"
+    path.write_text(yaml.safe_dump(data), encoding="utf-8")
+    monkeypatch.setenv(pr.ROSTER_ENV_VAR, str(path))
     pr._cache.clear()
     yield
     pr._cache.clear()
 
 
+def _nimble_actions(actions):
+    """The relay's actions for Nimble. Since 2026-11-03 the rccs roster also
+    carries service blocks (fast, vision, embed, rerank, ocr), which add their
+    own respawns when the test registry holds no endpoint for them."""
+    return [a for a in actions if a.model == "Bespoke-Nimble-9B"]
+
+
 def test_rccs_nimble_entry_is_kept_alive_on_a_gb10_partition(rccs_roster):
-    (policy,) = keep_alive_policies(pr.roster_entries())
+    (policy,) = [p for p in keep_alive_policies(pr.roster_entries()) if not p.service]
     assert (policy.model, policy.project_id) == ("Bespoke-Nimble-9B", "default")
     # The successor window must cover a cold start (~45 min Lustre load).
     assert policy.renew_before_sec >= 3600
@@ -373,7 +390,7 @@ def test_runner_reads_the_deadline_once_and_relays_by_it(rccs_roster, monkeypatc
     monkeypatch.setattr(runner, "_relay_backend", lambda: _Backend())
 
     actions = asyncio.run(runner.run_relay_once(now=NOW))
-    assert [a.action for a in actions] == ["provision"]
+    assert [a.action for a in _nimble_actions(actions)] == ["provision"]
     assert asked == ["401"]
     assert updates == [("401", {"slurm_deadline": (NOW + timedelta(hours=1)).isoformat()})]
 
@@ -397,7 +414,7 @@ def test_runner_without_a_deadline_answer_keeps_the_walltime_estimate(rccs_roste
     monkeypatch.setattr(runner, "get_registry", lambda: _Registry())
     monkeypatch.setattr(runner, "_site_walltime_sec", lambda: WALLTIME)
     monkeypatch.setattr(runner, "_relay_backend", lambda: _Backend())
-    assert asyncio.run(runner.run_relay_once(now=NOW)) == []
+    assert _nimble_actions(asyncio.run(runner.run_relay_once(now=NOW))) == []
 
 
 def _remote_backend(stdout, ok=True, seen=None):
