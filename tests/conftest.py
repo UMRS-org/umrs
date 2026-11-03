@@ -242,6 +242,20 @@ def _reset_skill_store_between_tests() -> Generator:
 
 
 @pytest.fixture(autouse=True)
+def _reset_job_store_between_tests() -> Generator:
+    """The jobs API store (``umrs.api.jobs._job_store``) is module-global: a
+    test that boots the real app (e.g. test_github_issue_87_features) left it
+    set, and a later test's workflow trigger became a durable job that no
+    scheduler runs (test_workflow_gate_api timed out whenever xdist put it
+    after such a test on the same worker, 2026-11-03). Clear it after every
+    test; no-op when the module was never imported."""
+    yield
+    module = sys.modules.get("umrs.api.jobs")
+    if module is not None:
+        module._job_store = None
+
+
+@pytest.fixture(autouse=True)
 def _reset_user_store_pg_lane_between_tests() -> Generator:
     """The user-store PG lane (``user_store._PG_POOL``) is module-global: a
     test that builds the real app with a database configured (the CI Postgres
