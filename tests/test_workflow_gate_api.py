@@ -46,6 +46,19 @@ def _reset_registry():
 
 
 @pytest.fixture(autouse=True)
+def _no_durable_job_store(monkeypatch):
+    """These routes run the workflow in process (no job store). A store an
+    earlier test left in ``umrs.api.jobs`` on the same xdist worker turned
+    every trigger into a durable job no scheduler here runs, so the gate
+    never reached ``waiting_approval`` (CI, 2026-11-03, after one database
+    per worker made the suite run on 4 workers)."""
+    import umrs.api.jobs as jobs
+
+    monkeypatch.setattr(jobs, "_job_store", None)
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _handshake_secret(monkeypatch):
     monkeypatch.setenv("UMRS_HANDSHAKE_HMAC_SECRET", "test-secret")
     yield
