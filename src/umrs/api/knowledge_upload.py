@@ -38,7 +38,6 @@ from fastapi import status as http_status
 from ..shared.storage.s3_config import get_s3_config
 from ._knowledge_mutation_guard import (
     enforce_graph_mutation_authorization,
-    request_actor,
 )
 from .files import get_project_id
 from .governance import guard_ingest
@@ -154,6 +153,7 @@ async def _submit_upload_ingest(
     user_id: str = "",
     origin_actor: str = "user",
     provenance: dict[str, Any] | None = None,
+    scope_fields: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Submit the KNOWLEDGE_INGEST job against the staged key (503 on no runtime).
 
@@ -192,6 +192,7 @@ async def _submit_upload_ingest(
         "graph_id": target_graph_id,
         "source": "knowledge_upload",
         "origin_actor": origin_actor,
+        **(scope_fields or {}),
     }
     if proposal_id:
         spec["proposal_id"] = proposal_id
@@ -252,6 +253,9 @@ async def knowledge_upload(
         user_id=user_id,
         details={"filename": file.filename},
     )
+    from umrs.api.knowledge_v2 import _ingest_scope, _scope_fields, _scoped_actor
+
+    scope = _ingest_scope(request, project_id)  # ADR-108 D-3
     target_graph_id = _resolve_ingest_target(request, project_id, graph_id)
     enforce_graph_mutation_authorization(
         request,
@@ -299,8 +303,9 @@ async def knowledge_upload(
         project_id=project_id,
         target_graph_id=target_graph_id,
         user_id=user_id,
-        origin_actor=request_actor(request),
+        origin_actor=_scoped_actor(request, scope),
         provenance=_form_provenance(provenance),
+        scope_fields=_scope_fields(scope),
     )
 
 

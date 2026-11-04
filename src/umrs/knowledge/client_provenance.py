@@ -45,6 +45,19 @@ def clean_provenance(raw: Any) -> dict[str, Any] | None:
     return {**out, "client_reported": True}
 
 
+def attach_scope_path(descs: list[dict[str, Any]], scope_path: Any) -> None:
+    """Stamp the work level's scope path (ADR-108 D-3) on each artifact."""
+    path = str(scope_path or "").strip()[:600]
+    if not path:
+        return
+    for desc in descs:
+        meta = desc.get("metadata")
+        if isinstance(meta, dict):
+            meta["scope_path"] = path
+        else:
+            desc["metadata"] = {"scope_path": path}
+
+
 def attach_provenance(descs: list[dict[str, Any]], src_spec: dict[str, Any]) -> None:
     """Put the source's provenance on the artifacts it produced."""
     clean = clean_provenance((src_spec or {}).get(PROVENANCE_KEY))

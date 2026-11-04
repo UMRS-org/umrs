@@ -1043,6 +1043,7 @@ async def delete_run_definition(
 @router.post("/run-definitions/{name}/trigger")
 async def trigger_run_definition(
     name: str,
+    scope_request: Request,
     x_user_id: str | None = Header(None),
     x_verified_project_id: str | None = Header(None),
     x_verified_is_admin: str | None = Header(None),
@@ -1072,6 +1073,7 @@ async def trigger_run_definition(
         x_verified_hmac=x_verified_hmac,
         x_r4_session_id=x_r4_session_id,
         memberships=memberships,
+        scope_request=scope_request,
     )
 
 
@@ -1644,6 +1646,7 @@ def _run_workflow_payload(
 async def trigger_workflow(
     workflow_name: str,
     request: WorkflowTriggerRequest,
+    scope_request: Request,
     x_user_id: str | None = Header(None),
     x_verified_project_id: str | None = Header(None),
     x_verified_is_admin: str | None = Header(None),
@@ -1652,7 +1655,8 @@ async def trigger_workflow(
     memberships: frozenset[str] = Depends(get_verified_memberships),
 ):
     """Start a run. Refused (typed 403 ``workflows.plan_required``) when the
-    project requires plan -> commit (ADR-105 D-4).
+    project requires plan -> commit (ADR-105 D-4); a work level's request
+    needs its scope's ``workflow:<name>`` grant (ADR-108 D-3).
     # auth: verified
     """
     _require_verified_workflow_identity(
@@ -1662,8 +1666,21 @@ async def trigger_workflow(
         x_user_id, x_verified_project_id, x_verified_is_admin, x_verified_hmac
     )
     resolved = _resolve_trigger(workflow_name, request, caller, memberships)
+    _refuse_unscoped_trigger(scope_request, workflow_name, resolved)
     _refuse_unplanned_trigger(workflow_name, resolved.project_id)
     return _dispatch_trigger(workflow_name, resolved, x_r4_session_id)
+
+
+def _refuse_unscoped_trigger(
+    http_request: Request | None, workflow_name: str, resolved: _ResolvedTrigger
+) -> None:
+    """A scoped trigger needs ``workflow:<name>`` (or ``workflow:*``)."""
+    if http_request is None:
+        return
+    from umrs.api.scope_tokens import require_grant, scope_of
+
+    claims = scope_of(http_request, user=resolved.user_id, project=resolved.project_id)
+    require_grant(claims, f"workflow:{workflow_name}")
 
 
 # ---------------------------------------------------------------------------

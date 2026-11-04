@@ -421,6 +421,8 @@ async def trigger_ingest(
         )
 
     _refuse_server_side_source_kinds(body.sources or [])
+    # ADR-108 D-3: a work level's request needs its scope's ingest grant.
+    scope = _ingest_scope(request, project_id)
     sources, save = _session_save(request, body.sources or [])
 
     runtime = get_runtime()
@@ -469,8 +471,10 @@ async def trigger_ingest(
         # ingestion invisible to knowledge/query — audit B2.
         "graph_id": target_graph_id,
         # D-35 producer leg: agent-originated extractions land their
-        # nodes/edges as 'proposed' (the understand chain reads this).
-        "origin_actor": request_actor(request),
+        # nodes/edges as 'proposed' (the understand chain reads this). A
+        # scoped request is a work level's: proposed too (ADR-108 D-4).
+        "origin_actor": _scoped_actor(request, scope),
+        **_scope_fields(scope),
         # K1.6: a kept assistant answer lands proposed, a vouched one
         # established, its owner the establisher (``session_turns.tier_stamp``).
         **_save_spec(save),
@@ -493,6 +497,28 @@ async def trigger_ingest(
         "status": "queued",
         **_save_receipt(save),
     }
+
+
+def _ingest_scope(request: Request, project_id: str) -> Any:
+    """The request's checked scope (``x-r4-scope``) holding ``ingest``, or
+    None without one (ADR-108 D-3)."""
+    from umrs.api.scope_tokens import require_grant, verified_scope
+
+    claims = verified_scope(request, project=project_id)
+    require_grant(claims, "ingest")
+    return claims
+
+
+def _scoped_actor(request: Request, scope: Any) -> str:
+    """``agent`` for a scoped request, else the request's own actor."""
+    from umrs.api._knowledge_mutation_guard import request_actor
+
+    return "agent" if scope is not None else request_actor(request)
+
+
+def _scope_fields(scope: Any) -> dict[str, Any]:
+    """The job's ``scope_path`` (stamped on its artifacts), when scoped."""
+    return {"scope_path": scope.path} if scope is not None else {}
 
 
 async def _submit_ingest(

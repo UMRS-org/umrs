@@ -1097,6 +1097,10 @@ def _create_app():
     from umrs.api.projects import router as projects_router
 
     app.include_router(projects_router)
+    # ADR-108 D-3 (2026-11-04): signed scope tokens of work levels.
+    from umrs.api.scope_tokens import router as scopes_router
+
+    app.include_router(scopes_router)
 
     # D-39 (2026-09-22): Scientific Catalog registry (gap row D-39, Phase 1).
     from umrs.api.scientific_catalogs import router as scientific_catalogs_router

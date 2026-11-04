@@ -1080,7 +1080,7 @@ def _run_ingest_sync(
     success_ids: list[str] = []
     success_descs: list[dict[str, Any]] = []
 
-    from umrs.knowledge.client_provenance import attach_provenance
+    from umrs.knowledge.client_provenance import attach_provenance, attach_scope_path
 
     for src_spec in source_refs:
         start = len(success_descs)
@@ -1098,6 +1098,8 @@ def _run_ingest_sync(
         )
         # ADR-108 D-6: where the file came from on the workstation.
         attach_provenance(success_descs[start:], src_spec)
+    # ADR-108 D-3: the work level the ingest ran for.
+    attach_scope_path(success_descs, (job.spec or {}).get("scope_path"))
 
     # Store artifact metadata in Postgres. Full descriptors (content_hash +
     # source_ref S3 key + kind) are required by the chained
