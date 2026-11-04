@@ -210,6 +210,7 @@ def test_lane_assignments_match_record(app):
         "web": "v1beta",
         "egress": "internal",
         "admin": "internal",  # RS-0 admin session control (2026-10-22)
+        "scopes": "v1beta",  # ADR-108 W2b scope tokens (2026-11-04)
     }, "lane drift vs the S2/S3 record — classification moves belong in the wave log"
 
 

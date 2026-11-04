@@ -137,6 +137,10 @@ FAMILY_LANES: dict[str, SurfaceLane] = {
     # internal — operator plane (RS-0, 2026-10-22): admin session control,
     # admin JWT or gateway-signed admin only; no gateway location serves it.
     "admin": SurfaceLane.INTERNAL,
+    # ADR-108 D-3 (W2b, 2026-11-04): work-level scope tokens, issued and
+    # revoked on the caller's verified identity through /gw/scopes — v1beta
+    # like projects.
+    "scopes": SurfaceLane.BETA,
 }
 
 

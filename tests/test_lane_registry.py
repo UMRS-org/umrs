@@ -75,6 +75,7 @@ CLASSIFIED_FIXED: dict[str, SurfaceLane] = {
     "web": SurfaceLane.BETA,
     "egress": SurfaceLane.INTERNAL,
     "admin": SurfaceLane.INTERNAL,  # RS-0 admin session control (2026-10-22)
+    "scopes": SurfaceLane.BETA,  # ADR-108 W2b scope tokens (2026-11-04)
 }
 
 # S5's placement list — families deliberately awaiting a lane decision.
