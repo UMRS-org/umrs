@@ -309,10 +309,13 @@ def test_runner_provisions_through_the_api_handler(rccs_roster, monkeypatch):
     assert [a.action for a in actions] == ["provision"]
     (call,) = calls
     request = call["request"]
-    assert (request.model, request.tier, request.ttl_sec, request.prefer_warm) == (
+    # wait=False: the relay must not block on a successor's readiness (a
+    # replica queued for Resources held every other role's drain for hours).
+    assert (request.model, request.tier, request.ttl_sec, request.prefer_warm, request.wait) == (
         "Bespoke-Nimble-9B",
         "system",
         0,
+        False,
         False,
     )
     assert (call["project_id"], call["is_admin"], call["requesting_user"]) == (

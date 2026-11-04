@@ -102,6 +102,11 @@ async def _provision(
         ttl_sec=0,
         prefer_warm=False,  # the successor must not short-circuit to the old endpoint
         readiness_probe=policy.readiness_probe,  # ADR-106 D-7 (None = provision default)
+        # Return at submit: readiness finishes in the background and the next
+        # cycle counts the row as pending. Waiting here held the whole relay
+        # (every role's drain, retire, respawn) on one successor's model load,
+        # and up to the 24 h readiness timeout while it queued in Slurm.
+        wait=False,
     )
     result = await provision_endpoint(
         request=request,
