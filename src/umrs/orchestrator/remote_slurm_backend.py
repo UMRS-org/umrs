@@ -533,6 +533,120 @@ class RemoteSlurmBackend(SlurmBackend):
             return None
         return parsed[0]
 
+    async def move_if_blank(self, job_id: str, placement: Any) -> str | None:
+        """Move a pending job to a blank candidate partition; that partition, else None.
+
+        Maintainer, 2026-11-04: every ``ng-dgx-s`` / ``ng-dgx-m*`` partition
+        of an entry is equivalent, so a service model should start wherever
+        one is blank. A provision that queued because no candidate was free
+        at submit stayed on its partition after another one emptied (job
+        456170 waited on ng-dgx-m0 for a 21:55 start while m2 and m3 sat
+        idle). The janitor calls this for each pending provision.
+
+        ``placement`` is the endpoint row's metadata: ``partition_override``
+        (the candidate list), ``node_count`` and ``gpu_count``, as at submit.
+        ``scontrol update Partition=`` keeps the job id; a user may move an
+        own pending job (rccs probe job 456432, 2026-11-04).
+        """
+        from .site_config import load_site_config
+
+        if not re.fullmatch(r"\d+", str(job_id)):
+            return None
+        site = load_site_config()
+        candidates = self._partition_candidates(
+            site,
+            placement.get("partition_override"),
+            placement.get("gpu_count"),
+            placement.get("node_count"),
+        )
+        if len(candidates) < 2:
+            return None
+        ssh = await self._get_ssh()
+        queued = await self._queued_on(ssh, job_id)
+        if queued is None or queued not in candidates:
+            return None
+        target = await self._blank_candidate(ssh, site, placement, candidates, queued)
+        if target is None:
+            return None
+        return await self._move_partition(ssh, job_id, queued, target)
+
+    async def _queued_on(self, ssh: Any, job_id: str) -> str | None:
+        """The partition a job is pending on when a move can help it, else None."""
+        result = await ssh.run_remote(f'squeue -j {job_id} -h -o "%T|%P|%r"')
+        if not result.ok or not result.stdout.strip():
+            return None
+        fields = [*result.stdout.strip().splitlines()[0].split("|"), "", ""]
+        state, partition, reason = (field.strip() for field in fields[:3])
+        if state != "PENDING" or not pc.movable_reason(reason):
+            return None
+        return partition
+
+    async def _blank_candidate(
+        self,
+        ssh: Any,
+        site: Any,
+        placement: Any,
+        candidates: list[str],
+        current: str,
+    ) -> str | None:
+        """The blank candidate (see ``partition_choice.blank_target``), else None.
+
+        Each other candidate is probed with ``sbatch --test-only`` in the job's
+        shape (nodes, GPUs, time limits, wrapper script), so a two-node job is
+        blank only where two nodes start now.
+        """
+        sbatch_args = self._build_wrapper_sbatch_args(
+            site=site,
+            output_dir=self._job_info_dir(),
+            gpu_count=placement.get("gpu_count"),
+            node_count=placement.get("node_count"),
+            partition_override=current,
+            slurm_account=site.scheduler.account,
+            nodelist_hint=None,
+        )
+        script = self._get_wrapper_script(placement.get("env_vars"))
+        probe = [*sbatch_args, shlex.quote(script) if script else "--wrap=true"]
+        others = [cand for cand in candidates if cand != current]
+        gate = asyncio.Semaphore(_TEST_ONLY_CONCURRENCY)
+
+        async def _probe(cand: str) -> datetime | None:
+            async with gate:
+                return await self._test_only_start(ssh, probe, cand)
+
+        starts = await asyncio.gather(*(_probe(cand) for cand in others))
+        clock = await ssh.run_remote("date +%Y-%m-%dT%H:%M:%S")
+        now = pc.parse_clock(clock.stdout) if clock.ok else None
+        if now is None:
+            return None
+        return pc.blank_target(
+            current,
+            dict(zip(others, starts, strict=True)),
+            now,
+            pc.preferred_partitions(site),
+        )
+
+    async def _move_partition(
+        self, ssh: Any, job_id: str, current: str, target: str
+    ) -> str | None:
+        """``scontrol update`` the pending job onto ``target``; ``target``, else None."""
+        result = await ssh.run_remote(
+            f"scontrol update JobId={job_id} Partition={shlex.quote(target)}"
+        )
+        if not result.ok:
+            logger.warning(
+                "Pending job %s not moved from %s to %s: %s",
+                job_id,
+                current,
+                target,
+                pc.first_line(result.stderr) or pc.first_line(result.stdout),
+            )
+            return None
+        pc.recent_picks.note(target)
+        logger.info(
+            "Moved pending job %s from %s to blank partition %s", job_id, current, target
+        )
+        return target
+
     async def _sbatch_ranked(
         self, ssh: Any, sbatch_args: list[str], ranked: list[str]
     ) -> Any:

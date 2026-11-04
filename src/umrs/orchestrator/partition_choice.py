@@ -19,6 +19,15 @@ started is invisible to it), then to the configured order. Without the
 opt-in (the default, ``first``) the first candidate is used, exactly as
 before.
 
+A job that queued anyway (every candidate busy at submit) is not stuck on
+its partition (2026-11-04): the janitor asks the backend to move a pending
+provision to another of its candidates once that one is *blank*, meaning a
+``--test-only`` probe there starts within ``BLANK_SLACK_SEC`` of the
+cluster's clock (:func:`blank_target`). The candidates of one entry are
+equivalent hardware by configuration (rccs: every ``ng-dgx-s`` /
+``ng-dgx-m*`` partition is a GB10 partition), so a move changes only where
+the job waits.
+
 Everything here except the in-process ``recent_picks`` record is pure (no
 I/O) so the remote backend and the legacy launcher share it; they own the
 ssh calls.
@@ -42,6 +51,12 @@ TIE_TOLERANCE_SEC = 60
 # How long a pick counts against its partition on a tie: covers the gap
 # between submit and start (Slurm's main/backfill passes run every ~30-60 s).
 RECENT_PICK_TTL_SEC = 120
+# A candidate whose probe starts this close to the cluster's clock is blank:
+# the job would start there in the next scheduling passes.
+BLANK_SLACK_SEC = 120
+# Pending reasons a partition move cannot help: the job is held, or waits
+# for another job, a begin time or its own reservation.
+_UNMOVABLE_REASONS = ("JobHeld", "Dependency", "BeginTime", "Reservation")
 
 # sbatch --test-only success (stderr): "sbatch: Job 426027 to start at
 # 2026-10-24T23:01:59 using 20 processors on nodes ng-dgx-m1-10 in partition
@@ -226,6 +241,43 @@ def probe_args(sbatch_args: list[str], partition: str) -> list[str]:
         if arg != "--parsable" and not arg.startswith("--export=")
     ]
     return [kept[0], "--test-only", *kept[1:]]
+
+
+def movable_reason(reason: str | None) -> bool:
+    """True when moving a pending job with this ``squeue %r`` reason can help."""
+    return not any(mark in (reason or "") for mark in _UNMOVABLE_REASONS)
+
+
+def parse_clock(text: str) -> datetime | None:
+    """The cluster's clock from ``date +%Y-%m-%dT%H:%M:%S`` output, else None."""
+    try:
+        return datetime.fromisoformat(first_line(text))
+    except ValueError:
+        return None
+
+
+def blank_target(
+    current: str,
+    starts: Mapping[str, datetime | None],
+    now: datetime,
+    preferred: Collection[str] = (),
+) -> str | None:
+    """The blank candidate a job pending on ``current`` should move to, else None.
+
+    ``starts`` holds the ``--test-only`` start of every other candidate, in
+    configured order. Blank means a start within ``BLANK_SLACK_SEC`` of
+    ``now`` (the cluster's clock, the same zone as the probe answers). Among
+    blank candidates a ``preferred`` one wins, then the fewest recent picks,
+    then the configured order, as at submit.
+    """
+    slack = timedelta(seconds=BLANK_SLACK_SEC)
+    blank = {
+        cand: start
+        for cand, start in starts.items()
+        if cand != current and start is not None and start - now <= slack
+    }
+    ranked = rank_by_start(list(blank), blank, recent_picks.counts(), preferred)
+    return ranked[0] if ranked else None
 
 
 def first_line(text: str) -> str:

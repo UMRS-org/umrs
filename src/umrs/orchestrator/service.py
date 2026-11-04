@@ -329,6 +329,22 @@ class ProvisionRequest:
     variant: str | None = None  # Deployment variant name (e.g. "128k", "tep-128k")
 
 
+def _placement_metadata(request: ProvisionRequest) -> dict[str, Any]:
+    """Where the request's job may run, for its registry row (2026-11-04).
+
+    The janitor moves a pending provision to a blank candidate partition from
+    these (``RemoteSlurmBackend.move_if_blank``); the upgrade flip already
+    reads the same keys. Values the request leaves unset are not recorded.
+    """
+    placement = {
+        "partition_override": request.partition_override,
+        "node_count": request.node_count,
+        "gpu_count": request.gpu_count,
+        "nodelist_hint": request.nodelist_hint,
+    }
+    return {key: value for key, value in placement.items() if value is not None}
+
+
 @dataclass
 class ProvisionResult:
     """Result of a provision request."""
@@ -805,7 +821,8 @@ class OrchestrationService:
             job_id = job_info.job_id
             progress("job_submitted", {"job_id": job_id})
 
-            endpoint_metadata = dict(request.metadata)
+            # The request's own metadata wins over the placement it implies.
+            endpoint_metadata = {**_placement_metadata(request), **request.metadata}
             endpoint_metadata.update(mount_metadata)
             endpoint_metadata.setdefault("allocated_host", target_host)
             endpoint_metadata.setdefault("allocated_port", port)

@@ -6,6 +6,8 @@ Responsibilities:
 - U-112: Orphan job cleanup (stale/stuck jobs)
 - Ended-row retention: FAILED / TERMINATED / EXPIRED rows leave the
   registry after ``failed_retention_sec`` (2026-11-03)
+- Blank-partition moves: a pending provision moves to another of its
+  candidate partitions once that one is blank (2026-11-04)
 
 This runs as a background task in the UMRS service.
 """
@@ -14,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -166,6 +169,16 @@ class JanitorConfig:
     enable_failed_retention: bool = True
     failed_retention_sec: int = 21600
 
+    # Blank-partition moves (2026-11-04; maintainer: every ng-dgx-s /
+    # ng-dgx-m* partition is equivalent, start service models on a blank
+    # one). A provision queued at least ``partition_move_after_sec`` is
+    # offered to the backend's ``move_if_blank``; a job is retried at most
+    # every ``partition_move_cooldown_sec`` (a probe cannot see other
+    # users' pending jobs, so a move may still wait).
+    enable_partition_move: bool = True
+    partition_move_after_sec: int = 120
+    partition_move_cooldown_sec: int = 300
+
     # R-HC1: READY-side engine probe. The backend job-status check (ghost
     # pruning) only sees Slurm allocation state; a rivault allocation can
     # outlive its own engine stack (vllm/litellm exits) for days while the
@@ -217,6 +230,16 @@ class JanitorConfig:
             ).lower()
             == "true",
             failed_retention_sec=int(os.getenv("JANITOR_FAILED_RETENTION_SEC", "21600")),
+            enable_partition_move=os.getenv(
+                "JANITOR_ENABLE_PARTITION_MOVE", "true"
+            ).lower()
+            == "true",
+            partition_move_after_sec=int(
+                os.getenv("JANITOR_PARTITION_MOVE_AFTER_SEC", "120")
+            ),
+            partition_move_cooldown_sec=int(
+                os.getenv("JANITOR_PARTITION_MOVE_COOLDOWN_SEC", "300")
+            ),
             enable_engine_probe=os.getenv("JANITOR_ENABLE_ENGINE_PROBE", "true").lower()
             == "true",
             engine_probe_degrade_after=max(
@@ -245,6 +268,7 @@ class CleanupResult:
     orphans_cleaned: int = 0
     ghosts_pruned: int = 0
     ended_pruned: int = 0
+    queued_moved: int = 0
     engines_degraded: int = 0
     engines_recovered: int = 0
     errors: list[str] = None
@@ -273,6 +297,7 @@ class CleanupResult:
             "orphans_cleaned": self.orphans_cleaned,
             "ghosts_pruned": self.ghosts_pruned,
             "ended_pruned": self.ended_pruned,
+            "queued_moved": self.queued_moved,
             "engines_degraded": self.engines_degraded,
             "engines_recovered": self.engines_recovered,
             "total_cleaned": self.total_cleaned,
@@ -307,6 +332,8 @@ class Janitor:
         # Persistence is intentionally in-memory: a missed restart resets to
         # READY-trust, and the boot reconciler owns start-of-process truth.
         self._probe_failures: dict[str, int] = {}
+        # Blank-partition moves: when each job was last offered (monotonic).
+        self._move_offered: dict[str, float] = {}
 
     @property
     def registry(self) -> EndpointRegistry:
@@ -412,7 +439,57 @@ class Janitor:
         if self.config.enable_failed_retention:
             result.ended_pruned = self._cleanup_ended()
 
+        result.queued_moved = await self._move_queued()
+
         return result
+
+    async def _move_queued(self) -> int:
+        """Move pending provisions to a blank candidate partition.
+
+        Only a backend with ``move_if_blank`` (remote Slurm) takes part. The
+        backend checks the job is still pending, probes the row's other
+        candidates and moves it with ``scontrol update``; a failure is logged
+        and the row is left as it was.
+        """
+        mover = getattr(self.backend, "move_if_blank", None)
+        if not self.config.enable_partition_move or mover is None:
+            return 0
+        offered = [row for row in self._queued_rows() if self._may_offer_move(row)]
+        moves = [await self._offer_move(mover, row) for row in offered]
+        return sum(moves)
+
+    def _queued_rows(self) -> list[Any]:
+        """PROVISIONING rows; cooldown entries of rows gone from the list are dropped."""
+        rows = self.registry.list_all(status_filter=[EndpointStatus.PROVISIONING])
+        queued = {row.job_id for row in rows}
+        self._move_offered = {
+            job: at for job, at in self._move_offered.items() if job in queued
+        }
+        return rows
+
+    async def _offer_move(self, mover: Any, endpoint: Any) -> bool:
+        """One row offered to the backend's mover; True when it moved."""
+        self._move_offered[endpoint.job_id] = time.monotonic()
+        try:
+            return bool(await mover(endpoint.job_id, endpoint.metadata or {}))
+        except Exception as exc:  # noqa: BLE001 - one row must not stop the sweep
+            logger.warning("Partition move of %s skipped: %s", endpoint.job_id, exc)
+            return False
+
+    def _may_offer_move(self, endpoint: Any) -> bool:
+        """A queued row with several candidates, past the wait and the cooldown."""
+        metadata = endpoint.metadata or {}
+        candidates = str(metadata.get("partition_override") or "")
+        if "," not in candidates or metadata.get("nodelist_hint"):
+            return False
+        now = datetime.now(timezone.utc).replace(tzinfo=None)  # rows are naive UTC
+        queued_sec = (now - endpoint.created_at).total_seconds()
+        if queued_sec < self.config.partition_move_after_sec:
+            return False
+        last = self._move_offered.get(endpoint.job_id)
+        return last is None or (
+            time.monotonic() - last >= self.config.partition_move_cooldown_sec
+        )
 
     def _cleanup_ended(self) -> int:
         """Remove FAILED / TERMINATED / EXPIRED rows past the retention.
