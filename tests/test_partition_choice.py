@@ -572,3 +572,109 @@ def test_preferred_partitions_come_from_the_site_scheduler():
     site = SimpleNamespace(scheduler=SimpleNamespace(preferred_partitions="ng-dgx-s, ng-dgx-x"))
     assert pc.preferred_partitions(site) == frozenset({"ng-dgx-s", "ng-dgx-x"})
     assert pc.preferred_partitions(SimpleNamespace(scheduler=SimpleNamespace())) == frozenset()
+
+
+# ── per-partition GPU request (ADR-109 D-3) ──────────────────────────────────
+
+GB10 = SimpleNamespace(gpus=0, gpu_request="none", gres="", exclusive=False)
+PRO6000 = SimpleNamespace(gpus=2, gpu_request="gres", gres="gpu:PRO6000-96GB:2", exclusive=True)
+LEGACY = SimpleNamespace(gpus=1)  # a profile that predates gpu_request
+
+
+def _gres_of(cmd):
+    return [t for t in cmd.split() if t.startswith("--gres=") or t == "--exclusive"]
+
+
+def test_gres_request_follows_the_partition_style():
+    assert pc.gres_request("none", "gpu:x:2", 4, "gpu:4") is None
+    assert pc.gres_request("", "", 4, "gpu:4") == "gpu:4"  # legacy: the site rule
+    assert pc.gres_request("", "", 0, None) is None
+    assert pc.gres_request("gres", "gpu:PRO6000-96GB:2", 0, None) == "gpu:PRO6000-96GB:2"
+    assert pc.gres_request("gres", "", 2, None) == "gpu:2"
+    assert pc.gres_request("gres", "", 0, None) is None
+    with pytest.raises(ValueError, match="gres"):
+        pc.gres_request("gres", "gpu:x;id", 1, None)
+
+
+def test_gpu_request_style_refuses_an_unknown_style():
+    assert pc.gpu_request_style(None) == ""
+    assert pc.gpu_request_style(LEGACY) == ""
+    assert pc.gpu_request_style(PRO6000) == "gres"
+    with pytest.raises(ValueError, match="gpus"):
+        pc.gpu_request_style(SimpleNamespace(gpu_request="gpus"))
+
+
+@pytest.mark.parametrize(
+    ("gres", "count"),
+    [("gpu:PRO6000-96GB:2", 2), ("gpu:4", 4), ("gpu:a100", 1), ("gpu", 1), ("", 0), ("mps:9", 0)],
+)
+def test_gres_gpu_count(gres, count):
+    assert pc.gres_gpu_count(gres) == count
+
+
+def test_partition_gpus_reads_the_gres_then_gpus():
+    assert pc.partition_gpus(PRO6000) == 2
+    assert pc.partition_gpus(GB10) == 0
+    assert pc.partition_gpus(LEGACY) == 1
+    assert pc.partition_gpus(None) == 0
+
+
+def test_with_gpu_request_leaves_a_legacy_profile_untouched():
+    args = ["sbatch", "--partition=x", "--gres=gpu:1", "s.slurm"]
+    assert pc.with_gpu_request(args, LEGACY, 1) == args
+    assert pc.with_gpu_request(args, None, 1) == args
+
+
+def test_with_gpu_request_drops_or_sets_the_gres_line():
+    args = ["sbatch", "--partition=ng-dgx-m3", "--time=1:00:00", "--gres=gpu:1", "s.slurm"]
+    assert pc.with_gpu_request(args, GB10, 1) == [
+        "sbatch", "--partition=ng-dgx-m3", "--time=1:00:00", "s.slurm",
+    ]  # fmt: skip
+    plain = ["sbatch", "--partition=ai-pro6000", "--time=1:00:00", "s.slurm"]
+    assert pc.with_gpu_request(plain, PRO6000, 0) == [
+        "sbatch", "--partition=ai-pro6000", "--gres=gpu:PRO6000-96GB:2", "--exclusive",
+        "--time=1:00:00", "s.slurm",
+    ]  # fmt: skip
+
+
+def test_gb10_serving_args_are_unchanged_by_their_profiles():
+    # Live today (rccs-front: scheduler gpus 0, every candidate a GB10): the
+    # GB10 profiles' gpu_request none changes no byte of probe or submit.
+    gb10 = dict.fromkeys(("ng-dgx-m0", "ng-dgx-m1", "ng-dgx-m2", "ng-dgx-m3", "ng-dgx-s"), GB10)
+    before, after = _FakeSSH(), _FakeSSH()
+    _submit(_backend(before), _site())
+    pc.recent_picks.clear()
+    _submit(_backend(after), _site(profiles=gb10))
+    assert after.cmds == before.cmds
+    assert not any(_gres_of(c) for c in after.cmds)
+
+
+def test_ai_pro6000_gets_its_gres_on_probe_and_submit_even_with_site_gpus_zero():
+    ssh = _FakeSSH(probes={"ng-dgx-m3": ("ok", "2026-11-05T10:00:00")})
+    site = _site("ng-dgx-m3,ai-pro6000", profiles={"ng-dgx-m3": GB10, "ai-pro6000": PRO6000})
+    _submit(_backend(ssh), site)
+    probes = {_partition_of(c): _gres_of(c) for c in ssh.cmds if "--test-only" in c}
+    assert probes == {
+        "ng-dgx-m3": [],
+        "ai-pro6000": ["--gres=gpu:PRO6000-96GB:2", "--exclusive"],
+    }
+    [real] = ssh.real
+    assert _partition_of(real) == "ai-pro6000"  # the earlier start; one partition only
+    assert _gres_of(real) == ["--gres=gpu:PRO6000-96GB:2", "--exclusive"]
+
+
+def test_a_gb10_submit_next_to_a_pro6000_candidate_carries_no_gres():
+    ssh = _FakeSSH(probes={"ai-pro6000": ("ok", "2026-11-05T10:00:00")})
+    site = _site("ng-dgx-m3,ai-pro6000", profiles={"ng-dgx-m3": GB10, "ai-pro6000": PRO6000})
+    _submit(_backend(ssh), site)
+    [real] = ssh.real
+    assert _partition_of(real) == "ng-dgx-m3"
+    assert _gres_of(real) == []
+
+
+def test_a_legacy_site_keeps_its_site_wide_gres():
+    ssh = _FakeSSH()
+    site = _site("1n1gpu", profiles={"1n1gpu": LEGACY})
+    site.scheduler.gpus = 1
+    _submit(_backend(ssh), site)
+    assert _gres_of(ssh.real[0]) == ["--gres=gpu:1"]

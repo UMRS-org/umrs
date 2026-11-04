@@ -617,8 +617,13 @@ def collect_out(root, workdir, sink, max_files, max_bytes, max_file_bytes) -> di
 
 
 def _slurm(
-    argv: list[str], cwd: str | None = None, timeout: int = SLURM_TIMEOUT
+    argv: list[str],
+    cwd: str | None = None,
+    timeout: int = SLURM_TIMEOUT,
+    script: str | None = None,
 ) -> subprocess.CompletedProcess:
+    """Run a Slurm CLI; ``script`` is its stdin (none: /dev/null)."""
+    stdin = {"stdin": subprocess.DEVNULL} if script is None else {"input": script}
     try:
         return subprocess.run(
             argv,
@@ -627,7 +632,7 @@ def _slurm(
             text=True,
             timeout=timeout,
             check=False,
-            stdin=subprocess.DEVNULL,
+            **stdin,
         )
     except subprocess.TimeoutExpired as exc:  # a hung controller: Slurm down
         return subprocess.CompletedProcess(argv, 124, "", str(exc))
@@ -678,6 +683,24 @@ def submit(root: str, workdir: str) -> str:
     if not JOB_ID_RE.fullmatch(job_id):
         raise HelperError(f"sbatch printed no job id: {(proc.stdout or '').strip()[-200:]}")
     return job_id
+
+
+def test_only(source) -> str:
+    """``sbatch --test-only`` of the job script on stdin (capped as a
+    ``job.sbatch`` put): when Slurm would start it, on which partition. It
+    submits nothing and runs nothing, so the script needs no workdir; the
+    server probes each candidate partition with that partition's own script
+    and submits the real one to ONE of them (ADR-109 D-3)."""
+    cap = PUT_CAPS["job.sbatch"]
+    raw = source.read(cap + 1)
+    if len(raw) > cap:
+        raise Refused(f"input exceeds {cap} bytes")
+    script = raw.decode("utf-8", "replace")
+    proc = _slurm(["sbatch", "--test-only"], cwd="/", script=script)
+    answer = f"{proc.stdout or ''}\n{proc.stderr or ''}".strip()
+    if proc.returncode != 0:
+        raise HelperError(f"sbatch --test-only failed (rc={proc.returncode}): {answer[-500:]}")
+    return answer[-1000:]
 
 
 def status(job_id: str) -> str:
@@ -841,6 +864,7 @@ def _parser() -> argparse.ArgumentParser:
         ("tail-log", ("root", "workdir", "nbytes")),
         ("rmwd", ("root", "workdir")),
         ("submit", ("root", "workdir")),
+        ("test-only", ()),
         ("status", ("job_id",)),
         ("cancel", ("job_id",)),
         ("find-jobs", ("name",)),
@@ -906,6 +930,7 @@ def _run_verb(ns: argparse.Namespace) -> int:
         "mkwd": lambda: _emit_line(mkwd(ns.root, ns.prefix)),
         "rmwd": lambda: rmwd(ns.root, ns.workdir),
         "submit": lambda: _emit_line(submit(ns.root, ns.workdir)),
+        "test-only": lambda: _emit_line(test_only(sys.stdin.buffer)),
         "status": lambda: _emit_line(status(ns.job_id)),
         "cancel": lambda: cancel(ns.job_id),
         "sweep": lambda: _emit_line(json.dumps(sweep(ns.root, ns.older_than), sort_keys=True)),

@@ -42,6 +42,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+from umrs.orchestrator import partition_choice as pc
 from umrs.pipeline_sdk.step import StepContext, StepResult
 
 from .step_executor import (
@@ -372,6 +373,18 @@ class StagedJob:
     #: ``step_executor.gpu_form`` — the devices a step that needs a GPU gets
     #: (:data:`STAGED_GPU_DEVICES`).
     gpu_form: str = "cdi"
+    #: The partition profile's GPU request (ADR-109 D-3): "" the site-wide
+    #: ``gres_gpus`` rule, "none" never ``--gres``, "gres" ``--gres=<gres>``
+    #: (else ``gpu:<gres_gpus>``) for a step that needs a GPU.
+    gpu_request: str = ""
+    gres: str = ""
+    #: The partition allocates whole nodes: the job says ``--exclusive``.
+    exclusive: bool = False
+    #: The site's platform step image (``UMRS_STEP_IMAGE``): trusted code that
+    #: writes the step's seccomp profile and probes its pids limit, whatever
+    #: image the step itself runs (ADR-110 D-6). Empty: the step image IS the
+    #: platform image.
+    platform_image: str = ""
     #: ``--pids-limit`` (0 omits it and its check).
     pids_limit: int = 512
     #: ``--cgroups=disabled``: the venue grants the job no cgroup to create
@@ -399,18 +412,36 @@ class StagedJob:
 #: must be explicit: the image's USER 65534 cannot read the 0700 workdir.
 #: ``--http-proxy=false``: podman would copy the job's (login session's)
 #: ``*_proxy`` variables into the container, a proxy URL may carry a password.
+#: The image's config does not reach the pod (ADR-110 D-6): no Env
+#: (``--unsetenv-all``, then :data:`_POD_BASE_ENV`), no VOLUME
+#: (``--image-volume=ignore``), a fixed WORKDIR, and every container names its
+#: ``--entrypoint`` (:func:`_pod_command`), so no image ENTRYPOINT runs.
 _POD_POSTURE = (
     "--rm",
     "--init",
     "--pull=never",
     "--network=none",
     "--http-proxy=false",
+    "--unsetenv-all",
+    "--image-volume=ignore",
+    "--workdir=/tmp",
     "--read-only",
     "--tmpfs /tmp:rw,size=4g",
     "--cap-drop=all",
     "--security-opt no-new-privileges",
     "--userns=keep-id",
     '--user "$(id -u):$(id -g)"',
+)
+#: The pod's process environment besides the step's four names: the platform
+#: step image's own values (docker/Containerfile.step and its python:3.11-slim
+#: base), set explicitly after ``--unsetenv-all`` — the platform image runs as
+#: before, and no image (an allow-listed one included) adds or changes any.
+_POD_BASE_ENV = (
+    "PATH=/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin",
+    "HOME=/tmp",
+    "LANG=C.UTF-8",
+    "PYTHONUNBUFFERED=1",
+    "PYTHONDONTWRITEBYTECODE=1",
 )
 
 
@@ -429,6 +460,7 @@ def _pod_posture(job: StagedJob, name: str, *, seccomp: bool = True) -> list[str
     *seccomp*, the node's default profile in which ``fallocate`` fails
     (``${_step_seccomp}``, :func:`_staged_seccomp_lines`)."""
     parts = [*_POD_POSTURE[:2], f"--name {name}", *_POD_POSTURE[2:]]
+    parts += [f"-e {assignment}" for assignment in _POD_BASE_ENV]
     if seccomp:
         parts.append('--security-opt seccomp="${_step_seccomp}"')
     if job.cgroups_disabled:
@@ -438,6 +470,12 @@ def _pod_posture(job: StagedJob, name: str, *, seccomp: bool = True) -> list[str
     if job.nproc_limit > 0:
         parts.append(f"--ulimit nproc={int(job.nproc_limit)}")
     return [*parts, f"--ulimit fsize={int(job.max_file_bytes)}"]
+
+
+def _pod_command(image: str, entrypoint: str, *args: str) -> list[str]:
+    """``--entrypoint <entrypoint> <image> <args>``: the command is ours,
+    never the image's ENTRYPOINT (ADR-110 D-6)."""
+    return ["--entrypoint", entrypoint, image, *args]
 
 
 #: (workdir entry, container path, mode) — the workdir itself, its job
@@ -543,7 +581,10 @@ def staged_podman_argv(job: StagedJob) -> list[str]:
         parts += ["-e", assignment]
     if job.needs_gpu:
         parts += _staged_gpu_devices(job)
-    return [*parts, '"${_step_image}"', "python", "-m", "umrs.server.step_worker"]
+    return [
+        *parts,
+        *_pod_command('"${_step_image}"', "python", "-m", "umrs.server.step_worker"),
+    ]
 
 
 def _staged_directives(job: StagedJob) -> list[str]:
@@ -565,14 +606,27 @@ def _staged_directives(job: StagedJob) -> list[str]:
     # Partitions such as RCCS ng-dgx-m* reject --mem and --gres.
     if job.memory.strip():
         lines.append(f"#SBATCH --mem={job.memory}")
-    if job.needs_gpu and job.gres_gpus > 0:
-        lines.append(f"#SBATCH --gres=gpu:{int(job.gres_gpus)}")
+    lines += _staged_gpu_request_lines(job)
     if job.deadline_seconds > 0:
         lines.append(f"#SBATCH --deadline=now+{int(job.deadline_seconds)}")
     lines += [
         f"#SBATCH --output={job.workdir}/log/slurm.out",
         f"#SBATCH --error={job.workdir}/log/slurm.err",
     ]
+    return lines
+
+
+def _staged_gpu_request_lines(job: StagedJob) -> list[str]:
+    """``--gres`` (a step that needs a GPU, as its partition's profile asks:
+    ADR-109 D-3) and ``--exclusive`` (a whole-node partition)."""
+    legacy = f"gpu:{int(job.gres_gpus)}" if job.gres_gpus > 0 else None
+    try:
+        gres = pc.gres_request(job.gpu_request, job.gres, job.gres_gpus, legacy)
+    except ValueError as exc:
+        raise StepExecutionError("setup", str(exc)) from exc
+    lines = [f"#SBATCH --gres={gres}"] if job.needs_gpu and gres else []
+    if job.exclusive:
+        lines.append("#SBATCH --exclusive")
     return lines
 
 
@@ -634,17 +688,21 @@ def _staged_venue_lines(venue_script: str) -> list[str]:
     ]
 
 
-def _staged_image_lines(image: str, archive_dir: str) -> list[str]:
+def _staged_image_lines(
+    image: str, archive_dir: str, var: str = "_step_image"
+) -> list[str]:
     """Image ensure: the node's image must carry the archive's recorded id,
-    else it is removed and loaded from the archive; never pulled."""
+    else it is removed and loaded from the archive; never pulled. ``${var}``
+    names the image afterwards."""
     stem = image_archive_stem(image)
     archive = shlex.quote(f"{archive_dir.rstrip('/')}/{stem}-")
     label = "'{{ index .Config.Labels \"" + STEP_CONTRACT_LABEL + "\" }}'"
     inspect = "podman image inspect --format"
-    image_id = f"$({inspect} '{{{{.Id}}}}' \"${{_step_image}}\" 2>/dev/null || true)"
-    contract = f'$({inspect} {label} "${{_step_image}}" 2>/dev/null || true)'
+    ref = "${" + var + "}"
+    image_id = f"$({inspect} '{{{{.Id}}}}' \"{ref}\" 2>/dev/null || true)"
+    contract = f'$({inspect} {label} "{ref}" 2>/dev/null || true)'
     return [
-        f"_step_image={shlex.quote(image)}",
+        f"{var}={shlex.quote(image)}",
         f'_step_archive={archive}"$(uname -m).tar"',
         _or_fatal(
             '[[ -f "${_step_archive}" && -f "${_step_archive}.id" ]]',
@@ -654,7 +712,7 @@ def _staged_image_lines(image: str, archive_dir: str) -> list[str]:
         '_step_want="$(head -c 200 "${_step_archive}.id" | tr -d \'[:space:]\')"',
         f'_step_have="{image_id}"',
         'if [[ -z "${_step_want}" || "${_step_have}" != "${_step_want}" ]]; then',
-        '    podman rmi -f "${_step_image}" >/dev/null 2>&1 || true',
+        f'    podman rmi -f "{ref}" >/dev/null 2>&1 || true',
         "    "
         + _or_fatal(
             'podman load -i "${_step_archive}" >&2',
@@ -666,7 +724,7 @@ def _staged_image_lines(image: str, archive_dir: str) -> list[str]:
         + _or_fatal(
             '[[ -n "${_step_want}" && "${_step_have}" == "${_step_want}" ]]',
             _EX_CONFIG,
-            "image ${_step_image} does not match ${_step_archive}.id",
+            f"image {ref} does not match ${{_step_archive}}.id",
         ),
         "    echo '[umrs-step] image loaded from archive'",
         "fi",
@@ -674,10 +732,22 @@ def _staged_image_lines(image: str, archive_dir: str) -> list[str]:
         _or_fatal(
             f'[[ "${{_step_contract}}" == "{STEP_CONTRACT_VERSION}" ]]',
             _EX_CONFIG,
-            f"image ${{_step_image}} lacks {STEP_CONTRACT_LABEL}={STEP_CONTRACT_VERSION}",
+            f"image {ref} lacks {STEP_CONTRACT_LABEL}={STEP_CONTRACT_VERSION}",
         ),
         "",
     ]
+
+
+def _staged_trusted_image_lines(job: StagedJob) -> list[str]:
+    """``${_step_trusted}``: the platform step image, the only image whose
+    code shapes the step's posture (ADR-110 D-6). A step on another image
+    (an allow-listed one) has the platform image ensured from its archive
+    too; on the platform image it is the step's image."""
+    if not job.platform_image or job.platform_image == job.image:
+        return ['_step_trusted="${_step_image}"', ""]
+    return _staged_image_lines(
+        job.platform_image, job.image_archive_dir, "_step_trusted"
+    )
 
 
 #: Rewrites the node's default seccomp profile (argv[1]) so that
@@ -686,7 +756,9 @@ def _staged_image_lines(image: str, archive_dir: str) -> list[str]:
 #: never see (``FALLOC_FL_KEEP_SIZE`` keeps the apparent size, and
 #: ``RLIMIT_FSIZE`` does not apply to it). glibc's ``posix_fallocate`` then
 #: falls back to writing, which the file size limit and the watchdog bound.
-#: Runs as ``python -I -c`` inside the step image (no single quote in it).
+#: Runs as ``python -I -c`` inside the platform step image, never the step's
+#: own image (ADR-110 D-6: no image writes its own profile; no single quote
+#: in it).
 SECCOMP_FILTER_PY = """import json, sys
 profile = json.load(open(sys.argv[1]))
 kept = []
@@ -706,17 +778,23 @@ json.dump(profile, sys.stdout)
 
 def _staged_seccomp_lines(job: StagedJob) -> list[str]:
     """``${_step_seccomp}``: the node's default profile plus the fallocate
-    rule, written by the step image's Python next to the job script (the
-    workdir itself is never mounted). No profile file, no step."""
+    rule, written by the platform step image's Python (``${_step_trusted}``,
+    ADR-110 D-6) next to the job script (the workdir itself is never
+    mounted). No profile file, no step."""
     info = "podman info --format '{{.Host.Security.SECCOMPProfilePath}}'"
     transform = " ".join(
         [
             *_podman_run(job),
             *_pod_posture(job, '"${_step_ctr}-seccomp"', seccomp=False),
             '-v "${_step_seccomp_base}:/umrs-seccomp-base.json:ro"',
-            '"${_step_image}" python -I -c',
-            shlex.quote(SECCOMP_FILTER_PY),
-            "/umrs-seccomp-base.json",
+            *_pod_command(
+                '"${_step_trusted}"',
+                "python",
+                "-I",
+                "-c",
+                shlex.quote(SECCOMP_FILTER_PY),
+                "/umrs-seccomp-base.json",
+            ),
         ]
     )
     return [
@@ -748,7 +826,7 @@ def _staged_pids_lines(job: StagedJob) -> list[str]:
         [
             *_podman_run(job),
             *_pod_posture(job, '"${_step_ctr}-pids"'),
-            '"${_step_image}" cat /sys/fs/cgroup/pids.max',
+            *_pod_command('"${_step_trusted}"', "cat", "/sys/fs/cgroup/pids.max"),
         ]
     )
     tail = "$(printf '%s' \"${_step_pids}\" | tail -c 300)"
@@ -892,6 +970,7 @@ def render_staged_job_script(job: StagedJob) -> str:
     lines = _staged_directives(job) + _staged_prologue()
     lines += _staged_venue_lines(job.venue_script)
     lines += _staged_image_lines(job.image, job.image_archive_dir)
+    lines += _staged_trusted_image_lines(job)
     lines += _staged_seccomp_lines(job)
     lines += _staged_pids_lines(job) + _staged_stale_lines() + _staged_watch_lines(job)
     lines += _staged_gpu_lines(job)

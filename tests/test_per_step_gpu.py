@@ -14,6 +14,7 @@ from typing import Any
 import pytest
 from umrs.pipeline_sdk.step import Step, StepContext, StepResult
 from umrs.server.step_executor import (
+    EXECUTOR_GPU_COUNT_METADATA_KEY,
     EXECUTOR_GPU_METADATA_KEY,
     PodmanExecutor,
     StepExecutionError,
@@ -326,3 +327,25 @@ class TestRunnerGpuHint:
         # Routing log should also show False.
         routing = record.results.get("_routing", {})
         assert routing["probe"]["gpu"] is False
+
+    def test_gpu_count_hint_threaded_into_metadata(self, tmp_path):
+        """ADR-109 D-3: routing_hints.gpu_count reaches the executor as
+        declared (the staged lane validates it); absent, no key."""
+        executor = _RecordingExecutor()
+        for hints in ({"gpu": True, "gpu_count": 2}, {"gpu": True}):
+            record = get_execution_registry().create(workflow_name="wf", user_id="alice")
+            run_workflow_record(
+                record,
+                source_path=str(tmp_path),
+                workflow_json=_workflow(hints),
+                executor=executor,
+            )
+            assert record.status == "succeeded", record.error
+        assert executor.calls[0]["metadata"].get(EXECUTOR_GPU_COUNT_METADATA_KEY) == 2
+        assert EXECUTOR_GPU_COUNT_METADATA_KEY not in executor.calls[1]["metadata"]
+
+    def test_gpu_count_key_stripped_from_worker_metadata(self):
+        from umrs.server.step_executor import _worker_metadata
+
+        ctx = _make_ctx(**{EXECUTOR_GPU_COUNT_METADATA_KEY: 2})
+        assert EXECUTOR_GPU_COUNT_METADATA_KEY not in _worker_metadata(ctx)

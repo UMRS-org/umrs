@@ -37,7 +37,11 @@ from umrs.server.slurm_step_executor import (
     StagedJob,
     render_staged_job_script,
 )
-from umrs.server.step_executor import EXECUTOR_GPU_METADATA_KEY, StepExecutionError
+from umrs.server.step_executor import (
+    EXECUTOR_GPU_METADATA_KEY,
+    EXECUTOR_IMAGE_METADATA_KEY,
+    StepExecutionError,
+)
 
 WD = "/lvs0/rccs-dmp/u/umrs_steps/wf-0123456789-s1-1-abcdefgh"
 IMAGE = "localhost/umrs-step:0123456789ab"
@@ -112,19 +116,47 @@ def _flag_values(tokens: list[str], flag: str) -> list[str]:
     return [tokens[i + 1] for i, token in enumerate(tokens) if token == flag]
 
 
+#: The platform step image's own process env, pinned after --unsetenv-all.
+BASE_ENV = [
+    "PATH=/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin",
+    "HOME=/tmp", "LANG=C.UTF-8", "PYTHONUNBUFFERED=1", "PYTHONDONTWRITEBYTECODE=1",
+]  # fmt: skip
+STEP_ENV = [
+    "UMRS_STEP_INPUT=/work/input.pkl",
+    "UMRS_STEP_OUTPUT_JSON=/work/reply/output.json",
+    "UMRS_STEP_STAGED=1",
+    "UMRS_STEP_SOURCE_DIR=/src",
+]
+#: The step's own command, never the image's ENTRYPOINT (ADR-110 D-6).
+STEP_COMMAND = ["--entrypoint", "python", "IMG", "-m", "umrs.server.step_worker"]
+
+
 def test_podman_argv_is_hardened():
     tokens = _tokens(render_staged_job_script(_job()))
     posture = [
         "--rm", "--init", "--name", "CTR", "--pull=never", "--network=none",
-        "--http-proxy=false", "--read-only",
+        "--http-proxy=false", "--unsetenv-all", "--image-volume=ignore", "--workdir=/tmp",
+        "--read-only",
         "--tmpfs", "/tmp:rw,size=4g", "--cap-drop=all", "--security-opt", "no-new-privileges",
         "--userns=keep-id", "--user", "$(id -u):$(id -g)",
+        *[x for env in BASE_ENV for x in ("-e", env)],
         "--security-opt", "seccomp=${_step_seccomp}", "--pids-limit=512",
         "--ulimit", f"fsize={8 * 1024**3}",
     ]  # fmt: skip
     assert tokens[2 : 2 + len(posture)] == posture
-    assert tokens[-4:] == ["IMG", "python", "-m", "umrs.server.step_worker"]
+    assert tokens[-5:] == STEP_COMMAND
     assert "--device" not in tokens
+
+
+def test_the_image_config_never_reaches_the_pod():
+    # ADR-110 D-6: no image Env, VOLUME, WORKDIR or ENTRYPOINT applies; the
+    # three containers of a job (seccomp writer, pids probe, step) each say so.
+    script = render_staged_job_script(_job())
+    runs = [x for x in script.splitlines() if "podman run " in x or "podman --cgroup" in x]
+    assert len(runs) == 3
+    for run in runs:
+        for flag in ("--unsetenv-all", "--image-volume=ignore", "--workdir=/tmp", "--entrypoint "):
+            assert flag in run, (flag, run)
 
 
 def test_podman_mounts_only_the_staged_dirs_and_sets_only_four_env():
@@ -136,12 +168,8 @@ def test_podman_mounts_only_the_staged_dirs_and_sets_only_four_env():
         f"{WD}/src:/src:ro",
         f"{WD}/input.pkl:/work/input.pkl:ro",
     ]
-    assert _flag_values(tokens, "-e") == [
-        "UMRS_STEP_INPUT=/work/input.pkl",
-        "UMRS_STEP_OUTPUT_JSON=/work/reply/output.json",
-        "UMRS_STEP_STAGED=1",
-        "UMRS_STEP_SOURCE_DIR=/src",
-    ]
+    # the platform image's own env (pinned), then the step's four names
+    assert _flag_values(tokens, "-e") == [*BASE_ENV, *STEP_ENV]
 
 
 def test_the_script_never_carries_object_store_or_credential_env(monkeypatch):
@@ -170,9 +198,9 @@ def test_the_gpu_form_picks_the_devices_of_a_step_that_needs_a_gpu():
     assert "--device /dev/kfd --device /dev/dri" in rocm and "nvidia.com" not in rocm
     cdi = _podman_run_line(render_staged_job_script(_job(needs_gpu=True, gpu_form="cdi")))
     assert "--device nvidia.com/gpu=all" in cdi and "/dev/kfd" not in cdi
-    assert _tokens(render_staged_job_script(_job(needs_gpu=True, gpu_form="rocm")))[-4:] == [
-        "IMG", "python", "-m", "umrs.server.step_worker",
-    ]  # fmt: skip
+    assert _tokens(render_staged_job_script(_job(needs_gpu=True, gpu_form="rocm")))[-5:] == (
+        STEP_COMMAND
+    )
     # No GPU asked: no device, whatever the form.
     assert "--device" not in render_staged_job_script(_job(gpu_form="rocm"))
 
@@ -403,7 +431,7 @@ def test_the_pids_probe_runs_first_in_the_steps_posture(node):
     assert probe.startswith("run --rm --init --name umrs-step-4242-pids --pull=never ")
     assert probe.endswith(
         f"--security-opt seccomp={seccomp} --pids-limit=512 --ulimit fsize={8 * 1024**3} "
-        f"{IMAGE} cat /sys/fs/cgroup/pids.max"
+        f"--entrypoint cat {IMAGE} /sys/fs/cgroup/pids.max"
     )
 
 
@@ -663,6 +691,75 @@ def test_the_step_and_its_probe_run_under_the_written_profile(node):
     assert f"--security-opt seccomp={node['wd'] / 'seccomp.json'} " in step
     [transform] = [x for x in node["log"]() if "umrs-seccomp-base.json" in x]
     assert "seccomp=" not in transform.split(" python ")[0]  # the default profile
+
+
+#: An allow-listed step image (the opossum CNN shape): not the platform image.
+OTHER = "localhost/umrs-step-opossum-cnn:7afb44c12c0e-a51b1fa4"
+
+
+def _run_other_image(node) -> list[str]:
+    """The job of a step on :data:`OTHER` (its archive staged) with the
+    platform image :data:`IMAGE`; the fake podman's log."""
+    stem = f"umrs-step-opossum-cnn-7afb44c12c0e-a51b1fa4-{platform.machine()}.tar"
+    archive = node["archive"].parent / stem
+    archive.write_bytes(b"tar")
+    archive.with_name(archive.name + ".id").write_text("f" * 64 + "\n")
+    proc = node["run"](image=OTHER, platform_image=IMAGE)
+    assert proc.returncode == 0, proc.stderr
+    return node["log"]()
+
+
+def _logged(log: list[str], needle: str) -> str:
+    [line] = [x for x in log if needle in x]
+    return line
+
+
+def test_another_image_never_writes_its_own_seccomp_profile(node):
+    # ADR-110 D-6: the platform step image's Python writes the profile the
+    # step then runs under, and the platform image probes the pids limit; the
+    # step's own image only runs the step (it could write a permissive one).
+    log = _run_other_image(node)
+    transform = _logged(log, "umrs-seccomp-base.json")
+    assert transform.split(" -I -c ")[0].endswith(f"--entrypoint python {IMAGE}")
+    assert OTHER not in transform
+    probe = _logged(log, "pids.max")
+    assert f"--entrypoint cat {IMAGE} /sys/fs/cgroup/pids.max" in probe
+    [step] = _step_runs(log)
+    assert step.endswith(f"--entrypoint python {OTHER} -m umrs.server.step_worker")
+
+
+def test_another_image_has_the_platform_image_ensured_too(node):
+    # both images come from their archives (never pulled), both labelled
+    log = _run_other_image(node)
+    inspected = {x.rsplit(" ", 1)[1] for x in log if x.startswith("image inspect")}
+    assert inspected == {IMAGE, OTHER}
+    assert not any("pull" in x for x in log)
+
+
+def test_the_platform_image_keeps_one_image_ensure(node):
+    # The step image IS the platform image: nothing more is loaded or run.
+    script = render_staged_job_script(_job(platform_image=IMAGE))
+    assert '_step_trusted="${_step_image}"' in script.splitlines()
+    assert script == render_staged_job_script(_job())
+
+
+def test_the_executor_hands_the_job_its_platform_image(monkeypatch):
+    monkeypatch.setenv("UMRS_STEP_ALLOWED_IMAGES", OTHER)
+    ex = RemoteSlurmStepExecutor(
+        ssh_config=SSHControlConfig(ssh_target="login"), workdir_root="/r", image=IMAGE,
+        image_archive_dir="/a", venue_script="/v.sh", partition_profiles={},
+    )  # fmt: skip
+    job = _StepJob("wf-1", "s1", 1, "umrs-step-wf-1-s1", "wf-1-s1-1-", workdir=WD)
+    ctx = StepContext(s3=None, input_bucket="b", input_keys=[], output_bucket="b-output",
+                      metadata={EXECUTOR_IMAGE_METADATA_KEY: OTHER}, run_id="wf-1")  # fmt: skip
+    assert ex._lane_image(ctx) == OTHER
+    script = ex._job_script(job, ctx, OTHER)
+    assert f"_step_trusted={IMAGE}" in script.splitlines()
+    assert '--entrypoint python "${_step_trusted}" -I -c' in script
+    # No platform image on the lane: nothing could write the profile.
+    ex.image = ""
+    with pytest.raises(StepExecutionError, match="no platform step image"):
+        ex._lane_image(ctx)
 
 
 def test_a_node_without_a_default_seccomp_profile_runs_no_step(node):

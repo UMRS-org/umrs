@@ -22,11 +22,17 @@ from pathlib import Path
 import jsonschema
 import pytest
 import yaml
+from umrs.orchestrator import partition_choice as pc
 from umrs.orchestrator.site_config import load_site_config, reset_site_config
 from umrs.orchestrator.ssh_control import SSHControlConfig
 from umrs.pipeline_sdk.step import StepContext
 from umrs.server import step_reaper
 from umrs.server.remote_slurm_step_executor import RemoteSlurmStepExecutor, _StepJob
+from umrs.server.step_executor import (
+    EXECUTOR_GPU_COUNT_METADATA_KEY,
+    EXECUTOR_GPU_METADATA_KEY,
+    StepExecutionError,
+)
 from umrs.server.step_trust import hpc_lane_available, uploaded_code_lane
 
 UMRS_ROOT = Path(__file__).resolve().parents[1]
@@ -191,15 +197,19 @@ def _site_executor(monkeypatch, front: str, **site_overrides) -> RemoteSlurmStep
     return RemoteSlurmStepExecutor(
         ssh_config=SSHControlConfig(ssh_target="login"),
         image="localhost/umrs-step:0123456789ab",
+        # the front server reads its partition profiles from this same file
+        partition_profiles=cfg.partition_profiles,
     )
 
 
-def _rendered(ex: RemoteSlurmStepExecutor) -> str:
+def _rendered(
+    ex: RemoteSlurmStepExecutor, partition: str | None = None, metadata: dict | None = None
+) -> str:
     job = _StepJob("wf-0123456789ab", "s1", 1, "umrs-step-wf-0123456789ab-s1",
                    "wf-0123456789ab-s1-1-", workdir=f"{ex.workdir_root}/wf-x-abcdefgh")  # fmt: skip
     ctx = StepContext(s3=None, input_bucket="b", input_keys=[], output_bucket="b-output",
-                      run_id="wf-0123456789ab")  # fmt: skip
-    return ex._job_script(job, ctx, ex.image)
+                      metadata=dict(metadata or {}), run_id="wf-0123456789ab")  # fmt: skip
+    return ex._job_script(job, ctx, ex.image, partition)
 
 
 def test_rccs_step_jobs_ask_for_no_memory_and_no_gres(monkeypatch):
@@ -379,3 +389,94 @@ def test_allowed_images_are_pinned_and_archive_named(front):
         leaf = image.rsplit("/", 1)[-1]
         assert ":" in leaf and not leaf.endswith(":latest"), image
         assert image_archive_stem(image)
+
+
+# ── ADR-109 D-3 / V1: per-partition GPU request, ai-pro6000 not yet listed ───
+
+#: rccs's compute-side file and the front's own (each server reads its own).
+RCCS_SITES = ("rccs", "rccs-front")
+GB10_PARTITIONS = ("ng-dgx-s", "ng-dgx-m0", "ng-dgx-m1", "ng-dgx-m2", "ng-dgx-m3")
+PRO6000_GRES = "#SBATCH --gres=gpu:PRO6000-96GB:2"
+
+
+def _site(site: str):
+    return load_site_config(str(DEPLOY / site / "site.yaml"))
+
+
+@pytest.mark.parametrize("site", RCCS_SITES)
+def test_rccs_gb10_profiles_never_ask_for_gres_and_ai_pro6000_does(site):
+    profiles = _site(site).partition_profiles
+    for name in GB10_PARTITIONS:
+        assert profiles[name].gpu_request == "none", name
+    pro = profiles["ai-pro6000"]
+    assert (pro.arch, pro.gpu_vendor, pro.gpu_memory_gb, pro.gpus) == ("aarch64", "nvidia", 96, 2)
+    assert (pro.gpu_request, pro.gres, pro.exclusive) == ("gres", "gpu:PRO6000-96GB:2", True)
+
+
+@pytest.mark.parametrize("site", RCCS_SITES)
+def test_rccs_site_yaml_validates_against_the_schema(site):
+    schema = json.loads(SCHEMA.read_text())
+    jsonschema.validate(yaml.safe_load((DEPLOY / site / "site.yaml").read_text()), schema)
+
+
+@pytest.mark.parametrize("site", RCCS_SITES)
+def test_ai_pro6000_is_in_no_candidate_list_before_its_v2_receipts(site):
+    cfg = _site(site)
+    assert "ai-pro6000" not in pc.split_partitions(cfg.scheduler.partition)
+    assert "ai-pro6000" not in pc.split_partitions(cfg.step_executor.partition)
+    for roster in (DEPLOY / site).glob("pool-*.yaml"):
+        assert "ai-pro6000" not in roster.read_text(), roster.name
+    if site == "rccs-front":
+        assert cfg.step_executor.partition == "ng-dgx-m3"  # the live step lane
+
+
+@pytest.mark.parametrize("partition", ["ng-dgx-m3", "ng-dgx-s"])
+def test_rccs_gb10_step_scripts_are_byte_identical_with_their_profiles(monkeypatch, partition):
+    ex = _site_executor(monkeypatch, "rccs-front")
+    gpu_step = {EXECUTOR_GPU_METADATA_KEY: True}  # site gpu gate on + the hint
+    script = _rendered(ex, partition, gpu_step)
+    ex.partition_profiles = {}  # the rule before ADR-109: no profile consulted
+    assert _rendered(ex, partition, gpu_step) == script
+    assert f"#SBATCH --partition={partition}\n" in script
+    assert "#SBATCH --gres" not in script and "#SBATCH --exclusive" not in script
+    assert '"${_step_gpu[@]}"' in script  # the GPU still reaches the pod (nvidia-devices)
+
+
+def test_rccs_front_ai_pro6000_step_script_asks_for_its_whole_node(monkeypatch):
+    ex = _site_executor(monkeypatch, "rccs-front", partition="ng-dgx-m3,ai-pro6000")
+    script = _rendered(ex, "ai-pro6000", {EXECUTOR_GPU_METADATA_KEY: True})
+    lines = script.splitlines()
+    assert "#SBATCH --partition=ai-pro6000" in lines
+    assert PRO6000_GRES in lines and "#SBATCH --exclusive" in lines
+    # a step without the GPU hint holds the exclusive node but asks no GPU
+    plain = _rendered(ex, "ai-pro6000").splitlines()
+    assert PRO6000_GRES not in plain and "#SBATCH --exclusive" in plain
+
+
+def test_rccs_front_two_gpu_steps_are_eligible_only_on_ai_pro6000(monkeypatch):
+    ex = _site_executor(monkeypatch, "rccs-front", partition="ng-dgx-m3,ai-pro6000")
+
+    def ctx(count: int) -> StepContext:
+        return StepContext(s3=None, input_bucket="b", input_keys=[], output_bucket="b-output",
+                           metadata={EXECUTOR_GPU_COUNT_METADATA_KEY: count}, run_id="wf-1")  # fmt: skip
+
+    assert ex._lane_partitions(ctx(1)) == ["ng-dgx-m3", "ai-pro6000"]
+    assert ex._lane_partitions(ctx(2)) == ["ai-pro6000"]
+    live = _site_executor(monkeypatch, "rccs-front")  # today: ng-dgx-m3 only
+    with pytest.raises(StepExecutionError, match="gpu_count 2"):
+        live._lane_partitions(ctx(2))
+
+
+@pytest.mark.parametrize("site", RCCS_SITES)
+def test_rccs_serving_args_of_every_gb10_candidate_are_unchanged(site):
+    from umrs.orchestrator.remote_slurm_backend import _partition_shaper
+
+    cfg = _site(site)
+    args = ["sbatch", "--parsable", "--mem=0", "--partition=x", "--time=23:00:00",
+            "--cpus-per-task=8", "--account=cloud-users", "/deploy/serve-model.slurm"]  # fmt: skip
+    shape = _partition_shaper(cfg, None)
+    for name in pc.split_partitions(cfg.scheduler.partition):
+        assert shape(args, name) == pc.with_partition(args, name), name
+    assert shape(args, "ai-pro6000")[3:6] == [
+        "--partition=ai-pro6000", "--gres=gpu:PRO6000-96GB:2", "--exclusive",
+    ]  # fmt: skip
