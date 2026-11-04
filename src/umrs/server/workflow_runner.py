@@ -28,7 +28,7 @@ import re
 import sys
 import threading
 import time
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
@@ -60,6 +60,7 @@ from umrs.server.step_router import (
     StepRoutingError,
     build_default_router,
     get_feedback_store,
+    resolve_waiting,
 )
 from umrs.server.step_trust import (
     HPC_LANES,
@@ -660,6 +661,7 @@ def _resolve_step_decision(
     affinity_state: dict[str, str],
     routing_log: dict[str, dict[str, Any]],
     state_lock: threading.Lock,
+    cancelled: Callable[[], bool] | None = None,
 ) -> tuple[RoutingDecision, str | None]:
     """Resolve the step's routing decision. Never raises.
 
@@ -684,8 +686,12 @@ def _resolve_step_decision(
         affinity_hints = AffinityHints.from_step(
             step_spec_obj, parent_endpoint_ids=parent_endpoint_ids
         )
-        decision = router.resolve(
+        # ADR-109 D-4: an endpoint still starting is waited for (bounded),
+        # not a routing failure.
+        decision = resolve_waiting(
+            router,
             step_spec_obj,
+            cancelled=cancelled,
             project_id=project_id,
             user_id=user_id,
             affinity_hints=affinity_hints,
@@ -1184,6 +1190,7 @@ def _execute_step(
         affinity_state=affinity_state,
         routing_log=routing_log,
         state_lock=state_lock,
+        cancelled=lambda: bool(record.cancel_requested),
     )
     if routing_err is not None:
         record.set_step(
@@ -1885,6 +1892,7 @@ def run_workflow_record(
     project_id: str | None = None,
     user_id: str | None = None,
     executor: StepExecutor | None = None,
+    prelaunch: Callable[[ExecutionRecord], None] | None = None,
 ) -> None:
     """Execute the workflow described by ``workflow_json`` in-process.
 
@@ -1908,6 +1916,10 @@ def run_workflow_record(
     else the workflow manifest ``execution_mode``, else ``inproc``. Tests
     inject a custom executor to assert isolation semantics without
     spawning real subprocesses.
+
+    ``prelaunch`` runs once the run is accepted (not refused, workflow
+    valid) and before the first wave: the handler starts the endpoints the
+    steps need there (ADR-109 D-4). Its failure never fails the run.
     """
     record.update(status="running", started_at=time.time())
     # ADR-074 D-2: the uploaded tree never joins this process's sys.path (a
@@ -1930,6 +1942,7 @@ def run_workflow_record(
     if prepared is None:
         return
     levels, s3_client, bucket = prepared
+    _run_prelaunch(prelaunch, record)
 
     parent_results: dict[str, StepResult] = {}
     routing_log: dict[str, dict[str, Any]] = {}
@@ -1997,6 +2010,18 @@ def run_workflow_record(
         executor=executor,
         state_lock=state_lock,
     )
+
+
+def _run_prelaunch(
+    prelaunch: Callable[[ExecutionRecord], None] | None, record: ExecutionRecord
+) -> None:
+    """Call the run's prelaunch hook; an error is logged, never raised."""
+    if prelaunch is None:
+        return
+    try:
+        prelaunch(record)
+    except Exception:  # the steps still route (and fail) by name
+        logger.exception("prelaunch of %s failed", record.execution_id)
 
 
 def _try_shutdown_executor(executor: StepExecutor) -> None:

@@ -655,6 +655,43 @@ def _take_over_prior_run(prior: Any, record: Any) -> None:
         record.update(cancel_requested=True)
 
 
+#: ``record.results`` key listing what the trigger-time ensure started.
+ENDPOINT_ENSURE_RESULTS_KEY = "_endpoint_ensure"
+
+
+def _endpoint_prelaunch(
+    workflow_json: dict[str, Any],
+    router: Any,
+    client_id: str,
+    verified_project: str | None,
+) -> Any:
+    """ADR-109 D-4: the run's hook that starts the endpoints its steps need.
+
+    Only for a gateway-verified project (ADR-080): a provision spends that
+    project's quota and GPU, so an unverified project claim (or the
+    ``default`` bucket) starts nothing and the steps route as before.
+    ``UMRS_STEP_ENDPOINT_ENSURE=false`` turns it off.
+    """
+    if not verified_project or not client_id:
+        return None
+    if os.getenv("UMRS_STEP_ENDPOINT_ENSURE", "true").lower() in ("0", "false", "no"):
+        return None
+    steps = list(workflow_json.get("steps") or [])
+
+    def _prelaunch(record: Any) -> None:
+        from umrs.server.step_endpoint_ensure import ensure_step_endpoints
+
+        record.results[ENDPOINT_ENSURE_RESULTS_KEY] = ensure_step_endpoints(
+            steps,
+            router=router,
+            project_id=verified_project,
+            user_id=client_id,
+            execution_id=record.execution_id,
+        )
+
+    return _prelaunch
+
+
 def _launch_workflow_from_catalog(
     *,
     workflow_name: str,
@@ -713,7 +750,13 @@ def _launch_workflow_from_catalog(
     _take_over_prior_run(prior, record)
 
     project_id = _workflow_project_id(params)
-    router = build_registry_backed_router(project_id=project_id)
+    router = build_registry_backed_router(project_id=project_id, user_id=client_id)
+    prelaunch = _endpoint_prelaunch(
+        workflow_json,
+        router,
+        client_id,
+        caller_project or _verified_caller_project(params, identity_verified),
+    )
 
     def _runner(record_to_run):
         run_workflow_record(
@@ -723,6 +766,7 @@ def _launch_workflow_from_catalog(
             router=router,
             project_id=project_id,
             user_id=client_id,
+            prelaunch=prelaunch,
         )
 
     registry.launch(record, _runner)
