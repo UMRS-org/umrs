@@ -231,6 +231,20 @@
         "vllm_docker_image": { "type": "string" },
         "litellm_image": { "type": "string", "description": "LiteLLM image for this partition (e.g. a digest pin); empty keeps the wrapper's floating main-stable default. Pin only where the GPU nodes hold or can pull that digest." },
         "gpus": { "type": "integer", "minimum": 0 },
+        "gpu_request": {
+          "type": "string",
+          "enum": ["", "none", "gres"],
+          "description": "How a job on this partition asks for GPUs (ADR-109 D-3): empty keeps the site-wide rule (scheduler.gpus / step_executor.gpus), none never emits --gres (RCCS ng-dgx-* reject it), gres emits --gres=<gres> (else gpu:<count>) even when the site rule says gpus: 0"
+        },
+        "gres": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.:-]{0,128}$",
+          "description": "The exact Slurm gres string for gpu_request gres, e.g. gpu:PRO6000-96GB:2"
+        },
+        "exclusive": {
+          "type": "boolean",
+          "description": "The partition allocates whole nodes (OverSubscribe=EXCLUSIVE); jobs there ask --exclusive"
+        },
         "needs_netavark_switch": { "type": "boolean" },
         "gpu_mem_util_max": {
           "type": "number",

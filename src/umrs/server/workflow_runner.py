@@ -43,6 +43,7 @@ from umrs.pipeline_sdk.step import (
 )
 from umrs.pipeline_sdk.workflow import StepSpec
 from umrs.server.step_executor import (
+    EXECUTOR_GPU_COUNT_METADATA_KEY,
     EXECUTOR_GPU_METADATA_KEY,
     EXECUTOR_IMAGE_METADATA_KEY,
     EXECUTOR_PAYLOAD_S3_METADATA_KEY,
@@ -741,6 +742,13 @@ def _apply_routing_overrides(
     return image_hint, gpu_hint
 
 
+def _gpu_count_hint(spec: dict[str, Any]) -> Any:
+    """``routing_hints.gpu_count`` as declared (None: absent); the staged
+    lane validates it (ADR-109 D-3)."""
+    hints = spec.get("routing_hints")
+    return hints.get("gpu_count") if isinstance(hints, dict) else None
+
+
 def _collect_upstream_keys(
     spec: dict[str, Any], parent_results_snapshot: dict[str, StepResult]
 ) -> list[str]:
@@ -1022,9 +1030,10 @@ def _executor_metadata(
     gpu_hint: Any,
     source_path: str | None,
     routed_keys: list[str] | None = None,
+    gpu_count: Any = None,
 ) -> dict[str, Any]:
-    """Per-step executor hints (image / GPU / uploaded source tree / the
-    config keys the router filled in)."""
+    """Per-step executor hints (image / GPU / GPUs per job / uploaded source
+    tree / the config keys the router filled in)."""
     metadata: dict[str, Any] = {}
     if routed_keys:
         metadata[EXECUTOR_ROUTED_KEYS_METADATA_KEY] = list(routed_keys)
@@ -1032,6 +1041,8 @@ def _executor_metadata(
         metadata[EXECUTOR_IMAGE_METADATA_KEY] = image_hint
     if gpu_hint is not None:
         metadata[EXECUTOR_GPU_METADATA_KEY] = gpu_hint
+    if gpu_count is not None:
+        metadata[EXECUTOR_GPU_COUNT_METADATA_KEY] = gpu_count
     if source_path:
         metadata[EXECUTOR_SOURCE_DIR_METADATA_KEY] = source_path
     return metadata
@@ -1217,7 +1228,9 @@ def _execute_step(
 
     # ---- Build context ----------------------------------------------------
     upstream_keys = _collect_upstream_keys(spec, parent_results_snapshot)
-    metadata = _executor_metadata(image_hint, gpu_hint, source_path, routed_keys)
+    metadata = _executor_metadata(
+        image_hint, gpu_hint, source_path, routed_keys, _gpu_count_hint(spec)
+    )
     _bind_step_lane(executor, spec, metadata, record)
     payload_s3_enabled, payload_bucket, payload_s3_prefix = _payload_s3_hint(metadata)
     _annotate_payload_mode(
