@@ -263,6 +263,9 @@ class StepExecutorConfig:
     # RLIMIT_NPROC of the step container (--ulimit nproc): a process bound
     # that needs no cgroup. 0 omits it.
     nproc_limit: int = 0
+    # ADR-109 D-4: how long a step waits for its endpoint to become READY
+    # (queue plus model load) before it fails by name; 0 = fail at once.
+    endpoint_wait_sec: int = 2700
 
 
 @dataclass
@@ -497,6 +500,7 @@ def _step_lane_env(cfg: StepExecutorConfig) -> dict[str, str]:
         "UMRS_STEP_CGROUPS": cfg.cgroups,
         "UMRS_STEP_NPROC_LIMIT": str(int(cfg.nproc_limit)),
         "UMRS_STEP_GPU_FORM": cfg.gpu_form,
+        "UMRS_STEP_ENDPOINT_WAIT_SEC": str(int(cfg.endpoint_wait_sec)),
     }
 
 

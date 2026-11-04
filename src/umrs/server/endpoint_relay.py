@@ -15,21 +15,26 @@ Environment:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 from datetime import datetime, timezone
+from typing import Any
 
 from ..orchestrator.endpoint_registry import get_registry
 from ..orchestrator.endpoint_relay import (
+    _LIVE,
+    _PENDING,
     KeepAlivePolicy,
     RelayAction,
+    _owned,
     deadline_metadata,
     keep_alive_policies,
     needs_deadline,
     parse_slurm_duration,
     plan_relay,
 )
-from ..orchestrator.provision_roster import roster_entries
+from ..orchestrator.provision_roster import role_alias_models, roster_entries
 
 logger = logging.getLogger(__name__)
 
@@ -90,9 +95,28 @@ async def refresh_deadlines(policies, endpoints, now: datetime) -> None:
         await _read_deadline(backend, endpoint, now)
 
 
+def provision_result(result: Any) -> dict[str, Any]:
+    """``status`` / ``job_id`` / ``error`` of a ``provision_endpoint`` answer.
+
+    A ``wait=False`` submit answers a 202 ``JSONResponse`` (the body carries
+    the job id), a ready or reused endpoint a ``ProvisionResponse``. Reading
+    only the attribute lost the job id of every relay successor since #720,
+    so the replica's recipe digest (ADR-106 D-4) was never recorded.
+    """
+    body = getattr(result, "body", None)
+    if isinstance(body, (bytes, bytearray)):
+        try:
+            data = json.loads(body)
+        except ValueError:
+            data = {}
+    else:
+        data = {k: getattr(result, k, None) for k in ("status", "job_id", "error")}
+    return data if isinstance(data, dict) else {}
+
+
 async def _provision(
     policy: KeepAlivePolicy, action: RelayAction, now: datetime
-) -> None:
+) -> str | None:
     from ..api.endpoints import ProvisionRequest, provision_endpoint
 
     request = ProvisionRequest(
@@ -115,7 +139,7 @@ async def _provision(
         requesting_user=policy.user,
         registry=get_registry(),
     )
-    job_id = getattr(result, "job_id", None)
+    job_id = provision_result(result).get("job_id")
     if policy.service and job_id:
         # ADR-106 D-4: the replica remembers the recipe it was built from;
         # a later change to the entry makes it due for an upgrade roll.
@@ -129,6 +153,7 @@ async def _provision(
         action.reason,
         job_id or "-",
     )
+    return str(job_id) if job_id else None
 
 
 async def _drain(
@@ -191,6 +216,70 @@ async def run_relay_once(now: datetime | None = None) -> list[RelayAction]:
 
 
 _EXECUTORS = {"provision": _provision, "drain": _drain, "retire": _retire}
+
+
+def service_policies_for(name: str) -> list[KeepAlivePolicy]:
+    """The ``service`` policies serving *name*: a role alias (``svc-*``,
+    every model whose entry carries it) or a model name. Roster order."""
+    models = set(role_alias_models(name)) or {name}
+    return [
+        policy
+        for policy in keep_alive_policies(roster_entries())
+        if policy.service and policy.model in models
+    ]
+
+
+def _has_replica(policies: list[KeepAlivePolicy], endpoints) -> bool:
+    return any(
+        _owned(policy, ep) and ep.status in (*_LIVE, *_PENDING)
+        for policy in policies
+        for ep in endpoints
+    )
+
+
+def _service_admits(policy: KeepAlivePolicy, caller: Any) -> bool:
+    """Would the caller be routed to this service's replicas? The recipe's
+    ``access`` (ADR-078 D-4) decides; no caller = the relay itself."""
+    if caller is None:
+        return True
+    from types import SimpleNamespace
+
+    from ..orchestrator.endpoint_access import can_use
+
+    entry = next((e for e in roster_entries() if e.get("model") == policy.model), {})
+    row = SimpleNamespace(
+        project_id=policy.project_id, metadata={"access": entry.get("access") or []}
+    )
+    return can_use(row, caller)
+
+
+async def ensure_service_replica(
+    name: str, *, reason: str, now: datetime | None = None, caller: Any = None
+) -> dict[str, Any]:
+    """ADR-109 D-4: at least one replica of the service *name* now.
+
+    The relay stays the one owner of service lifetime (ADR-106 D-3): the
+    replica is provisioned exactly as a relay cycle would (system tier, the
+    entry's project and user, the recipe digest recorded). An on-demand
+    entry (``service.replicas: 0``) is never respawned, rolled or trimmed by
+    the controller, so its replica lives until ``r4 endpoint down`` or its
+    Slurm walltime. A *caller* the service's access list would not route to
+    starts nothing (``forbidden``). Answers ``{"outcome": "no_service" |
+    "forbidden" | "present" | "provisioned" | "failed", "model", "job_id"}``.
+    """
+    policies = service_policies_for(name)
+    if not policies:
+        return {"outcome": "no_service", "model": name, "job_id": None}
+    policy = policies[0]
+    if not _service_admits(policy, caller):
+        return {"outcome": "forbidden", "model": policy.model, "job_id": None}
+    if _has_replica(policies, get_registry().list_all()):
+        return {"outcome": "present", "model": policy.model, "job_id": None}
+    action = RelayAction("provision", policy.model, policy.project_id, reason)
+    now = now or datetime.now(timezone.utc).replace(tzinfo=None)
+    job_id = await _provision(policy, action, now)
+    outcome = "provisioned" if job_id else "failed"
+    return {"outcome": outcome, "model": policy.model, "job_id": job_id}
 
 
 class EndpointRelay:

@@ -175,7 +175,7 @@ def _non_negative(value: Any, default: int) -> int:
 def _service_fields(block: dict[str, Any], entry: dict[str, Any]) -> dict[str, Any]:
     """The ADR-106 ``service`` block's replica, roll and drain settings."""
     max_age = block.get("max_age")
-    replicas = _positive(block.get("replicas"), 1)
+    replicas = _non_negative(block.get("replicas"), 1)  # 0 = on demand (ADR-109 D-4)
     return {
         "service": True,
         "replicas": replicas,

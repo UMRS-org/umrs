@@ -40,6 +40,12 @@ last case it rolls early once, so the replicas' deadlines spread out.
 An upgrade stops itself: while a replica of the new recipe is FAILED, an
 outdated digest is no longer a reason to roll (the canary failed; the old
 replicas keep serving).
+
+``replicas: 0`` is an on-demand service (ADR-109 D-4): the controller never
+respawns, rolls or trims it. A workflow trigger whose step needs it starts
+one replica (``umrs.server.endpoint_relay.ensure_service_replica``), which
+lives until ``r4 endpoint down`` or its Slurm walltime; draining and stale
+replicas are still retired as above.
 """
 
 from __future__ import annotations
@@ -234,6 +240,8 @@ def _trim(policy: KeepAlivePolicy, view: _View):
 
 def _capacity(policy: KeepAlivePolicy, view: _View, now: datetime):
     """Respawn, roll or trim: at most one capacity action per cycle."""
+    if policy.replicas == 0:  # on demand (ADR-109 D-4): a trigger starts it
+        return []
     if len(view.live) + len(view.pending) < policy.replicas:
         if view.pending:
             return []

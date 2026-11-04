@@ -16,7 +16,11 @@ Resolution order
 3. Capability match: query the model registry for models satisfying
    ``step.requires`` / ``step.model_type``, then pick the corresponding
    active endpoint via the new capability filter. Prefers the system
-   tier first.
+   tier first. The caller's own project wins; an endpoint of another
+   project is used when its ADR-078 access list admits the caller. When no
+   live endpoint exists but one is starting (PENDING / PROVISIONING /
+   STARTING), :class:`StepEndpointPending` tells the runner to wait
+   (:func:`resolve_waiting`, ADR-109 D-4).
 4. Env-var fallback: ``OPENAI_BASE_URL`` / ``R4_GATEWAY_URL``. This is
    what kept the templates working before this router existed.
 
@@ -32,6 +36,7 @@ import logging
 import math
 import os
 import threading
+import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from typing import Any
@@ -43,6 +48,23 @@ logger = logging.getLogger(__name__)
 
 class StepRoutingError(RuntimeError):
     """Raised when a step declares routing requirements that cannot be met."""
+
+
+class StepEndpointPending(StepRoutingError):
+    """No live endpoint yet, but one the caller may use is starting (ADR-109 D-4).
+
+    The runner waits on this (bounded by ``UMRS_STEP_ENDPOINT_WAIT_SEC``)
+    instead of failing the step at once; any other ``StepRoutingError`` still
+    fails it.
+    """
+
+    def __init__(self, step_name: str, model: str, status: str) -> None:
+        super().__init__(
+            f"Step '{step_name}': endpoint for {model} is {status or 'starting'}"
+        )
+        self.step_name = step_name
+        self.model = model
+        self.status = status
 
 
 @dataclass
@@ -170,6 +192,13 @@ ModelLookup = Callable[[list[str], str | None], list[dict[str, Any]]]
 
 #: ``find_endpoint(model_name, project_id, owner_hint) -> Optional[EndpointDict]``.
 EndpointLookup = Callable[[str, str | None, str | None], dict[str, Any] | None]
+
+#: ``find_pending(model_name, project_id) -> Optional[EndpointDict]``: a
+#: PENDING/PROVISIONING/STARTING row of the model the caller may use.
+PendingLookup = Callable[[str, str | None], dict[str, Any] | None]
+
+#: ``alias_models(name) -> models``: the models a role alias (``svc-*``) names.
+AliasLookup = Callable[[str], tuple[str, ...]]
 
 
 def _endpoint_id_of(ep: dict[str, Any]) -> str:
@@ -551,6 +580,167 @@ def _softcap_penalty(load_norm: float) -> float:
     return (load_norm - softcap) * factor
 
 
+#: Model scope tiers, cheapest (shared infra) first.
+_SCOPE_ORDER = {"system": 0, "project": 1, "user": 2}
+
+
+def _scope_tier(entry: dict[str, Any]) -> int:
+    return _SCOPE_ORDER.get(str(entry.get("scope", "system")), 99)
+
+
+@dataclass(frozen=True)
+class _ScoreWeights:
+    """Every scoring knob, read from the environment once per resolve."""
+
+    aff: float
+    load: float
+    lat: float
+    q: float
+    fb: float
+    fail: float
+    lat_decorr: float
+    ucb: float
+    ucb_c: float
+    cap: float
+
+    @classmethod
+    def from_env(cls) -> _ScoreWeights:
+        w_aff, w_load, w_lat, w_q = _router_weights()
+        # Slice 7: when an endpoint has accumulated feedback, treat the
+        # registry-reported latency as a prior and shrink its contribution.
+        # Default 0.5 halves the latency term for warm endpoints; 1.0
+        # disables decorrelation.
+        lat_decorr = _env_float("UMRS_ROUTER_LATENCY_DECORR_FACTOR", 0.5)
+        return cls(
+            aff=w_aff,
+            load=w_load,
+            lat=w_lat,
+            q=w_q,
+            fb=_env_float("UMRS_ROUTER_FEEDBACK_WEIGHT", 0.2),
+            fail=_env_float("UMRS_ROUTER_FAILURE_WEIGHT", 0.5),
+            lat_decorr=min(max(lat_decorr, 0.0), 1.0),
+            # UCB exploration (Slice 15): a bonus that decays with visits.
+            ucb=_env_float("UMRS_ROUTER_UCB_WEIGHT", 0.3),
+            ucb_c=_env_float("UMRS_ROUTER_UCB_C", 1.0),
+            # Capability preference (Slice 17): a soft nudge, not a filter.
+            cap=_env_float("UMRS_ROUTER_CAPABILITY_WEIGHT", 0.2),
+        )
+
+    def effective_latency(self, lat_norm: float, fb_norm: float) -> float:
+        """Latency/feedback decorrelation: with observed exec times the
+        registry's reported latency becomes a less-trusted prior."""
+        return float(lat_norm) * self.lat_decorr if fb_norm > 0.0 else float(lat_norm)
+
+
+def _owner_hint(step: StepSpec) -> str | None:
+    hints = step.routing_hints if isinstance(step.routing_hints, dict) else {}
+    raw = hints.get("owner")
+    return raw if isinstance(raw, str) else None
+
+
+def _preferred_caps(step: StepSpec) -> list[Any]:
+    """``routing_hints.prefer``: names or ``{"name", "weight"}`` dicts."""
+    hints = step.routing_hints if isinstance(step.routing_hints, dict) else {}
+    raw_prefer = hints.get("prefer")
+    if not isinstance(raw_prefer, list):
+        return []
+    return [
+        c
+        for c in raw_prefer
+        if isinstance(c, str)
+        and c
+        or isinstance(c, dict)
+        and isinstance(c.get("name"), str)
+    ]
+
+
+def _ucb_bonus(ep: dict[str, Any], ucb_c: float, total_visits: int) -> float:
+    """Cold endpoints (0 visits) get the maximum bonus; it decays as
+    sqrt(log(N+1) / (n+1))."""
+    visits = _feedback_store.get_visits(_endpoint_id_of(ep))
+    if visits:
+        return ucb_c * math.sqrt(math.log(total_visits + 1) / (visits + 1))
+    return ucb_c * math.sqrt(math.log(total_visits + 1)) if total_visits > 0 else ucb_c
+
+
+def _score_item(
+    idx: int,
+    item: dict[str, Any],
+    w: _ScoreWeights,
+    hints: AffinityHints | None,
+    preferred_caps: list[Any],
+    total_visits: int,
+) -> dict[str, Any]:
+    """One viable endpoint's signals and weighted total (higher wins).
+
+    The soft cap is scaled by the load weight, so ``UMRS_ROUTER_LOAD_WEIGHT=0``
+    disables the whole load family (linear + soft cap).
+    """
+    ep = item["ep"]
+    aff_score, matches = (
+        _score_endpoint_for_affinity(ep, hints) if hints is not None else (0, [])
+    )
+    load_norm = _endpoint_load_norm(ep)
+    lat_norm = _endpoint_latency_norm(ep)
+    q_norm = _endpoint_queue_norm(ep)
+    fb_norm = _endpoint_feedback_norm(ep)
+    fail_norm = _endpoint_failure_norm(ep)
+    ucb_bonus = _ucb_bonus(ep, w.ucb_c, total_visits)
+    ep_md = ep.get("metadata")
+    cap_score = _capability_match(
+        ep_md if isinstance(ep_md, dict) else {}, preferred_caps
+    )
+    total = (
+        (w.aff * float(aff_score))
+        - (w.load * float(load_norm))
+        - (w.lat * w.effective_latency(lat_norm, fb_norm))
+        - (w.q * float(q_norm))
+        - (w.fb * float(fb_norm))
+        - (w.fail * float(fail_norm))
+        - (w.load * float(_softcap_penalty(load_norm)))
+        + (w.ucb * ucb_bonus)
+        + (w.cap * cap_score)
+    )
+    return {
+        **item,
+        "aff_score": aff_score,
+        "matches": matches,
+        "load_norm": load_norm,
+        "latency_norm": lat_norm,
+        "queue_norm": q_norm,
+        "feedback_norm": fb_norm,
+        "failure_norm": fail_norm,
+        "ucb_bonus": ucb_bonus,
+        "cap_score": cap_score,
+        "total": total,
+        "decl_index": idx,
+    }
+
+
+def _decision_breakdown(chosen: dict[str, Any], w: _ScoreWeights) -> dict[str, float]:
+    """Each weighted contribution to ``total_score`` (sign included)."""
+    return {
+        "affinity": w.aff * float(chosen["aff_score"]),
+        "load": -(w.load * float(chosen["load_norm"])),
+        "latency": -(
+            w.lat * w.effective_latency(chosen["latency_norm"], chosen["feedback_norm"])
+        ),
+        "queue": -(w.q * float(chosen["queue_norm"])),
+        "feedback": -(w.fb * float(chosen["feedback_norm"])),
+        "failure": -(w.fail * float(chosen["failure_norm"])),
+        "softcap": -(w.load * _softcap_penalty(float(chosen["load_norm"]))),
+        "ucb": w.ucb * float(chosen["ucb_bonus"]),
+        "capability": w.cap * float(chosen.get("cap_score", 0.0)),
+    }
+
+
+def _active_affinity(hints: AffinityHints | None) -> AffinityHints | None:
+    """The hints when affinity is in effect for this step, else None."""
+    if hints and not hints.disabled and hints.parent_endpoint_ids:
+        return hints
+    return None
+
+
 @dataclass
 class StepRouter:
     """Resolves :class:`StepSpec` -> :class:`RoutingDecision`."""
@@ -560,6 +750,8 @@ class StepRouter:
     default_api_base: str | None = None
     default_api_key: str | None = None
     extra_headers: dict[str, str] = field(default_factory=dict)
+    find_pending: PendingLookup | None = None
+    alias_models: AliasLookup | None = None
 
     def resolve(
         self,
@@ -602,6 +794,8 @@ class StepRouter:
             )
             if decision is not None:
                 return decision
+            # ADR-109 D-4: an endpoint still starting is "wait", not "fail".
+            self._raise_if_pending(step, project_id)
             # Strict mode when explicit requirements were declared: fail
             # rather than silently picking up an env endpoint that may not
             # satisfy them.
@@ -625,59 +819,12 @@ class StepRouter:
         project_id: str | None,
         affinity_hints: AffinityHints | None = None,
     ) -> RoutingDecision | None:
-        assert self.find_models is not None  # narrowed by caller
-
-        candidates = self.find_models(list(step.requires), step.model_type) or []
-        # When the workflow pinned a symbolic model name, prefer that one if
-        # it appears in the candidate set.
-        if step.model:
-            preferred = [m for m in candidates if m.get("name") == step.model]
-            if preferred:
-                candidates = preferred
-
-        if not candidates:
-            return None
-
         # Prefer system-tier models (cheapest path / shared infra).
-        scope_order = {"system": 0, "project": 1, "user": 2}
-        candidates.sort(
-            key=lambda m: scope_order.get(str(m.get("scope", "system")), 99)
-        )
-
-        owner_hint = None
-        if isinstance(step.routing_hints, dict):
-            owner_hint_raw = step.routing_hints.get("owner")
-            if isinstance(owner_hint_raw, str):
-                owner_hint = owner_hint_raw
-
+        candidates = sorted(self.registry_candidates(step), key=_scope_tier)
         # Resolve every viable candidate so we can score them. Without
         # affinity hints and with no load info, every score is 0 and the
         # first-by-scope candidate wins (legacy behaviour preserved).
-        viable: list[dict[str, Any]] = []
-        for entry in candidates:
-            model_name = str(entry.get("name") or "")
-            if not model_name:
-                continue
-            ep = (
-                self.find_endpoint(model_name, project_id, owner_hint)
-                if self.find_endpoint is not None
-                else None
-            )
-            if ep is None:
-                continue
-            api_base = ep.get("litellm_url") or ep.get("api_base")
-            if not api_base:
-                continue
-            scope_tier = scope_order.get(str(entry.get("scope", "system")), 99)
-            viable.append(
-                {
-                    "entry": entry,
-                    "ep": ep,
-                    "api_base": api_base,
-                    "scope_tier": scope_tier,
-                }
-            )
-
+        viable = self._viable(candidates, project_id, _owner_hint(step))
         if not viable:
             return None
 
@@ -688,133 +835,54 @@ class StepRouter:
         lowest_tier = min(item["scope_tier"] for item in viable)
         tier_pool = [item for item in viable if item["scope_tier"] == lowest_tier]
 
-        affinity_active = bool(
-            affinity_hints
-            and not affinity_hints.disabled
-            and affinity_hints.parent_endpoint_ids
-        )
-        w_aff, w_load, w_lat, w_q = _router_weights()
-        w_fb = _env_float("UMRS_ROUTER_FEEDBACK_WEIGHT", 0.2)
-        w_fail = _env_float("UMRS_ROUTER_FAILURE_WEIGHT", 0.5)
-        # Slice 7: when an endpoint has accumulated feedback, treat
-        # the registry-reported latency as a prior and shrink its
-        # contribution. ``feedback_norm`` is the posterior. Default
-        # 0.5 halves the latency term for warm endpoints; setting
-        # this to 1.0 disables decorrelation (keep full latency
-        # weight in parallel).
-        lat_decorr = _env_float("UMRS_ROUTER_LATENCY_DECORR_FACTOR", 0.5)
-        lat_decorr = max(lat_decorr, 0.0)
-        lat_decorr = min(lat_decorr, 1.0)
-
-        # UCB exploration (Slice 15): add an exploration bonus that
-        # decays as an endpoint accumulates visits. Replaces ε-greedy.
-        w_ucb = _env_float("UMRS_ROUTER_UCB_WEIGHT", 0.3)
-        ucb_c = _env_float("UMRS_ROUTER_UCB_C", 1.0)
+        hints = _active_affinity(affinity_hints)
+        weights = _ScoreWeights.from_env()
+        preferred_caps = _preferred_caps(step)
         total_visits = _feedback_store.get_total_visits()
-
-        # Capability preference (Slice 17): a small bonus for endpoints
-        # whose metadata matches the step's ``routing_hints.prefer``
-        # list.  This is a soft nudge, NOT a hard filter — candidates
-        # missing preferred capabilities are still eligible.
-        w_cap = _env_float("UMRS_ROUTER_CAPABILITY_WEIGHT", 0.2)
-        preferred_caps: list[Any] = []
-        if isinstance(step.routing_hints, dict):
-            raw_prefer = step.routing_hints.get("prefer")
-            if isinstance(raw_prefer, list):
-                preferred_caps = [
-                    c
-                    for c in raw_prefer
-                    if isinstance(c, str)
-                    and c
-                    or isinstance(c, dict)
-                    and isinstance(c.get("name"), str)
-                ]
-
-        scored: list[dict[str, Any]] = []
-        for idx, item in enumerate(tier_pool):
-            if affinity_active:
-                aff_score, matches = _score_endpoint_for_affinity(
-                    item["ep"],
-                    affinity_hints,  # type: ignore[arg-type]
-                )
-            else:
-                aff_score, matches = 0, []
-            load_norm = _endpoint_load_norm(item["ep"])
-            lat_norm = _endpoint_latency_norm(item["ep"])
-            q_norm = _endpoint_queue_norm(item["ep"])
-            fb_norm = _endpoint_feedback_norm(item["ep"])
-            fail_norm = _endpoint_failure_norm(item["ep"])
-            # Latency/feedback decorrelation: warm endpoints with
-            # observed exec_time_ms have a posterior signal; the
-            # registry's reported latency becomes a less-trusted prior.
-            effective_lat = (
-                float(lat_norm) * lat_decorr if fb_norm > 0.0 else float(lat_norm)
-            )
-            # Soft cap kicks in only when the endpoint is over the
-            # configured utilisation threshold; below it, the term is
-            # zero so quiet endpoints are unaffected. We scale by
-            # ``w_load`` so ``UMRS_ROUTER_LOAD_WEIGHT=0`` disables the
-            # entire load family (linear + soft cap) — operators who
-            # turn off load awareness should not be surprised by a
-            # residual saturation penalty.
-            softcap = _softcap_penalty(load_norm)
-            # UCB bonus: cold endpoints (0 visits) get the maximum
-            # bonus; the term decays as sqrt(log(N+1) / (n+1)).
-            eid = _endpoint_id_of(item["ep"])
-            visits = _feedback_store.get_visits(eid)
-            if visits == 0:
-                ucb_bonus = (
-                    ucb_c * math.sqrt(math.log(total_visits + 1))
-                    if total_visits > 0
-                    else ucb_c
-                )
-            else:
-                ucb_bonus = ucb_c * math.sqrt(math.log(total_visits + 1) / (visits + 1))
-            # Capability preference (Slice 17): score from endpoint
-            # metadata matching routing_hints.prefer tags.
-            ep_md = item["ep"].get("metadata")
-            cap_score = _capability_match(
-                ep_md if isinstance(ep_md, dict) else {},
-                preferred_caps,
-            )
-            total = (
-                (w_aff * float(aff_score))
-                - (w_load * float(load_norm))
-                - (w_lat * effective_lat)
-                - (w_q * float(q_norm))
-                - (w_fb * float(fb_norm))
-                - (w_fail * float(fail_norm))
-                - (w_load * float(softcap))
-                + (w_ucb * ucb_bonus)
-                + (w_cap * cap_score)
-            )
-            scored.append(
-                {
-                    **item,
-                    "aff_score": aff_score,
-                    "matches": matches,
-                    "load_norm": load_norm,
-                    "latency_norm": lat_norm,
-                    "queue_norm": q_norm,
-                    "feedback_norm": fb_norm,
-                    "failure_norm": fail_norm,
-                    "ucb_bonus": ucb_bonus,
-                    "cap_score": cap_score,
-                    "total": total,
-                    "decl_index": idx,
-                }
-            )
-
+        scored = [
+            _score_item(idx, item, weights, hints, preferred_caps, total_visits)
+            for idx, item in enumerate(tier_pool)
+        ]
         # Highest total wins; ties broken by declaration order so legacy
-        # tests with all-zero scores stay deterministic.
+        # tests with all-zero scores stay deterministic. The UCB bonus is
+        # already folded into ``total`` (Slice 15): no separate random pick.
         scored.sort(key=lambda s: (-s["total"], s["decl_index"]))
+        return self._registry_decision(step, scored[0], hints, weights)
 
-        # UCB-based selection (Slice 15): the exploration bonus is
-        # already folded into ``total``, so the top-scored entry is
-        # the UCB-optimal choice. No separate random branch needed.
-        chosen = scored[0]
-        explored = False
+    def _viable(
+        self,
+        candidates: list[dict[str, Any]],
+        project_id: str | None,
+        owner_hint: str | None,
+    ) -> list[dict[str, Any]]:
+        """Candidates with a live endpoint that has an upstream URL."""
+        viable: list[dict[str, Any]] = []
+        for entry in candidates:
+            model_name = str(entry.get("name") or "")
+            ep = (
+                self.find_endpoint(model_name, project_id, owner_hint)
+                if model_name and self.find_endpoint is not None
+                else None
+            )
+            api_base = (ep.get("litellm_url") or ep.get("api_base")) if ep else None
+            if api_base:
+                viable.append(
+                    {
+                        "entry": entry,
+                        "ep": ep,
+                        "api_base": api_base,
+                        "scope_tier": _scope_tier(entry),
+                    }
+                )
+        return viable
 
+    def _registry_decision(
+        self,
+        step: StepSpec,
+        chosen: dict[str, Any],
+        hints: AffinityHints | None,
+        w: _ScoreWeights,
+    ) -> RoutingDecision:
         entry = chosen["entry"]
         ep = chosen["ep"]
         endpoint_id = str(ep.get("job_id") or ep.get("endpoint_id") or "")
@@ -829,7 +897,7 @@ class StepRouter:
             lora=step.lora,
             model_type=step.model_type
             or (str(entry.get("model_type")) if entry.get("model_type") else None),
-            affinity_used=bool(affinity_active and chosen["aff_score"] > 0),
+            affinity_used=bool(hints is not None and chosen["aff_score"] > 0),
             affinity_matched_parents=list(chosen["matches"]),
             load_score=float(chosen["load_norm"]),
             latency_score=float(chosen["latency_norm"]),
@@ -837,27 +905,62 @@ class StepRouter:
             feedback_score=float(chosen["feedback_norm"]),
             failure_score=float(chosen["failure_norm"]),
             capability_score=float(chosen.get("cap_score", 0.0)),
-            exploration_used=bool(explored),
+            exploration_used=False,
             total_score=float(chosen["total"]),
-            decision_breakdown={
-                "affinity": w_aff * float(chosen["aff_score"]),
-                "load": -(w_load * float(chosen["load_norm"])),
-                "latency": -(
-                    w_lat
-                    * (
-                        float(chosen["latency_norm"]) * lat_decorr
-                        if chosen["feedback_norm"] > 0
-                        else float(chosen["latency_norm"])
-                    )
-                ),
-                "queue": -(w_q * float(chosen["queue_norm"])),
-                "feedback": -(w_fb * float(chosen["feedback_norm"])),
-                "failure": -(w_fail * float(chosen["failure_norm"])),
-                "softcap": -(w_load * _softcap_penalty(float(chosen["load_norm"]))),
-                "ucb": w_ucb * float(chosen["ucb_bonus"]),
-                "capability": w_cap * float(chosen.get("cap_score", 0.0)),
-            },
+            decision_breakdown=_decision_breakdown(chosen, w),
         )
+
+    # ------------------------------------------------------------------
+    # Candidate + endpoint-state helpers (shared with the trigger-time ensure)
+    # ------------------------------------------------------------------
+
+    def pinned_names(self, step: StepSpec) -> set[str]:
+        """The model names the step pinned: ``step.model`` and, for a role
+        alias (ADR-106 D-1), the models whose roster entries carry it."""
+        if not step.model:
+            return set()
+        names = {step.model}
+        if self.alias_models is not None:
+            names.update(self.alias_models(step.model))
+        return names
+
+    def registry_candidates(self, step: StepSpec) -> list[dict[str, Any]]:
+        """Registry models satisfying the step; narrowed to the pinned model
+        (or the models of a pinned role alias) when any of them is present."""
+        if self.find_models is None:
+            return []
+        candidates = self.find_models(list(step.requires), step.model_type) or []
+        pinned = self.pinned_names(step)
+        preferred = [m for m in candidates if m.get("name") in pinned]
+        return preferred or candidates
+
+    def pending_endpoint(
+        self, model_name: str, project_id: str | None
+    ) -> dict[str, Any] | None:
+        """A starting endpoint of *model_name* the caller may use, or None."""
+        if self.find_pending is None:
+            return None
+        return self.find_pending(model_name, project_id)
+
+    def has_usable_endpoint(self, names: list[str], project_id: str | None) -> bool:
+        """True when any of *names* has a live or starting endpoint for the caller."""
+        for name in names:
+            if self.find_endpoint is not None and self.find_endpoint(
+                name, project_id, None
+            ):
+                return True
+            if self.pending_endpoint(name, project_id) is not None:
+                return True
+        return False
+
+    def _raise_if_pending(self, step: StepSpec, project_id: str | None) -> None:
+        for entry in self.registry_candidates(step):
+            name = str(entry.get("name") or "")
+            pending = self.pending_endpoint(name, project_id) if name else None
+            if pending is not None:
+                raise StepEndpointPending(
+                    step.name, name, str(pending.get("status") or "")
+                )
 
     def _env_fallback_decision(self, step: StepSpec) -> RoutingDecision:
         api_base = (
@@ -926,72 +1029,204 @@ def build_default_router() -> StepRouter:
     return StepRouter()
 
 
+# ----------------------------------------------------------------------
+# ADR-109 D-4: a step waits (bounded) for an endpoint that is starting
+# ----------------------------------------------------------------------
+
+#: Queue plus model load of a cold endpoint (site override:
+#: ``step_executor.endpoint_wait_sec`` -> ``UMRS_STEP_ENDPOINT_WAIT_SEC``).
+DEFAULT_STEP_ENDPOINT_WAIT_SEC = 45 * 60
+DEFAULT_STEP_ENDPOINT_POLL_SEC = 15.0
+
+
+def step_endpoint_wait_sec() -> float:
+    """How long a step waits for a starting endpoint (0 = fail at once)."""
+    raw = _env_float("UMRS_STEP_ENDPOINT_WAIT_SEC", DEFAULT_STEP_ENDPOINT_WAIT_SEC)
+    return max(raw, 0.0)
+
+
+def _step_endpoint_poll_sec() -> float:
+    raw = _env_float("UMRS_STEP_ENDPOINT_POLL_SEC", DEFAULT_STEP_ENDPOINT_POLL_SEC)
+    return raw if raw > 0 else DEFAULT_STEP_ENDPOINT_POLL_SEC
+
+
+def resolve_waiting(
+    router: StepRouter,
+    step: StepSpec,
+    *,
+    cancelled: Callable[[], bool] | None = None,
+    clock: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
+    **resolve_kwargs: Any,
+) -> RoutingDecision:
+    """``router.resolve`` that waits while the step's endpoint is starting.
+
+    Re-resolves every poll interval until a live endpoint appears, then
+    returns its decision. Past the bounded clock (or on cancel) it raises
+    :class:`StepRoutingError` naming the model; any other routing error
+    propagates at once, as before.
+    """
+    budget = step_endpoint_wait_sec()
+    deadline = clock() + budget
+    while True:
+        try:
+            return router.resolve(step, **resolve_kwargs)
+        except StepEndpointPending as pending:
+            _wait_or_give_up(pending, deadline, budget, clock, sleep, cancelled)
+
+
+def _wait_or_give_up(
+    pending: StepEndpointPending,
+    deadline: float,
+    budget: float,
+    clock: Callable[[], float],
+    sleep: Callable[[float], None],
+    cancelled: Callable[[], bool] | None,
+) -> None:
+    left = deadline - clock()
+    if left <= 0:
+        raise StepRoutingError(
+            f"Step '{pending.step_name}': endpoint for {pending.model} not READY "
+            f"within {int(budget)} s (last status: {pending.status or 'unknown'})"
+        ) from pending
+    if cancelled is not None and cancelled():
+        raise StepRoutingError(
+            f"Step '{pending.step_name}': run cancelled while waiting for "
+            f"endpoint {pending.model}"
+        ) from pending
+    logger.info("%s; waiting (%.0f s left)", pending, left)
+    sleep(min(_step_endpoint_poll_sec(), left))
+
+
+def _registry_models(
+    capabilities: list[str], model_type: str | None
+) -> list[dict[str, Any]]:
+    """Model-registry entries of *model_type* carrying every capability."""
+    try:
+        from umrs.api.endpoints import _capability_satisfied
+        from umrs.api.models import get_model_store
+        from umrs.model_registry.store import AccessContext
+
+        store = get_model_store()
+        ctx = AccessContext(user_id="", is_admin=True)
+        entries = [e.to_dict() for e in store.list_models(ctx, limit=500)]
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Model registry lookup failed: %s", exc)
+        return []
+    return [
+        entry
+        for entry in entries
+        if (not model_type or entry.get("model_type") == model_type)
+        and all(_capability_satisfied(entry, tag) for tag in capabilities)
+    ]
+
+
+def _endpoint_caller(user_id: str | None, project_id: str) -> Any:
+    """The ADR-078 routing caller of a run: its user in its project. Never
+    admin (admin does not widen routing); circle scopes are not resolved
+    here, so a circle-only share is not routable from a step."""
+    from umrs.orchestrator.endpoint_access import EndpointCaller
+
+    return EndpointCaller(user_id=user_id or "", project_id=project_id)
+
+
+def _serves_model(ep: Any, model_name: str) -> bool:
+    served = (ep.metadata or {}).get("served_model_name")
+    return served == model_name or ep.model == model_name
+
+
+def _own_live_endpoint(registry: Any, project: str, model_name: str) -> Any:
+    from umrs.orchestrator.endpoint_registry import EndpointStatus
+
+    ep = registry.get(project, model_name, prefer_warm=True)
+    if ep is not None:
+        return ep
+    # Fall back to scanning all ready endpoints for served model match.
+    for candidate in registry.list_all(
+        project_id=project or None,
+        status_filter=[EndpointStatus.READY, EndpointStatus.DEGRADED],
+    ):
+        if _serves_model(candidate, model_name):
+            return candidate
+    return None
+
+
+def _registry_endpoint(
+    model_name: str, project: str, user_id: str | None
+) -> dict[str, Any] | None:
+    """Own project first, then an endpoint shared with the caller (ADR-078 D-2)."""
+    try:
+        from umrs.orchestrator.endpoint_registry import get_registry
+
+        registry = get_registry()
+        ep = _own_live_endpoint(registry, project, model_name)
+        if ep is None:
+            ep = registry.select_shared_endpoint(
+                _endpoint_caller(user_id, project), model_name
+            )
+        return ep.to_dict() if ep is not None else None
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Endpoint registry lookup failed: %s", exc)
+    return None
+
+
+def _registry_pending(
+    model_name: str, project: str, user_id: str | None
+) -> dict[str, Any] | None:
+    """A PENDING/PROVISIONING/STARTING row of the model the caller may use
+    (own project, or shared with the caller: ADR-078)."""
+    try:
+        from umrs.orchestrator.endpoint_access import can_use
+        from umrs.orchestrator.endpoint_registry import EndpointStatus, get_registry
+
+        caller = _endpoint_caller(user_id, project)
+        starting = [
+            EndpointStatus.PENDING,
+            EndpointStatus.PROVISIONING,
+            EndpointStatus.STARTING,
+        ]
+        for ep in get_registry().list_all(status_filter=starting):
+            if _serves_model(ep, model_name) and can_use(ep, caller):
+                return ep.to_dict()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Pending endpoint lookup failed: %s", exc)
+    return None
+
+
+def _role_alias_models(name: str) -> tuple[str, ...]:
+    try:
+        from umrs.orchestrator.provision_roster import role_alias_models
+
+        return role_alias_models(name)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Role alias lookup failed: %s", exc)
+        return ()
+
+
 def build_registry_backed_router(
     *,
     project_id: str | None = None,
+    user_id: str | None = None,
 ) -> StepRouter:
     """Build a router that consults the live UMRS model + endpoint registries.
 
     Imports are lazy so this module stays cheap to import in worker
-    subprocesses that do not need the registry backends.
+    subprocesses that do not need the registry backends. ``user_id`` is the
+    run's triggering user: an endpoint of another project is routable when
+    its ADR-078 access list admits that user in the run's project.
     """
 
-    def _find_models(
-        capabilities: list[str], model_type: str | None
-    ) -> list[dict[str, Any]]:
-        try:
-            from umrs.api.endpoints import _capability_satisfied
-            from umrs.api.models import get_model_store
-            from umrs.model_registry.store import AccessContext
-
-            store = get_model_store()
-            ctx = AccessContext(user_id="", is_admin=True)
-            entries = [e.to_dict() for e in store.list_models(ctx, limit=500)]
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("Model registry lookup failed: %s", exc)
-            return []
-
-        out: list[dict[str, Any]] = []
-        for entry in entries:
-            if model_type and entry.get("model_type") != model_type:
-                continue
-            if capabilities and not all(
-                _capability_satisfied(entry, tag) for tag in capabilities
-            ):
-                continue
-            out.append(entry)
-        return out
-
     def _find_endpoint(
-        model_name: str,
-        proj: str | None,
-        owner_hint: str | None,
+        model_name: str, proj: str | None, owner_hint: str | None
     ) -> dict[str, Any] | None:
-        try:
-            from umrs.orchestrator.endpoint_registry import (
-                EndpointStatus,
-                get_registry,
-            )
+        return _registry_endpoint(model_name, proj or project_id or "", user_id)
 
-            registry = get_registry()
-            target_project = proj or project_id or ""
-            ep = registry.get(target_project, model_name, prefer_warm=True)
-            if ep is not None:
-                return ep.to_dict()
-
-            # Fall back to scanning all ready endpoints for served model match.
-            for candidate in registry.list_all(
-                project_id=target_project or None,
-                status_filter=[EndpointStatus.READY, EndpointStatus.DEGRADED],
-            ):
-                served = (candidate.metadata or {}).get("served_model_name")
-                if served == model_name or candidate.model == model_name:
-                    return candidate.to_dict()
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("Endpoint registry lookup failed: %s", exc)
-        return None
+    def _find_pending(model_name: str, proj: str | None) -> dict[str, Any] | None:
+        return _registry_pending(model_name, proj or project_id or "", user_id)
 
     return StepRouter(
-        find_models=_find_models,
+        find_models=_registry_models,
         find_endpoint=_find_endpoint,
+        find_pending=_find_pending,
+        alias_models=_role_alias_models,
     )
