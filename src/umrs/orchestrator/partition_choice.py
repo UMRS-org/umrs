@@ -234,3 +234,95 @@ def first_line(text: str) -> str:
         if line.strip():
             return line.strip()
     return ""
+
+
+# ── per-partition GPU request (ADR-109 D-3) ─────────────────────────────────
+
+#: ``partition_profiles.<p>.gpu_request``: "" keeps the caller's site-wide
+#: rule; "none" never asks for GPUs (RCCS GB10: ng-dgx-* reject --gres and
+#: --gpus); "gres" asks with ``--gres=<profile gres, else gpu:<count>>``.
+GPU_REQUEST_LEGACY = ""
+GPU_REQUEST_NONE = "none"
+GPU_REQUEST_GRES = "gres"
+GPU_REQUEST_STYLES = (GPU_REQUEST_LEGACY, GPU_REQUEST_NONE, GPU_REQUEST_GRES)
+#: What a gres value may hold: it goes onto an sbatch command or #SBATCH line.
+_GRES_RE = re.compile(r"[A-Za-z0-9_.:-]{1,128}")
+
+
+def gpu_request_style(profile: Any) -> str:
+    """The profile's GPU request style; no profile is the legacy style."""
+    style = str(getattr(profile, "gpu_request", "") or "").strip()
+    if style not in GPU_REQUEST_STYLES:
+        raise ValueError(
+            f"partition gpu_request {style!r} is not one of none|gres (or empty)"
+        )
+    return style
+
+
+def gres_request(style: str, gres: str, count: int, legacy: str | None) -> str | None:
+    """The value after ``--gres=`` on one partition, or None for no line.
+
+    ``legacy`` is what the caller's site-wide rule asks; style "" keeps it.
+    """
+    if style == GPU_REQUEST_NONE:
+        return None
+    if style != GPU_REQUEST_GRES:
+        return legacy
+    value = str(gres or "").strip() or (f"gpu:{int(count)}" if count > 0 else "")
+    if value and not _GRES_RE.fullmatch(value):
+        raise ValueError(f"partition gres {value!r} is not a Slurm gres string")
+    return value or None
+
+
+def gres_gpu_count(gres: str) -> int:
+    """GPUs a ``gpu[:type][:count]`` gres string asks for (0: no GPU gres)."""
+    parts = str(gres or "").strip().split(":")
+    if parts[0] != "gpu":
+        return 0
+    last = parts[-1] if len(parts) > 1 else ""
+    return int(last) if last.isdigit() else 1
+
+
+def partition_gpus(profile: Any) -> int:
+    """GPUs one job on the partition can get: its gres, else ``gpus``."""
+    if profile is None:
+        return 0
+    count = gres_gpu_count(getattr(profile, "gres", ""))
+    return count or int(getattr(profile, "gpus", 0) or 0)
+
+
+def with_gpu_request(sbatch_args: list[str], profile: Any, count: int) -> list[str]:
+    """``sbatch_args`` with the ``--gres=`` and ``--exclusive`` the partition's
+    profile asks for (``count``: the job's GPUs, for a gres without a string).
+    A legacy profile (style "", not exclusive), or none, changes nothing."""
+    style = gpu_request_style(profile)
+    exclusive = bool(getattr(profile, "exclusive", False))
+    if style == GPU_REQUEST_LEGACY and not exclusive:
+        return list(sbatch_args)
+    legacy = _arg_value(sbatch_args, "--gres=")
+    value = gres_request(style, getattr(profile, "gres", ""), count, legacy)
+    request = [f"--gres={value}"] if value else []
+    if exclusive:
+        request.append("--exclusive")
+    kept = [
+        a for a in sbatch_args if not a.startswith("--gres=") and a != "--exclusive"
+    ]
+    return _after_partition(kept, request)
+
+
+def _arg_value(sbatch_args: list[str], prefix: str) -> str | None:
+    """The value of the first ``<prefix><value>`` argument, else None."""
+    for arg in sbatch_args:
+        if arg.startswith(prefix):
+            return arg[len(prefix) :]
+    return None
+
+
+def _after_partition(sbatch_args: list[str], extra: list[str]) -> list[str]:
+    """``extra`` inserted right after ``--partition=`` (else after argv[0])."""
+    at = 1
+    for index, arg in enumerate(sbatch_args):
+        if arg.startswith("--partition="):
+            at = index + 1
+            break
+    return [*sbatch_args[:at], *extra, *sbatch_args[at:]]

@@ -145,6 +145,7 @@ partition_profiles:
     network_backend: netavark
     vllm_docker_tag: cu130-nightly-aarch64
     gpus: 0
+    gpu_request: none          # ADR-109 D-3: GB10 partitions reject --gres/--gpus
     gpu_mem_util_max: 0.78     # GB10 shared with harness + vision sidecar (~97 GiB free of 121.6)
     needs_netavark_switch: false
   ng-dgx-m0:
@@ -156,6 +157,7 @@ partition_profiles:
     network_backend: netavark
     vllm_docker_tag: cu130-nightly-aarch64
     gpus: 0                    # ng-dgx-m* partitions reject --gpus
+    gpu_request: none          # ADR-109 D-3: GB10 partitions reject --gres/--gpus
     gpu_mem_util_max: 0.78     # GB10 shared with harness + vision sidecar (~97 GiB free of 121.6)
     needs_netavark_switch: false
   ng-dgx-m1:
@@ -167,6 +169,7 @@ partition_profiles:
     network_backend: netavark
     vllm_docker_tag: cu130-nightly-aarch64
     gpus: 0
+    gpu_request: none          # ADR-109 D-3: GB10 partitions reject --gres/--gpus
     gpu_mem_util_max: 0.78     # GB10 shared with harness + vision sidecar (~97 GiB free of 121.6)
     needs_netavark_switch: false
   ng-dgx-m2:
@@ -178,6 +181,7 @@ partition_profiles:
     network_backend: netavark
     vllm_docker_tag: cu130-nightly-aarch64
     gpus: 0
+    gpu_request: none          # ADR-109 D-3: GB10 partitions reject --gres/--gpus
     gpu_mem_util_max: 0.78     # GB10 shared with harness + vision sidecar (~97 GiB free of 121.6)
     needs_netavark_switch: false
   ng-dgx-m3:
@@ -189,7 +193,31 @@ partition_profiles:
     network_backend: netavark
     vllm_docker_tag: cu130-nightly-aarch64
     gpus: 0
+    gpu_request: none          # ADR-109 D-3: GB10 partitions reject --gres/--gpus
     gpu_mem_util_max: 0.78     # GB10 shared with harness + vision sidecar (~97 GiB free of 121.6)
+    needs_netavark_switch: false
+
+  # ── aarch64 NVIDIA (RTX PRO 6000 Blackwell, discrete) ──
+  # ai-pro6000-[00-01] (sinfo/scontrol 2026-11-04): aarch64, two discrete
+  # 96 GB RTX PRO 6000 Blackwell (sm_120, not the GB10's unified sm_121) per
+  # node, 128 CPUs, 1 TB RAM, MaxTime 1-00:00:00, DefaultTime 01:00:00,
+  # OverSubscribe=EXCLUSIVE, AllowAccounts=ALL. ADR-109 D-3: in NO candidate
+  # list yet (scheduler.partition, step_executor.partition); it joins them
+  # only after the V2 first-launch receipts.
+  ai-pro6000:
+    arch: aarch64
+    gpu_vendor: nvidia
+    gpu_memory_gb: 96            # per GPU; two per node
+    # first-launch receipt pending (ADR-109 V2): runtime, userns, network
+    # and vLLM tag are ng-dgx-m3's, not yet proven on these nodes.
+    oci_runtime: runc
+    userns_mode: host
+    network_backend: netavark
+    vllm_docker_tag: cu130-nightly-aarch64
+    gpus: 2
+    gpu_request: gres            # unlike ng-dgx-*, this partition takes --gres
+    gres: "gpu:PRO6000-96GB:2"   # the node's whole Gres (exclusive anyway)
+    exclusive: true
     needs_netavark_switch: false
 
   # ── x86_64 NVIDIA ──

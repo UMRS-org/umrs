@@ -76,7 +76,32 @@ def run_job(wd):
     return subprocess.call([sys.executable, os.environ["FAKE_SLURM_JOB"], wd], stderr=err, env=env)
 
 
+def request_lines(script):
+    return [x for x in script.splitlines()
+            if x.startswith("#SBATCH --gres") or x == "#SBATCH --exclusive"]
+
+
+def partition_of(script):
+    return re.search(r"^#SBATCH --partition=(\S*)", script, re.M).group(1)
+
+
+def test_only():
+    # The script comes on stdin; nothing is queued or run. behaviour
+    # "starts": {partition: start | null (a quota refusal)}.
+    script = sys.stdin.read()
+    part = partition_of(script)
+    log("probe", part, *request_lines(script))
+    start = behaviour().get("starts", {}).get(part, "2026-11-04T10:00:00")
+    if start is None:
+        sys.stderr.write(f"sbatch: error: Quota exceeded on partition '{part}' (limit)\n")
+        sys.exit(1)
+    sys.stderr.write(f"sbatch: Job 99 to start at {start} using 8 processors on nodes "
+                     f"{part}-00 in partition {part}\n")
+
+
 def sbatch(args):
+    if "--test-only" in args:
+        return test_only()
     beh = behaviour()
     path = args[-1]
     chdir = [a[len("--chdir="):] for a in args if a.startswith("--chdir=")]
@@ -102,7 +127,9 @@ def sbatch(args):
             data["next"] += 1
             data["jobs"][job_id] = {"name": name, "workdir": wd, "states": states, "i": 0,
                                     "cancel_to": beh.get("cancel_to", ["CANCELLED"]),
-                                    "comment": comment.group(1) if comment else ""}
+                                    "comment": comment.group(1) if comment else "",
+                                    "partition": partition_of(script),
+                                    "request": request_lines(script)}
     if beh.get("sbatch_rc", 0):
         sys.stderr.write(beh.get("sbatch_err", "sbatch: error: Socket timed out on send/recv"))
         sys.exit(beh["sbatch_rc"])

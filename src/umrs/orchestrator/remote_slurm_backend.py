@@ -31,6 +31,7 @@ import logging
 import os
 import re
 import shlex
+from collections.abc import Callable
 from datetime import datetime
 from typing import Any
 
@@ -68,6 +69,9 @@ _SLURM_VANISHED_ERROR = "Slurm no longer lists the job and sacct is unavailable"
 # 10), so five candidates wait at most two rounds of this bound.
 _TEST_ONLY_TIMEOUT_SEC = 30
 _TEST_ONLY_CONCURRENCY = 3
+
+#: One candidate partition's sbatch arguments from the shared ones.
+_Shaper = Callable[[list[str], str], list[str]]
 
 
 def _squeue_omits_job(result: Any) -> bool:
@@ -406,12 +410,15 @@ class RemoteSlurmBackend(SlurmBackend):
         else:
             ssh = await self._get_ssh()
         # One partition per submission (RCCS refuses a list); the probes run
-        # through the same ssh as the real submit.
+        # through the same ssh as the real submit, each with the GPU request
+        # of the partition it probes (ADR-109 D-3).
+        shape = _partition_shaper(site, gpu_count)
         ranked = await self._rank_partitions(
             ssh,
             [*sbatch_args, shlex.quote(wrapper_script)],
             candidates,
             pc.preferred_partitions(site),
+            shape=shape,
         )
 
         # Build environment exports + sacct attribution for the job. The cap
@@ -436,7 +443,7 @@ class RemoteSlurmBackend(SlurmBackend):
         # Append the wrapper script path
         sbatch_args.append(shlex.quote(wrapper_script))
 
-        result = await self._sbatch_ranked(ssh, sbatch_args, ranked)
+        result = await self._sbatch_ranked(ssh, sbatch_args, ranked, shape=shape)
 
         if not result.ok:
             raise RuntimeError(f"Remote sbatch failed: {result.stderr}")
@@ -476,6 +483,7 @@ class RemoteSlurmBackend(SlurmBackend):
         sbatch_args: list[str],
         candidates: list[str],
         preferred: frozenset[str] = frozenset(),
+        shape: _Shaper | None = None,
     ) -> list[str]:
         """Candidates ranked by `sbatch --test-only` start, earliest first.
 
@@ -492,7 +500,7 @@ class RemoteSlurmBackend(SlurmBackend):
 
         async def _probe(cand: str) -> datetime | None:
             async with gate:
-                return await self._test_only_start(ssh, sbatch_args, cand)
+                return await self._test_only_start(ssh, sbatch_args, cand, shape)
 
         starts = await asyncio.gather(*(_probe(cand) for cand in candidates))
         by_name = dict(zip(candidates, starts, strict=True))
@@ -513,10 +521,15 @@ class RemoteSlurmBackend(SlurmBackend):
         return ranked
 
     async def _test_only_start(
-        self, ssh: Any, sbatch_args: list[str], partition: str
+        self,
+        ssh: Any,
+        sbatch_args: list[str],
+        partition: str,
+        shape: _Shaper | None = None,
     ) -> datetime | None:
         """When Slurm would start this job on ``partition``; None if refused."""
-        cmd = " ".join(pc.probe_args(sbatch_args, partition))
+        shaped = shape(sbatch_args, partition) if shape else sbatch_args
+        cmd = " ".join(pc.probe_args(shaped, partition))
         try:
             result = await ssh.run_remote(cmd, timeout=_TEST_ONLY_TIMEOUT_SEC)
         except (asyncio.TimeoutError, OSError) as exc:
@@ -534,18 +547,22 @@ class RemoteSlurmBackend(SlurmBackend):
         return parsed[0]
 
     async def _sbatch_ranked(
-        self, ssh: Any, sbatch_args: list[str], ranked: list[str]
+        self,
+        ssh: Any,
+        sbatch_args: list[str],
+        ranked: list[str],
+        shape: _Shaper | None = None,
     ) -> Any:
         """Submit to the first ranked partition; on a quota refusal, the next.
 
         Any other failure (and the quota refusal of the last candidate) is
         returned to the caller unchanged, as a single submit was before.
+        ``shape`` gives each partition's arguments (default: its name only).
         """
         result = None
+        per_partition = shape or pc.with_partition
         for index, partition in enumerate(ranked or [""]):
-            args = (
-                pc.with_partition(sbatch_args, partition) if partition else sbatch_args
-            )
+            args = per_partition(sbatch_args, partition) if partition else sbatch_args
             logger.info("Submitting wrapper job: %s", pc.redact_exports(args))
             result = await ssh.run_remote(" ".join(args), timeout=60)
             last = index >= len(ranked) - 1
@@ -1185,6 +1202,21 @@ _PROXY_PASSTHRU = frozenset(
 # The mini-rivault wrapper's own default when VLLM_GPU_MEM_UTIL is unset
 # (serve-model.yaml / serve-model.slurm: ${VLLM_GPU_MEM_UTIL:-0.95}).
 _WRAPPER_GPU_MEM_UTIL_DEFAULT = 0.95
+
+
+def _partition_shaper(site: Any, gpu_count: int | None) -> _Shaper:
+    """The sbatch arguments of one candidate partition: its ``--partition=``
+    plus the GPU request its profile asks for (ADR-109 D-3: ``gpu_request``
+    none / gres, ``exclusive``). A partition without such a profile keeps the
+    site-wide ``--gres=gpu:<n>`` rule exactly as before."""
+    effective = gpu_count if gpu_count is not None else site.scheduler.gpus
+    profiles = getattr(site, "partition_profiles", None) or {}
+
+    def _shape(sbatch_args: list[str], partition: str) -> list[str]:
+        args = pc.with_partition(sbatch_args, partition)
+        return pc.with_gpu_request(args, profiles.get(partition), int(effective or 0))
+
+    return _shape
 
 
 def _partition_util_cap(site: Any, partition: str | None) -> float:

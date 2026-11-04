@@ -18,11 +18,18 @@ from pathlib import Path
 
 import pytest
 from step_lane_harness import HELPER, IMAGE, FakeS3, make_cluster, write_step_tree
-from umrs.orchestrator.site_config import StepExecutorConfig, _step_executor_env
+from umrs.orchestrator import partition_choice as pc
+from umrs.orchestrator.site_config import (
+    PartitionProfile,
+    StepExecutorConfig,
+    _step_executor_env,
+)
 from umrs.orchestrator.ssh_control import SSHControlConfig, SSHControlManager
 from umrs.pipeline_sdk.step import StepContext
 from umrs.server.remote_slurm_step_executor import RemoteSlurmStepExecutor, safe_segment
 from umrs.server.step_executor import (
+    EXECUTOR_GPU_COUNT_METADATA_KEY,
+    EXECUTOR_GPU_METADATA_KEY,
     EXECUTOR_IMAGE_METADATA_KEY,
     EXECUTOR_SOURCE_DIR_METADATA_KEY,
     StepExecutionError,
@@ -406,3 +413,110 @@ def test_command_argv_is_a_client_of_the_shared_master():
     assert argv[0] == "ssh"
     assert "ControlMaster=no" in argv
     assert argv[-2:] == ["u@login", "A=1 squeue -h"]
+
+
+# ── step-lane partition candidates (ADR-109 D-3) ─────────────────────────────
+
+GB10 = PartitionProfile(arch="aarch64", gpus=0, gpu_request="none")
+PRO6000 = PartitionProfile(
+    arch="aarch64", gpus=2, gpu_request="gres", gres="gpu:PRO6000-96GB:2", exclusive=True
+)
+PROFILES = {"ng-dgx-m3": GB10, "ng-dgx-s": GB10, "ai-pro6000": PRO6000}
+
+
+@pytest.fixture(autouse=True)
+def _fresh_recent_picks():
+    pc.recent_picks.clear()
+    yield
+    pc.recent_picks.clear()
+
+
+def _lane_run(cluster, tree, partition, *, metadata=None, gpu_site=False, monkeypatch=None):
+    if gpu_site:
+        monkeypatch.setenv("UMRS_STEP_GPU", "1")
+    ex = cluster.executor(partition=partition, partition_profiles=PROFILES)
+    ctx = _ctx(FakeS3(), tree, metadata=metadata)
+    ex.execute(entrypoint="steps.lane:Upper", config={"step_name": "s1"}, ctx=ctx)
+    [job] = cluster.jobs().values()
+    return job
+
+
+def _probed(cluster) -> list[str]:
+    return [row[2] for row in cluster.calls("sbatch") if row[1] == "probe"]
+
+
+def test_the_live_single_partition_is_submitted_unprobed_and_unchanged(cluster, tree):
+    job = _lane_run(cluster, tree, "ng-dgx-m3")
+    assert "test-only" not in cluster.helper_verbs()
+    assert job["partition"] == "ng-dgx-m3"
+    assert job["request"] == []  # no --gres, no --exclusive
+
+
+def test_a_gb10_gpu_step_asks_for_no_gres(cluster, tree, monkeypatch):
+    job = _lane_run(cluster, tree, "ng-dgx-m3", metadata={EXECUTOR_GPU_METADATA_KEY: True},
+                    gpu_site=True, monkeypatch=monkeypatch)  # fmt: skip
+    assert job["request"] == []
+
+
+def test_a_candidate_list_submits_one_partition_the_earliest_start(cluster, tree, monkeypatch):
+    cluster.behave(starts={"ng-dgx-m3": "2026-11-05T12:00:00", "ai-pro6000": "2026-11-04T10:00:00"})
+    job = _lane_run(cluster, tree, "ng-dgx-m3,ai-pro6000",
+                    metadata={EXECUTOR_GPU_METADATA_KEY: True}, gpu_site=True,
+                    monkeypatch=monkeypatch)  # fmt: skip
+    assert sorted(_probed(cluster)) == ["ai-pro6000", "ng-dgx-m3"]
+    assert cluster.helper_verbs().count("test-only") == 2
+    assert job["partition"] == "ai-pro6000"  # one partition, never the list
+    assert job["request"] == ["#SBATCH --gres=gpu:PRO6000-96GB:2", "#SBATCH --exclusive"]
+    probes = {row[2]: row[3:] for row in cluster.calls("sbatch") if row[1] == "probe"}
+    assert probes["ng-dgx-m3"] == []  # each probe carries its own partition's request
+
+
+def test_a_tie_goes_to_the_first_candidate(cluster, tree):
+    job = _lane_run(cluster, tree, "ng-dgx-m3,ai-pro6000")
+    assert job["partition"] == "ng-dgx-m3"  # an idle lane partition beats an idle node
+
+
+def test_a_refused_probe_drops_its_candidate(cluster, tree):
+    cluster.behave(starts={"ng-dgx-m3": None})  # e.g. a per-partition quota
+    job = _lane_run(cluster, tree, "ng-dgx-m3,ai-pro6000")
+    assert job["partition"] == "ai-pro6000"
+    assert job["request"] == ["#SBATCH --exclusive"]  # no GPU asked: no --gres
+
+
+def test_no_probe_answering_submits_the_first_candidate(cluster, tree):
+    cluster.behave(starts={"ng-dgx-m3": None, "ai-pro6000": None})
+    job = _lane_run(cluster, tree, "ng-dgx-m3,ai-pro6000")
+    assert job["partition"] == "ng-dgx-m3"
+
+
+def test_a_two_gpu_step_goes_only_where_a_job_gets_two_gpus(cluster, tree, monkeypatch):
+    meta = {EXECUTOR_GPU_METADATA_KEY: True, EXECUTOR_GPU_COUNT_METADATA_KEY: 2}
+    job = _lane_run(cluster, tree, "ng-dgx-m3,ai-pro6000", metadata=meta, gpu_site=True,
+                    monkeypatch=monkeypatch)  # fmt: skip
+    assert _probed(cluster) == []  # one eligible candidate: no probe
+    assert job["partition"] == "ai-pro6000"
+    assert job["request"] == ["#SBATCH --gres=gpu:PRO6000-96GB:2", "#SBATCH --exclusive"]
+
+
+def test_a_two_gpu_step_without_such_a_partition_is_refused_before_any_ssh(cluster, tree):
+    with pytest.raises(StepExecutionError, match="gpu_count 2: no step-lane partition"):
+        _lane_run(cluster, tree, "ng-dgx-m3,ng-dgx-s",
+                  metadata={EXECUTOR_GPU_COUNT_METADATA_KEY: 2})  # fmt: skip
+    assert cluster.commands == []
+
+
+@pytest.mark.parametrize("count", [0, "2", 1.5, True])
+def test_a_malformed_gpu_count_is_refused_by_name(cluster, tree, count):
+    with pytest.raises(StepExecutionError, match="gpu_count must be a whole number"):
+        _lane_run(cluster, tree, "ng-dgx-m3", metadata={EXECUTOR_GPU_COUNT_METADATA_KEY: count})
+    assert cluster.commands == []
+
+
+def test_the_gpu_count_hint_never_reaches_the_step(cluster, tree):
+    _lane_run(cluster, tree, "ng-dgx-m3", metadata={EXECUTOR_GPU_COUNT_METADATA_KEY: 1})
+    [job] = cluster.jobs().values()
+    assert job["partition"] == "ng-dgx-m3"
+    # the payload drops every executor-internal key (input.pkl, inputs tag)
+    from umrs.server.remote_slurm_step_executor import _INTERNAL_METADATA_KEYS
+
+    assert EXECUTOR_GPU_COUNT_METADATA_KEY in _INTERNAL_METADATA_KEYS

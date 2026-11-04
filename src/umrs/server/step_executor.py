@@ -78,6 +78,11 @@ EXECUTOR_PAYLOAD_S3_METADATA_KEY = "__payload_s3__"
 # ``bool``; non-bool triggers a setup-phase error.
 EXECUTOR_GPU_METADATA_KEY = "__executor_gpu__"
 
+# How many GPUs one job of the step needs (``routing_hints.gpu_count``,
+# default 1; ADR-109 D-3). The staged HPC lane sends a step that asks for
+# two or more only to partitions whose profile gives that many per job.
+EXECUTOR_GPU_COUNT_METADATA_KEY = "__executor_gpu_count__"
+
 # Metadata key used by the runner to tell container/remote executors
 # where the uploaded workflow source tree lives (the directory holding
 # ``workflow.json`` and the step modules). Executors that spawn a
@@ -108,6 +113,7 @@ _WORKER_INTERNAL_KEYS = frozenset(
         EXECUTOR_IMAGE_METADATA_KEY,
         EXECUTOR_PAYLOAD_S3_METADATA_KEY,
         EXECUTOR_GPU_METADATA_KEY,
+        EXECUTOR_GPU_COUNT_METADATA_KEY,
         EXECUTOR_ROUTED_KEYS_METADATA_KEY,
         EXECUTOR_UPSTREAM_METADATA_KEY,
     }

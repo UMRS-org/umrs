@@ -197,6 +197,17 @@ class PartitionProfile:
     # that digest or can pull it.
     litellm_image: str = ""
     gpus: int = 1  # Slurm --gpus count
+    # ADR-109 D-3: how a job on this partition asks for GPUs. "" keeps the
+    # site-wide rule (scheduler.gpus / step_executor.gpus); "none" never
+    # emits --gres (RCCS ng-dgx-* reject --gres/--gpus); "gres" emits
+    # --gres=<gres> (else gpu:<count>), even when the site rule says gpus: 0.
+    gpu_request: str = ""
+    # The exact Slurm gres string for gpu_request "gres", e.g.
+    # "gpu:PRO6000-96GB:2" (RCCS ai-pro6000: two GPUs per node).
+    gres: str = ""
+    # The partition allocates whole nodes (Slurm OverSubscribe=EXCLUSIVE):
+    # jobs there say --exclusive, so the request matches what Slurm grants.
+    exclusive: bool = False
     needs_netavark_switch: bool = True  # force netavark backend file on startup
     # Ceiling on a model server's --gpu-memory-utilization on this partition
     # (0 = no cap). For nodes whose GPU is shared with co-located services
@@ -219,7 +230,10 @@ class StepExecutorConfig:
     """
 
     kind: str = "inproc"  # inproc | slurm | slurm-remote | podman | subprocess
-    partition: str = ""  # Slurm partition (e.g. "1n1gpu")
+    # Slurm partition (e.g. "1n1gpu"). The connected-HPC lane also takes a
+    # comma list of candidates (ADR-109 D-3) and submits each step to ONE of
+    # them: the earliest sbatch --test-only start, ties to the list order.
+    partition: str = ""
     gpus: int = 1  # Number of GPUs to request
     cpus: int = 8  # CPUs per task
     memory: str = "32G"  # Memory per node

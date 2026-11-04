@@ -58,6 +58,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, BinaryIO, ClassVar
 
+from umrs.orchestrator import partition_choice as pc
 from umrs.orchestrator.ssh_control import SSHControlConfig, SSHControlManager
 from umrs.pipeline_sdk.step import StepContext, StepResult
 
@@ -80,6 +81,7 @@ from .slurm_step_executor import (
 )
 from .step_executor import (
     _PAYLOAD_MAX_BYTES,
+    EXECUTOR_GPU_COUNT_METADATA_KEY,
     EXECUTOR_GPU_METADATA_KEY,
     EXECUTOR_IMAGE_METADATA_KEY,
     EXECUTOR_PAYLOAD_S3_METADATA_KEY,
@@ -122,6 +124,9 @@ _DEFAULT_TIME_LIMIT = 3600.0
 _SETTLE_SECONDS = 300.0
 _CONTROL_TIMEOUT = 60
 _TRANSFER_TIMEOUT = 300
+#: Bound on one candidate partition's ``sbatch --test-only`` probe (the
+#: serving submit's bound, remote_slurm_backend).
+_TEST_ONLY_TIMEOUT = 30
 #: A sweep may remove several workdirs (each up to the helper's 280 s).
 _SWEEP_TIMEOUT = 1800
 #: Floor for a streamed transfer's timeout: bytes / this rate.
@@ -151,6 +156,7 @@ _INTERNAL_METADATA_KEYS = frozenset(
         EXECUTOR_PAYLOAD_S3_METADATA_KEY,
         EXECUTOR_ROUTED_KEYS_METADATA_KEY,
         EXECUTOR_GPU_METADATA_KEY,
+        EXECUTOR_GPU_COUNT_METADATA_KEY,
         EXECUTOR_SOURCE_DIR_METADATA_KEY,
         EXECUTOR_UPSTREAM_METADATA_KEY,
         STAGE_REQUEST_METADATA_KEY,
@@ -175,6 +181,16 @@ def _site_ssh_config() -> SSHControlConfig:
     from umrs.orchestrator.site_config import load_site_config
 
     return SSHControlConfig.from_site_config(load_site_config().extra or {})
+
+
+def _site_partition_profiles() -> dict[str, Any]:
+    """``site.yaml`` ``partition_profiles`` (none without a site file)."""
+    from umrs.orchestrator.site_config import load_site_config
+
+    try:
+        return dict(load_site_config().partition_profiles)
+    except FileNotFoundError:
+        return {}
 
 
 def _env(name: str, default: str = "") -> str:
@@ -329,6 +345,9 @@ class RemoteSlurmStepExecutor(SlurmStepExecutor):
     #: ``step_executor.gpu_form``: the devices a step that needs a GPU gets
     #: ("cdi" NVIDIA, "rocm" AMD); any other value refuses before any SSH.
     gpu_form: str = field(default_factory=lambda: _env("UMRS_STEP_GPU_FORM") or "cdi")
+    #: ``site.yaml`` ``partition_profiles`` (None: read on first use): each
+    #: candidate's GPU request style and GPUs per job (ADR-109 D-3).
+    partition_profiles: dict[str, Any] | None = None
     helper_python: str = "python3"
     caps: StageCaps = DEFAULT_CAPS
     reply_cap: int = REPLY_CAP_BYTES
@@ -386,6 +405,7 @@ class RemoteSlurmStepExecutor(SlurmStepExecutor):
     ) -> StepResult:
         self._check_lane()
         image = self._lane_image(ctx)
+        partitions = self._lane_partitions(ctx)
         plan = build_stage_plan(ctx, caps=self.caps)
         source_dir = self._resolve_source_dir(ctx)
         payload = self._payload(entrypoint, config, ctx)
@@ -399,7 +419,7 @@ class RemoteSlurmStepExecutor(SlurmStepExecutor):
         job.workdir = self._mkwd(job)
         self._notify(job)  # a crash before submit still leaves the reaper its name
         try:
-            return self._run_job(job, payload, ctx, plan, image, source_dir)
+            return self._run_job(job, payload, ctx, plan, image, source_dir, partitions)
         finally:
             self._finish(job)
 
@@ -463,8 +483,96 @@ class RemoteSlurmStepExecutor(SlurmStepExecutor):
                 f"image {image!r} is not an allowed step image on this site "
                 "(ADR-074 D-7)",
             )
+        if not self.image:
+            raise StepExecutionError(
+                "setup",
+                "the lane has no platform step image (UMRS_STEP_IMAGE), whose "
+                "code writes every step's seccomp profile (ADR-110 D-6); nothing "
+                "was submitted",
+            )
         image_archive_stem(image)
+        image_archive_stem(self.image)
         return image
+
+    def _profile(self, partition: str) -> Any:
+        if self.partition_profiles is None:
+            self.partition_profiles = _site_partition_profiles()
+        return self.partition_profiles.get(partition)
+
+    def _lane_partitions(self, ctx: StepContext) -> list[str]:
+        """The partitions this step may run on, in configured order:
+        ``step_executor.partition`` (a name or a comma list of candidates),
+        and for a step that asks for N >= 2 GPUs per job
+        (``routing_hints.gpu_count``) only those whose profile gives N."""
+        candidates = pc.split_partitions(self.partition) or [self.partition]
+        wanted = _gpu_count(ctx)
+        if wanted < 2:
+            return candidates
+        eligible = [
+            name
+            for name in candidates
+            if pc.partition_gpus(self._profile(name)) >= wanted
+        ]
+        if not eligible:
+            raise StepExecutionError(
+                "setup",
+                f"routing_hints.gpu_count {wanted}: no step-lane partition "
+                f"({', '.join(candidates)}) gives {wanted} GPUs per job; nothing "
+                "was submitted",
+            )
+        return eligible
+
+    def _choose_partition(
+        self, job: _StepJob, ctx: StepContext, image: str, candidates: list[str]
+    ) -> str:
+        """ONE partition per job (RCCS refuses a list): the earliest
+        ``sbatch --test-only`` start of this step's own job script on each
+        candidate; a tie goes to the first candidate (an idle lane partition
+        beats an idle exclusive node, ADR-109 D-3), then as for the serving
+        submit (partition_choice). No answer at all: the first candidate."""
+        if len(candidates) <= 1:
+            return candidates[0]
+        starts = {
+            name: self._test_only_start(job, ctx, image, name) for name in candidates
+        }
+        ranked = pc.choose(candidates, starts, frozenset(candidates[:1]))
+        if not ranked:
+            logger.info(
+                "step lane: no partition of %s passed --test-only; using %s",
+                ",".join(candidates),
+                candidates[0],
+            )
+            return candidates[0]
+        logger.info(
+            "step lane: partition %s from %s for %s",
+            ranked[0],
+            ",".join(candidates),
+            job.job_name,
+        )
+        return ranked[0]
+
+    def _test_only_start(
+        self, job: _StepJob, ctx: StepContext, image: str, partition: str
+    ) -> Any:
+        """When Slurm would start this step's job on ``partition`` (helper
+        ``test-only``: ``sbatch --test-only``, nothing is submitted); None
+        when refused (quota, invalid) or unanswered."""
+        script = self._job_script(job, ctx, image, partition).encode("utf-8")
+        try:
+            proc = self._helper(
+                "test-only", stdin=script, timeout=_TEST_ONLY_TIMEOUT, phase="run"
+            )
+        except _Unreachable as exc:
+            logger.info("step lane: partition %s skipped: %s", partition, exc.message)
+            return None
+        answer = proc.stdout.decode("utf-8", "replace") if proc.returncode == 0 else ""
+        parsed = pc.parse_test_only(answer)
+        if parsed is None:
+            logger.info(
+                "step lane: partition %s skipped: %s", partition, _reason(proc.stderr)
+            )
+            return None
+        return parsed[0]
 
     def _begin(self, ctx: StepContext, step: str, tag: str) -> _StepJob:
         key = (str(ctx.run_id), step)
@@ -481,10 +589,13 @@ class RemoteSlurmStepExecutor(SlurmStepExecutor):
         plan: StagePlan,
         image: str,
         source_dir: str,
+        partitions: list[str],
     ) -> StepResult:
         self._stage_in(job, ctx, plan, source_dir)
         self._put(job, "input.pkl", payload)
-        self._put(job, "job.sbatch", self._job_script(job, ctx, image).encode("utf-8"))
+        partition = self._choose_partition(job, ctx, image, partitions)
+        script = self._job_script(job, ctx, image, partition)
+        self._put(job, "job.sbatch", script.encode("utf-8"))
         reason = self._stop_reason(job, ctx, None)
         if reason:
             raise StepExecutionError("run", f"step {job.step} not submitted: {reason}")
@@ -587,7 +698,27 @@ class RemoteSlurmStepExecutor(SlurmStepExecutor):
         hint = ctx.metadata.get(EXECUTOR_GPU_METADATA_KEY)
         return hint is True or str(hint).strip().lower() in ("1", "true", "yes")
 
-    def _job_script(self, job: _StepJob, ctx: StepContext, image: str) -> str:
+    def _partition_request(
+        self, ctx: StepContext, partition: str | None
+    ) -> dict[str, Any]:
+        """The job's partition (default: the step's first candidate) and the
+        GPU request its profile asks for (ADR-109 D-3)."""
+        name = partition if partition is not None else self._lane_partitions(ctx)[0]
+        profile = self._profile(name)
+        try:
+            style = pc.gpu_request_style(profile)
+        except ValueError as exc:
+            raise StepExecutionError("setup", f"partition {name}: {exc}") from exc
+        return {
+            "partition": name,
+            "gpu_request": style,
+            "gres": str(getattr(profile, "gres", "") or ""),
+            "exclusive": bool(getattr(profile, "exclusive", False)),
+        }
+
+    def _job_script(
+        self, job: _StepJob, ctx: StepContext, image: str, partition: str | None = None
+    ) -> str:
         caps = self.caps
         buffered = out_limits(ctx.s3, caps)[0]
         out_files = caps.max_buffered_files if buffered else caps.max_out_files
@@ -599,13 +730,14 @@ class RemoteSlurmStepExecutor(SlurmStepExecutor):
                 job_name=job.job_name,
                 attempt=job.attempt,
                 run_tag=run_tag(job.run_id),
-                partition=self.partition,
+                **self._partition_request(ctx, partition),
                 account=self.account,
                 cpus=self.cpus,
                 memory=self.memory,
                 time_limit=self._format_time_limit(seconds) or "01:00:00",
                 gres_gpus=self.gpus,
                 image=image,
+                platform_image=self.image,
                 image_archive_dir=self.image_archive_dir,
                 venue_script=self.venue_script,
                 needs_gpu=self._needs_gpu(ctx),
@@ -1441,6 +1573,16 @@ class RemoteSlurmStepExecutor(SlurmStepExecutor):
             logger.warning(
                 "step lane: recording job %s failed", job.job_id, exc_info=True
             )
+
+
+def _gpu_count(ctx: StepContext) -> int:
+    """``routing_hints.gpu_count``: GPUs one job of the step needs (default 1)."""
+    raw = ctx.metadata.get(EXECUTOR_GPU_COUNT_METADATA_KEY, 1)
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw < 1:
+        raise StepExecutionError(
+            "setup", f"routing_hints.gpu_count must be a whole number >= 1, got {raw!r}"
+        )
+    return raw
 
 
 def _job_identity(run_id: str, step: str, attempt: int, tag: str = "") -> _StepJob:
