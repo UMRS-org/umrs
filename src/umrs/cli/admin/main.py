@@ -624,8 +624,8 @@ def _print_onboarding_steps(
         print("  2. Give the token to the user, who runs:")
         if no_url:  # the token carries no URL, so the user names it
             print(
-                f"       r4 auth login --gateway-url {shlex.quote(_GATEWAY_URL_EXAMPLE)} "
-                f"--api-key TOKEN   (replace {_GATEWAY_URL_EXAMPLE})"
+                f"       r4 auth login --gateway-url {_LOGIN_URL_PLACEHOLDER} "
+                f"--api-key TOKEN   (replace {_LOGIN_URL_PLACEHOLDER})"
             )
         else:
             print("       r4 auth login --api-key TOKEN")
@@ -1051,15 +1051,12 @@ def _cmd_user_generate_template(args: argparse.Namespace, _store: UserStore) -> 
     print()
     print("  Onboarding steps for the user:")
     print(f"  1. Send '{out_path.name}' to the user (or copy via scp)")
-    gateway_url = (
-        _resolve_public_gateway_url(
-            args, unset=f"the command below shows the example {_GATEWAY_URL_EXAMPLE}"
-        )
-        or _GATEWAY_URL_EXAMPLE
+    gateway_url = _resolve_public_gateway_url(
+        args, unset=f"the command below names {_LOGIN_URL_PLACEHOLDER}"
     )
     print("  2. On their local machine:")
     print(
-        f"       r4 config init --gateway-url {shlex.quote(gateway_url)} "
+        f"       r4 config init --gateway-url {shlex.quote(gateway_url) if gateway_url else _LOGIN_URL_PLACEHOLDER} "
         f"--umrs-username {shlex.quote(username)}"
     )
     print("  3. Config is stored locally at ~/.config/r4/profiles.json")
@@ -1231,9 +1228,15 @@ def _resolve_jwt_secret(args: argparse.Namespace) -> str:
 # so it must pick UMRS_<VENUE>_PUBLIC_GATEWAY_URL from the user's venue (open
 # item under U-3 in docs/development/umrs-hub-convergence-plan-2026-10-03.md).
 # Printed commands never carry ``<PLACEHOLDER>`` tokens: bash reads ``<X>`` as
-# an input redirect ("GATEWAY_URL: No such file or directory").
+# an input redirect ("GATEWAY_URL: No such file or directory"). Nor does an
+# r4-facing command carry _GATEWAY_URL_EXAMPLE: pasted as-is, the r4 client
+# saved it and every later call died at DNS on "HOST" (2026-11-04). r4-facing
+# commands name _LOGIN_URL_PLACEHOLDER instead — not a URL, so no client can
+# store it. Admin-facing mint commands keep the example: _gateway_url_arg
+# rejects it with a named error, so it cannot be minted into a token either.
 PUBLIC_GATEWAY_URL_ENV = "UMRS_PUBLIC_GATEWAY_URL"
 _GATEWAY_URL_EXAMPLE = "https://HOST/SITE"
+_LOGIN_URL_PLACEHOLDER = "SITE_GATEWAY_URL"
 _ZMQ_LOGIN_LEAD = "umrs direct ZMQ — requires CURVE keys if CURVE auth is enabled:"
 # One rule for every source (--gateway-url, the env, the converge's .env
 # line — deploy/ansible/roles/front_end/tasks/umrs-front.yaml uses the same
@@ -1329,10 +1332,10 @@ def _format_login_hint(
     lines = [
         (
             f"{lead}r4 via Gateway HTTP (this token carries NO gateway URL; "
-            f"replace {_GATEWAY_URL_EXAMPLE} with the site's public gateway URL):"
+            f"replace {_LOGIN_URL_PLACEHOLDER} with the site's public gateway URL):"
         ),
         (
-            f"{pad}r4 auth login --gateway-url {shlex.quote(_GATEWAY_URL_EXAMPLE)} "
+            f"{pad}r4 auth login --gateway-url {_LOGIN_URL_PLACEHOLDER} "
             f"--api-key {shlex.quote(token)}"
         ),
     ]

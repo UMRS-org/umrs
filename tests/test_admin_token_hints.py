@@ -35,6 +35,10 @@ SECRET = "hint-test-secret"
 RCCS_URL = "https://data0.ai.r-ccs.riken.jp/rccs"
 EXAMPLE = "https://HOST/SITE"
 Q_EXAMPLE = shlex.quote(EXAMPLE)
+# r4-facing commands never carry EXAMPLE (2026-11-04): pasted as-is, the r4
+# client stored it and every later call died at DNS on "HOST". They name this
+# placeholder word instead — not a URL, so no client can store it.
+PLACEHOLDER = "SITE_GATEWAY_URL"
 # A command line (umrs-server / umrs / r4 / export) must never hold <WORD>.
 _COMMAND = re.compile(r"(^|[\s`'\"(])(umrs-server|umrs|r4|export)\s")
 _ANGLE = re.compile(r"<[A-Za-z_][\w-]*>")
@@ -196,7 +200,8 @@ def test_generate_jwt_hint_without_url_is_shell_safe(
     assert _run(tmp_path, "token", "generate-jwt", "--user", "alice", "--project", "p1") == 0
     out = capsys.readouterr().out
     token = _token_line(out, "token:")
-    assert f"r4 auth login --gateway-url {Q_EXAMPLE} --api-key {token}" in out
+    assert f"r4 auth login --gateway-url {PLACEHOLDER} --api-key {token}" in out
+    assert EXAMPLE not in out  # never a storable URL in an r4-facing command
     assert PUBLIC_GATEWAY_URL_ENV in out  # says how to embed it next time
     _assert_shell_safe(out)
 
@@ -210,7 +215,8 @@ def test_generate_jwt_no_gateway_url_drops_the_embed_advice(
     assert _run(tmp_path, *argv) == 0
     out = capsys.readouterr().out
     token = _token_line(out, "token:")
-    assert f"r4 auth login --gateway-url {Q_EXAMPLE} --api-key {token}" in out
+    assert f"r4 auth login --gateway-url {PLACEHOLDER} --api-key {token}" in out
+    assert EXAMPLE not in out
     assert PUBLIC_GATEWAY_URL_ENV not in out
     _assert_shell_safe(out)
 
@@ -289,7 +295,8 @@ def test_issue_token_without_url_is_shell_safe(
 ) -> None:
     out, token = _issue(tmp_path, capsys)
     assert "gateway_url" not in _claims(token)
-    assert f"r4 auth login --gateway-url {Q_EXAMPLE} --api-key {token}" in out
+    assert f"r4 auth login --gateway-url {PLACEHOLDER} --api-key {token}" in out
+    assert EXAMPLE not in out
     _assert_shell_safe(out)
 
 
@@ -299,7 +306,8 @@ def test_issue_token_no_gateway_url_flag(
     monkeypatch.setenv(PUBLIC_GATEWAY_URL_ENV, RCCS_URL)
     out, token = _issue(tmp_path, capsys, "--no-gateway-url")
     assert "gateway_url" not in _claims(token)
-    assert f"--gateway-url {Q_EXAMPLE} --api-key {token}" in out
+    assert f"--gateway-url {PLACEHOLDER} --api-key {token}" in out
+    assert EXAMPLE not in out
     assert PUBLIC_GATEWAY_URL_ENV not in out  # the admin chose no URL
     _assert_shell_safe(out)
 
@@ -318,6 +326,18 @@ def test_both_minting_paths_render_the_same_hint() -> None:
         b = _format_login_hint(payload, "TOK", lead="  1. (recommended) ")
         assert a.splitlines()[1:] == b.splitlines()[1:]
         _assert_shell_safe(a)
+
+
+def test_no_url_hint_never_names_a_storable_url() -> None:
+    # 2026-11-04: the hint's r4 command carried https://HOST/SITE; pasted
+    # as-is, the r4 client stored it and every later call died at DNS on
+    # "HOST". The r4-facing command names SITE_GATEWAY_URL instead — not a
+    # URL, so no client can store it. The example URL stays only in
+    # admin-facing mint commands, where _gateway_url_arg rejects it.
+    hint = _format_login_hint({}, "TOK", lead="")
+    assert EXAMPLE not in hint
+    assert f"--gateway-url {PLACEHOLDER}" in hint
+    _assert_shell_safe(hint)
 
 
 # --- hints that mint nothing -------------------------------------------------
@@ -346,7 +366,8 @@ def test_generate_template_hint_is_shell_safe(
     out_file = tmp_path / "eve.json"
     assert _run(tmp_path, "user", "generate-template", "eve", "-o", str(out_file)) == 0
     out = capsys.readouterr().out
-    assert f"r4 config init --gateway-url {Q_EXAMPLE} --umrs-username eve" in out
+    assert f"r4 config init --gateway-url {PLACEHOLDER} --umrs-username eve" in out
+    assert EXAMPLE not in out
     _assert_shell_safe(out)
 
     monkeypatch.setenv(PUBLIC_GATEWAY_URL_ENV, RCCS_URL)
@@ -420,7 +441,7 @@ def test_user_add_no_gateway_url_without_token(
     assert _run(tmp_path, *argv) == 0
     out = capsys.readouterr().out
     assert "generate-jwt --user hank --project p3 --no-gateway-url" in out
-    assert f"r4 auth login --gateway-url {Q_EXAMPLE} --api-key TOKEN" in out
+    assert f"r4 auth login --gateway-url {PLACEHOLDER} --api-key TOKEN" in out
     assert f"set ${PUBLIC_GATEWAY_URL_ENV}" not in out
     _assert_shell_safe(out)
 
