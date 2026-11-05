@@ -191,8 +191,14 @@ endpoints:
   #  Fit under the rccs 0.78 cap: checkpoint 148.7 GiB / 2 = 74.4 GiB per rank,
   #  budget 0.78 x 121.6 = 94.8 GiB (inside the ~105 GiB a job can get), so
   #  ~20 GiB per rank for MLA KV (fp8) + activations + MTP. Context and seqs start below the bdrt recipe's.
-  #  Fabric: the QSFP link is enP2p1s0f1np1 (192.168.1.x/24) on m1 and m2
-  #  (probed 2026-11-01); m3 stays the ADR-074 step lane.
+  #  Fabric: the QSFP link is enP2p1s0f1np1 (192.168.1.x/24, 200 Gb/s, RoCE
+  #  ports ACTIVE) on m1 and m2 (probed 2026-11-01). But TCP over it is
+  #  REJECTED by a host firewall (2026-11-06, probe jobs 458814/458815 on m2:
+  #  ping OK both ways, TCP connect "No route to host"; the mgmt NIC enP7s7
+  #  connects). NCCL's bootstrap died ("remote process exited or there was a
+  #  network error", job 458807), so NCCL runs over enP7s7 (10 Gb/s) until
+  #  RCCS opens TCP on 192.168.1.0/24 or the wrapper passes RDMA devices.
+  #  m3 stays the ADR-074 step lane.
   #  Weights: hf download deepseek-ai/DeepSeek-V4-Flash @60d8d707 into
   #  the model root below (local-dir layout).
   - name: deepseek-v4-flash
@@ -209,7 +215,9 @@ endpoints:
       VLLM_GPU_MEM_UTIL: "0.78"
       VLLM_TP: "2"
       VLLM_TENSOR_PARALLEL_SIZE: "2"
-      NCCL_SOCKET_IFNAME: "enP2p1s0f1np1"
+      NCCL_SOCKET_IFNAME: "enP7s7"
+      # No /dev/infiniband in the containers: keep NCCL off the RoCE ports.
+      NCCL_IB_DISABLE: "1"
       # GB10 unified memory: Ray's monitor counts CPU+GPU and would SIGTERM the
       # worker during the 74 GiB/rank load (same as bdrt).
       RAY_memory_monitor_refresh_ms: "0"

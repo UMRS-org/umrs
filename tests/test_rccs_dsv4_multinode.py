@@ -109,6 +109,19 @@ def test_rccs_deepseek_reclaims_cuda_memory_before_start(env):
     assert env["RIVAULT_MN_PRESTART_RECLAIM_GIB"] == "100"
 
 
+def test_rccs_deepseek_runs_nccl_over_the_mgmt_nic(env):
+    """Job 458807: TCP over the QSFP fabric (enP2p1s0f1np1) is firewalled on
+    rccs (ping OK, connect "No route to host"); NCCL's bootstrap died. The
+    mgmt NIC accepts TCP (probe job 458815)."""
+    assert (env["NCCL_SOCKET_IFNAME"], env["NCCL_IB_DISABLE"]) == ("enP7s7", "1")
+
+
+def test_launcher_forwards_nccl_ib_disable():
+    text = SLURM.read_text(encoding="utf-8")
+    loop = re.search(r"for _mn_nccl_var in ([^;]+); do", text)
+    assert loop and "NCCL_IB_DISABLE" in loop.group(1).split()
+
+
 def test_both_ranks_reclaim_right_before_they_start():
     text = SLURM.read_text(encoding="utf-8")
     assert "'\"${_mn_reclaim}\"'exec vllm serve" in text

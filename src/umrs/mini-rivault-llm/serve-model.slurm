@@ -1992,7 +1992,9 @@ RAYEOF
     # is `ray start --block`), forwarding it here puts it on both raylets.
     # Required by the Laguna-M.1 NVFP4 dual-Spark TP2 recipe, whose NVFP4 MoE
     # kernels JIT for ~15 min on first start.
-    for _mn_nccl_var in NCCL_P2P_DISABLE NCCL_SHM_DISABLE NCCL_SOCKET_IFNAME NCCL_NET MAX_JOBS; do
+    # NCCL_IB_DISABLE (rccs 2026-11-06): the containers get no /dev/infiniband,
+    # so a pair whose TCP fabric is firewalled runs NCCL over the mgmt NIC.
+    for _mn_nccl_var in NCCL_P2P_DISABLE NCCL_SHM_DISABLE NCCL_SOCKET_IFNAME NCCL_NET NCCL_IB_DISABLE MAX_JOBS; do
         if [[ -n "${!_mn_nccl_var:-}" ]]; then
             _mn_vllm_args+=( -e "${_mn_nccl_var}=${!_mn_nccl_var}" )
         fi
