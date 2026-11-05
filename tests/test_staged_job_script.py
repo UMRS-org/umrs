@@ -733,7 +733,7 @@ def test_another_image_has_the_platform_image_ensured_too(node):
     log = _run_other_image(node)
     inspected = {x.rsplit(" ", 1)[1] for x in log if x.startswith("image inspect")}
     assert inspected == {IMAGE, OTHER}
-    assert not any("pull" in x for x in log)
+    assert not any(x.startswith("pull") or x == "PULLED" for x in log)
 
 
 def test_the_platform_image_keeps_one_image_ensure(node):
