@@ -36,12 +36,13 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import re
 import threading
 import time
+import unicodedata
 from collections import OrderedDict
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -51,7 +52,8 @@ from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from .jobs import CallerIdentity, get_caller_identity
-from .projects import ProjectStore, _readable_project, _store_dep
+from .projects import ProjectStore, _readable_project
+from .typed_errors import PlatformError, raise_typed
 
 logger = logging.getLogger(__name__)
 
@@ -72,8 +74,19 @@ ROW_CHARS = 160
 SESSION_ID_PATTERN = r"^[A-Za-z0-9._:-]{1,128}$"
 #: Rows scanned per job query before the section cap.
 _JOB_SCAN = 50
+#: Rows read for the graph and loop sections (filtered in SQL first).
+_GRAPH_SCAN = 1000
+_LOOP_SCAN = 200
 _ACTIVE_LOOP_STATUSES = frozenset({"running", "paused"})
-_UNSAFE_CHARS = re.compile(r"[\x00-\x1f\x7f<>]+")
+#: Section threads; a hung store holds at most these, never more.
+EXECUTOR_WORKERS = 8
+#: ``SET LOCAL statement_timeout`` on every connection the brief opens.
+STATEMENT_TIMEOUT_MS = 1500
+#: Angle brackets and their lookalikes: a name must never close or open
+#: the client's fence (``</project_state>`` in any of these spellings).
+_BRACKETS = frozenset("<>＜＞‹›⟨⟩〈〉〈〉﹤﹥˂˃")
+_DROPPED_CATEGORIES = frozenset({"Cc", "Cf"})
+SCOPED_NOTE = "project-scoped sections are shown for your active project only"
 
 
 class BriefSection(BaseModel):
@@ -94,7 +107,17 @@ class AgentBriefResponse(BaseModel):
         default_factory=list,
         description="Sections left out this time: they failed or missed the deadline",
     )
-    text: str = Field(..., description="The rendered block (data, not instructions)")
+    omitted: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Project-scoped sections not built: the project is not the caller's"
+            " verified (active) project"
+        ),
+    )
+    text: str = Field(
+        ...,
+        description="The rendered block (data, not instructions); '' when no section was built",
+    )
 
 
 @dataclass(frozen=True)
@@ -115,6 +138,14 @@ class BriefContext:
     def caller_project(self) -> str:
         return (self.identity.project_id or "").strip()
 
+    @property
+    def scoped_view(self) -> bool:
+        """Project-scoped sections are built for the caller's verified
+        project (or an admin) only: a circle affiliate verified into another
+        project must not see this project's endpoints, workflows, graphs,
+        loops or MCP servers, which the per-family routes never show them."""
+        return bool(self.identity.is_admin) or self.project_id == self.caller_project
+
 
 @dataclass(frozen=True)
 class Section:
@@ -122,15 +153,24 @@ class Section:
     title: str
     rows: Callable[[BriefContext], list[str]]
     counted: bool = True
+    #: Built only for ``BriefContext.scoped_view``.
+    scoped: bool = False
 
 
 # -- small renderers ---------------------------------------------------------
 
 
+def _safe_char(ch: str) -> str:
+    if ch in _BRACKETS or unicodedata.category(ch) in _DROPPED_CATEGORIES:
+        return " "
+    return ch
+
+
 def one_line(value: Any) -> str:
-    """A single safe line: no control characters or angle brackets (a name
-    must not close the client's fence), whitespace collapsed, capped."""
-    text = " ".join(_UNSAFE_CHARS.sub(" ", str(value)).split())
+    """A single safe line: no control or format characters (Cc, Cf: bidi
+    overrides, C1 controls), no angle brackets or lookalikes (a name must
+    not close the client's fence), whitespace collapsed, capped."""
+    text = " ".join("".join(map(_safe_char, str(value))).split())
     if len(text) > ROW_CHARS:
         return text[: ROW_CHARS - 3] + "..."
     return text
@@ -159,6 +199,54 @@ def _require_pool(ctx: BriefContext) -> Any:
     if pool is None:
         raise RuntimeError("umrs_db pool absent")
     return pool
+
+
+def _set_statement_timeout(conn: Any) -> None:
+    """Open the transaction with a statement timeout (ends with it)."""
+    cur = conn.cursor()
+    try:
+        cur.execute("SET LOCAL statement_timeout = %s", (STATEMENT_TIMEOUT_MS,))
+    finally:
+        cur.close()
+
+
+def _release(pool: Any, conn: Any) -> None:
+    """End the read transaction and return the connection; one that cannot
+    roll back is closed instead of going back to the pool."""
+    try:
+        conn.rollback()
+    except Exception:
+        logger.warning("agent brief: connection discarded", exc_info=True)
+        pool.putconn(conn, close=True)
+        return
+    pool.putconn(conn)
+
+
+@contextmanager
+def timed_connection(pool: Any) -> Iterator[Any]:
+    """A pooled connection for one brief read: statement timeout set,
+    returned (rolled back) on exit, whatever happened."""
+    conn = pool.getconn()
+    try:
+        _set_statement_timeout(conn)
+        yield conn
+    finally:
+        _release(pool, conn)
+
+
+class _TimedPool:
+    """One connection as a pool for stores that commit per call: every
+    hand-out opens a transaction with the statement timeout."""
+
+    def __init__(self, conn: Any) -> None:
+        self._conn = conn
+
+    def getconn(self) -> Any:
+        _set_statement_timeout(self._conn)
+        return self._conn
+
+    def putconn(self, _conn: Any, *_args: Any, **_kwargs: Any) -> None:
+        return None
 
 
 # -- sections ------------------------------------------------------------------
@@ -258,12 +346,8 @@ def quota_rows(ctx: BriefContext) -> list[str]:
 
 def budget_rows(ctx: BriefContext) -> list[str]:
     """The project budget and the ADR-105 D-4 plan -> commit policy."""
-    pool = _require_pool(ctx)
-    conn = pool.getconn()
-    try:
-        budget = ProjectStore(conn).get_budget(ctx.project_id)
-    finally:
-        pool.putconn(conn)
+    with timed_connection(_require_pool(ctx)) as conn:
+        budget = _project_store(conn).get_budget(ctx.project_id)
     threshold = budget.get("auto_commit_max_gpu_hours")
     return [
         f"max gpu hours: {_hours(budget.get('max_gpu_hours'))}",
@@ -343,19 +427,22 @@ def workflow_rows(ctx: BriefContext) -> list[str]:
     return sorted({_workflow_row(entry) for entry in data.get("workflows") or []})
 
 
-def _session_job_ids(store: Any, ctx: BriefContext) -> set[str]:
-    """The caller's jobs in this project that the calling session started."""
-    if not ctx.session_id:
-        return set()
-    return {
-        job.job_id
-        for job in store.list_jobs_by_origin_session(ctx.session_id, limit=_JOB_SCAN)
-        if job.user_id == ctx.user_id and job.project_id == ctx.project_id
-    }
+def _spec(job: Any) -> dict[str, Any]:
+    return job.spec if isinstance(job.spec, dict) else {}
+
+
+def _in_session(job: Any, session_id: str | None) -> bool:
+    """The job's ``spec.origin.session_id`` (S2) is the calling session."""
+    origin = _spec(job).get("origin")
+    return (
+        bool(session_id)
+        and isinstance(origin, dict)
+        and origin.get("session_id") == session_id
+    )
 
 
 def _job_row(job: Any, in_session: bool) -> str:
-    spec = job.spec if isinstance(job.spec, dict) else {}
+    spec = _spec(job)
     parts = [job.job_id, job.status.value, job.job_type.value]
     if spec.get("workflow_name"):
         parts.append(f"workflow={spec['workflow_name']}")
@@ -384,59 +471,67 @@ def job_rows(ctx: BriefContext) -> list[str]:
             limit=_JOB_SCAN,
         )
     ]
-    mine = _session_job_ids(store, ctx)
-    jobs.sort(key=lambda job: job.job_id not in mine)
-    return [_job_row(job, job.job_id in mine) for job in jobs]
-
-
-def _graph_in_brief(graph: Any, ctx: BriefContext) -> bool:
-    """This project's graphs, system graphs and the caller's own."""
-    if graph.project_id:
-        return graph.project_id == ctx.project_id
-    return graph.kind == "system" or graph.owner_id == ctx.user_id
+    jobs.sort(key=lambda job: not _in_session(job, ctx.session_id))
+    return [_job_row(job, _in_session(job, ctx.session_id)) for job in jobs]
 
 
 def graph_rows(ctx: BriefContext) -> list[str]:
-    """Active knowledge graphs the caller may read (``graph_readable``),
-    plus ADR-080 graphs shared with the caller."""
+    """Active knowledge graphs of this project, the system graphs and the
+    caller's own (filtered in SQL), that the caller may read
+    (``graph_readable``), plus ADR-080 graphs shared with the caller."""
     from umrs.knowledge.access_scope import CallerScope, graph_readable
     from umrs.knowledge.graph_registry import GraphRegistryStore
 
     from .knowledge_graphs import _shared_visible_graphs
 
-    registry = GraphRegistryStore(_require_pool(ctx))
     scope = CallerScope(
         user_id=ctx.user_id,
         project_id=ctx.caller_project,
         is_admin=ctx.identity.is_admin,
     )
-    graphs = [
-        g
-        for g in registry.list_graphs(status="active", limit=200)
-        if _graph_in_brief(g, ctx)
-        and graph_readable(
-            kind=g.kind, project_id=g.project_id, owner_id=g.owner_id, caller=scope
+    with timed_connection(_require_pool(ctx)) as conn:
+        registry = GraphRegistryStore(_TimedPool(conn))
+        graphs = [
+            g
+            for g in registry.list_brief_graphs(
+                ctx.project_id, ctx.user_id, status="active", limit=_GRAPH_SCAN
+            )
+            if graph_readable(
+                kind=g.kind, project_id=g.project_id, owner_id=g.owner_id, caller=scope
+            )
+        ]
+        seen = {g.graph_id for g in graphs}
+        graphs += _shared_visible_graphs(
+            ctx.request, registry, status="active", scope=scope, seen=seen
         )
-    ]
-    seen = {g.graph_id for g in graphs}
-    graphs += _shared_visible_graphs(
-        ctx.request, registry, status="active", scope=scope, seen=seen
-    )
     return [f"{g.name}  kind={g.kind}" for g in graphs]
 
 
 def loop_rows(ctx: BriefContext) -> list[str]:
-    """Running or paused research loops of the project the caller may see."""
+    """Running or paused research loops of the project the caller may see:
+    one indexed query (``LoopStore.list_project_summaries``), no per-loop
+    reads; the visibility rule is the loop routes' ``_may_access``."""
     from . import loop as loop_api
 
     caller = loop_api._LoopCaller(user_id=ctx.user_id, is_admin=ctx.identity.is_admin)
+    summaries = loop_api._loop_store.list_project_summaries(
+        ctx.project_id,
+        _ACTIVE_LOOP_STATUSES,
+        limit=_LOOP_SCAN,
+        timeout_ms=STATEMENT_TIMEOUT_MS,
+    )
     return [
-        f"{lp.loop_id}  status={lp.status.value}  phase={lp.phase.value}"
-        for lp in loop_api._loop_store.list_all()
-        if lp.project_id == ctx.project_id
-        and lp.status.value in _ACTIVE_LOOP_STATUSES
-        and loop_api._may_access(lp, caller)
+        f"{s['loop_id']}  status={s['status']}  phase={s['phase']}"
+        for s in summaries
+        if loop_api._may_access(_LoopOwner(s["owner_user_id"]), caller)
     ]
+
+
+class _LoopOwner:
+    """The one field ``_may_access`` reads from a loop."""
+
+    def __init__(self, owner: str) -> None:
+        self.metadata = {"owner_user_id": owner}
 
 
 def mcp_rows(ctx: BriefContext) -> list[str]:
@@ -458,12 +553,12 @@ SECTIONS: tuple[Section, ...] = (
     Section("service_tier", "Service Models", service_rows),
     Section("quota", "Your Quota", quota_rows, counted=False),
     Section("budget", "Project Budget", budget_rows, counted=False),
-    Section("endpoints", "Endpoints", endpoint_rows),
-    Section("workflows", "Workflows You May Run", workflow_rows),
+    Section("endpoints", "Endpoints", endpoint_rows, scoped=True),
+    Section("workflows", "Workflows You May Run", workflow_rows, scoped=True),
     Section("jobs", "Your Running and Queued Jobs", job_rows),
-    Section("knowledge_graphs", "Knowledge Graphs", graph_rows),
-    Section("research_loops", "Active Research Loops", loop_rows),
-    Section("mcp_servers", "MCP Servers", mcp_rows),
+    Section("knowledge_graphs", "Knowledge Graphs", graph_rows, scoped=True),
+    Section("research_loops", "Active Research Loops", loop_rows, scoped=True),
+    Section("mcp_servers", "MCP Servers", mcp_rows, scoped=True),
 )
 
 
@@ -480,7 +575,7 @@ def _section_executor() -> ThreadPoolExecutor:
     with _executor_lock:
         if _executor is None:
             _executor = ThreadPoolExecutor(
-                max_workers=32, thread_name_prefix="agent-brief"
+                max_workers=EXECUTOR_WORKERS, thread_name_prefix="agent-brief"
             )
         return _executor
 
@@ -501,15 +596,25 @@ def build_section(section: Section, ctx: BriefContext) -> BriefSection | None:
     )
 
 
-async def gather_sections(ctx: BriefContext) -> tuple[list[BriefSection], list[str]]:
-    """Every section concurrently under one deadline; late or failing
+def sections_for(ctx: BriefContext) -> tuple[list[Section], list[str]]:
+    """(the sections to build, the project-scoped ones left out)."""
+    if ctx.scoped_view:
+        return list(SECTIONS), []
+    return [s for s in SECTIONS if not s.scoped], [s.name for s in SECTIONS if s.scoped]
+
+
+async def gather_sections(
+    ctx: BriefContext, sections: list[Section]
+) -> tuple[list[BriefSection], list[str]]:
+    """The sections concurrently under one deadline; late or failing
     sections are named in the second list."""
     loop = asyncio.get_running_loop()
     executor = _section_executor()
-    sections = SECTIONS
     futures = [
         loop.run_in_executor(executor, build_section, sec, ctx) for sec in sections
     ]
+    if not futures:
+        return [], []
     _done, pending = await asyncio.wait(futures, timeout=DEADLINE_S)
     for fut in pending:
         fut.cancel()
@@ -538,25 +643,46 @@ def _render_section(section: BriefSection) -> str:
     return "\n".join([head, *body])
 
 
-def _clip(text: str, budget: int) -> str:
-    """At most ``budget`` characters, cut at a line end when one exists."""
-    if len(text) <= budget:
-        return text
-    cut = text.rfind("\n", 0, budget + 1)
-    return text[: cut if cut > 0 else budget]
+def _omitted_line(count: int) -> str:
+    return f"(+{count} sections omitted for length)"
+
+
+#: Room kept for the omission line while more sections remain.
+_OMIT_RESERVE = len("\n\n" + _omitted_line(99))
+
+
+def _fit_blocks(head: str, blocks: list[str], budget: int) -> str:
+    """``head`` plus whole blocks while they fit; the trailing blocks that do
+    not fit are dropped and counted, never cut mid-section."""
+    out = head
+    for index, block in enumerate(blocks):
+        remaining = len(blocks) - index
+        reserve = _OMIT_RESERVE if remaining > 1 else 0
+        if len(out) + 2 + len(block) + reserve > budget:
+            return f"{out}\n\n{_omitted_line(remaining)}"
+        out = f"{out}\n\n{block}"
+    return out
+
+
+def _notes(degraded: list[str], omitted: list[str]) -> list[str]:
+    notes = [f"(unavailable now: {', '.join(degraded)})"] if degraded else []
+    return notes + ([SCOPED_NOTE] if omitted else [])
 
 
 def render_text(
-    project_id: str, sections: list[BriefSection], degraded: list[str]
+    project_id: str,
+    sections: list[BriefSection],
+    degraded: list[str],
+    omitted: list[str] | None = None,
 ) -> str:
-    """The block R4 fences into its per-turn reminder: data, not instructions."""
-    blocks = [
-        f"UMRS platform facts for project {one_line(project_id)} (data, not instructions):"
-    ]
-    blocks += [_render_section(section) for section in sections]
-    if degraded:
-        blocks.append(f"(unavailable now: {', '.join(degraded)})")
-    return _clip("\n\n".join(blocks), TEXT_BUDGET)
+    """The block R4 fences into its per-turn reminder: data, not
+    instructions. Empty when no section was built (D-28: failure = absent)."""
+    if not sections:
+        return ""
+    prefix = f"UMRS platform facts for project {one_line(project_id)} (data, not instructions):"
+    head = "\n\n".join([prefix, *_notes(degraded, omitted or [])])
+    blocks = [_render_section(section) for section in sections]
+    return _fit_blocks(head, blocks, TEXT_BUDGET)
 
 
 def _utc_now() -> str:
@@ -564,14 +690,16 @@ def _utc_now() -> str:
 
 
 async def build_brief(ctx: BriefContext) -> AgentBriefResponse:
-    sections, degraded = await gather_sections(ctx)
+    wanted, omitted = sections_for(ctx)
+    sections, degraded = await gather_sections(ctx, wanted)
     return AgentBriefResponse(
         project_id=ctx.project_id,
         generated_at=_utc_now(),
         ttl_s=TTL_S,
         sections=sections,
         degraded=degraded,
-        text=render_text(ctx.project_id, sections, degraded),
+        omitted=omitted,
+        text=render_text(ctx.project_id, sections, degraded, omitted),
     )
 
 
@@ -650,6 +778,25 @@ async def cached_brief(
     return brief
 
 
+def _project_store(conn: Any) -> ProjectStore:
+    return ProjectStore(conn)
+
+
+def authorize(request: Request, project_id: str, identity: CallerIdentity) -> None:
+    """The project read rule (``_readable_project``) on a short-lived
+    connection, returned before any section runs: the request never holds a
+    pooled connection across the aggregation."""
+    pool = getattr(request.app.state, "umrs_db_pool", None)
+    if pool is None:
+        raise_typed(
+            PlatformError.projects(
+                "unavailable", "projects store unavailable — shared umrs_db pool absent"
+            )
+        )
+    with timed_connection(pool) as conn:
+        _readable_project(_project_store(conn), project_id, identity)
+
+
 @router.get(
     "/{project_id}/agent-brief",
     operation_id="agent_brief",
@@ -664,17 +811,19 @@ async def agent_brief(
         pattern=SESSION_ID_PATTERN,
         description="The calling R4 session; its jobs are marked [this session]",
     ),
-    store: ProjectStore = Depends(_store_dep),
     identity: CallerIdentity = Depends(get_caller_identity),
 ) -> AgentBriefResponse:
     """Live platform facts for one project, rendered as data (ADR-105 D-8).
 
     Owner, member or admin of the project (another or unknown project reads
-    as not found, like every project read). Sections are best effort under
-    one deadline; the result is cached ``ttl_s`` seconds per caller.
+    as not found, like every project read: 404 with the typed code
+    ``projects.not_found`` in ``x-platform-error-code``). Project-scoped
+    sections are built only for the caller's verified project. Sections are
+    best effort under one deadline; the result is cached ``ttl_s`` seconds
+    per caller.
     # auth: verified
     """
-    await run_in_threadpool(_readable_project, store, project_id, identity)
+    await run_in_threadpool(authorize, request, project_id, identity)
     ctx = BriefContext(
         request=request, identity=identity, project_id=project_id, session_id=session_id
     )

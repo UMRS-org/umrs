@@ -12,6 +12,7 @@ API shape (sync-friendly; the engine is sync):
     store.save_keeping_control(loop)  # runner save: never undoes a pause/stop
     store.get(loop_id)          # ResearchLoop | None
     store.list_all()            # list[ResearchLoop]
+    store.list_project_summaries(project_id, statuses)  # one query (agent brief)
     store.delete(loop_id)
     store.clear()               # only meaningful for memory mode; tests use it
 """
@@ -23,6 +24,7 @@ import copy
 import json
 import logging
 import threading
+from collections.abc import Iterable
 from typing import Any
 
 from .loop import LoopIteration, LoopPhase, LoopStatus, ResearchLoop
@@ -158,6 +160,27 @@ def _row_to_iteration(row: Any) -> LoopIteration:
 
 
 logger = logging.getLogger(__name__)
+
+
+def _memory_summaries(
+    loops: Iterable[ResearchLoop], project_id: str, statuses: list[str], limit: int
+) -> list[dict[str, str]]:
+    """The memory-mode ``list_project_summaries``."""
+    picked = [
+        lp
+        for lp in loops
+        if lp.project_id == project_id and lp.status.value in statuses
+    ]
+    picked.sort(key=lambda lp: str(lp.updated_at or ""), reverse=True)
+    return [
+        {
+            "loop_id": lp.loop_id,
+            "status": lp.status.value,
+            "phase": lp.phase.value,
+            "owner_user_id": str(lp.metadata.get("owner_user_id") or ""),
+        }
+        for lp in picked[:limit]
+    ]
 
 
 def _is_connection_loss(exc: Exception, conn: Any) -> bool:
@@ -624,6 +647,52 @@ class LoopStore:
         if self._pool is None:
             return list(self._memory.values())
         return self._run(self._list_all_pg())
+
+    def list_project_summaries(
+        self,
+        project_id: str,
+        statuses: Iterable[str],
+        *,
+        limit: int = 200,
+        timeout_ms: int | None = None,
+    ) -> list[dict[str, str]]:
+        """``loop_id``, ``status``, ``phase`` and ``owner_user_id`` of one
+        project's loops in ``statuses``, newest first (ADR-105 S4 agent
+        brief): one indexed query under the store lock, no per-loop reads,
+        optionally under a statement timeout."""
+        wanted = sorted(statuses)
+        if self._sync_pool is not None:
+            return self._sync_call(
+                self._project_summaries_sync, project_id, wanted, limit, timeout_ms
+            )
+        if self._pool is None:
+            return _memory_summaries(
+                list(self._memory.values()), project_id, wanted, limit
+            )
+        raise RuntimeError("project loop summaries need the psycopg2 or memory store")
+
+    def _project_summaries_sync(
+        self, project_id: str, statuses: list[str], limit: int, timeout_ms: int | None
+    ) -> list[dict[str, str]]:
+        with self._sync_pool.cursor() as cur:
+            if timeout_ms:
+                cur.execute("SET LOCAL statement_timeout = %s", (int(timeout_ms),))
+            cur.execute(
+                "SELECT loop_id, status, phase, metadata->>'owner_user_id'"
+                " FROM research_loops WHERE project_id = %s AND status = ANY(%s)"
+                " ORDER BY updated_at DESC LIMIT %s",
+                (project_id, statuses, limit),
+            )
+            rows = cur.fetchall()
+        return [
+            {
+                "loop_id": r[0],
+                "status": r[1],
+                "phase": r[2],
+                "owner_user_id": r[3] or "",
+            }
+            for r in rows
+        ]
 
     def delete(self, loop_id: str) -> None:
         if self._sync_pool is not None:

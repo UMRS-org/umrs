@@ -386,6 +386,28 @@ class GraphRegistryStore(_SyncPoolStore):
             rows = cur.fetchall()
         return [_row_to_graph(row) for row in rows]
 
+    def list_brief_graphs(
+        self,
+        project_id: str,
+        owner_id: str,
+        *,
+        status: str = "active",
+        limit: int = 1000,
+    ) -> list[KnowledgeGraphMeta]:
+        """A project's graphs, the system graphs and one owner's unbound
+        graphs, filtered in SQL (ADR-105 S4 agent brief: a global pre-filter
+        cap understated the totals). Readability is still the caller's check."""
+        with self._cursor() as cur:
+            cur.execute(
+                f"SELECT {_GRAPH_COLUMNS} FROM knowledge_graphs "
+                "WHERE status = %s AND (project_id = %s OR ("
+                "COALESCE(project_id, '') = '' AND (kind = 'system' OR owner_id = %s)"
+                ")) ORDER BY created_at LIMIT %s",
+                (status, project_id, owner_id, limit),
+            )
+            rows = cur.fetchall()
+        return [_row_to_graph(row) for row in rows]
+
     def search_graphs(
         self,
         query: str,
