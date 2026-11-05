@@ -40,6 +40,7 @@ from ..orchestrator.caller_roots import (
     foreign_sources,
     model_path_in_scope,
 )
+from ..orchestrator.co_serve import primary_job_id
 from ..orchestrator.endpoint_access import usable_endpoints
 from ..orchestrator.endpoint_mounts import (
     egress_reasons,
@@ -647,7 +648,8 @@ async def _is_backend_job_alive(service: Any, job_id: str) -> bool:
     if backend is None:
         return False
     try:
-        info = await backend.get_job_status(job_id)
+        # A co-served row's job is its primary's (ADR-109 D-2).
+        info = await backend.get_job_status(primary_job_id(job_id))
     except Exception as exc:  # noqa: BLE001 - defensive, treat as dead
         logger.warning(
             "Backend get_job_status(%s) failed during warm-endpoint check: %s",
@@ -681,7 +683,7 @@ async def _backend_job_liveness(service: Any, job_id: str) -> bool | None:
         return None
 
     try:
-        info = await backend.get_job_status(job_id)
+        info = await backend.get_job_status(primary_job_id(job_id))
     except Exception as exc:  # noqa: BLE001 - preserve on verification errors
         logger.warning(
             "Backend get_job_status(%s) failed during active-endpoint verification: %s",
@@ -815,6 +817,21 @@ def _endpoint_can_refresh_readiness(endpoint: Any) -> bool:
     )
 
 
+def _refresh_probe(endpoint: Any) -> tuple[str, str, Any]:
+    """(probe kind, probe model, path) that may turn a starting row READY.
+
+    ADR-109 D-2: a co-served row turns READY only on its role probe (one
+    segmentation with its adapter), never on ``/readyz`` alone.
+    """
+    metadata = endpoint.metadata or {}
+    path = metadata.get("readiness_path")
+    role_probe = metadata.get("role_probe")
+    if role_probe:
+        return str(role_probe), str(metadata.get("vision_adapter") or endpoint.model), path
+    kind = metadata.get("readiness_probe") or _resolve_readiness_probe_mode(endpoint.model)
+    return str(kind), str(metadata.get("served_model_name") or endpoint.model), path
+
+
 async def _refresh_endpoint_readiness(
     registry: EndpointRegistry,
     endpoint: Any,
@@ -822,11 +839,7 @@ async def _refresh_endpoint_readiness(
     if not _endpoint_can_refresh_readiness(endpoint):
         return endpoint
 
-    readiness_probe = str(
-        endpoint.metadata.get("readiness_probe")
-        or _resolve_readiness_probe_mode(endpoint.model)
-    )
-    readiness_path = endpoint.metadata.get("readiness_path")
+    readiness_probe, probe_model, readiness_path = _refresh_probe(endpoint)
 
     try:
         (
@@ -837,7 +850,7 @@ async def _refresh_endpoint_readiness(
         ) = await get_readiness_poller().check_ready_detail(
             endpoint.host,
             endpoint.port,
-            probe_model=endpoint.metadata.get("served_model_name") or endpoint.model,
+            probe_model=probe_model,
             probe_kind=readiness_probe,
             probe_path=str(readiness_path) if readiness_path else None,
         )
@@ -2183,6 +2196,7 @@ async def roll_endpoint(
                 "admin_required", "Admin token required to roll a replica"
             )
         )
+    _refuse_co_served(registry.get_by_job_id(job_id), "roll")
     endpoint = registry.update_metadata(job_id, {ROLL_KEY: True})
     if endpoint is None:
         raise_typed(
@@ -2796,6 +2810,61 @@ def _apply_vision_env(
         env_vars.setdefault("HF_HUB_OFFLINE", "1")
         if container_image:
             env_vars.setdefault("BENTOML_VISION_IMAGE", str(container_image))
+
+
+def _apply_co_serve(
+    request, env_vars: dict, metadata: dict, *, is_vision: bool
+) -> None:
+    """ADR-109 D-2 sidecar rule for a vLLM job.
+
+    The BentoML vision sidecar (``vision-bentoml``) starts only when the
+    model's roster entry declares a vision ``co_serve``; otherwise it is
+    stripped from the job's profiles, even when a roster or request lists it.
+    A co-served job also gets the sidecar's memory budget env and carries the
+    co-servings to the orchestrator, which registers their rows.
+    """
+    from ..orchestrator import co_serve
+    from ..orchestrator.provision_roster import resolve_model_recipe
+
+    if is_vision:
+        return  # a vision endpoint is the BentoML service itself
+    for key in ("RIVAULT_PROFILES", "RIVAULT_EXTRA_PROFILES"):
+        if key in env_vars:
+            env_vars[key] = co_serve.sidecar_profiles(env_vars[key], co_served=False)
+    specs = co_serve.co_serves(resolve_model_recipe(request.model, request.variant))
+    if not specs:
+        return
+    env_vars["RIVAULT_EXTRA_PROFILES"] = co_serve.sidecar_profiles(
+        env_vars.get("RIVAULT_EXTRA_PROFILES"), co_served=True
+    )
+    for key, value in co_serve.job_env(specs).items():
+        env_vars.setdefault(key, value)
+    profiles = " ".join(metadata.get("launch_profiles") or [])
+    metadata["launch_profiles"] = co_serve.sidecar_profiles(
+        profiles, co_served=True
+    ).split()
+    metadata[co_serve.CO_SERVE_KEY] = [spec.to_metadata() for spec in specs]
+
+
+def _refuse_co_served(endpoint: Any, action: str) -> None:
+    """A co-served row has no job of its own (ADR-109 D-2): stopping or
+    rolling it alone would leave its primary on a dead job, or do nothing.
+    The caller acts on the primary, which takes every serving with it."""
+    from ..orchestrator.co_serve import CO_SERVED_BY_KEY
+
+    primary = ((getattr(endpoint, "metadata", None) or {}).get(CO_SERVED_BY_KEY))
+    if not primary:
+        return
+    raise_typed(
+        PlatformError.endpoints(
+            "conflict",
+            (
+                f"{endpoint.model} ({endpoint.job_id}) is co-served in job "
+                f"{primary}; {action} the primary endpoint {primary}, which "
+                "acts on every serving of the job"
+            ),
+        ),
+    )
 
 
 def _apply_served_name_env(
@@ -3438,6 +3507,17 @@ async def provision_endpoint(
         serving_plan=serving_plan,
     )
     _apply_vision_env(serving_backend, service_kind, env_vars, container_image)
+    _apply_co_serve(
+        request,
+        env_vars,
+        request_metadata,
+        is_vision=_is_bentoml_vision_service(
+            request.model,
+            model_entry,
+            serving_backend=serving_backend,
+            service_kind=service_kind,
+        ),
+    )
 
     request_metadata.setdefault("owner_type", request.tier)
     request_metadata.setdefault("tier", request_metadata["owner_type"])
@@ -3663,6 +3743,7 @@ async def deprovision_endpoint(
             PlatformError.endpoints("not_found", f"Endpoint not found: {job_id}"),
         )
     _forbid_if_project_mismatch(endpoint, project_id)
+    _refuse_co_served(endpoint, "stop")
 
     service = get_orchestration_service()
 

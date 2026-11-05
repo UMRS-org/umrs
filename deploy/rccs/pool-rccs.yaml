@@ -269,6 +269,19 @@ endpoints:
       VLLM_REASONING_PARSER: "qwen3"
       VLLM_EXTRA_ARGS: '--kv-cache-dtype fp8 --enable-prefix-caching --limit-mm-per-prompt {"image":8}'
       RIVAULT_PROFILES: "harness vllm litellm-db"
+    # ADR-109 V3: svc-vision2 = SAM3.1, co-served in this job (one job, two
+    # endpoint rows). ENABLE AFTER THE V3 LIVE LEG has staged the umrs-vision
+    # aarch64 archive on rccs (no archive exists yet: a sidecar would try to
+    # build the image on the GB10 node). To enable: uncomment co_serve below
+    # and set RIVAULT_PROFILES above to "harness vllm vision-bentoml
+    # litellm-db" (the provision path adds the sidecar profile for a co_serve
+    # entry and strips it from any LLM job without one). The recipe digest
+    # changes, so the controller rolls svc-vision onto a co-served job. The
+    # sidecar gets VISION_MAX_BATCH=1, a 16 GiB CUDA budget and
+    # RIVAULT_VISION_STRICT=0 by default (umrs.orchestrator.co_serve); vLLM
+    # keeps VLLM_GPU_MEM_UTIL 0.45.
+    # co_serve:
+    #   - {name: sam3.1, model: SAM3.1, aliases: [svc-vision2], model_type: vision, adapter: sam3}
 
   # ── Qwen3-Embedding-0.6B → svc-embed (1 node) ────────────────────────
   #  New ADR-083 embedding space; the e5-base-v2 space stays default until

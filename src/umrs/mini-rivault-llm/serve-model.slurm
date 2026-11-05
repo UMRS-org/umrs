@@ -717,6 +717,11 @@ SAM3_MODEL_PATH=${SAM3_MODEL_PATH:-./models/sam3}
 HMAE_MODEL_PATH=${HMAE_MODEL_PATH:-./models/hmae}
 HMAE_CONFIG_PATH=${HMAE_CONFIG_PATH:-./models/hmae/infer_hmae_vit_b.yaml}
 HMAE_CHECKPOINT=${HMAE_CHECKPOINT:-./models/hmae/latest_checkpoint.pth}
+# ADR-109 D-2: the sidecar's budget when co-served beside vLLM (empty = none)
+MAX_VISION_MODELS=${MAX_VISION_MODELS:-3}
+VISION_MAX_BATCH=${VISION_MAX_BATCH:-}
+VISION_GPU_MEMORY_BUDGET_GIB=${VISION_GPU_MEMORY_BUDGET_GIB:-}
+VISION_PYTORCH_CUDA_ALLOC_CONF=${VISION_PYTORCH_CUDA_ALLOC_CONF:-}
 
 # ─── 4. Networking & Ports ────────────────────────────────────────────────────
 # Published LiteLLM port on the host (clients connect here).

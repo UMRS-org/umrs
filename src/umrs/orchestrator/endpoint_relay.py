@@ -94,6 +94,11 @@ class KeepAlivePolicy:
     # default ("chat": a real completion after warm-up); embedding, rerank and
     # OCR replicas cannot answer a chat probe, so they name "models".
     readiness_probe: str | None = None
+    # ADR-109 D-2: models co-served in each replica's job. A replica whose
+    # co-served row is not READY within ``co_serve_grace_sec`` of its own
+    # readiness is due (rolled like any failed replica).
+    co_serve: tuple[str, ...] = ()
+    co_serve_grace_sec: int = 900
 
 
 @dataclass(frozen=True)
@@ -105,6 +110,9 @@ class RelayAction:
     project_id: str
     reason: str
     job_id: str | None = None
+    # ADR-109 D-2: a surge provisioned because a replica's co-serving failed;
+    # the executor marks the successor so a repeat failure holds the roll.
+    co_retry: bool = False
 
 
 _DURATION = re.compile(r"(?:(\d+)-)?(\d+)(?::(\d+))?(?::(\d+))?")
@@ -185,6 +193,19 @@ def _service_fields(block: dict[str, Any], entry: dict[str, Any]) -> dict[str, A
         "max_age_sec": parse_slurm_duration(max_age) if max_age else None,
         "digest": entry_digest(entry),
         "readiness_probe": str(block.get("readiness_probe") or "").strip() or None,
+        **_co_serve_fields(block, entry),
+    }
+
+
+def _co_serve_fields(block: dict[str, Any], entry: dict[str, Any]) -> dict[str, Any]:
+    """ADR-109 D-2: the models co-served with the entry (the provision path
+    logs and skips rejected ones; the planner just does not expect them)."""
+    from .co_serve import parse_co_serve
+
+    specs, _errors = parse_co_serve(entry)
+    return {
+        "co_serve": tuple(spec.model for spec in specs),
+        "co_serve_grace_sec": _positive(block.get("co_serve_grace_sec"), 900),
     }
 
 

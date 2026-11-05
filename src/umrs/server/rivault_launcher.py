@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 
 from umrs.inference.loading import EmbeddingModel, load_model
 from umrs.orchestrator import partition_choice as pc
+from umrs.orchestrator.co_serve import co_serves, sidecar_profiles
 from umrs.orchestrator.endpoint_registry import (
     EndpointStatus,
     get_registry,
@@ -175,14 +176,14 @@ def _resolve_profiles_for_model(model_cfg):
 
         return ("harness", "vision-bentoml")
 
-    configured = _read_configured_profiles()
-    if configured:
-        # LLM / embedding jobs are served by vLLM only and must never start the
-        # BentoML vision sidecar, even when the site-wide default profile list
-        # (used for co-located deployments) includes ``vision-bentoml``.
-        llm_profiles = tuple(p for p in configured if p != "vision-bentoml")
-        return llm_profiles or ("harness", "vllm")
-    return ("harness", "vllm")
+    # LLM / embedding jobs are served by vLLM only and must never start the
+    # BentoML vision sidecar, even when the site-wide default profile list
+    # (used for co-located deployments) includes ``vision-bentoml``, unless
+    # the model declares a vision ``co_serve`` (ADR-109 D-2): then the job
+    # serves both, and the sidecar profile is added.
+    configured = _read_configured_profiles() or ("harness", "vllm")
+    profiles = sidecar_profiles(" ".join(configured), co_served=bool(co_serves(model_cfg)))
+    return tuple(profiles.split()) or ("harness", "vllm")
 
 
 def _job_capabilities_for_profiles(profiles):

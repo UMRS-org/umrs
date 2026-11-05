@@ -55,8 +55,41 @@ def _build_results_payload(
     return payload
 
 
+#: ADR-109 D-2 role probe: a generated image (no file ships with the service)
+#: of one red disc on a grey ground, and the prompt that names it.
+PROBE_PROMPT = "red circle"
+PROBE_SIZE = 256
+
+
+def probe_image() -> Image.Image:
+    """The role probe's input: a grey square with one centred red disc."""
+    from PIL import ImageDraw
+
+    image = Image.new("RGB", (PROBE_SIZE, PROBE_SIZE), (128, 128, 128))
+    margin = PROBE_SIZE // 4
+    ImageDraw.Draw(image).ellipse(
+        (margin, margin, PROBE_SIZE - margin, PROBE_SIZE - margin), fill=(220, 20, 20)
+    )
+    return image
+
+
 class SAM3Adapter(VisionModelAdapter):
     """Load and run SAM3 text-prompted segmentation."""
+
+    def probe(self, model: Any) -> dict[str, Any]:
+        """Segment the probe image (ADR-109 D-2 role probe); count the masks."""
+        from umrs.inference.sam3_segmentation import segment_image_with_text
+
+        result = segment_image_with_text(
+            model["model"],
+            model["processor"],
+            probe_image(),
+            PROBE_PROMPT,
+            model["device"],
+            0.3,
+            0.5,
+        )
+        return {"masks": int(result.get("num_objects") or 0), "prompt": PROBE_PROMPT}
 
     def capabilities(self):
         return {

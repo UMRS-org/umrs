@@ -46,15 +46,23 @@ respawns, rolls or trims it. A workflow trigger whose step needs it starts
 one replica (``umrs.server.endpoint_relay.ensure_service_replica``), which
 lives until ``r4 endpoint down`` or its Slurm walltime; draining and stale
 replicas are still retired as above.
+
+ADR-109 D-2 co-serving: a replica of an entry with ``co_serve`` is also due
+when a co-served row of its job is FAILED, or not READY ``co_serve_grace_sec``
+after the replica itself turned READY. The surge that replaces it is marked
+``co_serve_retry``; when such a replica's co-serving fails too, co-serving
+stops being a reason to roll (rolling again would not help; the primary keeps
+serving and the alias stays absent until the next roll).
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Any
 
+from .co_serve import CO_SERVED_BY_KEY
 from .endpoint_registry import EndpointStatus, RegisteredEndpoint
 from .endpoint_relay import (
     _LIVE,
@@ -72,6 +80,10 @@ from .endpoint_relay import (
 DIGEST_KEY = "service_digest"
 DRAINING_SINCE_KEY = "draining_since"
 ROLL_KEY = "roll_requested"
+#: ADR-109 D-2: a surge provisioned because its predecessor's co-serving failed.
+CO_RETRY_KEY = "co_serve_retry"
+#: Due reasons that come from a co-serving start with this.
+CO_SERVE_DUE = "co-served"
 
 
 @dataclass
@@ -82,6 +94,10 @@ class _View:
     stale: list[RegisteredEndpoint]
     held: bool
     due: list[tuple[RegisteredEndpoint, str]] = field(default_factory=list)
+    # ADR-109 D-2: co-served rows by their primary's job id, and whether a
+    # retry already failed (co-serving no longer rolls replicas).
+    co_rows: dict[str, list[RegisteredEndpoint]] = field(default_factory=dict)
+    co_held: bool = False
 
 
 def _iso(raw: Any) -> datetime | None:
@@ -111,15 +127,83 @@ def _with_status(
 
 
 def _view(policy: KeepAlivePolicy, endpoints: Iterable[RegisteredEndpoint], now: datetime) -> _View:
-    mine = [ep for ep in endpoints if _owned(policy, ep)]
+    rows = list(endpoints)
+    mine = [ep for ep in rows if _owned(policy, ep)]
     stale = [ep for ep in mine if _stale_degraded(ep, now)]
-    return _View(
+    view = _View(
         live=_with_status(mine, _LIVE, skip=stale),
         pending=_with_status(mine, _PENDING),
         draining=_with_status(mine, (EndpointStatus.DRAINING,)),
         stale=stale,
         held=_upgrade_held(policy, mine),
+        co_rows=_co_rows(policy, rows, mine),
     )
+    view.co_held = _co_held(policy, view, now)
+    return view
+
+
+def _co_rows(
+    policy: KeepAlivePolicy,
+    rows: list[RegisteredEndpoint],
+    mine: list[RegisteredEndpoint],
+) -> dict[str, list[RegisteredEndpoint]]:
+    """The co-served rows of this policy's jobs, by primary job id."""
+    if not policy.co_serve:
+        return {}
+    jobs = {ep.job_id for ep in mine}
+    grouped: dict[str, list[RegisteredEndpoint]] = {}
+    for row in rows:
+        primary = (row.metadata or {}).get(CO_SERVED_BY_KEY)
+        if primary in jobs:
+            grouped.setdefault(str(primary), []).append(row)
+    return grouped
+
+
+def _co_row_reason(
+    policy: KeepAlivePolicy,
+    ep: RegisteredEndpoint,
+    row: RegisteredEndpoint | None,
+    model: str,
+    now: datetime,
+) -> str | None:
+    """Why one co-serving of ``ep`` does not serve, once it counts."""
+    if row is not None and row.status in _LIVE and not _stale_degraded(row, now):
+        return None
+    if row is not None and row.status == EndpointStatus.FAILED:
+        return f"{CO_SERVE_DUE} {model} failed: {row.error_message or 'no detail'}"
+    waited = _age_sec(ep, now)
+    if waited < policy.co_serve_grace_sec:
+        return None  # the sidecar may still be loading
+    state = row.status.value if row is not None else "no row"
+    return f"{CO_SERVE_DUE} {model} not READY {int(waited)}s after the replica ({state})"
+
+
+def _co_failure(
+    policy: KeepAlivePolicy, ep: RegisteredEndpoint, view: _View, now: datetime
+) -> str | None:
+    """Why a live replica's co-servings fail it (ADR-109 D-2), or ``None``."""
+    rows = {row.model: row for row in view.co_rows.get(ep.job_id, ())}
+    for model in policy.co_serve:
+        reason = _co_row_reason(policy, ep, rows.get(model), model, now)
+        if reason:
+            return reason
+    return None
+
+
+def _co_held(policy: KeepAlivePolicy, view: _View, now: datetime) -> bool:
+    """A replica started to retry a failed co-serving failed it again."""
+    return any(
+        (ep.metadata or {}).get(CO_RETRY_KEY) and _co_failure(policy, ep, view, now)
+        for ep in view.live
+    )
+
+
+def _co_due(
+    policy: KeepAlivePolicy, ep: RegisteredEndpoint, view: _View, now: datetime
+) -> str | None:
+    if not policy.co_serve or view.co_held:
+        return None
+    return _co_failure(policy, ep, view, now)
 
 
 def _outdated(policy: KeepAlivePolicy, ep: RegisteredEndpoint, held: bool) -> bool:
@@ -143,7 +227,7 @@ def _due_reason(
         return "roll requested"
     if policy.max_age_sec and _age_sec(ep, now) >= policy.max_age_sec:
         return f"older than max_age ({int(_age_sec(ep, now))}s)"
-    return None
+    return _co_due(policy, ep, view, now)
 
 
 def _stagger_due(
@@ -225,7 +309,8 @@ def _handed_over_ready(
 def _roll_one(policy: KeepAlivePolicy, view: _View, now: datetime):
     target, reason = view.due[0]
     if len(view.live) < policy.replicas + policy.max_surge:
-        return [_action(policy, "provision", f"surge for {target.job_id}: {reason}")]
+        surge = _action(policy, "provision", f"surge for {target.job_id}: {reason}")
+        return [replace(surge, co_retry=reason.startswith(CO_SERVE_DUE))]
     if _handed_over_ready(policy, view, target, now) >= max(policy.min_available, 1):
         return [_action(policy, "drain", reason, target.job_id)]
     return []

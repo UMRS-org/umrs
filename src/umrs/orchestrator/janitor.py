@@ -23,6 +23,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from .base import OrchestratorBackend
+from .co_serve import is_co_served
 from .detection import detect_backend
 from .endpoint_registry import (
     ENDED_STATUSES,
@@ -63,6 +64,28 @@ def _stuck_since(endpoint: Any) -> datetime:
     if endpoint.status == EndpointStatus.STARTING and starting_at is not None:
         return starting_at
     return _stamp(endpoint, "left_queue_at") or endpoint.created_at
+
+
+#: Slurm reasons that mean "legitimately waiting in the queue". These are
+#: not failures, so a stuck endpoint reporting one is preserved.
+_BENIGN_QUEUE_REASONS = (
+    "Resources",
+    "Priority",
+    "BeginTime",
+    "Dependency",
+    "JobArrayTaskLimit",
+)
+
+
+def _benign_queue_wait(job_status: Any, reason: str | None) -> bool:
+    """The job still waits in the queue for a benign reason."""
+    from .base import JobStatus
+
+    return (
+        job_status == JobStatus.PENDING
+        and bool(reason)
+        and any(b in str(reason) for b in _BENIGN_QUEUE_REASONS)
+    )
 
 
 def _service_hold_digests() -> set[str] | None:
@@ -537,9 +560,7 @@ class Janitor:
         from .base import JobStatus
 
         pruned = 0
-        endpoints = self.registry.list_all(
-            status_filter=[EndpointStatus.READY, EndpointStatus.DEGRADED],
-        )
+        endpoints = self._job_rows([EndpointStatus.READY, EndpointStatus.DEGRADED])
         if not endpoints:
             return 0
 
@@ -722,9 +743,8 @@ class Janitor:
         now = datetime.utcnow()
         threshold = timedelta(seconds=self.config.ttl_auto_extend_threshold_sec)
 
-        endpoints = self.registry.list_all(
-            status_filter=[EndpointStatus.READY, EndpointStatus.DEGRADED],
-        )
+        # Co-served rows renew with their primary (extend_ttl follows the job).
+        endpoints = self._job_rows([EndpointStatus.READY, EndpointStatus.DEGRADED])
         for endpoint in endpoints:
             if _has_idle_ttl(endpoint):
                 continue
@@ -779,7 +799,7 @@ class Janitor:
         now = datetime.utcnow()
         grace = timedelta(seconds=self.config.ttl_grace_sec)
 
-        endpoints = self.registry.list_all()
+        endpoints = self._job_rows()
         for endpoint in endpoints:
             if endpoint.status not in (EndpointStatus.READY, EndpointStatus.DEGRADED):
                 continue
@@ -813,87 +833,73 @@ class Janitor:
         for a long time before nodes free up. Endpoints whose job is held for an
         unsatisfiable allocation, or that never reached ready for any other
         reason, are cleaned up once they exceed ``stuck_timeout_sec``.
+
+        Co-served rows (ADR-109 D-2) are not checked: their job is their
+        primary's, and its reap removes them with it.
         """
-        from .base import JobStatus
-
-        # Slurm reasons that mean "legitimately waiting in the queue". These are
-        # not failures, so a stuck endpoint reporting one is preserved.
-        benign_reasons = (
-            "Resources",
-            "Priority",
-            "BeginTime",
-            "Dependency",
-            "JobArrayTaskLimit",
-        )
-
         cleaned = 0
         now = datetime.utcnow()
-        stuck_threshold = timedelta(seconds=self.config.stuck_timeout_sec)
-
-        endpoints = self.registry.list_all()
-        for endpoint in endpoints:
-            if endpoint.status not in (
-                EndpointStatus.PROVISIONING,
-                EndpointStatus.STARTING,
-            ):
-                continue
-
-            # Best-effort: query the backend for the live state + reason so we
-            # can surface it and make an informed cleanup decision.
-            reason: str | None = None
-            job_status = None
-            try:
-                info = await self.backend.get_job_status(endpoint.job_id)
-                reason = getattr(info, "state_reason", None)
-                job_status = getattr(info, "status", None)
-            except Exception as exc:  # noqa: BLE001
-                logger.debug(
-                    "Stuck-check for %s skipped (backend error): %s",
-                    endpoint.job_id,
-                    exc,
-                )
-                continue  # Inconclusive — preserve the endpoint
-
-            # Surface the reason to users via the endpoint detail field.
-            if reason:
-                self.registry.update_metadata(
-                    endpoint.job_id, {"detail": f"queued: {reason}"}
-                )
-
-            age = now - _stuck_since(endpoint)
-            if age <= stuck_threshold:
-                continue  # Not stuck yet — leave it to keep provisioning
-
-            # Past the stuck timeout. Preserve jobs that are simply waiting in
-            # the queue for resources; only reap unsatisfiable / failed ones.
-            if (
-                job_status == JobStatus.PENDING
-                and reason
-                and any(b in reason for b in benign_reasons)
-            ):
-                logger.info(
-                    "Endpoint %s still queued after %ds (reason=%s); preserving",
-                    endpoint.job_id,
-                    int(age.total_seconds()),
-                    reason,
-                )
-                continue
-
-            logger.warning(
-                "Endpoint %s stuck in %s for >%ds (reason=%s), cleaning up",
-                endpoint.job_id,
-                endpoint.status.value,
-                self.config.stuck_timeout_sec,
-                reason or "unknown",
-            )
-            success = await self._reap_stuck(endpoint, reason)
-            if success:
+        stuck = [EndpointStatus.PROVISIONING, EndpointStatus.STARTING]
+        for endpoint in self._job_rows(stuck):
+            if await self._reap_if_stuck(endpoint, now):
                 cleaned += 1
-
             if cleaned >= self.config.batch_size:
                 break
-
         return cleaned
+
+    async def _reap_if_stuck(self, endpoint: Any, now: datetime) -> bool:
+        """Annotate one PROVISIONING/STARTING row; reap it when stuck."""
+        # Best-effort: query the backend for the live state + reason so we
+        # can surface it and make an informed cleanup decision.
+        try:
+            info = await self.backend.get_job_status(endpoint.job_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "Stuck-check for %s skipped (backend error): %s",
+                endpoint.job_id,
+                exc,
+            )
+            return False  # Inconclusive — preserve the endpoint
+        reason: str | None = getattr(info, "state_reason", None)
+        # Surface the reason to users via the endpoint detail field.
+        if reason:
+            self.registry.update_metadata(
+                endpoint.job_id, {"detail": f"queued: {reason}"}
+            )
+        age = now - _stuck_since(endpoint)
+        if age <= timedelta(seconds=self.config.stuck_timeout_sec):
+            return False  # Not stuck yet — leave it to keep provisioning
+        # Past the stuck timeout. Preserve jobs that are simply waiting in
+        # the queue for resources; only reap unsatisfiable / failed ones.
+        if _benign_queue_wait(getattr(info, "status", None), reason):
+            logger.info(
+                "Endpoint %s still queued after %ds (reason=%s); preserving",
+                endpoint.job_id,
+                int(age.total_seconds()),
+                reason,
+            )
+            return False
+        logger.warning(
+            "Endpoint %s stuck in %s for >%ds (reason=%s), cleaning up",
+            endpoint.job_id,
+            endpoint.status.value,
+            self.config.stuck_timeout_sec,
+            reason or "unknown",
+        )
+        return await self._reap_stuck(endpoint, reason)
+
+    def _job_rows(self, status_filter: list[EndpointStatus] | None = None) -> list[Any]:
+        """Registry rows that own a backend job.
+
+        ADR-109 D-2: a co-served row shares its primary's job. The job-level
+        passes (liveness, TTL renewal and expiry, stuck reaping) act on the
+        primary, and the registry moves the co-served rows with it.
+        """
+        return [
+            ep
+            for ep in self.registry.list_all(status_filter=status_filter)
+            if not is_co_served(ep)
+        ]
 
     async def _reap_stuck(self, endpoint: Any, reason: str | None) -> bool:
         """Remove a stuck endpoint; a STARTING one counts as a failed attempt.

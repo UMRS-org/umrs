@@ -23,7 +23,13 @@ from enum import Enum
 from functools import partial
 from typing import Any
 
+from . import co_serve
 from .base import JobStatus, OrchestratorBackend
+from .co_serve_lifecycle import (
+    register_co_served,
+    resume_co_served,
+    start_co_served_probes,
+)
 from .detection import BackendType, detect_backend
 from .endpoint_mounts import build_mount_environment
 from .endpoint_registry import (
@@ -571,7 +577,8 @@ class OrchestrationService:
         fresh provisioning path (fail-safe default).
         """
         try:
-            info = await self.backend.get_job_status(job_id)
+            # A co-served row's job is its primary's (ADR-109 D-2).
+            info = await self.backend.get_job_status(co_serve.primary_job_id(job_id))
         except Exception as exc:  # noqa: BLE001 - defensive
             logger.warning(
                 "Backend get_job_status(%s) failed during warm-endpoint check: %s",
@@ -792,6 +799,8 @@ class OrchestrationService:
             if service_kind == "bentoml_vision" or serving_backend == "bentoml":
                 submit_env["BENTOML_VISION_DOCKER_PORT"] = str(port)
                 submit_env["RIVAULT_SERVICE_PORT"] = str(port)
+            # ADR-109 D-2: a co-served vision sidecar listens on its own port.
+            submit_env.update(co_serve.submit_env(request.metadata, port))
             mount_env, mount_metadata = build_mount_environment(
                 tier=request.tier,
                 mounts=request.mounts,
@@ -861,6 +870,8 @@ class OrchestrationService:
             # reply's id IS the backend identity — record it at claim time
             # so the deprovision lane never cancels a surrogate.
             self.registry.set_backend_job_id(job_id, job_info.job_id)
+            # ADR-109 D-2: one more row per co-serving of the same job.
+            register_co_served(self.registry, endpoint, job_info.job_id)
             progress("registered", {"endpoint_id": job_id})
 
             if request.wait_for_ready:
@@ -973,6 +984,8 @@ class OrchestrationService:
 
             if readiness_result.is_ready:
                 self.registry.mark_ready(job_id)
+                # ADR-109 D-2: each co-serving's role probe, in the background.
+                start_co_served_probes(self, job_id)
                 _record_attempt(request, job_id, ok=True)
                 if progress:
                     progress("ready", {"models": readiness_result.models})
@@ -1754,12 +1767,13 @@ class OrchestrationService:
 
     def _unfinished_rows(self) -> list[RegisteredEndpoint]:
         # Gather outside later registry calls (refresh_endpoint takes the lock).
+        # Co-served rows finish with their primary (ADR-109 D-2), never alone.
         stuck_statuses = {EndpointStatus.PROVISIONING, EndpointStatus.STARTING}
         with self.registry._lock:
             return [
                 ep
                 for ep in self.registry._endpoints.values()
-                if ep.status in stuck_statuses
+                if ep.status in stuck_statuses and not co_serve.is_co_served(ep)
             ]
 
     async def _still_in_queue(self, ep: RegisteredEndpoint) -> bool:
@@ -1848,6 +1862,7 @@ class OrchestrationService:
             self._resume_tasks.add(task)
             task.add_done_callback(self._resume_tasks.discard)
             resumed.append(ep.job_id)
+        resume_co_served(self)
         if resumed:
             logger.info(
                 "Resumed %d interrupted provision(s): %s", len(resumed), resumed

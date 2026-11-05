@@ -177,10 +177,32 @@ def _probe_url(
     probe_path: str | None,
 ) -> tuple[str, str]:
     normalized_probe = "http" if probe_kind == "bentoml" else probe_kind
-    if normalized_probe == "http":
+    if normalized_probe in _SERVICE_PROBES:
         path = _normalized_probe_path(probe_path)
         return normalized_probe, f"http://{host}:{port}{path}"
     return normalized_probe, f"http://{host}:{port}/v1/models"
+
+
+#: Probes of a non-OpenAI service (BentoML vision): first its readiness path.
+#: ``segment`` (ADR-109 D-2 role probe) then runs one segmentation of the
+#: service's built-in probe image and needs at least one mask back.
+_SERVICE_PROBES = ("http", "segment")
+SEGMENT_PROBE_PATH = "/probe"
+
+
+def _segment_probe_error(response: httpx.Response) -> str | None:
+    """Why a segmentation probe answer is not a pass, or ``None``."""
+    if response.status_code != 200:
+        return f"Segment probe HTTP {response.status_code}: {response.text[:160]}"
+    try:
+        body = response.json()
+    except ValueError:
+        return "Segment probe returned no JSON"
+    masks = body.get("masks") if isinstance(body, dict) else None
+    if not isinstance(masks, int) or masks < 1:
+        detail = body.get("error") if isinstance(body, dict) else None
+        return f"Segment probe returned no mask ({detail or body!r:.160})"
+    return None
 
 
 def _normalized_probe_path(probe_path: str | None) -> str:
@@ -310,8 +332,10 @@ class ReadinessPoller:
             if response.status_code != 200:
                 return False, False, [], f"HTTP {response.status_code}"
 
-            if normalized_probe == "http":
-                return True, False, [], ""
+            if normalized_probe in _SERVICE_PROBES:
+                return await self._service_probe(
+                    client, host, port, normalized_probe, probe_model
+                )
 
             models = _models_from_response(response.json())
             validation_error = self._model_validation_error(models)
@@ -338,6 +362,37 @@ class ReadinessPoller:
             return False, False, [], "Request timeout"
         except Exception as e:
             return False, False, [], f"{type(e).__name__}: {e}"
+
+    async def _service_probe(
+        self,
+        client: httpx.AsyncClient,
+        host: str,
+        port: int,
+        probe_kind: str,
+        adapter: str | None,
+    ) -> tuple[bool, bool, list[str], str]:
+        """A service whose readiness path answered 200: ``http`` is ready;
+        ``segment`` must also segment the probe image (a reachable service
+        that cannot is degraded)."""
+        if probe_kind != "segment":
+            return True, False, [], ""
+        try:
+            response = await client.post(
+                f"http://{host}:{port}{SEGMENT_PROBE_PATH}",
+                json={"model_type": adapter or "sam3"},
+                timeout=httpx.Timeout(
+                    connect=self.config.connect_timeout_sec,
+                    read=self.config.probe_read_timeout_sec,
+                    write=5.0,
+                    pool=5.0,
+                ),
+            )
+        except httpx.HTTPError as exc:
+            return False, True, [], f"Segment probe error: {type(exc).__name__}: {exc}"
+        error = _segment_probe_error(response)
+        if error:
+            return False, True, [], self._truncate_error_detail(error)
+        return True, False, [str(adapter or "")], ""
 
     def _auth_headers(self) -> dict[str, str] | None:
         if self.config.auth_token:

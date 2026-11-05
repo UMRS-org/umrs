@@ -26,6 +26,8 @@ from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
+from .co_serve import CO_SERVED_BY_KEY
+
 if TYPE_CHECKING:
     from .registry_backend import RegistryBackend
 
@@ -106,6 +108,10 @@ ENDED_STATUSES = (
     EndpointStatus.TERMINATED,
     EndpointStatus.EXPIRED,
 )
+
+#: ADR-109 D-2: statuses a co-served row takes over from its primary (the
+#: job drains or ended, so every serving of it does).
+_FOLLOWED_STATUSES = (EndpointStatus.DRAINING, *ENDED_STATUSES)
 
 #: The metadata stamp a status transition writes.
 _TRANSITION_STAMPS = {
@@ -589,6 +595,7 @@ class EndpointRegistry:
             logger.info(
                 f"Endpoint {job_id} status: {old_status.value} -> {status.value}"
             )
+            self._follow_status(job_id, status, error_message)
             return endpoint
 
     def update_location(
@@ -618,6 +625,7 @@ class EndpointRegistry:
                 endpoint.host,
                 endpoint.port,
             )
+            self._follow_location(job_id, endpoint.host)
             return endpoint
 
     def update_metadata(
@@ -720,7 +728,49 @@ class EndpointRegistry:
                     job_id,
                     new_expires_at.isoformat(),
                 )
+            for row in self.co_rows(job_id):
+                self.extend_ttl(row.job_id, new_expires_at)
             return endpoint
+
+    # ── ADR-109 D-2: co-served rows follow their primary's job ──────────
+
+    def co_rows(self, job_id: str) -> list[RegisteredEndpoint]:
+        """The co-served rows whose job is ``job_id`` (its primary's id)."""
+        with self._lock:
+            return [
+                ep
+                for ep in self._by_job_id.values()
+                if (ep.metadata or {}).get(CO_SERVED_BY_KEY) == job_id
+            ]
+
+    def _follow_status(
+        self, job_id: str, status: EndpointStatus, error_message: str | None
+    ) -> None:
+        """A job that drains or ends takes its co-served rows with it.
+
+        Only the way down cascades: a co-served row's own readiness (READY,
+        DEGRADED) is its role probe's, and its failure never touches the
+        primary.
+        """
+        if status not in _FOLLOWED_STATUSES:
+            return
+        detail = f"its job {job_id} is {status.value}"
+        if error_message:
+            detail = f"{detail}: {error_message}"
+        for row in self.co_rows(job_id):
+            if row.status != status:
+                self.update_status(row.job_id, status, detail)
+
+    def _follow_location(self, job_id: str, host: str) -> None:
+        """Co-served rows run on their primary's node, on their own port."""
+        if not host or host == "pending":
+            return
+        for row in self.co_rows(job_id):
+            self.update_location(
+                row.job_id,
+                host=host,
+                metadata={"service_url": f"http://{host}:{row.port}"},
+            )
 
     def _find_candidate(self, project_id: str, model: str) -> RegisteredEndpoint | None:
         """Find an endpoint by (project_id, model) or served_model_name fallback."""
@@ -937,6 +987,9 @@ class EndpointRegistry:
                 # Delete from backend
                 self._delete_from_backend(job_id)
                 logger.info(f"Removed endpoint: {job_id}")
+            # ADR-109 D-2: the job's co-served rows go with it.
+            for row in self.co_rows(job_id):
+                self.remove(row.job_id)
             return endpoint
 
     def list_all(

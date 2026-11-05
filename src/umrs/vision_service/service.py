@@ -148,6 +148,86 @@ def _download_image_from_presigned_url(presigned_url, image_url):
     raise last_exc  # type: ignore[misc]
 
 
+def _positive_number(raw: str | None) -> float | None:
+    try:
+        value = float(str(raw or "").strip())
+    except ValueError:
+        return None
+    return value if value > 0 else None
+
+
+def budget_fraction(budget_gib: str | None, total_bytes: int) -> float | None:
+    """The CUDA memory fraction a ``budget_gib`` cap means on this device."""
+    budget = _positive_number(budget_gib)
+    if budget is None or total_bytes <= 0:
+        return None
+    return min(1.0, budget * (1 << 30) / total_bytes)
+
+
+def apply_gpu_memory_budget(torch_module=None) -> float | None:
+    """Cap this process's CUDA memory at ``VISION_GPU_MEMORY_BUDGET_GIB``.
+
+    ADR-109 D-2: on a GB10 the sidecar shares unified memory with vLLM
+    (``VLLM_GPU_MEM_UTIL``), so it must not grow past its budget. Unset means
+    no cap (a vision-only job owns the GPU).
+    """
+    if torch_module is None:
+        try:
+            import torch as torch_module
+        except ImportError:
+            return None
+    if not torch_module.cuda.is_available():
+        return None
+    total = torch_module.cuda.get_device_properties(0).total_memory
+    fraction = budget_fraction(os.environ.get("VISION_GPU_MEMORY_BUDGET_GIB"), total)
+    if fraction is not None:
+        torch_module.cuda.set_per_process_memory_fraction(fraction, 0)
+        logger.info("Vision GPU memory capped at %.3f of the device", fraction)
+    return fraction
+
+
+def max_batch() -> int | None:
+    """``VISION_MAX_BATCH``: inferences the service runs at once (unset: no limit)."""
+    value = _positive_number(os.environ.get("VISION_MAX_BATCH"))
+    return int(value) if value else None
+
+
+def _bounded(call, slots):
+    def run(*args, **kwargs):
+        with slots:
+            return call(*args, **kwargs)
+
+    return run
+
+
+def bound_concurrency(adapters: dict, limit: int | None) -> None:
+    """Let at most ``limit`` inferences (and probes) run at once, across adapters."""
+    import threading
+
+    if not limit:
+        return
+    slots = threading.BoundedSemaphore(limit)
+    for adapter in adapters.values():
+        if getattr(adapter, "_umrs_bounded", False):
+            continue
+        for name in ("infer", "probe"):
+            if hasattr(adapter, name):
+                setattr(adapter, name, _bounded(getattr(adapter, name), slots))
+        adapter._umrs_bounded = True
+
+
+def run_probe(adapters: dict, cache, model_type: str) -> dict:
+    """Run one adapter's role probe on its cached model ({"masks": 0, "error"} on failure)."""
+    adapter = adapters.get(model_type)
+    if adapter is None or not hasattr(adapter, "probe"):
+        return {"masks": 0, "error": f"no probe for model_type '{model_type}'"}
+    try:
+        return adapter.probe(cache.get_or_load(adapter, {}))
+    except Exception as exc:  # the probe reports, never raises
+        logger.exception("Vision probe failed (model_type=%s)", model_type)
+        return {"masks": 0, "error": f"{type(exc).__name__}: {exc}"}
+
+
 @bentoml.service(
     resources={"gpu": 1},
     traffic={"timeout": 3600, "max_concurrency": 64},
@@ -167,6 +247,15 @@ class VisionModelService:
     def __init__(self):
         self._s3 = None
         self._cache = ModelCache()
+        # ADR-109 D-2: a sidecar co-served beside vLLM keeps to its budget.
+        apply_gpu_memory_budget()
+        bound_concurrency(ADAPTER_REGISTRY, max_batch())
+
+    @bentoml.api
+    def probe(self, model_type: str = "sam3") -> dict:
+        """Role probe (ADR-109 D-2): segment the adapter's built-in probe
+        image; ``masks`` counts what it found (a pass needs at least one)."""
+        return run_probe(ADAPTER_REGISTRY, self._cache, model_type)
 
     def _ensure_s3(self):
         if self._s3 is None:

@@ -294,10 +294,21 @@ def role_alias_models(alias: str) -> tuple[str, ...]:
         return ()
     models: list[str] = []
     for entry in roster_entries():
-        model = entry.get("model")
-        if alias in (entry.get("aliases") or ()) and model and model not in models:
-            models.append(str(model))
+        for model in _alias_models(entry, alias):
+            if model not in models:
+                models.append(model)
     return tuple(models)
+
+
+def _alias_models(entry: dict[str, Any], alias: str) -> list[str]:
+    """The entry's models that serve ``alias``: its own, and (ADR-109 D-2)
+    each co-serving whose ``aliases`` name it."""
+    from .co_serve import parse_co_serve
+
+    model = entry.get("model")
+    served = [str(model)] if model and alias in (entry.get("aliases") or ()) else []
+    specs, _errors = parse_co_serve(entry)
+    return served + [spec.model for spec in specs if alias in spec.aliases]
 
 
 def resolve_model_recipe(

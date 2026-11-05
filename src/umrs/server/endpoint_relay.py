@@ -114,6 +114,17 @@ def provision_result(result: Any) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
+def replica_metadata(policy: KeepAlivePolicy, action: RelayAction) -> dict:
+    """What a new service replica records: its recipe digest (ADR-106 D-4)
+    and, for a surge that retries a failed co-serving, that mark (ADR-109 D-2)."""
+    from ..orchestrator.service_controller import CO_RETRY_KEY, DIGEST_KEY
+
+    metadata: dict = {DIGEST_KEY: policy.digest}
+    if action.co_retry:
+        metadata[CO_RETRY_KEY] = True
+    return metadata
+
+
 async def _provision(
     policy: KeepAlivePolicy, action: RelayAction, now: datetime
 ) -> str | None:
@@ -143,9 +154,7 @@ async def _provision(
     if policy.service and job_id:
         # ADR-106 D-4: the replica remembers the recipe it was built from;
         # a later change to the entry makes it due for an upgrade roll.
-        from ..orchestrator.service_controller import DIGEST_KEY
-
-        get_registry().update_metadata(str(job_id), {DIGEST_KEY: policy.digest})
+        get_registry().update_metadata(str(job_id), replica_metadata(policy, action))
     logger.info(
         "endpoint relay: provisioned %s for %s (%s) job=%s",
         policy.model,
@@ -220,12 +229,16 @@ _EXECUTORS = {"provision": _provision, "drain": _drain, "retire": _retire}
 
 def service_policies_for(name: str) -> list[KeepAlivePolicy]:
     """The ``service`` policies serving *name*: a role alias (``svc-*``,
-    every model whose entry carries it) or a model name. Roster order."""
+    every model whose entry carries it) or a model name. Roster order.
+
+    ADR-109 D-2: a co-served model (``svc-vision2`` = SAM3.1) is served by
+    its primary's replicas, so its primary's policy answers for it.
+    """
     models = set(role_alias_models(name)) or {name}
     return [
         policy
         for policy in keep_alive_policies(roster_entries())
-        if policy.service and policy.model in models
+        if policy.service and models & {policy.model, *policy.co_serve}
     ]
 
 
