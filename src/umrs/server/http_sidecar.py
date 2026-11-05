@@ -1097,6 +1097,11 @@ def _create_app():
     from umrs.api.projects import router as projects_router
 
     app.include_router(projects_router)
+    # ADR-105 S4 (D-8, 2026-11-05): the agent's situational brief, under the
+    # projects family (/gw/projects/), so no new gateway location.
+    from umrs.api.agent_brief import router as agent_brief_router
+
+    app.include_router(agent_brief_router)
     # ADR-108 D-3 (2026-11-04): signed scope tokens of work levels.
     from umrs.api.scope_tokens import router as scopes_router
 
