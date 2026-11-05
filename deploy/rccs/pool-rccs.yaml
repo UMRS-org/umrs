@@ -230,6 +230,11 @@ endpoints:
       # umrs.orchestrator: psycopg2), so the runc → step default never fired;
       # the detached worker's pause process broke and Ray never got 2 GPUs.
       RIVAULT_MN_WORKER_MODE: "step"
+      # Job 458139 (2026-11-05): vLLM refused the head rank (CUDA free 59.4 of
+      # 121.6 GiB; the 0.78 check wants 94.9). The free figure excludes
+      # reclaimable Lustre cache; a 100 GiB CUDA allocation reclaims it (102.7
+      # GiB free after, probe jobs 458165/458166). Both ranks reclaim first.
+      RIVAULT_MN_PRESTART_RECLAIM_GIB: "100"
       MAX_JOBS: "4"
       # Official image, CUDA 13.0.2 (matches the 580.x driver), DeepSeek-V4
       # stack native at this tag; never :latest.

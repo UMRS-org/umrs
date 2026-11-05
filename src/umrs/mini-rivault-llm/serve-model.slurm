@@ -2077,6 +2077,20 @@ RAYEOF
     if [[ -n "${_mn_s3host}" ]]; then
         _mn_vllm_args+=( --add-host "${_mn_s3host}:${_mn_priv}.${_mn_nginxout}" )
     fi
+    # GB10 pre-start reclaim (gb10_reclaim.py; rccs job 458139, 2026-11-05):
+    # CUDA counts reclaimable Lustre cache as used (59.4 of 121.6 GiB free on
+    # an idle ng-dgx-m node), so vLLM's --gpu-memory-utilization check refuses
+    # the rank. A short CUDA allocation reclaims it (102.7 GiB free after).
+    # Opt-in per roster entry; runs just before `vllm serve` (head) and
+    # `ray start` (worker), and never blocks the launch.
+    _mn_reclaim=""
+    if [[ -n "${RIVAULT_MN_PRESTART_RECLAIM_GIB:-}" ]]; then
+        _mn_vllm_args+=(
+            -v "${SCRIPT_DIR}/gb10_reclaim.py:/opt/rivault/gb10_reclaim.py:ro"
+            -e "RIVAULT_MN_PRESTART_RECLAIM_GIB=${RIVAULT_MN_PRESTART_RECLAIM_GIB}"
+        )
+        _mn_reclaim="{ python3 /opt/rivault/gb10_reclaim.py || true; } && "
+    fi
 
     # Start the Ray head AND the co-located vLLM driver in one container.
     # Sequence inside the container: install Ray → start Ray head (daemonized,
@@ -2102,7 +2116,7 @@ RAYEOF
             --env-file "./env.${uuid}" \
             "${_mn_vllm_args[@]}" \
             "${VLLM_IMAGE}" \
-            -c 'export PATH=/usr/local/bin:$PATH; python3 -m pip install -q --no-index --find-links /root/.cache/huggingface/ray_aarch64_env/wheels ray 2>&1 | grep -v "^$\|already\|Requirement" || python3 -m pip install -q ray; ray start --head --node-ip-address="'"${HEAD_IP}"'" --port="'"${RAY_PORT}"'" --num-gpus="'"${_gpus_per_node}"'" --object-store-memory=1073741824 --include-dashboard=false; echo "[vllm-head] Ray head started; waiting for '"${_want_gpus}"' GPUs..."; i=0; while [ $i -lt 120 ]; do g=$(ray status 2>/dev/null | grep -oE "[0-9.]+/[0-9.]+ GPU" | head -1 | sed "s@.*/@@; s@ GPU@@; s@[.].*@@"); [ "${g:-0}" = "'"${_want_gpus}"'" ] && break; sleep 5; i=$((i+1)); done; echo "[vllm-head] GPUs=${g:-0}; launching vLLM"; exec vllm serve "$VLLM_MODEL_REF" $VLLM_EXTRA_ARGS ${VLLM_SPECULATIVE_CONFIG:+--speculative-config "$VLLM_SPECULATIVE_CONFIG"} --served-model-name "$VLLM_SERVED_MODEL_NAME" --api-key "$VLLM_API_KEY" -tp "$VLLM_TP" -pp "$VLLM_PP" --distributed-executor-backend ray --host 0.0.0.0 --port 8000 --max-model-len "${VLLM_MAX_MODEL_LEN:-4096}" --gpu-memory-utilization "${VLLM_GPU_MEM_UTIL:-0.95}" ${VLLM_LANGUAGE_MODEL_ONLY:+--language-model-only} ${VLLM_KV_CACHE_MEMORY_BYTES:+--kv-cache-memory-bytes "$VLLM_KV_CACHE_MEMORY_BYTES"} ${VLLM_MAX_NUM_SEQS:+--max-num-seqs "$VLLM_MAX_NUM_SEQS"} ${VLLM_MAX_NUM_BATCHED_TOKENS:+--max-num-batched-tokens "$VLLM_MAX_NUM_BATCHED_TOKENS"} ${VLLM_ENFORCE_EAGER:+--enforce-eager} --enable-auto-tool-choice --tool-call-parser "${VLLM_TOOL_CALL_PARSER:-hermes}" ${VLLM_REASONING_PARSER:+--reasoning-parser "$VLLM_REASONING_PARSER"}'
+            -c 'export PATH=/usr/local/bin:$PATH; python3 -m pip install -q --no-index --find-links /root/.cache/huggingface/ray_aarch64_env/wheels ray 2>&1 | grep -v "^$\|already\|Requirement" || python3 -m pip install -q ray; ray start --head --node-ip-address="'"${HEAD_IP}"'" --port="'"${RAY_PORT}"'" --num-gpus="'"${_gpus_per_node}"'" --object-store-memory=1073741824 --include-dashboard=false; echo "[vllm-head] Ray head started; waiting for '"${_want_gpus}"' GPUs..."; i=0; while [ $i -lt 120 ]; do g=$(ray status 2>/dev/null | grep -oE "[0-9.]+/[0-9.]+ GPU" | head -1 | sed "s@.*/@@; s@ GPU@@; s@[.].*@@"); [ "${g:-0}" = "'"${_want_gpus}"'" ] && break; sleep 5; i=$((i+1)); done; echo "[vllm-head] GPUs=${g:-0}; launching vLLM"; '"${_mn_reclaim}"'exec vllm serve "$VLLM_MODEL_REF" $VLLM_EXTRA_ARGS ${VLLM_SPECULATIVE_CONFIG:+--speculative-config "$VLLM_SPECULATIVE_CONFIG"} --served-model-name "$VLLM_SERVED_MODEL_NAME" --api-key "$VLLM_API_KEY" -tp "$VLLM_TP" -pp "$VLLM_PP" --distributed-executor-backend ray --host 0.0.0.0 --port 8000 --max-model-len "${VLLM_MAX_MODEL_LEN:-4096}" --gpu-memory-utilization "${VLLM_GPU_MEM_UTIL:-0.95}" ${VLLM_LANGUAGE_MODEL_ONLY:+--language-model-only} ${VLLM_KV_CACHE_MEMORY_BYTES:+--kv-cache-memory-bytes "$VLLM_KV_CACHE_MEMORY_BYTES"} ${VLLM_MAX_NUM_SEQS:+--max-num-seqs "$VLLM_MAX_NUM_SEQS"} ${VLLM_MAX_NUM_BATCHED_TOKENS:+--max-num-batched-tokens "$VLLM_MAX_NUM_BATCHED_TOKENS"} ${VLLM_ENFORCE_EAGER:+--enforce-eager} --enable-auto-tool-choice --tool-call-parser "${VLLM_TOOL_CALL_PARSER:-hermes}" ${VLLM_REASONING_PARSER:+--reasoning-parser "$VLLM_REASONING_PARSER"}'
     }
     if ! _launch_engine_mn; then
         echo "[rivault] FATAL: failed to launch Ray head + vLLM container"
@@ -2159,7 +2173,7 @@ RAYEOF
     fi
     echo "[rivault] Multi-node worker launch mode: ${_mn_worker_mode}"
     # The worker container's shell command (the NVML self-check, then Ray).
-    _mn_worker_sh="export PATH=/usr/local/bin:\$PATH; python3 -m pip install -q --no-index --find-links /root/.cache/huggingface/ray_aarch64_env/wheels ray 2>/dev/null || python3 -m pip install -q ray; python3 -c 'import pynvml; pynvml.nvmlInit(); assert pynvml.nvmlDeviceGetCount() > 0' && exec ray start --address='${RAY_ADDRESS}' --num-gpus='${_gpus_per_node}' --object-store-memory=1073741824 --block"
+    _mn_worker_sh="export PATH=/usr/local/bin:\$PATH; python3 -m pip install -q --no-index --find-links /root/.cache/huggingface/ray_aarch64_env/wheels ray 2>/dev/null || python3 -m pip install -q ray; python3 -c 'import pynvml; pynvml.nvmlInit(); assert pynvml.nvmlDeviceGetCount() > 0' && ${_mn_reclaim}exec ray start --address='${RAY_ADDRESS}' --num-gpus='${_gpus_per_node}' --object-store-memory=1073741824 --block"
 
     # Start Ray workers on the remaining nodes (one task per node).
     for ((i=1; i<${#RAY_NODES[@]}; i++)); do
@@ -2245,7 +2259,7 @@ RAYEOF
                         -e "TRITON_LIBCUDA_PATH=/usr/lib/aarch64-linux-gnu" \
                         "${_mn_vllm_args[@]}" \
                         "${VLLM_IMAGE}" \
-                        -c "export PATH=/usr/local/bin:\$PATH; python3 -m pip install -q --no-index --find-links /root/.cache/huggingface/ray_aarch64_env/wheels ray 2>/dev/null || python3 -m pip install -q ray; python3 -c 'import pynvml; pynvml.nvmlInit(); assert pynvml.nvmlDeviceGetCount() > 0' && exec ray start --address='${RAY_ADDRESS}' --num-gpus='${_gpus_per_node}' --object-store-memory=1073741824 --block"
+                        -c "export PATH=/usr/local/bin:\$PATH; python3 -m pip install -q --no-index --find-links /root/.cache/huggingface/ray_aarch64_env/wheels ray 2>/dev/null || python3 -m pip install -q ray; python3 -c 'import pynvml; pynvml.nvmlInit(); assert pynvml.nvmlDeviceGetCount() > 0' && ${_mn_reclaim}exec ray start --address='${RAY_ADDRESS}' --num-gpus='${_gpus_per_node}' --object-store-memory=1073741824 --block"
                 # Watch the detached container with short polling steps. Only
                 # relaunch when it has verifiably exited; transient poll
                 # failures (srun step killed by the cluster's step-killer, ssh

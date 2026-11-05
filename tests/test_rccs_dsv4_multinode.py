@@ -101,3 +101,42 @@ def test_site_env_loader_failure_is_logged_not_silent(tmp_path):
     assert "site.yaml/partition-profile env defaults NOT applied" in proc.stderr
     assert "No module named 'psycopg2'" in proc.stderr
     assert not list(tmp_path.glob("rivault-site-env.*"))
+
+
+def test_rccs_deepseek_reclaims_cuda_memory_before_start(env):
+    """Job 458139: CUDA free 59.4 of 121.6 GiB failed vLLM's 0.78 check; a
+    100 GiB allocation reclaims the Lustre cache (probe jobs 458165/458166)."""
+    assert env["RIVAULT_MN_PRESTART_RECLAIM_GIB"] == "100"
+
+
+def test_both_ranks_reclaim_right_before_they_start():
+    text = SLURM.read_text(encoding="utf-8")
+    assert "'\"${_mn_reclaim}\"'exec vllm serve" in text
+    assert text.count("&& ${_mn_reclaim}exec ray start") == 2  # step + detached worker
+
+
+def _reclaim_block() -> str:
+    text = SLURM.read_text(encoding="utf-8")
+    start = text.index('    _mn_reclaim=""')
+    return text[start : text.index("\n    fi\n", start) + 8]
+
+
+@pytest.mark.parametrize(
+    ("gib", "mounted", "cmd"),
+    [("100", True, "{ python3 /opt/rivault/gb10_reclaim.py || true; } && "), ("", False, "")],
+)
+def test_reclaim_is_opt_in_and_never_blocks(gib, mounted, cmd):
+    script = (
+        "_mn_vllm_args=()\n"
+        + _reclaim_block()
+        + 'printf "%s\\n" "${_mn_vllm_args[@]}"; printf "CMD=[%s]\\n" "${_mn_reclaim}"\n'
+    )
+    proc = subprocess.run(
+        ["bash", "-c", script],
+        capture_output=True,
+        text=True,
+        env={"PATH": "/usr/bin:/bin", "SCRIPT_DIR": "/w", "RIVAULT_MN_PRESTART_RECLAIM_GIB": gib},
+        check=True,
+    )
+    assert ("/w/gb10_reclaim.py:/opt/rivault/gb10_reclaim.py:ro" in proc.stdout) is mounted
+    assert f"CMD=[{cmd}]" in proc.stdout
