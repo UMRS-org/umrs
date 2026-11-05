@@ -9,6 +9,7 @@ rejected there.
 from __future__ import annotations
 
 import re
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -65,3 +66,38 @@ def test_step_mode_owns_venue_pause_process_and_container_in_one_step():
     assert "rivault_venue_prepare" in step and "podman system migrate" in step
     assert "exec ${_wcmd}" in step
     assert " -d " not in step
+
+
+def test_rccs_deepseek_spells_out_the_step_worker_mode(env):
+    """Job 456170 (2026-11-05): the runc → step default never fired on rccs
+    (the wrapper's partition-profile loader fails there), so the entry names
+    the mode itself."""
+    assert env["RIVAULT_MN_WORKER_MODE"] == "step"
+
+
+def _site_env_loader() -> str:
+    text = SLURM.read_text(encoding="utf-8")
+    start = text.index("load_site_env_defaults() {")
+    return text[start : text.index("\n}\n", start) + 3]
+
+
+def test_site_env_loader_failure_is_logged_not_silent(tmp_path):
+    """rccs python3 cannot import umrs.orchestrator (no psycopg2); the loader
+    used to swallow that and apply no site/partition default without a word."""
+    fake = tmp_path / "bin"
+    fake.mkdir()
+    py = fake / "python3"
+    py.write_text("#!/bin/sh\necho \"ModuleNotFoundError: No module named 'psycopg2'\" >&2\nexit 1\n")
+    py.chmod(0o755)
+    script = _site_env_loader() + 'load_site_env_defaults; echo "rc=$? MARK=${RIVAULT_PARTITION_OCI_RUNTIME:-unset}"\n'
+    proc = subprocess.run(
+        ["bash", "-c", script],
+        capture_output=True,
+        text=True,
+        env={"PATH": f"{fake}:/usr/bin:/bin", "REPO_ROOT": str(tmp_path), "TMPDIR": str(tmp_path)},
+        check=False,
+    )
+    assert proc.stdout.strip() == "rc=0 MARK=unset"
+    assert "site.yaml/partition-profile env defaults NOT applied" in proc.stderr
+    assert "No module named 'psycopg2'" in proc.stderr
+    assert not list(tmp_path.glob("rivault-site-env.*"))

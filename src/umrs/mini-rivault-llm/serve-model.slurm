@@ -111,9 +111,11 @@ _apply_vllm_patches
 load_site_env_defaults() {
     local python_bin
     local rendered_exports
+    local loader_err
 
     python_bin="$(command -v python3 || true)"
     [[ -n "$python_bin" ]] || return 0
+    loader_err="$(mktemp "${TMPDIR:-/tmp}/rivault-site-env.XXXXXX" 2>/dev/null)" || loader_err=/dev/null
 
     rendered_exports="$({
         PYTHONPATH="${REPO_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}" \
@@ -146,7 +148,15 @@ for layer in layers:
             continue
         print(f"export {key}={shlex.quote(str(value))}")
 PY
-    } 2>/dev/null)" || return 0
+    } 2>"${loader_err}")" || {
+        # Never silent (2026-11-05): on rccs this loader failed on every job
+        # (python3 there has no psycopg2, which umrs.orchestrator imports), so
+        # no site or partition-profile default ever reached the wrapper.
+        echo "[rivault] WARNING: site.yaml/partition-profile env defaults NOT applied; the loader failed: $(tail -n 1 "${loader_err}" 2>/dev/null)" >&2
+        if [[ "${loader_err}" != /dev/null ]]; then rm -f "${loader_err}"; fi
+        return 0
+    }
+    if [[ "${loader_err}" != /dev/null ]]; then rm -f "${loader_err}"; fi
 
     if [[ -n "$rendered_exports" ]]; then
         eval "$rendered_exports"

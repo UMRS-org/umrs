@@ -225,6 +225,11 @@ endpoints:
       # one long-lived step on runc partitions (`step` mode; probe job 455210:
       # no step-killer on rccs).
       RIVAULT_USERNS_MODE: "host"
+      # Spelled out (2026-11-05, job 456170): the wrapper's site/partition env
+      # loader never runs on rccs (the cluster python3 cannot import
+      # umrs.orchestrator: psycopg2), so the runc → step default never fired;
+      # the detached worker's pause process broke and Ray never got 2 GPUs.
+      RIVAULT_MN_WORKER_MODE: "step"
       MAX_JOBS: "4"
       # Official image, CUDA 13.0.2 (matches the 580.x driver), DeepSeek-V4
       # stack native at this tag; never :latest.
