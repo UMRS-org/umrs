@@ -107,6 +107,12 @@ EXECUTOR_ROUTED_KEYS_METADATA_KEY = "__executor_routed_keys__"
 # earlier step that varies per run never re-tags its job.
 EXECUTOR_UPSTREAM_METADATA_KEY = "__executor_upstream_steps__"
 
+# ADR-109 D-5: the routed endpoint a staged step reaches through its socket
+# (``api_base``, ``kind``, ``api_key``, ``headers``). Only the lane that runs
+# a forwarder gets it; the job script and a 0600 file outside the pod carry
+# it, never the worker's payload.
+EXECUTOR_ENDPOINT_METADATA_KEY = "__executor_endpoint__"
+
 # Executor-internal keys a worker never sees in its ``ctx.metadata``.
 _WORKER_INTERNAL_KEYS = frozenset(
     {
@@ -116,6 +122,7 @@ _WORKER_INTERNAL_KEYS = frozenset(
         EXECUTOR_GPU_COUNT_METADATA_KEY,
         EXECUTOR_ROUTED_KEYS_METADATA_KEY,
         EXECUTOR_UPSTREAM_METADATA_KEY,
+        EXECUTOR_ENDPOINT_METADATA_KEY,
     }
 )
 

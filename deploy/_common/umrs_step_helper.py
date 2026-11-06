@@ -43,7 +43,13 @@ EXIT_SCHEDULER = 5  # squeue / sacct failed: Slurm is down, not the job
 WORKDIR_DIRS = ("in", "out", "reply", "src", "log")
 STAGE_TOPS = ("in", "src")
 #: Files the server may write into a workdir, with their size caps.
-PUT_CAPS = {"input.pkl": 64 * 1024 * 1024, "job.sbatch": 1024 * 1024}
+#: ``endpoint.json`` (ADR-109 D-5): the routed endpoint's credential headers,
+#: read by the step's forwarder only; the step pod never mounts it.
+PUT_CAPS = {
+    "input.pkl": 64 * 1024 * 1024,
+    "job.sbatch": 1024 * 1024,
+    "endpoint.json": 64 * 1024,
+}
 REPLY_PATH = ("reply", "output.json")
 LOG_PATH = ("log", "slurm.err")
 MAX_REPLY_CAP = 64 * 1024 * 1024

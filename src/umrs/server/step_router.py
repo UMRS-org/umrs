@@ -80,6 +80,10 @@ class RoutingDecision:
     routed_capabilities: list[str] = field(default_factory=list)
     lora: str | None = None
     model_type: str | None = None
+    # The chosen endpoint's serving backend ("bentoml" for the vision
+    # service, else its row's value; None off the registry path). ADR-109
+    # D-5: it picks the paths a staged step's forwarder allows.
+    serving_backend: str | None = None
     # Affinity tiebreaker applied inside the registry-capability path.
     # ``affinity_used`` is True when the chosen endpoint matched at least
     # one parent's endpoint id; ``affinity_matched_parents`` lists the
@@ -741,6 +745,19 @@ def _active_affinity(hints: AffinityHints | None) -> AffinityHints | None:
     return None
 
 
+def endpoint_serving_backend(ep: dict[str, Any]) -> str | None:
+    """An endpoint row's serving backend: "bentoml" for the vision service
+    (the rule ``api/vision.py`` uses), else the row's own value."""
+    if (
+        ep.get("serving_backend") == "bentoml"
+        or ep.get("service_kind") == "bentoml_vision"
+        or ep.get("model_type") == "vision"
+    ):
+        return "bentoml"
+    backend = ep.get("serving_backend")
+    return str(backend) if backend else None
+
+
 @dataclass
 class StepRouter:
     """Resolves :class:`StepSpec` -> :class:`RoutingDecision`."""
@@ -897,6 +914,7 @@ class StepRouter:
             lora=step.lora,
             model_type=step.model_type
             or (str(entry.get("model_type")) if entry.get("model_type") else None),
+            serving_backend=endpoint_serving_backend(ep),
             affinity_used=bool(hints is not None and chosen["aff_score"] > 0),
             affinity_matched_parents=list(chosen["matches"]),
             load_score=float(chosen["load_norm"]),

@@ -351,6 +351,32 @@ def image_archive_stem(image: str) -> str:
     return f"{name}-{tag}"
 
 
+#: ADR-109 D-5: the step's socket to its routed endpoint, in the pod and in
+#: the forwarder (``reply/endpoint.sock`` on the node), and its env name.
+ENDPOINT_SOCKET_ENV = "UMRS_STEP_ENDPOINT_SOCKET"
+ENDPOINT_SOCKET_PATH = "/run/umrs/endpoint.sock"
+#: The forwarder's credential file in the workdir (0600, written by the
+#: helper's ``put``): mounted into the forwarder only, never into the pod.
+ENDPOINT_CREDENTIAL_FILE = "endpoint.json"
+_ENDPOINT_FORWARDER = "umrs.server.step_endpoint_forwarder"
+#: Half-second ticks the job waits for the forwarder's socket.
+_ENDPOINT_START_TICKS = 120
+
+
+@dataclass(frozen=True)
+class EndpointForward:
+    """The routed endpoint a step reaches through its socket (ADR-109 D-5):
+    the one upstream, its kind (the paths it allows) and the byte caps. The
+    credential is not here: it is a file only the forwarder reads."""
+
+    host: str
+    port: int
+    kind: str
+    max_request_bytes: int
+    max_response_bytes: int
+    max_total_bytes: int
+
+
 @dataclass(frozen=True)
 class StagedJob:
     """Everything the staged job script is rendered from."""
@@ -406,6 +432,9 @@ class StagedJob:
     watch_seconds: int = WATCH_SECONDS
     log_head_bytes: int = LOG_HEAD_BYTES
     log_tail_bytes: int = LOG_TAIL_BYTES
+    #: ADR-109 D-5: the step's routed endpoint, reached through a forwarder
+    #: and a socket; None: no forwarder, no socket, no env name.
+    endpoint: EndpointForward | None = None
 
 
 #: The step container's posture (ADR-074 D-4, build spec §7). ``--user``
@@ -573,17 +602,95 @@ def _staged_gpu_lines(job: StagedJob) -> list[str]:
 
 def staged_podman_argv(job: StagedJob) -> list[str]:
     """``podman run`` for a staged step; ``${_step_image}`` is set by the
-    image-ensure lines. No other ``-e`` — the step gets files only."""
+    image-ensure lines. No other ``-e`` — the step gets files only, and,
+    with a routed endpoint, its socket (ADR-109 D-5)."""
     parts = [*_podman_run(job), *_pod_posture(job, '"${_step_ctr}"')]
-    for entry, target, mode in _STAGED_MOUNTS:
+    for entry, target, mode in _staged_mounts(job):
         parts += ["-v", shlex.quote(f"{job.workdir}/{entry}:{target}:{mode}")]
-    for assignment in _STAGED_ENV:
+    for assignment in _staged_env(job):
         parts += ["-e", assignment]
     if job.needs_gpu:
         parts += _staged_gpu_devices(job)
     return [
         *parts,
         *_pod_command('"${_step_image}"', "python", "-m", "umrs.server.step_worker"),
+    ]
+
+
+def _staged_mounts(job: StagedJob) -> tuple[tuple[str, str, str], ...]:
+    """The pod's mounts: the staged set, plus the endpoint socket when the
+    step has a routed endpoint (never the credential file)."""
+    if job.endpoint is None:
+        return _STAGED_MOUNTS
+    return (*_STAGED_MOUNTS, ("reply/endpoint.sock", ENDPOINT_SOCKET_PATH, "rw"))
+
+
+def _staged_env(job: StagedJob) -> tuple[str, ...]:
+    """The step's four names, plus ``UMRS_STEP_ENDPOINT_SOCKET`` when a
+    forwarder runs (ADR-109 D-5)."""
+    if job.endpoint is None:
+        return _STAGED_ENV
+    return (*_STAGED_ENV, f"{ENDPOINT_SOCKET_ENV}={ENDPOINT_SOCKET_PATH}")
+
+
+def _forwarder_argv(job: StagedJob, fwd: EndpointForward) -> list[str]:
+    """``podman run`` of the forwarder: trusted code from the platform step
+    image (``${_step_trusted}``) in the step's posture, except its network:
+    the host's (rootless: the job user's own reach, no listener — it serves
+    only the socket), so it can open TCP to the one upstream. It sees the
+    step's ``reply/`` (where its socket lives) and the credential file."""
+    posture = [
+        "--network=host" if part == "--network=none" else part
+        for part in _pod_posture(job, '"${_step_ctr}-endpoint"')
+    ]
+    mounts = (
+        f"{job.workdir}/reply:{ENDPOINT_SOCKET_PATH.rsplit('/', 1)[0]}:rw",
+        f"{job.workdir}/{ENDPOINT_CREDENTIAL_FILE}:/umrs-endpoint.json:ro",
+    )
+    args = (
+        ("--socket", ENDPOINT_SOCKET_PATH),
+        ("--credential", "/umrs-endpoint.json"),
+        ("--upstream", f"{fwd.host}:{int(fwd.port)}"),
+        ("--kind", fwd.kind),
+        ("--max-request-bytes", str(int(fwd.max_request_bytes))),
+        ("--max-response-bytes", str(int(fwd.max_response_bytes))),
+        ("--max-total-bytes", str(int(fwd.max_total_bytes))),
+    )
+    command = _pod_command(
+        '"${_step_trusted}"',
+        "python",
+        "-I",
+        "-m",
+        _ENDPOINT_FORWARDER,
+        *(shlex.quote(word) for pair in args for word in pair),
+    )
+    volumes = [word for m in mounts for word in ("-v", shlex.quote(m))]
+    return [*_podman_run(job), *posture, *volumes, *command]
+
+
+def _staged_endpoint_lines(job: StagedJob) -> list[str]:
+    """ADR-109 D-5: start the step's forwarder and wait for its socket; a
+    forwarder that does not come up fails the job before the step runs.
+    The EXIT trap stops it after the step (:func:`_staged_prologue`)."""
+    if job.endpoint is None:
+        return []
+    sock = shlex.quote(f"{job.workdir}/reply/endpoint.sock")
+    return [
+        "# ADR-109 D-5: the step reaches its routed endpoint through a socket.",
+        f"_step_sock={sock}",
+        " ".join(_forwarder_argv(job, job.endpoint)) + " >&2 &",
+        "_step_fwd_pid=$!",
+        f"for _ in $(seq 1 {_ENDPOINT_START_TICKS}); do",
+        '    [[ -S "${_step_sock}" ]] && break',
+        '    kill -0 "${_step_fwd_pid}" 2>/dev/null || break',
+        "    sleep 0.5",
+        "done",
+        _or_fatal(
+            '[[ -S "${_step_sock}" ]]',
+            _EX_CONFIG,
+            "the endpoint forwarder did not start on $(hostname)",
+        ),
+        "",
     ]
 
 
@@ -630,7 +737,17 @@ def _staged_gpu_request_lines(job: StagedJob) -> list[str]:
     return lines
 
 
-def _staged_prologue() -> list[str]:
+def _endpoint_stop_lines(job: StagedJob) -> list[str]:
+    """The forwarder goes with the step (TERM, then its summary line)."""
+    if job.endpoint is None:
+        return []
+    return [
+        '    podman stop -t 5 "${_step_ctr}-endpoint" >/dev/null 2>&1 || true',
+        '    podman rm -f "${_step_ctr}-endpoint" >/dev/null 2>&1 || true',
+    ]
+
+
+def _staged_prologue(job: StagedJob) -> list[str]:
     return [
         "",
         "set -euo pipefail",
@@ -650,6 +767,7 @@ def _staged_prologue() -> list[str]:
         "    fi",
         '    podman kill "${_step_ctr}" >/dev/null 2>&1 || true',
         '    podman rm -f "${_step_ctr}" >/dev/null 2>&1 || true',
+        *_endpoint_stop_lines(job),
         "}",
         "trap _step_cleanup EXIT",
         "trap 'exit 143' TERM",
@@ -967,13 +1085,13 @@ def render_staged_job_script(job: StagedJob) -> str:
     is echoed and every value from Python is quoted or validated. The pod's
     stdout and stderr go capped to ``log/slurm.err`` (the tail the server
     reads); the job's exit code is the pod's (``pipefail``)."""
-    lines = _staged_directives(job) + _staged_prologue()
+    lines = _staged_directives(job) + _staged_prologue(job)
     lines += _staged_venue_lines(job.venue_script)
     lines += _staged_image_lines(job.image, job.image_archive_dir)
     lines += _staged_trusted_image_lines(job)
     lines += _staged_seccomp_lines(job)
     lines += _staged_pids_lines(job) + _staged_stale_lines() + _staged_watch_lines(job)
-    lines += _staged_gpu_lines(job)
+    lines += _staged_gpu_lines(job) + _staged_endpoint_lines(job)
     lines += [" ".join(staged_podman_argv(job)) + " 2>&1 | _step_log >&2", ""]
     return "\n".join(lines)
 

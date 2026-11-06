@@ -213,7 +213,10 @@
         "pids_limit": { "type": "integer", "minimum": 0, "description": "--pids-limit of the step container; 0 drops it (and the job's check) for a runtime that cannot apply it" },
         "cgroups": { "type": "string", "enum": ["enabled", "disabled"], "description": "disabled: the venue grants the step job no cgroup to create the container's in (Slurm cgroup v2 without delegation); the container runs with --cgroups=disabled inside the job's cgroup and pids_limit must be 0" },
         "nproc_limit": { "type": "integer", "minimum": 0, "description": "--ulimit nproc (RLIMIT_NPROC) of the step container: a process bound without a cgroup; 0 omits it" },
-        "endpoint_wait_sec": { "type": "integer", "minimum": 0, "description": "ADR-109 D-4: seconds a step waits for its endpoint to turn READY (queue plus model load) before it fails by name; default 2700, 0 = fail at once (UMRS_STEP_ENDPOINT_WAIT_SEC)" }
+        "endpoint_wait_sec": { "type": "integer", "minimum": 0, "description": "ADR-109 D-4: seconds a step waits for its endpoint to turn READY (queue plus model load) before it fails by name; default 2700, 0 = fail at once (UMRS_STEP_ENDPOINT_WAIT_SEC)" },
+        "endpoint_max_request_bytes": { "type": "integer", "minimum": 0, "description": "ADR-109 D-5: largest request body a staged step may send its routed endpoint through its socket; 0 = the forwarder default, 32 MiB (UMRS_STEP_ENDPOINT_MAX_REQUEST_BYTES)" },
+        "endpoint_max_response_bytes": { "type": "integer", "minimum": 0, "description": "ADR-109 D-5: largest single answer the forwarder passes back; 0 = default, 256 MiB (UMRS_STEP_ENDPOINT_MAX_RESPONSE_BYTES)" },
+        "endpoint_max_total_bytes": { "type": "integer", "minimum": 0, "description": "ADR-109 D-5: everything one step sends and receives through its socket; 0 = default, 4 GiB (UMRS_STEP_ENDPOINT_MAX_TOTAL_BYTES)" }
       }
     },
     "partition_profile": {

@@ -23,14 +23,21 @@ import os
 import platform
 import shutil
 import subprocess
+import threading
 import uuid
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 from step_lane_harness import SRC, FakeS3, make_cluster
 from umrs.pipeline_sdk.step import StepContext
 from umrs.server.remote_slurm_step_executor import STEP_TIMEOUT_METADATA_KEY
-from umrs.server.step_executor import EXECUTOR_SOURCE_DIR_METADATA_KEY, StepExecutionError
+from umrs.server.step_executor import (
+    EXECUTOR_ENDPOINT_METADATA_KEY,
+    EXECUTOR_SOURCE_DIR_METADATA_KEY,
+    StepExecutionError,
+)
 from umrs.server.step_staging import DEFAULT_CAPS, STAGE_REQUEST_METADATA_KEY, MiB
 
 BASE = "docker.io/library/python:3.11-slim"
@@ -183,6 +190,27 @@ class Hide(Step):
         return StepResult()
 
 
+class CallEndpoint(Step):
+    name = "call-endpoint"
+    def setup(self, config): self.port = int(config["port"])
+    def teardown(self): pass
+    def run(self, ctx):
+        http = ctx.endpoint_http(timeout=30)
+        reply = http.post("/v1/chat/completions", json={"q": "hi"})
+        report = {
+            "env": sorted(k for k in os.environ if k.startswith("UMRS_")),
+            "socket": os.environ.get("UMRS_STEP_ENDPOINT_SOCKET"),
+            "status": reply.status,
+            "answer": reply.json(),
+            "refused": http.get("/metrics").status,
+            "direct": _connect("127.0.0.1", self.port),
+            "credential_file": os.path.exists("/umrs-endpoint.json"),
+            "workdir_files": sorted(os.listdir("/work")),
+        }
+        ctx.upload_bytes("endpoint.json", json.dumps(report).encode())
+        return StepResult(output_keys=["endpoint.json"])
+
+
 class Flood(Step):
     name = "flood"
     def setup(self, config): pass
@@ -260,7 +288,7 @@ def lane(tmp_path, monkeypatch, step_image):
     return cluster, ex, tree.parent
 
 
-def _run(lane, step: str, s3=None):
+def _run(lane, step: str, s3=None, *, metadata=None, config=None):
     cluster, ex, tree = lane
     s3 = s3 if s3 is not None else FakeS3()
     ctx = StepContext(
@@ -272,10 +300,11 @@ def _run(lane, step: str, s3=None):
             EXECUTOR_SOURCE_DIR_METADATA_KEY: str(tree),
             STAGE_REQUEST_METADATA_KEY: {"owner": "alice", "step": step},
             STEP_TIMEOUT_METADATA_KEY: 300,
+            **(metadata or {}),
         },
         run_id=RUN,
     )
-    return ex.execute(entrypoint=f"adv.steps:{step}", config={}, ctx=ctx), s3
+    return ex.execute(entrypoint=f"adv.steps:{step}", config=config or {}, ctx=ctx), s3
 
 
 def _check_env(env: list[str]) -> None:
@@ -333,3 +362,68 @@ def test_the_watchdog_stops_a_step_hiding_its_outputs_from_it(lane):
     with pytest.raises(StepExecutionError, match="hidden from the watchdog"):
         _run(lane, "Hide")
     assert lane[0].workdirs() == []  # rmwd gets through the 0300 directory too
+
+
+ENDPOINT_KEY = "sk-podman-endpoint-0123456789"
+
+
+class _Upstream(BaseHTTPRequestHandler):
+    """The routed endpoint on the host's loopback: says whether the
+    forwarder's credential arrived, never echoes it."""
+
+    seen: ClassVar[list[str]] = []
+
+    def do_POST(self):  # noqa: N802 - http.server's name
+        body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+        self.seen.append(self.path)
+        auth_ok = self.headers.get("Authorization") == f"Bearer {ENDPOINT_KEY}"
+        out = json.dumps({"auth_ok": auth_ok, "got": json.loads(body)}).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(out)))
+        self.end_headers()
+        self.wfile.write(out)
+
+    def log_message(self, *args):
+        pass
+
+
+@pytest.fixture
+def upstream():
+    _Upstream.seen = []
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _Upstream)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    yield server.server_address[1]
+    server.shutdown()
+
+
+def test_a_step_reaches_its_routed_endpoint_only_through_its_socket(lane, upstream):
+    # ADR-109 D-5: the forwarder (host network, platform image) adds the key;
+    # the step keeps --network=none and never sees the key or its file.
+    handover = {
+        "api_base": f"http://127.0.0.1:{upstream}",
+        "kind": "vllm",
+        "api_key": ENDPOINT_KEY,
+        "headers": {},
+    }
+    result, s3 = _run(
+        lane,
+        "CallEndpoint",
+        metadata={EXECUTOR_ENDPOINT_METADATA_KEY: handover},
+        config={"port": upstream},
+    )
+    report = json.loads(s3.objects[(OUT_BUCKET, result.output_keys[0])])
+    _check_endpoint_report(report)
+    assert _Upstream.seen == ["/v1/chat/completions"]
+
+
+def _check_endpoint_report(report: dict) -> None:
+    assert report["socket"] == "/run/umrs/endpoint.sock"
+    assert "UMRS_STEP_ENDPOINT_SOCKET" in report["env"]
+    assert (report["status"], report["answer"]) == (200, {"auth_ok": True, "got": {"q": "hi"}})
+    assert report["refused"] == 403
+    assert report["direct"] != "connected"  # no network of its own
+    assert report["credential_file"] is False
+    assert "endpoint.json" not in report["workdir_files"]
+    assert ENDPOINT_KEY not in json.dumps(report)

@@ -43,6 +43,7 @@ from umrs.pipeline_sdk.step import (
 )
 from umrs.pipeline_sdk.workflow import StepSpec
 from umrs.server.step_executor import (
+    EXECUTOR_ENDPOINT_METADATA_KEY,
     EXECUTOR_GPU_COUNT_METADATA_KEY,
     EXECUTOR_GPU_METADATA_KEY,
     EXECUTOR_IMAGE_METADATA_KEY,
@@ -1089,6 +1090,26 @@ def _bind_step_lane(
     )
 
 
+def _bind_step_endpoint(
+    executor: StepExecutor, metadata: dict[str, Any], decision: RoutingDecision
+) -> None:
+    """ADR-109 D-5: a lane whose steps reach their routed endpoint through a
+    forwarder and a socket gets the endpoint the decision names (address,
+    kind, credential) for the job, never for the step: the step's config and
+    payload carry none of it. A decision that names no endpoint (an author's
+    own ``api_base``, the env fallback) gives the job no forwarder."""
+    if getattr(executor, "endpoint_socket", False) is not True:
+        return
+    if not (decision.endpoint_id and decision.api_base):
+        return
+    metadata[EXECUTOR_ENDPOINT_METADATA_KEY] = {
+        "api_base": decision.api_base,
+        "kind": "bentoml" if decision.serving_backend == "bentoml" else "vllm",
+        "api_key": decision.api_key or "",
+        "headers": dict(decision.headers or {}),
+    }
+
+
 def _record_step_job(
     record: ExecutionRecord, step_name: str, job: dict[str, Any]
 ) -> None:
@@ -1232,6 +1253,7 @@ def _execute_step(
         image_hint, gpu_hint, source_path, routed_keys, _gpu_count_hint(spec)
     )
     _bind_step_lane(executor, spec, metadata, record)
+    _bind_step_endpoint(executor, metadata, decision)
     payload_s3_enabled, payload_bucket, payload_s3_prefix = _payload_s3_hint(metadata)
     _annotate_payload_mode(
         routing_log,

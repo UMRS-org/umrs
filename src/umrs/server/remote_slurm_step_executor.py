@@ -63,6 +63,7 @@ from umrs.orchestrator.ssh_control import SSHControlConfig, SSHControlManager
 from umrs.pipeline_sdk.step import StepContext, StepResult
 
 from .slurm_step_executor import (
+    ENDPOINT_CREDENTIAL_FILE,
     STAGED_GPU_DEVICES,
     TERMINAL_FAILURES,
     TERMINAL_STATES,
@@ -70,6 +71,7 @@ from .slurm_step_executor import (
     UNREACHABLE,
     UNREACHABLE_BUDGET_SEC,
     WALL_GRACE_SEC,
+    EndpointForward,
     PollClock,
     SlurmStepExecutor,
     StagedJob,
@@ -79,8 +81,17 @@ from .slurm_step_executor import (
     slurm_duration_seconds,
     stamp_slurm_accounting,
 )
+from .step_endpoint_forwarder import (
+    ALLOWED_PATHS,
+    DEFAULT_MAX_REQUEST_BYTES,
+    DEFAULT_MAX_RESPONSE_BYTES,
+    DEFAULT_MAX_TOTAL_BYTES,
+    credential_headers,
+    parse_upstream,
+)
 from .step_executor import (
     _PAYLOAD_MAX_BYTES,
+    EXECUTOR_ENDPOINT_METADATA_KEY,
     EXECUTOR_GPU_COUNT_METADATA_KEY,
     EXECUTOR_GPU_METADATA_KEY,
     EXECUTOR_IMAGE_METADATA_KEY,
@@ -161,6 +172,7 @@ _INTERNAL_METADATA_KEYS = frozenset(
         EXECUTOR_UPSTREAM_METADATA_KEY,
         STAGE_REQUEST_METADATA_KEY,
         STEP_TIMEOUT_METADATA_KEY,
+        EXECUTOR_ENDPOINT_METADATA_KEY,
     }
 )
 #: Platform routing values: useless without a network, never on the cluster.
@@ -195,6 +207,15 @@ def _site_partition_profiles() -> dict[str, Any]:
 
 def _env(name: str, default: str = "") -> str:
     return os.environ.get(name, default).strip()
+
+
+def _env_int(name: str, default: int) -> int:
+    """A positive int from the site env; *default* when unset or not positive."""
+    try:
+        value = int(_env(name) or 0)
+    except ValueError:
+        return default
+    return value if value > 0 else default
 
 
 def run_tag(run_id: str) -> str:
@@ -306,6 +327,10 @@ class RemoteSlurmStepExecutor(SlurmStepExecutor):
     #: The step's ``timeout_seconds`` is enforced on the job's run clock here,
     #: so the runner adds no soft deadline that would count queue wait.
     owns_step_deadline: ClassVar[bool] = True
+    #: ADR-109 D-5: a step whose routing decision names an endpoint reaches
+    #: it through a forwarder and a socket (the runner hands the endpoint
+    #: over in ``EXECUTOR_ENDPOINT_METADATA_KEY``).
+    endpoint_socket: ClassVar[bool] = True
 
     ssh_config: SSHControlConfig = field(default_factory=lambda: _site_ssh_config())
     helper_path: str = field(default_factory=lambda: _env("UMRS_STEP_HELPER"))
@@ -345,6 +370,23 @@ class RemoteSlurmStepExecutor(SlurmStepExecutor):
     #: ``step_executor.gpu_form``: the devices a step that needs a GPU gets
     #: ("cdi" NVIDIA, "rocm" AMD); any other value refuses before any SSH.
     gpu_form: str = field(default_factory=lambda: _env("UMRS_STEP_GPU_FORM") or "cdi")
+    #: ADR-109 D-5 byte caps of the step's endpoint forwarder
+    #: (``step_executor.endpoint_max_{request,response,total}_bytes``).
+    endpoint_max_request_bytes: int = field(
+        default_factory=lambda: _env_int(
+            "UMRS_STEP_ENDPOINT_MAX_REQUEST_BYTES", DEFAULT_MAX_REQUEST_BYTES
+        )
+    )
+    endpoint_max_response_bytes: int = field(
+        default_factory=lambda: _env_int(
+            "UMRS_STEP_ENDPOINT_MAX_RESPONSE_BYTES", DEFAULT_MAX_RESPONSE_BYTES
+        )
+    )
+    endpoint_max_total_bytes: int = field(
+        default_factory=lambda: _env_int(
+            "UMRS_STEP_ENDPOINT_MAX_TOTAL_BYTES", DEFAULT_MAX_TOTAL_BYTES
+        )
+    )
     #: ``site.yaml`` ``partition_profiles`` (None: read on first use): each
     #: candidate's GPU request style and GPUs per job (ADR-109 D-3).
     partition_profiles: dict[str, Any] | None = None
@@ -408,6 +450,7 @@ class RemoteSlurmStepExecutor(SlurmStepExecutor):
         partitions = self._lane_partitions(ctx)
         plan = build_stage_plan(ctx, caps=self.caps)
         source_dir = self._resolve_source_dir(ctx)
+        self._endpoint(ctx)  # a routed endpoint the job cannot reach fails here
         payload = self._payload(entrypoint, config, ctx)
         tag = inputs_tag(plan, payload, source_dir or None, self.caps, image=image)
         job = self._begin(ctx, plan.step, tag)
@@ -593,6 +636,9 @@ class RemoteSlurmStepExecutor(SlurmStepExecutor):
     ) -> StepResult:
         self._stage_in(job, ctx, plan, source_dir)
         self._put(job, "input.pkl", payload)
+        endpoint = self._endpoint(ctx)
+        if endpoint is not None:
+            self._put(job, ENDPOINT_CREDENTIAL_FILE, endpoint[1])
         partition = self._choose_partition(job, ctx, image, partitions)
         script = self._job_script(job, ctx, image, partition)
         self._put(job, "job.sbatch", script.encode("utf-8"))
@@ -679,6 +725,25 @@ class RemoteSlurmStepExecutor(SlurmStepExecutor):
             )
         return blob
 
+    def _endpoint(self, ctx: StepContext) -> tuple[EndpointForward, bytes] | None:
+        """ADR-109 D-5: the step's routed endpoint as the job's forwarder
+        spec, and its credential file (JSON headers, written 0600 next to
+        the job script, never mounted into the pod); None without one."""
+        raw = ctx.metadata.get(EXECUTOR_ENDPOINT_METADATA_KEY)
+        if not raw:
+            return None
+        caps = (
+            self.endpoint_max_request_bytes,
+            self.endpoint_max_response_bytes,
+            self.endpoint_max_total_bytes,
+        )
+        try:
+            return _endpoint_spec(raw, caps)
+        except (TypeError, ValueError) as exc:
+            raise StepExecutionError(
+                "setup", f"the step's routed endpoint cannot be forwarded: {exc}"
+            ) from exc
+
     def _job_seconds(self, ctx: StepContext) -> int:
         """``--time``: the least of the site's ``time_limit``, the step's
         ``timeout_seconds`` and ``UMRS_STEP_EXECUTOR_TIMEOUT`` when set."""
@@ -741,6 +806,7 @@ class RemoteSlurmStepExecutor(SlurmStepExecutor):
                 image_archive_dir=self.image_archive_dir,
                 venue_script=self.venue_script,
                 needs_gpu=self._needs_gpu(ctx),
+                endpoint=_forward_of(self._endpoint(ctx)),
                 gpu_form=self.gpu_form,
                 pids_limit=self.pids_limit,
                 cgroups_disabled=self.cgroups == "disabled",
@@ -1633,6 +1699,32 @@ _SETTLING_LOCK = threading.Lock()
 def _settling(job_id: str) -> bool:
     with _SETTLING_LOCK:
         return job_id in _SETTLING
+
+
+def _endpoint_spec(
+    raw: Any, caps: tuple[int, int, int]
+) -> tuple[EndpointForward, bytes]:
+    """The forwarder spec and credential blob of the runner's endpoint
+    hand-over (``api_base``, ``kind``, ``api_key``, ``headers``)."""
+    if not isinstance(raw, dict):
+        raise TypeError("the endpoint hand-over is not a mapping")
+    kind = str(raw.get("kind") or "")
+    if kind not in ALLOWED_PATHS:
+        raise ValueError(
+            f"endpoint kind {kind[:40]!r} is not {'|'.join(ALLOWED_PATHS)}"
+        )
+    host, port = parse_upstream(str(raw.get("api_base") or ""))
+    headers = credential_headers(
+        str(raw.get("api_key") or "") or None, dict(raw.get("headers") or {})
+    )
+    blob = json.dumps({"headers": headers}).encode("utf-8")
+    return EndpointForward(host, port, kind, *caps), blob
+
+
+def _forward_of(
+    endpoint: tuple[EndpointForward, bytes] | None,
+) -> EndpointForward | None:
+    return endpoint[0] if endpoint is not None else None
 
 
 def _without(config: dict[str, Any], keys: tuple[str, ...]) -> dict[str, Any]:

@@ -306,6 +306,27 @@ class StepContext:
         bkt = bucket or self.input_bucket
         return self.s3.head_object(Bucket=bkt, Key=key)
 
+    # ── the routed endpoint (ADR-109 D-5) ────────────────────────────────
+
+    def endpoint_http(self, timeout: float = 600.0) -> Any:
+        """An HTTP client to this step's routed endpoint, through the
+        socket the staged lane gives a step whose routing decision names
+        one (``UMRS_STEP_ENDPOINT_SOCKET``); the forwarder adds the
+        credential. Raises ``NoRoutedEndpoint`` for a step without one."""
+        from .endpoint import endpoint_http
+
+        return endpoint_http(timeout=timeout)
+
+    def endpoint_vision(
+        self, poll_interval: float = 2.0, timeout: float = 300.0
+    ) -> Any:
+        """The BentoML vision service (``svc-vision2``) through the socket."""
+        from .endpoint import VisionClient, endpoint_http
+
+        return VisionClient(
+            endpoint_http(), poll_interval=poll_interval, timeout=timeout
+        )
+
 
 @dataclass
 class StepResult:

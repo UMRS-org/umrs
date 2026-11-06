@@ -280,6 +280,12 @@ class StepExecutorConfig:
     # ADR-109 D-4: how long a step waits for its endpoint to become READY
     # (queue plus model load) before it fails by name; 0 = fail at once.
     endpoint_wait_sec: int = 2700
+    # ADR-109 D-5: byte caps of a staged step's endpoint forwarder (request
+    # body, one answer, everything the step sends and receives); 0 = the
+    # forwarder's default (32 MiB, 256 MiB, 4 GiB).
+    endpoint_max_request_bytes: int = 0
+    endpoint_max_response_bytes: int = 0
+    endpoint_max_total_bytes: int = 0
 
 
 @dataclass
@@ -515,6 +521,13 @@ def _step_lane_env(cfg: StepExecutorConfig) -> dict[str, str]:
         "UMRS_STEP_NPROC_LIMIT": str(int(cfg.nproc_limit)),
         "UMRS_STEP_GPU_FORM": cfg.gpu_form,
         "UMRS_STEP_ENDPOINT_WAIT_SEC": str(int(cfg.endpoint_wait_sec)),
+        "UMRS_STEP_ENDPOINT_MAX_REQUEST_BYTES": str(
+            int(cfg.endpoint_max_request_bytes)
+        ),
+        "UMRS_STEP_ENDPOINT_MAX_RESPONSE_BYTES": str(
+            int(cfg.endpoint_max_response_bytes)
+        ),
+        "UMRS_STEP_ENDPOINT_MAX_TOTAL_BYTES": str(int(cfg.endpoint_max_total_bytes)),
     }
 
 
