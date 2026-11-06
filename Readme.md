@@ -181,3 +181,10 @@ Deployment and runtime docs:
 - [deploy/rccs-cloud/README.md](deploy/rccs-cloud/README.md)
 - [deploy/hpbd-atom/README.md](deploy/hpbd-atom/README.md)
 - [src/umrs/mini-rivault-llm/README.md](src/umrs/mini-rivault-llm/README.md)
+
+## License
+
+UMRS is licensed under the [Apache License 2.0](LICENSE); see [NOTICE](NOTICE)
+(relicensed on 2026-11-06 with the rights holders' approval; earlier commits
+carried an evaluation-only licence). Third-party models and data used by the
+demos keep their own licences.
