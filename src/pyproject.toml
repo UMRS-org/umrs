@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "umrs"
-version = "0.2.0rc2"
+version = "0.2.0rc3"
 description = "UMRS — Unified Model Registry & Storage"
 license = {text = "Apache-2.0"}
 requires-python = ">=3.10"
