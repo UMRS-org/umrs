@@ -65,6 +65,12 @@ HEAD_TIMEOUT = 60.0
 #: still answers within it.
 IDLE_TIMEOUT = 1800.0
 CHUNK = 64 * 1024
+#: After a refusal the forwarder keeps reading (and dropping) what the client
+#: still sends, at most this long and this much, before it closes: a client
+#: still writing its body otherwise sees a broken pipe instead of the refusal
+#: ("lingering close"; 2026-11-07, flaky on a loaded CI runner).
+LINGER_SECONDS = 5.0
+LINGER_MAX_BYTES = 64 * 1024 * 1024
 #: A credential value shorter than this is not scanned for in answers.
 MIN_SECRET_LEN = 8
 
@@ -390,11 +396,13 @@ class Forwarder:
         if self._slots is None:
             self._slots = asyncio.Semaphore(MAX_CONNECTIONS)
         exchange = _Exchange()
+        refused = False
         async with self._slots:
             try:
                 await self._serve(reader, writer, exchange)
             except Refusal as exc:
                 self.refused += 1
+                refused = True
                 exchange.status, exchange.note = exc.status, exc.why
                 await _send(writer, refusal_bytes(exc.status, exc.why))
             except (
@@ -406,6 +414,8 @@ class Forwarder:
                 exchange.note = exchange.note or f"aborted: {type(exc).__name__}"
             finally:
                 self._log_exchange(exchange)
+                if refused:
+                    await _linger(reader, writer)
                 await _close(writer)
 
     async def _serve(
@@ -564,6 +574,26 @@ async def _send(writer: asyncio.StreamWriter, data: bytes) -> None:
     if data:
         writer.write(data)
         await asyncio.wait_for(writer.drain(), IDLE_TIMEOUT)
+
+
+async def _linger(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+    """Half-close our side (the client sees the end of the refusal and
+    closes), then drop what the client still sends until it closes or
+    LINGER_SECONDS / LINGER_MAX_BYTES run out."""
+    with contextlib.suppress(OSError, RuntimeError):
+        if writer.can_write_eof():
+            writer.write_eof()
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + LINGER_SECONDS
+    dropped = 0
+    with contextlib.suppress(asyncio.TimeoutError, OSError):
+        while dropped < LINGER_MAX_BYTES:
+            chunk = await asyncio.wait_for(
+                reader.read(CHUNK), max(deadline - loop.time(), 0)
+            )
+            if not chunk:
+                return
+            dropped += len(chunk)
 
 
 async def _close(writer: asyncio.StreamWriter) -> None:

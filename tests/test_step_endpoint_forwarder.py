@@ -164,6 +164,18 @@ async def test_the_sdk_sees_a_refusal_by_name(chain):
         reply.raise_for_status()
 
 
+async def test_a_refused_request_with_a_large_body_still_reads_the_refusal(chain):
+    # The refusal used to close the socket before the body was read; a body
+    # larger than the socket buffer then failed the client with a broken
+    # pipe instead of the 403 (2026-11-07, flaky on a loaded CI runner).
+    upstream, _forwarder, path, _log = chain
+    http = sdk.endpoint_http(path)
+    big = {"blob": "x" * (1024 * 1024)}
+    reply = await asyncio.to_thread(http.post, "/admin/shutdown", json=big)
+    assert reply.status == 403
+    assert upstream.requests == []
+
+
 async def test_the_httpx_client_rides_the_same_socket(chain):
     pytest.importorskip("httpx")
     upstream, _forwarder, path, _log = chain
@@ -393,7 +405,8 @@ class VisionUpstream(Upstream):
             out, ctype = pickle.dumps({"masks": 3}), "application/octet-stream"
         writer.write(
             f"HTTP/1.1 200 OK\r\nContent-Type: {ctype}\r\nContent-Length: {len(out)}\r\n"
-            "Connection: close\r\n\r\n".encode() + out
+            "Connection: close\r\n\r\n".encode()
+            + out
         )
         await writer.drain()
         writer.close()
