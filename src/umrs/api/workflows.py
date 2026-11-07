@@ -2,6 +2,7 @@
 
 Provides:
 - GET /umrs/workflows - List registered workflows with optional filters
+- GET /umrs/workflows/{workflow_name}/export - The registered source as a zip
 - POST /umrs/workflows/{workflow_name}/trigger - Accept workflow execution
 
 This router is intentionally thin. It bridges the HTTP sidecar to the
@@ -16,10 +17,12 @@ import logging
 import os
 import shutil
 import tempfile
+from collections.abc import Iterator
 from dataclasses import dataclass
 from itertools import islice
 from pathlib import Path
 from typing import Any, NoReturn
+from urllib.parse import quote
 
 from fastapi import (
     APIRouter,
@@ -33,6 +36,7 @@ from fastapi import (
     UploadFile,
     status,
 )
+from fastapi.responses import StreamingResponse
 from jsonschema.exceptions import SchemaError, ValidationError
 from jsonschema.validators import Draft202012Validator, validator_for
 from pydantic import BaseModel, Field, model_validator
@@ -71,6 +75,7 @@ from .workflow_auth import (
     strict_auth_mode,
     workflow_job_status,
 )
+from .workflow_export import ExportResult, ExportTooLarge, build_export_zip
 from .workflow_models import (
     WorkflowCommitResponse,
     WorkflowDescribeResponse,
@@ -1179,13 +1184,32 @@ async def get_workflow_package(
     with honest caps (``truncated`` flags); a missing source dir ships an
     empty list, never an invented listing.
     """
+    entry = _visible_workflow_entry(
+        workflow_name,
+        x_user_id,
+        x_verified_project_id,
+        x_verified_is_admin,
+        x_verified_hmac,
+    )
+    return _package_payload(entry)
+
+
+def _visible_workflow_entry(
+    workflow_name: str,
+    x_user_id: str | None,
+    x_verified_project_id: str | None,
+    x_verified_is_admin: str | None,
+    x_verified_hmac: str | None,
+) -> dict[str, Any]:
+    """The catalog entry ``/package`` and ``/export`` show the caller, or the
+    typed 404: verified identity, then the describe resolution (own, system,
+    an ADR-080 share for the verified project, another owner's for admins)."""
     _require_verified_workflow_identity(
         x_user_id, x_verified_project_id, x_verified_is_admin, x_verified_hmac
     )
-    caller = _header_str(x_user_id) or ""
     entry = resolve_workflow_for_caller(
         workflow_name,
-        caller,
+        _header_str(x_user_id) or "",
         is_admin=_header_str(x_verified_is_admin) == "true",
         caller_project=_header_str(x_verified_project_id),
     )
@@ -1195,7 +1219,121 @@ async def get_workflow_package(
                 "not_found", f"Workflow '{workflow_name}' not found"
             )
         )
-    return _package_payload(entry)
+    return entry
+
+
+def _built_export(workflow_name: str, entry: dict[str, Any]) -> ExportResult:
+    """Build the export archive; the size cap is a typed 413."""
+    try:
+        return build_export_zip(workflow_name, entry)
+    except ExportTooLarge as exc:
+        raise_typed(
+            PlatformError(
+                code="workflows.export_too_large",
+                message=str(exc),
+                http_status=413,
+            ),
+            cause=exc,
+        )
+
+
+_EXPORT_CHUNK = 1024 * 1024
+
+
+def _opened_export(
+    workflow_name: str, entry: dict[str, Any]
+) -> tuple[ExportResult, Any]:
+    """Build the archive, open it and unlink it at once (review fix
+    2026-11-07): nothing is left in TMPDIR whatever happens to the response
+    (bad or unsatisfiable Range, cancelled send); the open handle keeps the
+    bytes alive until :func:`_stream_export` closes it."""
+    result = _built_export(workflow_name, entry)
+    try:
+        handle = open(result.path, "rb")  # noqa: SIM115 - closed by _stream_export
+    finally:
+        os.unlink(result.path)
+    return result, handle
+
+
+def _stream_export(handle: Any) -> Iterator[bytes]:
+    """The open (already unlinked) archive in chunks; always closed."""
+    try:
+        yield from iter(lambda: handle.read(_EXPORT_CHUNK), b"")
+    finally:
+        handle.close()
+
+
+def _export_response(workflow_name: str, handle: Any) -> StreamingResponse:
+    """The whole archive, never a range: ``application/zip`` with the
+    ``FileResponse`` style ``Content-Disposition`` and an exact length."""
+    filename = f"{workflow_name}.zip"
+    quoted = quote(filename)
+    disposition = (
+        f'attachment; filename="{filename}"'
+        if quoted == filename
+        else f"attachment; filename*=utf-8''{quoted}"
+    )
+    headers = {
+        "Content-Disposition": disposition,
+        "Content-Length": str(os.fstat(handle.fileno()).st_size),
+    }
+    return StreamingResponse(
+        _stream_export(handle), media_type="application/zip", headers=headers
+    )
+
+
+@router.get(
+    "/{workflow_name}/export",
+    response_class=StreamingResponse,
+    responses={200: {"content": {"application/zip": {}}}},
+)
+async def export_workflow(
+    workflow_name: str,
+    x_user_id: str | None = Header(None),
+    x_verified_project_id: str | None = Header(None),
+    x_verified_is_admin: str | None = Header(None),
+    x_verified_hmac: str | None = Header(None),
+):
+    """The workflow's registered source as a zip (2026-11-07).
+    # auth: verified
+
+    Whoever may open ``/package`` may export (same identity gate, same
+    resolution: project members get a ``project:`` share through the
+    verified project); everyone else gets the same typed 404. The zip holds
+    the source tree (symlinks, hard links and secrets-shaped paths skipped
+    and listed), ``workflow.json`` with a relative ``source.path`` and
+    ``EXPORT.json`` (sha256 per file); container images are not included. Above
+    ``MAX_EXPORT_BYTES`` it is a typed 413. Audited as ``workflow.exported``.
+    The temp archive is unlinked before the response starts and streamed
+    whole (no Range support), so no request outcome leaves it on disk.
+    """
+    entry = _visible_workflow_entry(
+        workflow_name,
+        x_user_id,
+        x_verified_project_id,
+        x_verified_is_admin,
+        x_verified_hmac,
+    )
+    result, handle = await asyncio.to_thread(_opened_export, workflow_name, entry)
+    caller = _header_str(x_user_id) or ""
+    project_id = _header_str(x_verified_project_id) or ""
+    from .audit_events import emit_audit
+
+    emit_audit(
+        "workflow.exported",
+        actor=caller,
+        project_id=project_id,
+        details={
+            "workflow": workflow_name,
+            "owner": str(entry.get("user_id", "")),
+            "caller": caller,
+            "project": project_id,
+            "files": result.files,
+            "bytes": result.bytes,
+            "excluded": result.excluded,
+        },
+    )
+    return _export_response(workflow_name, handle)
 
 
 def _package_payload(entry: dict[str, Any]) -> dict[str, Any]:

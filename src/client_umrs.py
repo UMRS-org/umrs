@@ -4455,6 +4455,7 @@ def _action_workflow(ctx):
         cancel          — Cancel a running workflow execution
         errors          — Show error logs for a failed workflow execution
         visualize       — Render the workflow DAG as ASCII art or Graphviz dot
+        export          — Download a visible workflow's source as a zip
         validate-sandbox — Validate a workflow sandbox (Dockerfile + workflow.json)
     """
     args = ctx.args
@@ -4463,17 +4464,15 @@ def _action_workflow(ctx):
     wf_action = args.workflow_action
     exit_code = 0
 
-    # ---- upload ----------------------------------------------------------
-    if wf_action == "upload":
-        return _action_upload_workflow(ctx)
-
-    # ---- validate-sandbox ------------------------------------------------
-    if wf_action == "validate-sandbox":
-        return _action_validate_sandbox(ctx)
-
-    # ---- visualize -------------------------------------------------------
-    if wf_action == "visualize":
-        return _action_visualize_workflow(ctx)
+    # ---- upload / validate-sandbox / visualize / export (own handlers) ----
+    own_handler = {
+        "upload": _action_upload_workflow,
+        "validate-sandbox": _action_validate_sandbox,
+        "visualize": _action_visualize_workflow,
+        "export": _action_workflow_export,
+    }.get(wf_action)
+    if own_handler is not None:
+        return own_handler(ctx)
 
     # ---- list / run / status / results / cancel / errors -----------------
     try:
@@ -4558,6 +4557,70 @@ def _action_workflow(ctx):
     finally:
         ctx.control_mq.close()
     return exit_code
+
+
+def _export_error(ctx, message: str) -> int:
+    print(
+        api_json(
+            status="error",
+            action="workflow-export",
+            message=message,
+            output_format=ctx.args.output,
+        )
+    )
+    return 1
+
+
+def _print_workflow_export(ctx, dest: str, manifest: dict) -> None:
+    files = len(manifest.get("files") or [])
+    excluded = len(manifest.get("excluded") or [])
+    if ctx.args.output == "json":
+        print(
+            api_json(
+                action="workflow-export",
+                path=dest,
+                files=files,
+                excluded=excluded,
+                output_format="json",
+            )
+        )
+        return
+    print(
+        f"{_green('✓')} Exported {_bold(ctx.args.name)} to {dest} "
+        f"({files} files, {excluded} excluded)"
+    )
+
+
+def _action_workflow_export(ctx) -> int:
+    """``umrs workflow export NAME [-o FILE]``: the gateway export route,
+    verified against its EXPORT.json before it lands at FILE."""
+    from umrs.client.workflow_export import (
+        ExportDownloadError,
+        download_workflow_export,
+        export_destination,
+    )
+
+    args = ctx.args
+    _close_control_mq(ctx)
+    gateway_url = _get_gateway_url_from_ctx(ctx)
+    if not gateway_url:
+        return _export_error(
+            ctx, "workflow export requires a gateway_url in the connection profile"
+        )
+    dest = export_destination(args.name, args.dest)
+    try:
+        manifest = download_workflow_export(
+            gateway_url,
+            args.name,
+            dest,
+            api_key=_get_api_key_from_profile(ctx),
+            project=args.project,
+            overwrite=args.force,
+        )
+    except (ExportDownloadError, OSError) as exc:
+        return _export_error(ctx, str(exc))
+    _print_workflow_export(ctx, dest, manifest)
+    return 0
 
 
 def _print_workflow_list(parsed: dict) -> None:
@@ -7706,6 +7769,27 @@ def main():
         default="ascii",
         choices=["ascii", "dot"],
         help="Output format: ascii (default) or dot (Graphviz)",
+    )
+
+    # workflow export -- download a visible workflow's source as a zip
+    wexp_p = wf_sub.add_parser(
+        "export",
+        help="Download a workflow you can see (own, shared, system) as a zip",
+    )
+    wexp_p.add_argument("name", help="Registered workflow name to export")
+    wexp_p.add_argument(
+        "-o",
+        "--dest",
+        default=None,
+        help="Destination file or directory (default: ./<name>.zip)",
+    )
+    wexp_p.add_argument(
+        "--project",
+        default=None,
+        help="Project to act in (X-Project-ID; a project-shared workflow needs it)",
+    )
+    wexp_p.add_argument(
+        "--force", action="store_true", help="Overwrite an existing destination"
     )
 
     # workflow validate-sandbox -- validate Dockerfile sandbox
