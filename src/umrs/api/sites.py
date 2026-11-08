@@ -6,9 +6,11 @@
 * the site's non-secret capabilities (the same facts ``/health`` already
   carries in ``site_capabilities``, plus whether the staged step lane and its
   GPU gate are open);
-* the site's declared HPC access mode (``scheduler.hpc_access``, added by the
-  access-modes work, S1b). Until a site declares one the answer is
-  ``"undeclared"`` and clients must not route work here from another site;
+* the site's declared HPC access mode (``scheduler.hpc_access``, ADR-112
+  D-1). Until a site declares one the answer is ``"undeclared"`` and clients
+  must not route work here from another site. On a ``service_account`` site
+  it also says whether that login is ``personal`` and whether the operator's
+  ``consent`` is on record (never the reference);
 * the caller's **own** user row at this venue: present, disabled or absent,
   and whether a Slurm account is set. Never another user's row, never the
   account name, never a key path or consent reference.
@@ -42,6 +44,14 @@ class SiteAccess(BaseModel):
     declared: bool = False
     modes_allowed: list[str] = Field(default_factory=list)
     operator: str | None = None
+    personal: bool = Field(
+        False,
+        description="The service-account login belongs to a person (ADR-112)",
+    )
+    consent: bool = Field(
+        False,
+        description="The operator's written consent is on record (never the reference)",
+    )
 
 
 class SiteAccount(BaseModel):
@@ -94,8 +104,27 @@ def access_of(site: Any) -> SiteAccess:
     if not allowed or default not in allowed:
         return SiteAccess(modes_allowed=allowed, operator=operator)
     return SiteAccess(
-        mode=default, declared=True, modes_allowed=allowed, operator=operator
+        mode=default,
+        declared=True,
+        modes_allowed=allowed,
+        operator=operator,
+        **_service_account_flags(hpc, default),
     )
+
+
+def _service_account_flags(hpc: dict[str, Any], default: str) -> dict[str, bool]:
+    """``personal`` / ``consent`` of the service-account block (ADR-112).
+
+    Reported only when the default mode is ``service_account``; the consent
+    reference itself never leaves the server.
+    """
+    if default != "service_account":
+        return {}
+    service = _as_mapping(hpc.get("service_account"))
+    return {
+        "personal": bool(service.get("personal")),
+        "consent": bool(service.get("consent_ref")),
+    }
 
 
 def capabilities_of(site: Any) -> SiteCapabilities:

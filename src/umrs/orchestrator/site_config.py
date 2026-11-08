@@ -58,6 +58,47 @@ def _expand_env_refs(value: Any) -> Any:
 # ---------------------------------------------------------------------------
 
 
+HPC_ACCESS_MODES = ("service_account", "user_account")
+
+
+@dataclass
+class ServiceAccountAccess:
+    """``scheduler.hpc_access.service_account`` (ADR-112 D-1).
+
+    ``login`` is the site's platform login and must equal ``extra.ssh_user``.
+    ``personal`` says that login belongs to a person. ``consent_ref`` names the
+    operator's written consent ("" = interim). While it is empty, user-work
+    lanes run only for admins and ``allowed_projects`` ([] = admins only).
+    """
+
+    login: str = ""
+    personal: bool = False
+    consent_ref: str = ""
+    allowed_projects: list[str] = field(default_factory=list)
+
+
+@dataclass
+class UserAccountAccess:
+    """``scheduler.hpc_access.user_account`` (ADR-112 D-3; wave B)."""
+
+    methods: list[str] = field(default_factory=list)
+
+
+@dataclass
+class HpcAccessConfig:
+    """``scheduler.hpc_access``: the site's declared access modes (ADR-112 D-1).
+
+    Absent (``SchedulerConfig.hpc_access is None``) means undeclared: user-work
+    lanes refuse non-admins and platform lanes keep their login.
+    """
+
+    operator: str = ""
+    modes_allowed: list[str] = field(default_factory=list)
+    default_mode: str = ""
+    service_account: ServiceAccountAccess | None = None
+    user_account: UserAccountAccess | None = None
+
+
 @dataclass
 class SchedulerConfig:
     """Cluster job scheduler settings."""
@@ -86,15 +127,17 @@ class SchedulerConfig:
     nodes: int = 1  # Number of Slurm nodes (>1 for multi-node PP)
     extra_sbatch: list[str] = field(default_factory=list)  # e.g. ["--constraint=a100"]
 
-    # Per-user SSH delegation for Slurm job submission.
-    # - service_account: UMRS daemon submits all jobs as itself (default)
-    # - per_user_ssh: UMRS SSH's as the requesting user to submit sbatch
+    # Declared HPC access modes (ADR-112 D-1); None = undeclared. Parsed and
+    # validated by _parse_hpc_access (the generic loader drops nested keys).
+    hpc_access: HpcAccessConfig | None = None
+
+    # DEPRECATED by ADR-112 (2026-11-08): parsed so old site files still load,
+    # ignored by the backend. A site that says per_user_ssh and declares no
+    # hpc_access logs one ERROR at load. Removal one release later.
     slurm_delegation: str = "service_account"  # service_account | per_user_ssh
-    # Path to UMRS service ed25519 public key on shared filesystem.
-    # Users enroll by appending this key to their ~/.ssh/authorized_keys.
+    # DEPRECATED (ADR-112): the shared delegation key and its forced-command
+    # proxy were retired with per_user_ssh (keys destroyed 2026-10-24).
     service_pubkey_path: str = ""
-    # Path to the forced-command proxy script on shared filesystem.
-    # Only allows sbatch, squeue, sacct, scancel commands.
     slurm_proxy_path: str = ""
 
     # When True, endpoint provisioning rejects users who have no per-user
@@ -676,6 +719,138 @@ def _load_raw_with_extends(path: str, _seen: tuple[str, ...] = ()) -> dict[str, 
     return _deep_merge(_load_raw_with_extends(base_path, _seen + (real,)), raw)
 
 
+_HPC_ACCESS_KEYS = frozenset(
+    {"operator", "modes_allowed", "default_mode", "service_account", "user_account"}
+)
+_SERVICE_ACCOUNT_KEYS = frozenset(
+    {"login", "personal", "consent_ref", "allowed_projects"}
+)
+_USER_ACCOUNT_KEYS = frozenset({"methods"})
+
+
+def _hpc_mapping(value: Any, where: str, allowed: frozenset[str]) -> dict[str, Any]:
+    """A mapping with only *allowed* keys, or ValueError naming *where*."""
+    if not isinstance(value, dict):
+        raise ValueError(f"site.yaml {where} must be a mapping")  # noqa: TRY004
+    unknown = sorted(str(key) for key in value if key not in allowed)
+    if unknown:
+        raise ValueError(f"site.yaml {where} has unknown key(s): {', '.join(unknown)}")
+    return value
+
+
+def _hpc_str_list(value: Any, where: str) -> list[str]:
+    """A YAML list of strings (a bare scalar is refused, never split)."""
+    if value is None:
+        return []
+    if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+        raise ValueError(f"site.yaml {where} must be a list of strings")
+    return [v.strip() for v in value if v.strip()]
+
+
+def _parse_service_account(value: Any) -> ServiceAccountAccess:
+    where = "scheduler.hpc_access.service_account"
+    data = _hpc_mapping(value, where, _SERVICE_ACCOUNT_KEYS)
+    personal = data.get("personal", False)
+    if not isinstance(personal, bool):
+        raise ValueError(f"site.yaml {where}.personal must be true or false")  # noqa: TRY004
+    return ServiceAccountAccess(
+        login=str(data.get("login") or "").strip(),
+        personal=personal,
+        consent_ref=str(data.get("consent_ref") or "").strip(),
+        allowed_projects=_hpc_str_list(
+            data.get("allowed_projects"), f"{where}.allowed_projects"
+        ),
+    )
+
+
+def _parse_user_account(value: Any) -> UserAccountAccess:
+    where = "scheduler.hpc_access.user_account"
+    data = _hpc_mapping(value, where, _USER_ACCOUNT_KEYS)
+    return UserAccountAccess(
+        methods=_hpc_str_list(data.get("methods"), f"{where}.methods")
+    )
+
+
+def _check_hpc_modes(cfg: HpcAccessConfig) -> None:
+    """Modes are the two names; the default is one of them; its block exists."""
+    bad = [m for m in cfg.modes_allowed if m not in HPC_ACCESS_MODES]
+    if bad:
+        raise ValueError(
+            f"site.yaml scheduler.hpc_access.modes_allowed has unknown mode(s) "
+            f"{bad}; allowed: {list(HPC_ACCESS_MODES)}"
+        )
+    if cfg.default_mode not in cfg.modes_allowed:
+        raise ValueError(
+            f"site.yaml scheduler.hpc_access.default_mode {cfg.default_mode!r} "
+            f"is not in modes_allowed {cfg.modes_allowed}"
+        )
+    if "service_account" in cfg.modes_allowed and cfg.service_account is None:
+        raise ValueError(
+            "site.yaml scheduler.hpc_access.service_account is required when "
+            "modes_allowed lists service_account"
+        )
+
+
+def _check_service_login(cfg: HpcAccessConfig, extra: Any) -> None:
+    """``service_account.login`` must be the login the backend actually uses."""
+    raw_user = extra.get("ssh_user") if isinstance(extra, dict) else None
+    ssh_user = str(raw_user or "").strip()
+    if cfg.service_account is None or not ssh_user:
+        return
+    if cfg.service_account.login != ssh_user:
+        raise ValueError(
+            "site.yaml scheduler.hpc_access.service_account.login must equal "
+            "extra.ssh_user (the platform login every lane connects as)"
+        )
+
+
+def _parse_hpc_access(value: Any, extra: Any) -> HpcAccessConfig:
+    """Parse and validate ``scheduler.hpc_access`` fail-closed (ADR-112 D-1)."""
+    data = _hpc_mapping(value, "scheduler.hpc_access", _HPC_ACCESS_KEYS)
+    sa_raw, ua_raw = data.get("service_account"), data.get("user_account")
+    cfg = HpcAccessConfig(
+        operator=str(data.get("operator") or "").strip(),
+        modes_allowed=_hpc_str_list(
+            data.get("modes_allowed"), "scheduler.hpc_access.modes_allowed"
+        ),
+        default_mode=str(data.get("default_mode") or "").strip(),
+        service_account=None if sa_raw is None else _parse_service_account(sa_raw),
+        user_account=None if ua_raw is None else _parse_user_account(ua_raw),
+    )
+    _check_hpc_modes(cfg)
+    _check_service_login(cfg, extra)
+    return cfg
+
+
+def _parse_scheduler(raw_scheduler: Any, extra: Any) -> SchedulerConfig:
+    """SchedulerConfig with ``hpc_access`` parsed explicitly (never dropped)."""
+    data = dict(raw_scheduler or {})
+    hpc_raw = data.pop("hpc_access", None)
+    scheduler = _dict_to_dataclass(SchedulerConfig, data)
+    if hpc_raw is not None:
+        scheduler.hpc_access = _parse_hpc_access(hpc_raw, extra)
+    _log_retired_delegation(scheduler)
+    return scheduler
+
+
+def _log_retired_delegation(scheduler: SchedulerConfig) -> None:
+    """One ERROR at load for a site file that still says ``per_user_ssh``
+    (plan §3 A.1), naming ``hpc_access``, whether or not the file declares it."""
+    if scheduler.slurm_delegation != "per_user_ssh":
+        return
+    then = (
+        "scheduler.hpc_access governs; delete the slurm_delegation line."
+        if scheduler.hpc_access is not None
+        else "declare scheduler.hpc_access instead. Until then user-work lanes "
+        "refuse non-admins (mode_undeclared)."
+    )
+    logger.error(
+        "site.yaml scheduler.slurm_delegation: per_user_ssh is retired "
+        "(ADR-112) and ignored; %s",
+        then,
+    )
+
+
 def _parse_raw(raw: dict[str, Any]) -> SiteConfig:
     """Turn a raw YAML dict into a :class:`SiteConfig`."""
     pp_raw = raw.get("partition_profiles", {})
@@ -688,7 +863,7 @@ def _parse_raw(raw: dict[str, Any]) -> SiteConfig:
     return SiteConfig(
         name=raw.get("name", "default"),
         description=raw.get("description", ""),
-        scheduler=_dict_to_dataclass(SchedulerConfig, raw.get("scheduler", {})),
+        scheduler=_parse_scheduler(raw.get("scheduler"), raw.get("extra")),
         runtime=_dict_to_dataclass(RuntimeConfig, raw.get("runtime", {})),
         storage=_dict_to_dataclass(StorageConfig, raw.get("storage", {})),
         network=_dict_to_dataclass(NetworkConfig, raw.get("network", {})),

@@ -122,8 +122,10 @@ def catalog_env(tmp_path, monkeypatch):
 
     calls: list[dict] = []
 
-    def _fake_handle(cmd, client_id, payload, job_backend=None):
-        calls.append({"cmd": cmd, "client_id": client_id, "payload": payload})
+    def _fake_run(client_id, payload, *, event_project=None):
+        calls.append(
+            {"client_id": client_id, "payload": payload, "event_project": event_project}
+        )
         return json.dumps({"execution_id": f"exec-{len(calls)}", "status": "accepted"})
 
     catalog_file = tmp_path / "catalog.json"
@@ -132,8 +134,8 @@ def catalog_env(tmp_path, monkeypatch):
         lambda: str(catalog_file),
     )
     monkeypatch.setattr(
-        "umrs.server.workflow_registry_handler.handle_workflow_command",
-        _fake_handle,
+        "umrs.server.workflow_registry_handler.run_ingest_workflow",
+        _fake_run,
     )
     return catalog_file, calls
 

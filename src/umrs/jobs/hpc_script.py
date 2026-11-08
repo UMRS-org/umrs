@@ -60,13 +60,54 @@ def _sbatch_command(script_path: str, sbatch_args: list[str]) -> str:
     )
 
 
-class HpcScriptBackend:
-    """Submit a user sbatch script via the SSH ControlMaster."""
+def _flag_value(args: list[str], index: int, flags: tuple[str, ...]) -> str | None:
+    """The value of ``args[index]`` when it is one of *flags* (``-A x``,
+    ``-Ax``, ``--account x``, ``--account=x``), else None."""
+    arg = args[index]
+    for flag in flags:
+        if arg == flag:
+            return args[index + 1] if index + 1 < len(args) else None
+        if arg.startswith(flag + "=") or (len(flag) == 2 and arg.startswith(flag)):
+            return arg[len(flag) :].lstrip("=")
+    return None
 
-    def __init__(self, ssh=None) -> None:
+
+def sbatch_account(sbatch_args: list[str]) -> str | None:
+    """The Slurm account the user's ``sbatch_args`` charge, or None (the
+    login's default account, which the server does not know)."""
+    found = None
+    for index in range(len(sbatch_args)):
+        found = _flag_value(sbatch_args, index, ("--account", "-A")) or found
+    return found or None
+
+
+def job_hpc_identity(job: Job) -> Any:
+    """The USER_WORK identity of *job* here, or ``HpcAccessRefused``.
+
+    The attempt record names the account the script's own ``sbatch_args``
+    charge (I-10); without one it is the login's default (None)."""
+    from umrs.shared.hpc_user_work_access import resolve_job_user_work
+
+    args = (job.spec or {}).get("sbatch_args") or []
+    account = sbatch_account([str(a) for a in args]) if isinstance(args, list) else None
+    return resolve_job_user_work(job, slurm_account=account)
+
+
+class HpcScriptBackend:
+    """Submit a user sbatch script via the SSH ControlMaster.
+
+    The script runs under the site's login, so each submit first resolves
+    the job's USER_WORK identity (ADR-112): a refusal raises before any SSH
+    and is never retried under another identity; an allowed identity is
+    recorded in ``attempt.metrics["hpc_identity"]``.
+    """
+
+    def __init__(self, ssh=None, identity=None) -> None:
         # ssh is an awaitable factory returning a connected SSHControlManager
         # (injected by the adapters registry; None → named degraded ref).
         self._ssh_factory = ssh
+        # identity(job) -> HpcIdentity, or raises HpcAccessRefused (tests inject).
+        self._identity = identity or job_hpc_identity
 
     @property
     def backend_name(self) -> str:
@@ -74,6 +115,7 @@ class HpcScriptBackend:
 
     async def submit_job(self, job: Job, attempt: JobAttempt) -> str:
         spec = validate_hpc_script_spec(dict(job.spec or {}))
+        attempt.metrics["hpc_identity"] = self._identity(job).to_metrics()
         script_path = spec["script_path"]
         if self._ssh_factory is None:
             return f"hpc_script|script={script_path}|degraded=no_ssh"

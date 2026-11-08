@@ -267,6 +267,11 @@ class _StepJob:
     cleaned: bool = False
     #: The inputs tag this attempt's workdir name carries (empty: reaping).
     tag: str = ""
+    #: The HPC identity the job runs under (ADR-112 I-10): the login the
+    #: SSH transport used, the Slurm account, and the access mode.
+    site_login: str = ""
+    slurm_account: str = ""
+    access_mode: str = ""
 
     @property
     def stem(self) -> str:
@@ -281,6 +286,11 @@ class _StepJob:
             "attempt": self.attempt,
             "state": self.state,
             "cleaned": self.cleaned,
+            "site_login": self.site_login,
+            "slurm_account": self.slurm_account,
+            "access_mode": self.access_mode,
+            # A staged step is user work (ADR-112 D-2, I-10).
+            "lane": "user_work",
         }
 
 
@@ -632,7 +642,19 @@ class RemoteSlurmStepExecutor(SlurmStepExecutor):
         with self._lock:
             attempt = self._attempts.get(key, 0) + 1
             self._attempts[key] = attempt
-        return _job_identity(str(ctx.run_id), step, attempt, tag)
+        return self._stamp_identity(_job_identity(str(ctx.run_id), step, attempt, tag))
+
+    def _stamp_identity(self, job: _StepJob) -> _StepJob:
+        """Record who the job runs as (ADR-112 I-10). This lane implements the
+        ``service_account`` mode only: the site's login over this executor's
+        SSH config and its Slurm account; the run's project was checked
+        against the site's ``hpc_access`` before the run started."""
+        from umrs.orchestrator.hpc_identity import SERVICE_ACCOUNT
+
+        job.site_login = self.ssh_config.ssh_user
+        job.slurm_account = self.account or ""
+        job.access_mode = SERVICE_ACCOUNT
+        return job
 
     def _run_job(
         self,
@@ -1377,6 +1399,9 @@ class RemoteSlurmStepExecutor(SlurmStepExecutor):
             job_id=found.job_id,
             state="COMPLETED",
             terminal=True,
+            site_login=job.site_login,
+            slurm_account=job.slurm_account,
+            access_mode=job.access_mode,
         )
         try:
             if _workdir_tag(found.workdir, job) != job.tag:

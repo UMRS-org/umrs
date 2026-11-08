@@ -356,19 +356,36 @@ def _init_usage_pool(db_pool):
         logger.warning("LLM usage recording unavailable — usage will not be tracked")
 
 
-def _site_capabilities() -> dict[str, str | int]:
-    """Collect non-secret site capabilities for client discovery."""
-    caps: dict[str, str | int] = {}
+def _hpc_access_caps(scheduler: object) -> dict[str, object]:
+    """The declared HPC access mode for clients (ADR-112 A.3.7): mode names
+    and whether the service login is a person's; empty when undeclared.
+    Never the login, the consent reference or the project list."""
+    hpc = getattr(scheduler, "hpc_access", None)
+    if hpc is None:
+        return {}
+    service = getattr(hpc, "service_account", None)
+    return {
+        "default_mode": str(getattr(hpc, "default_mode", "") or ""),
+        "modes_allowed": list(getattr(hpc, "modes_allowed", None) or []),
+        "personal": bool(getattr(service, "personal", False)),
+    }
+
+
+def _site_capabilities() -> dict[str, object]:
+    """Collect non-secret site capabilities for client discovery.
+
+    ADR-112: ``slurm_delegation``, ``service_pubkey_path`` and
+    ``slurm_proxy_path`` are no longer advertised (no client enrols a shared
+    key any more); ``hpc_access`` says the declared mode instead.
+    """
+    caps: dict[str, object] = {}
     try:
         from umrs.orchestrator.site_config import load_site_config
 
         site = load_site_config()
         caps["scheduler_kind"] = site.scheduler.kind
-        caps["slurm_delegation"] = site.scheduler.slurm_delegation
         caps["site_name"] = site.name
-        if site.scheduler.slurm_delegation == "per_user_ssh":
-            caps["service_pubkey_path"] = site.scheduler.service_pubkey_path
-            caps["slurm_proxy_path"] = site.scheduler.slurm_proxy_path
+        caps["hpc_access"] = _hpc_access_caps(site.scheduler)
     except Exception:  # noqa: BLE001, S110 — boot/teardown must survive per-component failures
         pass
     zmq_port = os.environ.get("UMRS_CONTROL_PORT")

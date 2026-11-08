@@ -702,6 +702,7 @@ def _launch_workflow_from_catalog(
     source_path: str | None = None,
     identity_verified: bool = False,
     caller_project: str | None = None,
+    user_work_project: str | None = None,
 ):
     source_path, workflow_json, step_count = _workflow_run_context(
         workflow_name,
@@ -751,12 +752,14 @@ def _launch_workflow_from_catalog(
 
     project_id = _workflow_project_id(params)
     router = build_registry_backed_router(project_id=project_id, user_id=client_id)
-    prelaunch = _endpoint_prelaunch(
-        workflow_json,
-        router,
-        client_id,
-        caller_project or _verified_caller_project(params, identity_verified),
+    # The gateway-verified project (never the params claim): endpoint
+    # sharing and the HPC lane's project rule (ADR-080, ADR-112) use it.
+    verified_project = caller_project or _verified_caller_project(
+        params, identity_verified
     )
+    prelaunch = _endpoint_prelaunch(workflow_json, router, client_id, verified_project)
+    # The HPC lane rule alone may also use an ingest event's project.
+    hpc_project = verified_project or user_work_project
 
     def _runner(record_to_run):
         run_workflow_record(
@@ -767,6 +770,7 @@ def _launch_workflow_from_catalog(
             project_id=project_id,
             user_id=client_id,
             prelaunch=prelaunch,
+            verified_project=hpc_project,
         )
 
     registry.launch(record, _runner)
@@ -919,6 +923,32 @@ def _require_plan_refusal(
     )
 
 
+def _hpc_user_work_refusal(
+    workflow_json: dict[str, Any],
+    source_path: str,
+    client_id: str,
+    hpc_project: str | None,
+) -> str | None:
+    """Error JSON (typed ``hpcaccess.*``) when the run would use this site's
+    HPC lane and the site's ``hpc_access`` does not admit the caller's
+    **verified** project (ADR-112 A.3.4); None otherwise. The admin bit is
+    the caller's user record, the same source the runner reads."""
+    from umrs.orchestrator.hpc_identity import refusal_message
+    from umrs.server.hpc_user_work import workflow_user_work_refusal
+
+    refused = workflow_user_work_refusal(
+        workflow_json,
+        source_path,
+        user_id=client_id,
+        project_id=hpc_project,
+    )
+    if refused is None:
+        return None
+    return json.dumps(
+        {"status": "error", "code": refused.code, "message": refusal_message(refused)}
+    )
+
+
 def _handle_run_workflow(
     client_id: str,
     payload_str: str,
@@ -927,6 +957,7 @@ def _handle_run_workflow(
     trusted_identity: bool = False,
     caller_is_admin: bool = False,
     idempotency_key: str | None = None,
+    user_work_project: str | None = None,
 ) -> str:
     """Trigger execution of a registered workflow.
 
@@ -941,6 +972,11 @@ def _handle_run_workflow(
     verified plan commit, ADR-105 D-4): that run skips the project's
     ``require_plan`` refusal, which every other caller (HTTP trigger,
     run-definition trigger, ZMQ ``RUN_WORKFLOW``) gets.
+
+    ``user_work_project`` is set only by :func:`run_ingest_workflow`: the
+    ingest event's project, which the HPC lane rule (ADR-112) uses when no
+    verified caller project exists. It grants nothing else (no ADR-080
+    project share, no verified provenance).
     """
     payload, error = _run_workflow_request(payload_str)
     if error:
@@ -956,7 +992,7 @@ def _handle_run_workflow(
     caller_project = _verified_caller_project(params, identity_verified)
 
     try:
-        source_path, _, step_count = _caller_run_context(
+        source_path, workflow_json, step_count = _caller_run_context(
             workflow_name,
             client_id,
             is_admin=caller_is_admin,
@@ -964,6 +1000,11 @@ def _handle_run_workflow(
         )
     except ValueError as exc:
         return json.dumps({"status": "error", "message": str(exc)})
+    refused = _hpc_user_work_refusal(
+        workflow_json, source_path, client_id, caller_project or user_work_project
+    )
+    if refused:
+        return refused
 
     if job_backend is not None:
         execution_id = f"wf-{uuid.uuid4().hex[:12]}"
@@ -986,6 +1027,7 @@ def _handle_run_workflow(
         params=params,
         source_path=source_path,
         identity_verified=identity_verified,
+        user_work_project=user_work_project,
     )
 
     return json.dumps(
@@ -1002,6 +1044,29 @@ def _handle_run_workflow(
         },
         default=str,
     )
+
+
+def run_ingest_workflow(
+    client_id: str, payload_str: str, *, event_project: str | None
+) -> str:
+    """RUN_WORKFLOW for a W4 ``on: ingest`` subscription (server-side only).
+
+    *client_id* is the workflow's owner and *event_project* the project the
+    upload route recorded for the ingested object, passed only when the owner
+    belongs to it (:mod:`umrs.server.workflow_triggers`). It counts for the
+    HPC lane rule alone (ADR-112 A.3.4, review 2026-11-08): before, an ingest
+    run had no verified project and every allow-listed upload's staged run
+    was refused. No ZMQ payload reaches this entry, and a payload's
+    ``_identity_verified`` claim is dropped as on every untrusted path.
+    """
+    payload_str = _drop_untrusted_identity_claim(payload_str, False)
+    try:
+        return _handle_run_workflow(
+            client_id, payload_str, user_work_project=event_project
+        )
+    except Exception as exc:  # as _dispatch_workflow_command
+        logger.exception("ingest-triggered workflow run failed")
+        return json.dumps({"status": "error", "message": str(exc)})
 
 
 def commit_workflow_run(

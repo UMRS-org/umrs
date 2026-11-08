@@ -2,10 +2,36 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 from umrs.jobs.cluster_venue import ClusterSlurmSubmitter
 from umrs.jobs.models import Job, JobAttempt, JobType
 from umrs.jobs.research_loop_backend import ResearchLoopBackend
+from umrs.orchestrator.hpc_identity import HpcAccessRefused
+from umrs.orchestrator.site_config import HpcAccessConfig, ServiceAccountAccess
+from umrs.shared import hpc_user_work_access as hpc_user_work
+
+
+def _site(allowed=("proj-x",)):
+    hpc = HpcAccessConfig(
+        modes_allowed=["service_account"],
+        default_mode="service_account",
+        service_account=ServiceAccountAccess(
+            login="operator", personal=True, allowed_projects=list(allowed)
+        ),
+    )
+    return SimpleNamespace(
+        name="rccs", extra={"ssh_user": "operator"}, scheduler=SimpleNamespace(hpc_access=hpc)
+    )
+
+
+@pytest.fixture(autouse=True)
+def declared_site(monkeypatch):
+    """This server's site lists ``proj-x`` (ADR-112); nobody is an admin."""
+    monkeypatch.setattr(hpc_user_work, "current_site", lambda: _site())
+    monkeypatch.setattr(hpc_user_work, "user_is_admin", lambda _user: False)
+    return monkeypatch
 
 
 def _job(spec: dict, job_id: str = "job-1") -> Job:
@@ -154,3 +180,85 @@ async def test_venue_mix_chooses_cluster_only_when_declared(monkeypatch):
     )
     assert "driver=slurm" in out
     assert "slurm_id=s-1" in out
+
+
+# ── ADR-112 A.3.3: a cluster loop driver is user work on the site's login ──
+
+
+@pytest.mark.asyncio
+async def test_cluster_submit_refuses_an_unlisted_project_before_submitting(declared_site):
+    declared_site.setattr(hpc_user_work, "current_site", lambda: _site(allowed=()))
+    recorder = TrackingSubmitter()
+    attempt = _attempt()
+    spec = {"loop_id": "loop-1", "driver": "engine", "venue": "cluster:rccs"}
+    with pytest.raises(HpcAccessRefused) as refused:
+        await ClusterSlurmSubmitter(submit_wrapped=recorder.submit_wrapped).submit(
+            job=_job(spec), attempt=attempt, spec=spec
+        )
+    assert refused.value.code == "hpcaccess.project_not_allowed"
+    assert recorder.kwargs is None
+    assert "hpc_identity" not in attempt.metrics
+
+
+@pytest.mark.asyncio
+async def test_cluster_submit_records_the_owner_identity(declared_site):
+    from umrs.shared import handshake as _vh
+
+    declared_site.setattr(_vh, "handshake_secret", lambda: "s")
+    recorder = TrackingSubmitter()
+    attempt = _attempt()
+    spec = {"loop_id": "loop-1", "driver": "engine", "venue": "cluster:rccs"}
+    await ClusterSlurmSubmitter(submit_wrapped=recorder.submit_wrapped).submit(
+        job=_job(spec), attempt=attempt, spec=spec
+    )
+    identity = attempt.metrics["hpc_identity"]
+    assert (identity["lane"], identity["site_login"]) == ("user_work", "operator")
+    assert recorder.kwargs is not None
+
+
+@pytest.mark.asyncio
+async def test_cluster_submit_records_the_account_the_wrapper_charges(declared_site):
+    """I-10 (review 2026-11-08): the loop's wrapper job charges the site's
+    ``scheduler.account``; the attempt record named no account at all."""
+    from umrs.shared import handshake as _vh
+
+    site = _site()
+    site.scheduler.account = "alloc-x"
+    declared_site.setattr(hpc_user_work, "current_site", lambda: site)
+    declared_site.setattr(_vh, "handshake_secret", lambda: "s")
+    attempt = _attempt()
+    spec = {"loop_id": "loop-1", "driver": "engine", "venue": "cluster:rccs"}
+    await ClusterSlurmSubmitter(submit_wrapped=TrackingSubmitter().submit_wrapped).submit(
+        job=_job(spec), attempt=attempt, spec=spec
+    )
+    assert attempt.metrics["hpc_identity"]["slurm_account"] == "alloc-x"
+
+
+@pytest.mark.asyncio
+async def test_a_loop_never_takes_the_gateway_secret_off_the_platform_login(declared_site):
+    """Plan I-2 (review 2026-11-08): the loop job's env carries the operator's
+    gateway secret, so only the platform login (``service_account``) may run
+    it; a user-account identity (wave B) is refused before any submit."""
+    from umrs.orchestrator.hpc_identity import HpcIdentity, Lane
+    from umrs.shared import handshake as _vh
+
+    declared_site.setattr(_vh, "handshake_secret", lambda: "s")
+    user_identity = HpcIdentity(
+        site="rccs",
+        lane=Lane.USER_WORK,
+        mode="user_account",
+        login="alice-hpc",
+        slurm_account=None,
+        personal=False,
+        declared=True,
+    )
+    recorder = TrackingSubmitter()
+    attempt = _attempt()
+    spec = {"loop_id": "loop-1", "driver": "engine", "venue": "cluster:rccs"}
+    submitter = ClusterSlurmSubmitter(
+        submit_wrapped=recorder.submit_wrapped, identity=lambda _job: user_identity
+    )
+    with pytest.raises(RuntimeError, match="gateway secret"):
+        await submitter.submit(job=_job(spec), attempt=attempt, spec=spec)
+    assert recorder.kwargs is None
+    assert "hpc_identity" not in attempt.metrics

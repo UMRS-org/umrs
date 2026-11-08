@@ -1490,16 +1490,22 @@ def _settle_before_run(
     steps_spec: list[dict[str, Any]],
     source_path: str | None,
     executor: StepExecutor | None,
+    verified_project: str | None = None,
 ) -> tuple[bool, str | None]:
     """Outcomes decided before any step runs: nothing to run (succeeded), or
-    uploaded code on a server with no HPC lane (refused). Else the executor
-    name for the run."""
+    uploaded code on a server with no HPC lane, or on a lane the run's
+    verified project may not use (refused, ADR-112). Else the executor name
+    for the run."""
     if not steps_spec:
         record.update(status="succeeded", finished_at=time.time(), progress=1.0)
         _emit_workflow_metric(record, executor, "succeeded")
         return True, None
     worker, refusal = _workflow_executor_name(
-        workflow_json, steps_spec, source_path, injected=executor is not None
+        workflow_json,
+        steps_spec,
+        source_path,
+        injected=executor is not None,
+        run_identity=(record.user_id, verified_project),
     )
     if refusal:
         record.update(status="failed", error=refusal, finished_at=time.time())
@@ -1534,17 +1540,58 @@ def _workflow_executor_name(
     source_path: str | None,
     *,
     injected: bool,
+    run_identity: tuple[str | None, str | None] = (None, None),
 ) -> tuple[str | None, str]:
     """(executor name, refusal) for this run. Uploaded code (ADR-074
-    Amendment 1) runs on the site's connected-HPC lane, never in-process;
-    an injected executor (tests) stands as given."""
+    Amendment 1) runs on the site's connected-HPC lane, never in-process.
+    Any run on that lane, uploaded code or built-in steps, runs only for a
+    caller the site's ``hpc_access`` admits (ADR-112 D-2: staged steps are
+    user work); an injected executor (tests) stands as given.
+
+    *run_identity* is ``(user_id, verified project)``: the project is the
+    gateway-verified one, never the ``params.project_id`` claim."""
     worker = _executor_name_from_execution_mode(workflow_json.get("execution_mode"))
-    if injected or not workflow_has_uploaded_code(steps_spec, source_path):
+    if injected:
         return worker, ""
+    if not workflow_has_uploaded_code(steps_spec, source_path):
+        return _builtin_lane(worker, run_identity)
     lane = uploaded_code_lane(worker)
     if lane == LEGACY_IN_PROCESS:
-        return _legacy_uploaded_lane(worker, source_path), ""
-    return (lane, "") if lane else (None, _NO_HPC_LANE)
+        return _builtin_lane(_legacy_uploaded_lane(worker, source_path), run_identity)
+    if not lane:
+        return None, _NO_HPC_LANE
+    refusal = _hpc_identity_refusal(*run_identity)
+    return (None, refusal) if refusal else (lane, "")
+
+
+def _builtin_lane(
+    worker: str | None, run_identity: tuple[str | None, str | None]
+) -> tuple[str | None, str]:
+    """(executor name, refusal) for a run of built-in steps only: the lane
+    the workflow asks for, refused when that is the HPC lane and the site's
+    ``hpc_access`` does not admit the run (review 2026-11-08: a built-in
+    ``execution_mode: slurm`` run reached the site's login unchecked)."""
+    from umrs.server.hpc_user_work import requests_hpc_lane
+
+    if not requests_hpc_lane(worker):
+        return worker, ""
+    refusal = _hpc_identity_refusal(*run_identity)
+    return (None, refusal) if refusal else (worker, "")
+
+
+def _hpc_identity_refusal(user_id: str | None, verified_project: str | None) -> str:
+    """Why this run's user work may not use the HPC lane here, or ``""``.
+
+    Defence in depth behind the trigger-time refusal (ADR-112 A.3.4): a
+    durable re-dispatch or a direct launch still meets the site's rule.
+    ``is_admin`` comes from the user record (unreadable is not admin), the
+    same source every admission check reads.
+    """
+    from umrs.server.hpc_user_work import runner_refusal_text
+    from umrs.shared.hpc_user_work_access import user_work_refusal
+
+    refused = user_work_refusal(user_id=user_id, project_id=verified_project)
+    return runner_refusal_text(refused) if refused else ""
 
 
 class _StepLanes:
@@ -1928,6 +1975,7 @@ def run_workflow_record(
     user_id: str | None = None,
     executor: StepExecutor | None = None,
     prelaunch: Callable[[ExecutionRecord], None] | None = None,
+    verified_project: str | None = None,
 ) -> None:
     """Execute the workflow described by ``workflow_json`` in-process.
 
@@ -1955,6 +2003,11 @@ def run_workflow_record(
     ``prelaunch`` runs once the run is accepted (not refused, workflow
     valid) and before the first wave: the handler starts the endpoints the
     steps need there (ADR-109 D-4). Its failure never fails the run.
+
+    ``verified_project`` is the run's gateway-verified project (None when
+    unverified). Uploaded code bound for the HPC lane is refused unless the
+    site's ``hpc_access`` admits it (ADR-112); ``project_id`` stays the
+    recorded project for routing and storage.
     """
     record.update(status="running", started_at=time.time())
     # ADR-074 D-2: the uploaded tree never joins this process's sys.path (a
@@ -1963,7 +2016,7 @@ def run_workflow_record(
 
     steps_spec: list[dict[str, Any]] = list(workflow_json.get("steps", []))
     settled, worker = _settle_before_run(
-        record, workflow_json, steps_spec, source_path, executor
+        record, workflow_json, steps_spec, source_path, executor, verified_project
     )
     if settled:
         return

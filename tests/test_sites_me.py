@@ -1,13 +1,15 @@
 """``GET /umrs/sites/me`` (multi-HPC plan S2, 2026-10-24).
 
 The verified caller sees this site's non-secret capabilities, its declared
-HPC access mode (``undeclared`` until S1b adds ``scheduler.hpc_access``) and
-their **own** user row here — never another user's, never the Slurm account
-name, never anything personal in the open ``/health``.
+HPC access mode (``scheduler.hpc_access``, ADR-112; ``undeclared`` without
+one), whether its service login is personal, and their **own** user row here
+— never another user's, never the Slurm account name, never anything
+personal in the open ``/health``.
 """
 
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -15,7 +17,14 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from umrs.admin.user_store import UserStore
 from umrs.api import sites
-from umrs.orchestrator.site_config import SiteConfig
+from umrs.orchestrator.site_config import (
+    HpcAccessConfig,
+    ServiceAccountAccess,
+    SiteConfig,
+    load_site_config,
+)
+
+DEPLOY = Path(__file__).resolve().parents[1] / "deploy"
 
 _VERIFIED = {"X-User-ID": "alice", "X-Verified-Project-ID": "proj-a"}
 
@@ -31,14 +40,27 @@ def store(tmp_path, monkeypatch):
     return users
 
 
-def _site(hpc_access=None) -> SiteConfig:
+def _site(hpc_access: HpcAccessConfig | None = None) -> SiteConfig:
     site = SiteConfig(name="rccs-front")
     site.scheduler.kind = "slurm-remote"
     site.step_executor.remote_enabled = True
     site.step_executor.gpu = True
-    if hpc_access is not None:
-        site.scheduler.hpc_access = hpc_access  # type: ignore[attr-defined]
+    site.scheduler.hpc_access = hpc_access
     return site
+
+
+def _service_site(*, personal: bool, consent_ref: str = "") -> SiteConfig:
+    service = ServiceAccountAccess(
+        login="svc", personal=personal, consent_ref=consent_ref, allowed_projects=["p1"]
+    )
+    return _site(
+        HpcAccessConfig(
+            operator="R-CCS",
+            modes_allowed=["service_account"],
+            default_mode="service_account",
+            service_account=service,
+        )
+    )
 
 
 def _client(monkeypatch, site) -> TestClient:
@@ -58,6 +80,8 @@ def test_caller_sees_own_row_and_undeclared_mode(monkeypatch, store) -> None:
         "declared": False,
         "modes_allowed": [],
         "operator": None,
+        "personal": False,
+        "consent": False,
     }
     assert body["account"] == {"status": "present", "slurm_account": True}
     assert body["capabilities"] == {
@@ -73,24 +97,60 @@ def test_only_the_callers_own_row_and_no_account_name(monkeypatch, store) -> Non
 
 
 def test_declared_mode_is_reported(monkeypatch, store) -> None:
-    declared = {
-        "operator": "R-CCS",
-        "modes_allowed": ["user_account"],
-        "default_mode": "user_account",
-        "service_account": {"consent_ref": "SECRET-DOC-ID"},
-    }
+    declared = HpcAccessConfig(
+        operator="R-CCS",
+        modes_allowed=["user_account"],
+        default_mode="user_account",
+        service_account=ServiceAccountAccess(personal=True, consent_ref="SECRET-DOC-ID"),
+    )
     resp = _client(monkeypatch, _site(declared)).get("/umrs/sites/me", headers=_VERIFIED)
     assert resp.json()["access"] == {
         "mode": "user_account",
         "declared": True,
         "modes_allowed": ["user_account"],
         "operator": "R-CCS",
+        "personal": False,
+        "consent": False,
     }
     assert "SECRET-DOC-ID" not in resp.text
 
 
+def test_service_account_site_reports_a_personal_login(monkeypatch, store) -> None:
+    # ADR-112: the caller learns the login is a person's, never whose.
+    resp = _client(monkeypatch, _service_site(personal=True)).get(
+        "/umrs/sites/me", headers=_VERIFIED
+    )
+    access = resp.json()["access"]
+    assert (access["mode"], access["personal"], access["consent"]) == (
+        "service_account",
+        True,
+        False,
+    )
+    assert "svc" not in resp.text and "p1" not in resp.text
+
+
+def test_consent_is_a_flag_never_the_reference(monkeypatch, store) -> None:
+    site = _service_site(personal=False, consent_ref="LETTER-2026-17")
+    resp = _client(monkeypatch, site).get("/umrs/sites/me", headers=_VERIFIED)
+    access = resp.json()["access"]
+    assert (access["personal"], access["consent"]) == (False, True)
+    assert "LETTER-2026-17" not in resp.text
+
+
+@pytest.mark.parametrize("front", ["rccs-front", "ai4s-front", "bdrt-front", "octopus-front"])
+def test_every_front_reports_its_declared_personal_login(front) -> None:
+    # The old loader dropped scheduler.hpc_access, so every front read undeclared.
+    access = sites.access_of(load_site_config(str(DEPLOY / front / "site.yaml")))
+    assert (access.mode, access.declared, access.personal, access.consent) == (
+        "service_account",
+        True,
+        True,
+        False,
+    )
+
+
 def test_default_mode_outside_allowed_is_undeclared(monkeypatch, store) -> None:
-    bad = {"modes_allowed": ["user_account"], "default_mode": "service_account"}
+    bad = HpcAccessConfig(modes_allowed=["user_account"], default_mode="service_account")
     body = _client(monkeypatch, _site(bad)).get("/umrs/sites/me", headers=_VERIFIED).json()
     assert body["access"]["declared"] is False
     assert body["access"]["mode"] == "undeclared"

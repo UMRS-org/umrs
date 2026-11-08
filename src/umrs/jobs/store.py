@@ -199,6 +199,26 @@ def _budget_exhausted_marker(attempt_id: str, exit_reason: str | None) -> bool:
     return True
 
 
+def _policy_refusal_marker(attempt_id: str, exit_reason: str | None) -> bool:
+    """ADR-112: an exit reason that starts with an ``hpcaccess.*`` code is the
+    scheduler's record of a site-policy refusal at submit
+    (``HpcAccessRefused``). The same job would be refused again, so it is
+    terminal like the budget marker: never requeued. Only a refusal starts
+    with the code; a generic submit failure starts with
+    ``backend_submission_failed:``."""
+    if not (exit_reason or "").startswith("hpcaccess."):
+        return False
+    logger.warning(f"Attempt {attempt_id} refused by hpc_access — terminal, no requeue")
+    return True
+
+
+def _terminal_exit_reason(attempt_id: str, exit_reason: str | None) -> bool:
+    """Whether *exit_reason* forbids a requeue (budget or policy marker)."""
+    return _budget_exhausted_marker(attempt_id, exit_reason) or _policy_refusal_marker(
+        attempt_id, exit_reason
+    )
+
+
 # ADR-105 D-5: job-terminal listeners. One process holds several JobStore
 # instances (the scheduler's, the HTTP sidecar's, the ZMQ durable backend's,
 # the vision route's); a listener registered process-wide fires for every
@@ -1511,7 +1531,7 @@ class JobStore:
             job_row = cur.fetchone()
             job = self._row_to_job(job_row)
 
-            budget_exhausted = _budget_exhausted_marker(attempt_id, exit_reason)
+            budget_exhausted = _terminal_exit_reason(attempt_id, exit_reason)
 
             # Check if we should retry (the D-3 marker forces the failed branch
             # regardless of remaining retry budget).

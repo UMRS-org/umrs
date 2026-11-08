@@ -23,6 +23,22 @@ scheduler:
   cpus: 8
   memory: ""                    # "" omits --mem when the partition rejects it
   require_user_slurm_account: false
+  # ADR-112 D-1: declare how user work reaches this cluster. On a login node
+  # every job runs as the account UMRS itself runs under (no SSH); name it as
+  # service_account.login. personal: true when that account belongs to a
+  # person. Until the operator's written consent is recorded in consent_ref,
+  # user work (staged steps, hpc_script, cluster loops) runs only for admins
+  # and allowed_projects ([] = admins only). Omitting the block leaves the
+  # site undeclared: user work refuses non-admins.
+  hpc_access:
+    operator: "<who runs the system>"
+    modes_allowed: [service_account]
+    default_mode: service_account
+    service_account:
+      login: <operator-account>
+      personal: true
+      consent_ref: ""
+      allowed_projects: []
 
 runtime:
   kind: podman-compose

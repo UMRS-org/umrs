@@ -58,6 +58,41 @@ def _cluster_deploy_dir(site_name: str) -> str:
     return str(Path(repo) / "deploy" / "rccs")
 
 
+def _job_identity(job: Job) -> Any:
+    """The loop owner's USER_WORK identity here (ADR-112 A.3.3).
+
+    The wrapper job charges the site's ``scheduler.account`` (the same rule
+    as ``RemoteSlurmBackend._submit_wrapper_job``), so the attempt record
+    names it (I-10)."""
+    from umrs.shared.hpc_user_work_access import (
+        resolve_job_user_work,
+        site_slurm_account,
+    )
+
+    return resolve_job_user_work(job, slurm_account=site_slurm_account())
+
+
+def _platform_login_identity(identity: Any) -> Any:
+    """*identity* when it is the platform login, else a ``RuntimeError``.
+
+    A loop is user work for admission, but its job environment carries the
+    operator's gateway secret (``UMRS_GATEWAY_HMAC_SECRET_HEX``), and plan
+    invariant I-2 keeps such jobs on the platform login. Wave A resolves user
+    work only to ``service_account``, so this never fires today; once wave B
+    resolves ``user_account``, a loop must not carry the secret into a user's
+    own job (review 2026-11-08). Raised before any SSH."""
+    from umrs.orchestrator.hpc_identity import SERVICE_ACCOUNT
+
+    mode = getattr(identity, "mode", "")
+    if mode == SERVICE_ACCOUNT:
+        return identity
+    raise RuntimeError(
+        f"cluster loop refused: its job carries the platform's gateway secret "
+        f"and runs only under the platform login, not access mode {mode!r} "
+        f"(ADR-112 invariant I-2)"
+    )
+
+
 class ClusterSlurmSubmitter:
     """Go through RemoteSlurmBackend to stage the loop job wrapper on cluster.
 
@@ -70,19 +105,31 @@ class ClusterSlurmSubmitter:
         submit_wrapped: Callable[..., Awaitable[Any]] | None = None,
         *,
         repo_root: Path | None = None,
+        identity: Callable[[Job], Any] | None = None,
     ) -> None:
         self._submit = submit_wrapped
         self._repo_root = repo_root or Path(
             os.environ.get("R4_REPO_ROOT") or os.getcwd()
         )
+        # identity(job) -> HpcIdentity or raises HpcAccessRefused (ADR-112).
+        self._identity = identity or _job_identity
 
     async def submit(
         self, *, job: Job, attempt: JobAttempt, spec: Mapping[str, Any]
     ) -> str:
-        """Submit the loop's driver env-injected into the cluster wrapper."""
+        """Submit the loop's driver env-injected into the cluster wrapper.
+
+        A loop driver is user work on the site's login (ADR-112 A.3.3): the
+        owner's identity is resolved first, a refusal raises before any SSH,
+        and the identity is recorded in ``attempt.metrics["hpc_identity"]``.
+        """
         loop_id = str(spec.get("loop_id") or "").strip()
         if not loop_id:
             raise ValueError("cluster-venue loop job requires spec.loop_id")
+        identity = _platform_login_identity(self._identity(job))
+        attempt.metrics["hpc_identity"] = identity.to_metrics()
+        # TODO(MS X-5): the deploy dir is still the rccs one for every site;
+        # resolve it from the venue's own site (multi-site plan item X-5).
         deploy_dir = _cluster_deploy_dir("rccs")
         wrapper = str(Path(deploy_dir) / Path(LOOP_WRAPPER_REL).name)
         env = {

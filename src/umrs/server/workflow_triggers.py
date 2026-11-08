@@ -89,6 +89,31 @@ def _execution_id_from_response(raw: str) -> str | None:
     return None
 
 
+def _owner_event_project(client_id: str, project_id: str | None) -> str | None:
+    """The ingest event's project when the workflow owner's user record lists
+    it, else None. The upload route recorded the project for the uploader;
+    the run executes the owner's workflow, so the project counts for the HPC
+    lane rule (ADR-112 A.3.4) only when the owner belongs to it too (an
+    unreadable record fails closed; an admin owner is admitted anyway)."""
+    from umrs.shared.hpc_user_work_access import user_in_project
+
+    return project_id if user_in_project(client_id, project_id) else None
+
+
+def _run_triggered(
+    workflow_name: str, client_id: str, params: dict[str, Any]
+) -> str:
+    """Launch one ingest-triggered run of *workflow_name* for its owner."""
+    from umrs.server.workflow_registry_handler import run_ingest_workflow
+
+    payload = {"workflow_name": workflow_name, "params": params}
+    return run_ingest_workflow(
+        client_id,
+        json.dumps(payload),
+        event_project=_owner_event_project(client_id, params.get("project_id")),
+    )
+
+
 # ── batch quiet-window collection (single run per batch) ────────────────────
 
 _BATCH_LOCK = threading.Lock()
@@ -100,18 +125,11 @@ def _collect_batch_fire(
     workflow_name: str, client_id: str, trigger: dict[str, Any], stems: list[str],
 ) -> None:
     """Timer expiry: launch ONE run with only_videos=<comma-joined stems>."""
-    from umrs.core.TaskCmdStatus import TaskCmd
-    from umrs.server.workflow_registry_handler import handle_workflow_command
-
     params = dict(trigger.get("_params") or {})
     params["only_videos"] = ",".join(sorted(stems))
     params["_trigger"] = {k: v for k, v in trigger.items() if k != "_params"}
     try:
-        raw = handle_workflow_command(
-            TaskCmd.RUN_WORKFLOW, client_id,
-            json.dumps({"workflow_name": workflow_name, "params": params,
-                        "_identity_verified": False}),
-        )
+        raw = _run_triggered(workflow_name, client_id, params)
         execution_id = _execution_id_from_response(raw)
         logger.info(
             "Ingest batch fired: workflow=%s execution=%s files=%d",
@@ -173,9 +191,6 @@ def _dispatch_entry(
     """
     from pathlib import Path
 
-    from umrs.core.TaskCmdStatus import TaskCmd
-    from umrs.server.workflow_registry_handler import handle_workflow_command
-
     workflow_name = entry.get("name")
     if not workflow_name:
         return []
@@ -204,17 +219,7 @@ def _dispatch_entry(
         }
         if trigger.get("stem_key_only"):
             params["only_videos"] = stem
-        raw = handle_workflow_command(
-            TaskCmd.RUN_WORKFLOW,
-            client_id,
-            json.dumps(
-                {
-                    "workflow_name": workflow_name,
-                    "params": params,
-                    "_identity_verified": False,
-                }
-            ),
-        )
+        raw = _run_triggered(workflow_name, client_id, params)
         execution_id = _execution_id_from_response(raw)
         if execution_id:
             execution_ids.append(execution_id)

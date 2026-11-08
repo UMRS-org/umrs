@@ -1805,6 +1805,7 @@ async def trigger_workflow(
     )
     resolved = _resolve_trigger(workflow_name, request, caller, memberships)
     _refuse_unscoped_trigger(scope_request, workflow_name, resolved)
+    _refuse_hpc_user_work_trigger(workflow_name, resolved)
     _refuse_unplanned_trigger(workflow_name, resolved.project_id)
     return _dispatch_trigger(workflow_name, resolved, x_r4_session_id)
 
@@ -1879,6 +1880,15 @@ class _ResolvedTrigger:
         none), as ``workflow_registry_handler._workflow_project_id``."""
         value = self.params.get("project_id")
         return value.strip() if isinstance(value, str) and value.strip() else "default"
+
+    @property
+    def verified_project(self) -> str | None:
+        """The run's project when the identity verified (the header project,
+        or a declared one checked against the verified memberships), else
+        None; never ``default`` (as ``_verified_caller_project``)."""
+        if not self.identity_verified or self.project_id == "default":
+            return None
+        return self.project_id
 
 
 def _resolve_trigger(
@@ -2013,7 +2023,45 @@ def _quote_resolved(workflow_name: str, resolved: _ResolvedTrigger) -> Any:
     quote = quote_workflow(workflow_json, source_path)
     if quote.refusal:
         _plan_refusal("lane_unavailable", 409, quote.refusal)
+    _refuse_hpc_user_work(workflow_json, source_path, resolved)
     return quote
+
+
+def _refuse_hpc_user_work(
+    workflow_json: dict[str, Any], source_path: str, resolved: _ResolvedTrigger
+) -> None:
+    """Typed 403 ``hpcaccess.*`` when the run would use this site's HPC lane
+    and the site's ``hpc_access`` does not admit the caller's verified
+    project (ADR-112 A.3.4). Uses the verified project, never the claimed
+    ``params.project_id``; the admin bit is the caller's user record, the
+    same source the runner reads, so an admitted run is not refused later."""
+    from ..orchestrator.hpc_identity import platform_error
+    from ..server.hpc_user_work import workflow_user_work_refusal
+
+    refused = workflow_user_work_refusal(
+        workflow_json,
+        source_path,
+        user_id=resolved.user_id,
+        project_id=resolved.verified_project,
+    )
+    if refused is not None:
+        raise_typed(platform_error(refused))
+
+
+def _refuse_hpc_user_work_trigger(
+    workflow_name: str, resolved: _ResolvedTrigger
+) -> None:
+    """:func:`_refuse_hpc_user_work` for a trigger, before it is accepted. A
+    workflow that does not load is left to the dispatch, which reports it."""
+    try:
+        source_path, workflow_json, _ = _workflow_run_context(
+            workflow_name,
+            resolved.user_id,
+            source_path=str(resolved.entry.get("source_path") or ""),
+        )
+    except ValueError:
+        return
+    _refuse_hpc_user_work(workflow_json, source_path, resolved)
 
 
 _PLATFORM_PARAM_KEYS = ("input_files", "project_id")

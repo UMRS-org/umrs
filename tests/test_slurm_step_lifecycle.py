@@ -169,6 +169,29 @@ def test_a_completed_earlier_job_with_its_reply_is_adopted_not_rerun(cluster, tr
     assert cluster.workdirs() == []
 
 
+def test_an_adopted_earlier_job_is_recorded_with_its_identity(cluster, tree):
+    """ADR-112 I-10 (review 2026-11-08): the adopted job's record, published
+    to the run, names the login, account, mode and lane like a fresh one."""
+    wd = _earlier_workdir(cluster, tag=_tag(cluster, tree))
+    (wd / "reply" / "output.json").write_bytes(
+        reply_to_json({"status": "ok", "result": StepResult(output_keys=[])})
+    )
+    cluster.add_job("900", JOB_NAME, str(wd), ["COMPLETED"])
+    ex = cluster.executor(ssh_config=SSHControlConfig(ssh_target="login", ssh_user="op"))
+    recorded: list[dict] = []
+    ex.bind_run(RUN, on_job=lambda _step, job: recorded.append(dict(job)))
+    ex.execute(entrypoint="steps.lane:Upper", config={}, ctx=_ctx(tree, FakeS3()))
+    assert cluster.calls("sbatch") == []
+    [adopted] = [job for job in recorded if job["job_id"] == "900"]
+    identity = (
+        adopted["site_login"],
+        adopted["slurm_account"],
+        adopted["access_mode"],
+        adopted["lane"],
+    )
+    assert identity == ("op", "cloud-users", "service_account", "user_work")
+
+
 def test_a_completed_job_that_ran_on_other_inputs_is_not_adopted(cluster, tree):
     # A restart re-ran an upstream step: its outputs (this step's inputs) may
     # differ now, so the earlier job's reply does not belong to this run.

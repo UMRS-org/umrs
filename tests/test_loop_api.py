@@ -607,6 +607,24 @@ class TestLoopVenueStartLane:
                 return "job-cluster-1"
 
         monkeypatch.setattr(djr, "get_runtime", lambda: _FakeRuntime())
+        # ADR-112 A.3.3: a cluster loop is user work on the site's login, so
+        # it needs a verified owner whose project the site lists.
+        from types import SimpleNamespace
+
+        from umrs.orchestrator.site_config import HpcAccessConfig, ServiceAccountAccess
+        from umrs.shared import hpc_user_work_access as hpc_user_work
+
+        hpc = HpcAccessConfig(
+            modes_allowed=["service_account"],
+            default_mode="service_account",
+            service_account=ServiceAccountAccess(login="op", allowed_projects=["proj-v"]),
+        )
+        site = SimpleNamespace(
+            name="rccs-front",
+            extra={"ssh_user": "op"},
+            scheduler=SimpleNamespace(hpc_access=hpc),
+        )
+        monkeypatch.setattr(hpc_user_work, "current_site", lambda: site)
         resp = client.post(
             "/umrs/loops",
             json={
@@ -615,6 +633,11 @@ class TestLoopVenueStartLane:
                 "max_iterations": 1,
                 "mode": "auto",
                 "venue": "cluster:rccs-front",
+            },
+            headers={
+                "X-User-ID": "alice",
+                "X-Verified-Project-ID": "proj-v",
+                "X-Verified-Is-Admin": "false",
             },
         )
         assert resp.status_code == 201, resp.text

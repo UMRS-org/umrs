@@ -21,10 +21,22 @@ scheduler:
   gpus: 1
   cpus: 8
   memory: ""
-  # per_user_ssh delegates sbatch to each user's own SSH identity; omit to use
-  # the single service SSH connection below.
-  #slurm_delegation: per_user_ssh
   require_user_slurm_account: false
+  # ADR-112 D-1: declare how user work reaches this cluster (per_user_ssh is
+  # retired). Every lane connects as extra.ssh_user; service_account.login must
+  # equal it. personal: true when that login belongs to a person. Until the
+  # operator's written consent is recorded in consent_ref, user work runs only
+  # for admins and allowed_projects ([] = admins only). Omitting the block
+  # leaves the site undeclared: user work refuses non-admins.
+  hpc_access:
+    operator: "<who runs the system>"
+    modes_allowed: [service_account]
+    default_mode: service_account
+    service_account:
+      login: <ssh-user>
+      personal: true
+      consent_ref: ""
+      allowed_projects: []
 
 runtime:
   kind: podman-compose

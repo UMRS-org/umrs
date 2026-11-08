@@ -52,15 +52,61 @@
     "name"
   ],
   "$defs": {
+    "hpc_access": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "ADR-112 D-1: the site's declared HPC access modes. Absent = undeclared (user-work lanes refuse non-admins).",
+      "required": ["modes_allowed", "default_mode"],
+      "properties": {
+        "operator": { "type": "string", "description": "Who runs the system." },
+        "modes_allowed": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "enum": ["service_account", "user_account"] }
+        },
+        "default_mode": { "type": "string", "enum": ["service_account", "user_account"] },
+        "service_account": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "login": { "type": "string", "description": "The platform login; must equal extra.ssh_user." },
+            "personal": { "type": "boolean", "description": "The login belongs to a person (shown in /umrs/sites/me and refusals)." },
+            "consent_ref": { "type": "string", "description": "The operator's written consent; empty = interim." },
+            "allowed_projects": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Projects whose user work may run under this login while consent_ref is empty; [] = admins only."
+            }
+          }
+        },
+        "user_account": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "methods": { "type": "array", "items": { "type": "string" } }
+          }
+        }
+      }
+    },
     "scheduler": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
         "nodes": { "type": "integer", "minimum": 0 },
         "require_user_slurm_account": { "type": "boolean" },
-        "slurm_delegation": { "type": "string" },
-        "service_pubkey_path": { "type": "string" },
-        "slurm_proxy_path": { "type": "string" },
+        "slurm_delegation": {
+          "type": "string",
+          "description": "DEPRECATED (ADR-112): ignored by the backend; declare hpc_access."
+        },
+        "service_pubkey_path": {
+          "type": "string",
+          "description": "DEPRECATED (ADR-112): the shared delegation key is retired."
+        },
+        "slurm_proxy_path": {
+          "type": "string",
+          "description": "DEPRECATED (ADR-112): the shared delegation proxy is retired."
+        },
+        "hpc_access": { "$ref": "#/$defs/hpc_access" },
         "kind": { "type": "string" },
         "partition": { "type": "string" },
         "partition_choice": {

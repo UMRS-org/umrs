@@ -142,6 +142,16 @@ def _resolve_sbatch_mem_arg(site: Any, effective_gpus: int | None) -> str:
     return f"--mem={mem}"
 
 
+def _site_or_none() -> Any:
+    """The loaded site config, or None when none can be read."""
+    try:
+        from .site_config import load_site_config
+
+        return load_site_config()
+    except Exception:
+        return None
+
+
 class RemoteSlurmBackend(SlurmBackend):
     """
     SSH-based remote Slurm backend for front-end server deployments.
@@ -149,10 +159,13 @@ class RemoteSlurmBackend(SlurmBackend):
     All Slurm CLI commands are executed remotely via SSH ControlMaster.
     Job info files on the shared filesystem are read via SSH cat.
 
-    When ``slurm_delegation`` is ``per_user_ssh``, job submission and cancellation
-    are executed as the requesting user via a per-user SSH connection using the
-    UMRS service identity key. The user must have enrolled the service public key
-    in their ~/.ssh/authorized_keys (via ``r4 onboard``).
+    Every verb runs under the site's platform login (``extra.ssh_user``):
+    this backend serves the platform lanes of ADR-112 D-2 (endpoints, serving,
+    relay, janitor), whose job environments carry operator secrets. The
+    ``requesting_user`` a caller passes is attribution only (``--comment`` and
+    ``UMRS_USER``), never an SSH identity, and a failed connect is raised,
+    never retried under another login (I-1). Each submit records the
+    resolved identity in ``JobInfo.metadata["hpc_identity"]``.
     """
 
     def __init__(self, config: Any, ssh_config: SSHControlConfig | None = None) -> None:
@@ -176,22 +189,6 @@ class RemoteSlurmBackend(SlurmBackend):
         self._ssh: SSHControlManager | None = None
         self._tunnel_pool: TunnelPool | None = None
 
-        # Per-user SSH delegation state
-        self._delegation_mode: str = "service_account"
-        self._service_identity_file: str = ""
-        self._user_ssh_pool: dict[str, SSHControlManager] = {}
-        try:
-            from .site_config import load_site_config
-
-            site = load_site_config()
-            self._delegation_mode = site.scheduler.slurm_delegation
-            # Derive private key path from pubkey path (strip .pub suffix)
-            pubkey_path = site.scheduler.service_pubkey_path
-            if pubkey_path.endswith(".pub"):
-                self._service_identity_file = pubkey_path[:-4]
-        except Exception:
-            pass
-
     @property
     def backend_name(self) -> str:
         return "slurm-remote"
@@ -202,52 +199,6 @@ class RemoteSlurmBackend(SlurmBackend):
             self._ssh = SSHControlManager(self._ssh_config)
         await self._ssh.ensure_connected()
         return self._ssh
-
-    async def _get_ssh_for_user(self, username: str) -> SSHControlManager:
-        """Get or create a per-user SSH control manager for delegated submission.
-
-        Uses the UMRS service identity key to connect as the target user.
-        The user must have enrolled the service pubkey in their authorized_keys.
-        Falls back to the service-account connection if delegation is not
-        configured **or** if the per-user connection fails (user has not
-        enrolled yet).
-        """
-        if self._delegation_mode != "per_user_ssh" or not self._service_identity_file:
-            return await self._get_ssh()
-
-        if username not in self._user_ssh_pool:
-            # Build a user-specific SSH config based on service config
-            user_config = SSHControlConfig(
-                ssh_target=self._ssh_config.ssh_target,
-                ssh_user=username,
-                ssh_port=self._ssh_config.ssh_port,
-                connect_timeout=self._ssh_config.connect_timeout,
-                command_timeout=self._ssh_config.command_timeout,
-                control_path="",  # Auto-generated per-user socket
-                server_alive_interval=self._ssh_config.server_alive_interval,
-                server_alive_count_max=self._ssh_config.server_alive_count_max,
-                reverse_tunnels=[],  # No tunnels for per-user connections
-                proxy_jump=self._ssh_config.proxy_jump,
-                identity_file=self._service_identity_file,
-                remote_env=self._ssh_config.remote_env,
-            )
-            self._user_ssh_pool[username] = SSHControlManager(user_config)
-
-        mgr = self._user_ssh_pool[username]
-        try:
-            await mgr.ensure_connected()
-        except Exception:
-            # Per-user SSH failed (user likely hasn't enrolled their key).
-            # Fall back to service account so the job can still proceed
-            # under the site master Slurm account.
-            logger.warning(
-                "Per-user SSH connection failed for %s; falling back to "
-                "service account.  The user may not have enrolled the UMRS "
-                "service key (r4 auth login / r4 onboard).",
-                username,
-            )
-            return await self._get_ssh()
-        return mgr
 
     def _get_wrapper_script(self, env: dict | None = None) -> str | None:
         """Get the remote wrapper script path.
@@ -297,10 +248,10 @@ class RemoteSlurmBackend(SlurmBackend):
         model_path: str | None = None,
         **kwargs: Any,
     ) -> JobInfo:
-        """Submit a Slurm job via remote SSH sbatch.
+        """Submit a Slurm job via remote SSH sbatch under the platform login.
 
-        When per-user delegation is active and ``requesting_user`` is provided,
-        the sbatch is executed as that user via the UMRS service identity key.
+        ``requesting_user`` is attribution only (ADR-112 D-2): it never
+        selects the SSH identity.
         """
         # Wrapper jobs (loop jobs, vendor wrappers) carry their own runtime —
         # a model requirement is only valid for the legacy direct-submit path.
@@ -322,10 +273,7 @@ class RemoteSlurmBackend(SlurmBackend):
         # Legacy: generate Singularity-based sbatch script and pipe via stdin.
         script_content = self._build_sbatch_script(model, **kwargs)
 
-        if requesting_user and self._delegation_mode == "per_user_ssh":
-            ssh = await self._get_ssh_for_user(requesting_user)
-        else:
-            ssh = await self._get_ssh()
+        ssh = await self._get_ssh()
         result = await ssh.run_remote_with_stdin(
             "sbatch --parsable",
             script_content.encode(),
@@ -343,6 +291,7 @@ class RemoteSlurmBackend(SlurmBackend):
             model_path=model,
             created_at=datetime.now(),
             backend=self.backend_name,
+            metadata=self._identity_metadata(None, None),
         )
 
     @staticmethod
@@ -405,10 +354,7 @@ class RemoteSlurmBackend(SlurmBackend):
         # Pop unused kwargs before building env
         kwargs.pop("min_gpu_memory_gb", None)
 
-        if requesting_user and self._delegation_mode == "per_user_ssh":
-            ssh = await self._get_ssh_for_user(requesting_user)
-        else:
-            ssh = await self._get_ssh()
+        ssh = await self._get_ssh()
         # One partition per submission (RCCS refuses a list); the probes run
         # through the same ssh as the real submit, each with the GPU request
         # of the partition it probes (ADR-109 D-3).
@@ -457,7 +403,33 @@ class RemoteSlurmBackend(SlurmBackend):
             model_path=model_path,
             created_at=datetime.now(),
             backend=self.backend_name,
+            metadata=self._identity_metadata(site, slurm_account),
         )
+
+    def _identity_metadata(
+        self, site: Any, slurm_account: str | None
+    ) -> dict[str, Any]:
+        """``{"hpc_identity": ...}`` for one submit (ADR-112 D-2, I-10).
+
+        Always the platform lane: the login is the one the connection used,
+        whatever user the job is attributed to.
+        """
+        from .hpc_identity import Lane, resolve_hpc_identity
+
+        if site is None:
+            site = _site_or_none()
+        identity = resolve_hpc_identity(
+            site,
+            lane=Lane.PLATFORM,
+            user_id=None,
+            project_id=None,
+            is_admin=False,
+            slurm_account=slurm_account,
+        ).to_metrics()
+        ssh_config = getattr(self, "_ssh_config", None)
+        login = getattr(ssh_config, "ssh_user", "") or identity["site_login"]
+        identity["site_login"] = login
+        return {"hpc_identity": identity}
 
     def _partition_candidates(
         self,
@@ -1299,10 +1271,6 @@ class RemoteSlurmBackend(SlurmBackend):
         if self._tunnel_pool is not None:
             await self._tunnel_pool.shutdown()
             self._tunnel_pool = None
-        # Close per-user SSH connections
-        for username, mgr in list(self._user_ssh_pool.items()):
-            await mgr.close()
-        self._user_ssh_pool.clear()
         if self._ssh:
             await self._ssh.close()
             self._ssh = None

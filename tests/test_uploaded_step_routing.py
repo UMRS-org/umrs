@@ -74,6 +74,9 @@ def test_uploaded_code_is_refused_by_name_without_an_hpc_lane(tmp_path, monkeypa
 
 def test_uploaded_code_runs_on_the_hpc_lane_never_in_the_server(tmp_path, monkeypatch):
     monkeypatch.setattr("umrs.server.step_trust.hpc_lane_available", lambda: True)
+    # ADR-112: uploaded code on the HPC lane is user work; this test site is
+    # undeclared, so only an admin's run is admitted.
+    monkeypatch.setattr("umrs.shared.hpc_user_work_access.user_is_admin", lambda _user: True)
     hpc = _FakeHpc()
     names: list = []
 

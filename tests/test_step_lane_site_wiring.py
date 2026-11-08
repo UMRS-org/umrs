@@ -362,13 +362,43 @@ def test_octopus_paths_are_on_the_octopus_home():
     assert not [s for s in _strings(raw) if s.startswith("/home/")]
     cfg = load_site_config(str(DEPLOY / "octopus-front" / "site.yaml"))
     for path in (
-        cfg.scheduler.service_pubkey_path,
-        cfg.scheduler.slurm_proxy_path,
         cfg.storage.sam3_model_path,
         cfg.extra["slurm_job_info_dir"],
         cfg.extra["slurm_wrapper_script"],
     ):
         assert path.startswith(OCTOPUS_HOME + "/"), path
+
+
+#: ADR-112 G-8: the maintainer's interim per-site lists ([] = admins only).
+DEMO_PROJECTS = ["bdr-opossum", "spring-8", "brc-mouse"]
+ALLOWED_PROJECTS = {
+    "rccs-front": DEMO_PROJECTS,
+    "ai4s-front": DEMO_PROJECTS,
+    "bdrt-front": [],
+    "octopus-front": [],
+}
+RETIRED_SCHEDULER_KEYS = (
+    "slurm_delegation",
+    "service_pubkey_path",
+    "slurm_proxy_path",
+    "require_user_slurm_account",
+)
+
+
+@pytest.mark.parametrize("front", FRONTS)
+def test_every_front_declares_its_personal_service_account(front):
+    # ADR-112 D-1: per_user_ssh is retired; each front declares the login every
+    # lane uses, says it is personal, and lists who may run user work on it.
+    raw = yaml.safe_load((DEPLOY / front / "site.yaml").read_text())
+    assert not set(RETIRED_SCHEDULER_KEYS) & set(raw["scheduler"]), front
+    hpc = load_site_config(str(DEPLOY / front / "site.yaml")).scheduler.hpc_access
+    assert hpc is not None and hpc.operator, front
+    assert (hpc.modes_allowed, hpc.default_mode) == (["service_account"], "service_account")
+    service = hpc.service_account
+    assert service is not None
+    assert service.login == raw["extra"]["ssh_user"]
+    assert (service.personal, service.consent_ref) == (True, "")
+    assert service.allowed_projects == ALLOWED_PROJECTS[front]
 
 
 def test_octopus_lane_is_closed_on_x86_64_with_rocm_and_no_partition_yet():
@@ -490,8 +520,18 @@ AI4S_CHECKOUT = "/data1/rkp00043/rku00126/ai4s-platform"
 
 def test_ai4s_lane_is_declared_open_like_rccs_with_rikyu_limits():
     step = _step("ai4s-front")
-    assert (step.kind, step.partition, step.account, step.image) == ("inproc", "gpu", "rkp00101", "")
-    assert (step.remote_enabled, step.uploaded_code, step.gpu, step.gpu_form) == (True, "refuse", True, "nvidia-devices")
+    assert (step.kind, step.partition, step.account, step.image) == (
+        "inproc",
+        "gpu",
+        "rkp00101",
+        "",
+    )
+    assert (step.remote_enabled, step.uploaded_code, step.gpu, step.gpu_form) == (
+        True,
+        "refuse",
+        True,
+        "nvidia-devices",
+    )
     # RIKYU per-GPU job limit: 32 cores / 400 GB; refuses --gres=gpu:N, takes --gpus=N.
     assert (step.gpus, step.gpu_flag, step.cpus, step.memory) == (1, "gpus", 32, "240G")
     assert step.workdir_root == "/data1/rkp00101/rku00126/umrs_steps"

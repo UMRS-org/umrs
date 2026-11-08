@@ -341,6 +341,26 @@ def test_the_runner_records_the_job_while_it_runs(cluster, tree):
     assert job["workdir"].startswith(str(cluster.root))
 
 
+def test_the_job_record_names_the_login_account_and_mode(cluster, tree):
+    """ADR-112 I-10: each step job records who it ran as."""
+    from umrs.server import workflow_runner as wr
+    from umrs.server.workflow_execution_registry import ExecutionRecord
+
+    cluster.behave(run=False, states=["RUNNING", "FAILED"])
+    record = ExecutionRecord(execution_id=RUN, workflow_name="lane", user_id=OWNER)
+    workflow = {"steps": [{"name": "s1", "entrypoint": "steps.lane:Upper", "config": {}}]}
+    executor = cluster.executor(ssh_config=SSHControlConfig(ssh_target="login", ssh_user="op"))
+    wr.run_workflow_record(record, source_path=str(tree), workflow_json=workflow, executor=executor)
+    [job] = step_jobs(record.steps["s1"]).values()
+    assert (job["site_login"], job["slurm_account"], job["access_mode"]) == (
+        "op",
+        "cloud-users",
+        "service_account",
+    )
+    # I-10 names the lane too (review 2026-11-08): a staged step is user work.
+    assert job["lane"] == "user_work"
+
+
 # ── factory and site wiring (unchanged) ─────────────────────────────────────
 
 

@@ -323,7 +323,6 @@ class TestSlurmAttribution:
         from umrs.orchestrator.remote_slurm_backend import RemoteSlurmBackend
 
         backend = RemoteSlurmBackend.__new__(RemoteSlurmBackend)
-        backend._delegation_mode = "service_account"
         backend._job_info_dir = lambda: "/jobs"  # type: ignore[method-assign]
         backend._control_dir = lambda: "/jobs/control"  # type: ignore[method-assign]
 
