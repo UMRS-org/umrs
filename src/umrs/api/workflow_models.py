@@ -86,6 +86,10 @@ class WorkflowTriggerResponse(_OpenModel):
     durable_job_id: str | None = None
     durable_job: dict[str, Any] | None = None
     message: str | None = None
+    intent_id: str | None = Field(
+        default=None,
+        description="sha256 of the signed intent of a run under your own HPC account (ADR-112)",
+    )
 
 
 class WorkflowExecution(_OpenModel):
@@ -224,6 +228,14 @@ class WorkflowPlanResponse(_OpenModel):
     )
     auto_commit_allowed: bool = Field(
         ..., description="Threshold set and max_gpu_hours <= threshold"
+    )
+    requires_intent: bool = Field(
+        default=False,
+        description=(
+            "The run executes under your own HPC account (ADR-112): it starts "
+            "only from a signed intent (r4 workflow trigger --site), never "
+            "from a commit"
+        ),
     )
 
 

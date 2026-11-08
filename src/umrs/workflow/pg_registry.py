@@ -32,15 +32,18 @@ from typing import Any
 
 from ..server.workflow_execution_registry import (
     ExecutionRecord,
+    RunIntentFields,
     StepProgress,
     WorkflowExecutionRegistry,
+    intent_fields,
 )
 
 logger = logging.getLogger(__name__)
 
 _COLUMNS = (
     "execution_id, workflow_name, user_id, status, submitted_at, record_json, "
-    "updated_at, workflow_version, source_sha256"
+    "updated_at, workflow_version, source_sha256, intent_b64, intent_signature, "
+    "intent_id"
 )
 
 
@@ -191,6 +194,7 @@ def _record_from_payload(data: dict[str, Any]) -> DurableExecutionRecord:
         identity_provenance=str(data.get("identity_provenance", "unverified")),
         workflow_version=data.get("workflow_version"),
         source_sha256=data.get("source_sha256"),
+        intent_id=data.get("intent_id"),
     )
     record.steps = _steps_from_payload(data.get("steps"))
     results = dict(data.get("results") or {})
@@ -198,6 +202,19 @@ def _record_from_payload(data: dict[str, Any]) -> DurableExecutionRecord:
         results["blobs"] = _decode_blobs(results.get("blobs"))
     record.results = results
     record.artifacts = list(data.get("artifacts") or [])
+    return record
+
+
+def _record_from_row(row: dict[str, Any]) -> DurableExecutionRecord:
+    """A record from a ``workflow_executions`` row: the ``record_json``
+    payload, plus the intent payload and signature from their own columns
+    (migration 0136). ``to_dict()`` leaves both out of the payload, so a
+    record loaded on another front or after a restart gets them here: its
+    gated steps can then still hand the gate the signed envelope."""
+    record = _record_from_payload(row["record_json"])
+    record.intent_b64 = row.get("intent_b64") or record.intent_b64
+    record.intent_signature = row.get("intent_signature") or record.intent_signature
+    record.intent_id = row.get("intent_id") or record.intent_id
     return record
 
 
@@ -249,6 +266,7 @@ class PgWorkflowExecutionRegistry(WorkflowExecutionRegistry):
         identity_provenance: str = "unverified",
         workflow_version: str | None = None,
         source_sha256: str | None = None,
+        intent: RunIntentFields | None = None,
     ) -> ExecutionRecord:
         """Create a durable execution record (memory + PG mirror)."""
         import uuid
@@ -262,6 +280,7 @@ class PgWorkflowExecutionRegistry(WorkflowExecutionRegistry):
             identity_provenance=identity_provenance,
             workflow_version=workflow_version,
             source_sha256=source_sha256,
+            **intent_fields(intent),
         )
         self._install_hooks(record)
         with self._lock:
@@ -277,7 +296,7 @@ class PgWorkflowExecutionRegistry(WorkflowExecutionRegistry):
         row = self._fetch(execution_id)
         if row is None:
             return None
-        record = _record_from_payload(row["record_json"])
+        record = _record_from_row(row)
         self._install_hooks(record)
         with self._lock:
             self._records[execution_id] = record
@@ -296,7 +315,7 @@ class PgWorkflowExecutionRegistry(WorkflowExecutionRegistry):
             with self._cursor() as cur:
                 cur.execute(
                     f"INSERT INTO workflow_executions ({_COLUMNS}) "
-                    "VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s) "
+                    "VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s) "
                     "ON CONFLICT (execution_id) DO UPDATE SET "
                     "workflow_name = excluded.workflow_name, "
                     "user_id = excluded.user_id, "
@@ -305,7 +324,13 @@ class PgWorkflowExecutionRegistry(WorkflowExecutionRegistry):
                     "record_json = excluded.record_json, "
                     "updated_at = excluded.updated_at, "
                     "workflow_version = excluded.workflow_version, "
-                    "source_sha256 = excluded.source_sha256",
+                    "source_sha256 = excluded.source_sha256, "
+                    # ADR-112 B2: a run's intent is written once, at create.
+                    "intent_b64 = COALESCE(workflow_executions.intent_b64, "
+                    "excluded.intent_b64), "
+                    "intent_signature = COALESCE("
+                    "workflow_executions.intent_signature, excluded.intent_signature), "
+                    "intent_id = COALESCE(workflow_executions.intent_id, excluded.intent_id)",
                     (
                         record.execution_id,
                         record.workflow_name,
@@ -316,6 +341,9 @@ class PgWorkflowExecutionRegistry(WorkflowExecutionRegistry):
                         time.time(),
                         record.workflow_version,
                         record.source_sha256,
+                        record.intent_b64,
+                        record.intent_signature,
+                        record.intent_id,
                     ),
                 )
         except Exception:
@@ -353,7 +381,7 @@ class PgWorkflowExecutionRegistry(WorkflowExecutionRegistry):
                 eid = str(row["execution_id"])
                 if eid in self._records:
                     continue
-                record = _record_from_payload(row["record_json"])
+                record = _record_from_row(row)
                 self._install_hooks(record)
                 self._records[eid] = record
 

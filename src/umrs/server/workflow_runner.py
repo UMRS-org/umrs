@@ -490,6 +490,15 @@ def _record_final_attempt_failure(
         get_feedback_store().record_failure(decision.endpoint_id)
 
 
+def _max_attempts(policy: StepPolicy, record: ExecutionRecord) -> int:
+    """How many attempts one step may take. A run under the person's own
+    HPC account (ADR-112 B2: it carries a signed intent) takes exactly one:
+    the gate's nonce makes a second submit ``replayed``, a gate refusal is
+    never retried, and recovery within the attempt is the gated lane's own
+    (plan §5 B2.0 §10.5)."""
+    return 1 if record.intent_id else policy.max_retries + 1
+
+
 def _execute_with_retry(
     *,
     executor: StepExecutor,
@@ -518,7 +527,7 @@ def _execute_with_retry(
     signal, matching pre-W3 single-attempt semantics.
     """
     policy = StepPolicy.from_mapping(spec)
-    max_attempts = policy.max_retries + 1
+    max_attempts = _max_attempts(policy, record)
     retry_delay = policy.retry_delay
     timeout_seconds = policy.timeout_seconds
     last_msg = ""
@@ -1061,6 +1070,7 @@ def _bind_step_lane(
     (the parents its payload and inputs tag carry), and the run's cancel
     flag and step record for the job lifecycle. Other executors are
     untouched."""
+    _require_gated_lane(executor, record)
     bind = getattr(executor, "bind_run", None)
     if not callable(bind):
         return
@@ -1087,7 +1097,44 @@ def _bind_step_lane(
         record.execution_id,
         cancelled=lambda: bool(record.cancel_requested),
         on_job=lambda step_name, job: _record_step_job(record, step_name, job),
+        **_gated_binding(record),
     )
+
+
+def _require_gated_lane(executor: StepExecutor, record: ExecutionRecord) -> None:
+    """I-1 backstop: a run with a signed intent never reaches a Slurm
+    executor without a gated path (a local ``sbatch`` lane would submit as
+    the server's own login); the step fails by name before anything is
+    sent. Non-HPC executors (a platform-template step's in-process lane)
+    are untouched."""
+    if not record.intent_id:
+        return
+    from umrs.server.slurm_step_executor import SlurmStepExecutor
+
+    if isinstance(executor, SlurmStepExecutor) and not _accepts_gated(executor):
+        raise StepExecutionError(
+            "setup",
+            "this run carries your signed intent, but this step lane has no gated "
+            "path: nothing was sent (hpcaccess.lane_not_gated)",
+        )
+
+
+def _accepts_gated(executor: StepExecutor) -> bool:
+    import inspect
+
+    bind = getattr(executor, "bind_run", None)
+    return callable(bind) and "gated" in inspect.signature(bind).parameters
+
+
+def _gated_binding(record: ExecutionRecord) -> dict[str, Any]:
+    """ADR-112 B2: a run with a signed intent runs under the person's own
+    account; its steps go through the person's gate (the lane's
+    ``bind_run(gated=...)``). Other runs bind nothing more."""
+    if not record.intent_id:
+        return {}
+    from umrs.server.gated_step_lane import gated_run_for
+
+    return {"gated": gated_run_for(record)}
 
 
 def _bind_step_endpoint(
@@ -1505,7 +1552,7 @@ def _settle_before_run(
         steps_spec,
         source_path,
         injected=executor is not None,
-        run_identity=(record.user_id, verified_project),
+        run_identity=(record.user_id, verified_project, bool(record.intent_id)),
     )
     if refusal:
         record.update(status="failed", error=refusal, finished_at=time.time())
@@ -1540,7 +1587,7 @@ def _workflow_executor_name(
     source_path: str | None,
     *,
     injected: bool,
-    run_identity: tuple[str | None, str | None] = (None, None),
+    run_identity: tuple[Any, ...] = (None, None),
 ) -> tuple[str | None, str]:
     """(executor name, refusal) for this run. Uploaded code (ADR-074
     Amendment 1) runs on the site's connected-HPC lane, never in-process.
@@ -1548,8 +1595,9 @@ def _workflow_executor_name(
     caller the site's ``hpc_access`` admits (ADR-112 D-2: staged steps are
     user work); an injected executor (tests) stands as given.
 
-    *run_identity* is ``(user_id, verified project)``: the project is the
-    gateway-verified one, never the ``params.project_id`` claim."""
+    *run_identity* is ``(user_id, verified project[, has intent])``: the
+    project is the gateway-verified one, never the ``params.project_id``
+    claim; a signed intent (ADR-112 B2) decides a ``user_account`` run."""
     worker = _executor_name_from_execution_mode(workflow_json.get("execution_mode"))
     if injected:
         return worker, ""
@@ -1560,38 +1608,72 @@ def _workflow_executor_name(
         return _builtin_lane(_legacy_uploaded_lane(worker, source_path), run_identity)
     if not lane:
         return None, _NO_HPC_LANE
-    refusal = _hpc_identity_refusal(*run_identity)
+    refusal = _uploaded_lane_refusal(lane, run_identity)
     return (None, refusal) if refusal else (lane, "")
 
 
+def _uploaded_lane_refusal(lane: str, run_identity: tuple[Any, ...]) -> str:
+    """The identity refusal on *lane*; and a service run on a site whose
+    only open path is the gated one (no helper lane, ADR-112 B2.0 §10.5)
+    has no HPC lane (only a ``user_account`` run carries an intent)."""
+    from umrs.server.hpc_user_work import lane_has_gated_path
+    from umrs.server.step_trust import hpc_lane_available
+
+    refusal = _hpc_identity_refusal(*run_identity, gated=lane_has_gated_path(lane))
+    if refusal or _has_intent(run_identity) or hpc_lane_available():
+        return refusal
+    return _NO_HPC_LANE
+
+
+def _has_intent(run_identity: tuple[Any, ...]) -> bool:
+    return len(run_identity) > 2 and bool(run_identity[2])
+
+
 def _builtin_lane(
-    worker: str | None, run_identity: tuple[str | None, str | None]
+    worker: str | None, run_identity: tuple[Any, ...]
 ) -> tuple[str | None, str]:
     """(executor name, refusal) for a run of built-in steps only: the lane
     the workflow asks for, refused when that is the HPC lane and the site's
     ``hpc_access`` does not admit the run (review 2026-11-08: a built-in
     ``execution_mode: slurm`` run reached the site's login unchecked)."""
-    from umrs.server.hpc_user_work import requests_hpc_lane
+    from umrs.server.hpc_user_work import lane_has_gated_path, requests_hpc_lane
 
     if not requests_hpc_lane(worker):
         return worker, ""
-    refusal = _hpc_identity_refusal(*run_identity)
+    refusal = _hpc_identity_refusal(*run_identity, gated=lane_has_gated_path(worker))
     return (None, refusal) if refusal else (worker, "")
 
 
-def _hpc_identity_refusal(user_id: str | None, verified_project: str | None) -> str:
+def _hpc_identity_refusal(
+    user_id: str | None,
+    verified_project: str | None,
+    has_intent: bool = False,
+    *,
+    gated: bool = True,
+) -> str:
     """Why this run's user work may not use the HPC lane here, or ``""``.
 
     Defence in depth behind the trigger-time refusal (ADR-112 A.3.4): a
     durable re-dispatch or a direct launch still meets the site's rule.
     ``is_admin`` comes from the user record (unreadable is not admin), the
-    same source every admission check reads.
+    same source every admission check reads. A run that resolves to the
+    person's own account needs its signed intent, and only such a run may
+    carry one (ADR-112 B2, ``signature_required`` / ``intent_invalid``).
+    *gated* says the chosen lane has a gated path; on one without (a local
+    ``sbatch`` lane runs as the server's login) a ``user_account`` run
+    refuses ``lane_not_gated`` (I-1, fixer finding 2026-11-08).
     """
-    from umrs.server.hpc_user_work import runner_refusal_text
-    from umrs.shared.hpc_user_work_access import user_work_refusal
+    from umrs.orchestrator.hpc_identity import HpcAccessRefused
+    from umrs.server.hpc_user_work import intent_refusal_text, runner_refusal_text
+    from umrs.shared.hpc_user_work_access import resolve_user_work
 
-    refused = user_work_refusal(user_id=user_id, project_id=verified_project)
-    return runner_refusal_text(refused) if refused else ""
+    try:
+        identity = resolve_user_work(
+            user_id=user_id, project_id=verified_project, gated=gated
+        )
+    except HpcAccessRefused as exc:
+        return runner_refusal_text(exc)
+    return intent_refusal_text(identity, has_intent)
 
 
 class _StepLanes:

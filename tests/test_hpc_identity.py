@@ -233,10 +233,17 @@ def test_identity_records_mode_login_account_and_lane() -> None:
     assert _user_work(_site(), "proj-a").slurm_account is None
 
 
-def test_refusal_reasons_are_the_typed_wave_a_codes() -> None:
+def test_refusal_reasons_are_the_typed_codes() -> None:
     from r4_contracts.errors import HPCACCESS_ERRORS
 
-    assert REFUSAL_REASONS == ("mode_undeclared", "project_not_allowed", "not_enrolled")
+    # Wave A's three, then wave B2's two (plan §5 B2.0 §10.1).
+    assert REFUSAL_REASONS == (
+        "mode_undeclared",
+        "project_not_allowed",
+        "not_enrolled",
+        "allocation_not_linked",
+        "lane_not_gated",
+    )
     assert all(f"hpcaccess.{r}" in HPCACCESS_ERRORS for r in REFUSAL_REASONS)
     with pytest.raises(ValueError):
         HpcAccessRefused("made_up", "site-x", "d")

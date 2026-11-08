@@ -21,6 +21,9 @@ site, as ONE audited event (``audit_events.event = 'account.cascade'``):
   provider's own keystore sweep ends a disabled account's sessions (D-03,
   every 60 s). A project removal leaves them: the ZMQ project check (S-1)
   reads live memberships per command.
+- **gated jobs** (ADR-112 B2) — when the whole account goes, its live gated
+  jobs at this venue are cancelled through the person's own gate first
+  (best-effort; a job the gate cannot reach still ends by ``--time``);
 - **HPC site accounts** (ADR-112 B1) — a lost account's transport keys at
   this venue are destroyed, its ``site_accounts`` row is revoked and its
   project links suspended; a project removal suspends that project's link.
@@ -76,6 +79,9 @@ class CascadeResult:
     # to the person's own site allocation suspended.
     transport_keys_destroyed: int = 0
     hpc_links_suspended: int = 0
+    # ADR-112 B2: live gated jobs cancelled through the person's own gate
+    # before the keys that reach it were destroyed.
+    gated_jobs_cancelled: int = 0
     audited: bool = False
 
     def details(self) -> dict[str, Any]:
@@ -330,6 +336,7 @@ def run_cascade(
     )
     if project is None and curve_provider is not None:
         result.curve_sessions_revoked = int(curve_provider.revoke_user(user) or 0)
+    cancel_gated_jobs(result)  # before the keys that reach the gate go
     end_site_accounts(
         site_accounts or site_account_store(audit_pool, result.venue), result
     )
@@ -345,6 +352,30 @@ def site_account_store(pool: Any, venue: str) -> Any:
     from umrs.hpc_accounts.store import SiteAccountStore
 
     return SiteAccountStore(pool, venue)
+
+
+def _execution_records() -> list[Any]:
+    from umrs.server.workflow_execution_registry import get_execution_registry
+
+    return list(get_execution_registry().list())
+
+
+def cancel_gated_jobs(result: CascadeResult, records: Any = None) -> None:
+    """ADR-112 B2 leg (plan §5 B2.0 §10.6): when the whole account goes, its
+    live gated jobs at this venue are cancelled through the person's own
+    gate first; the transport keys that reach the gate are destroyed next.
+    Best-effort like the other legs: the count says what happened."""
+    if result.project or not result.venue:
+        return
+    try:
+        from umrs.server.gated_step_lane import cancel_person_jobs
+
+        found = _execution_records() if records is None else records
+        result.gated_jobs_cancelled = cancel_person_jobs(result.venue, result.user, found)
+    except Exception:
+        logger.warning(
+            "cascade: gated jobs of %s not cancelled", result.user, exc_info=True
+        )
 
 
 def end_site_accounts(store: Any, result: CascadeResult) -> None:
@@ -677,6 +708,7 @@ __all__ = [
     "AccountStandingSweep",
     "CascadeResult",
     "account_disabled",
+    "cancel_gated_jobs",
     "cancel_owner_jobs",
     "live_project_ids",
     "load_record",

@@ -173,8 +173,14 @@ def _site() -> SiteConfig:
         modes_allowed=["service_account", "user_account"],
         default_mode="service_account",
         service_account=ServiceAccountAccess(login="op", personal=True),
-        user_account=UserAccountAccess(methods=["gated_key"], signing_domain=DOMAIN),
+        user_account=UserAccountAccess(
+            methods=["gated_key"],
+            signing_domain=DOMAIN,
+            # B2.0 §2: the published gate site profile needs its archive dir.
+            profile={"image_archive_dir": "/shared/umrs/archives"},
+        ),
     )
+    site.step_executor.partition = "gpu"
     return site
 
 
@@ -235,7 +241,17 @@ def world(tmp_path, monkeypatch) -> World:
     assert answer.status_code == 200, answer.text
     offer = hs.parse_offer(answer.json())
     signer = _signing_key(tmp_path)
-    plan = hs.build_install(offer, principal=USER, home=str(home), signer=signer, kind="ed25519")
+    # Wave B2: r4 installs the site profile the server publishes (site.json).
+    profile = client.get("/umrs/sites/me/hpc/site-profile", headers=HEADERS)
+    assert profile.status_code == 200, profile.text
+    plan = hs.build_install(
+        offer,
+        principal=USER,
+        home=str(home),
+        signer=signer,
+        kind="ed25519",
+        site_profile=base64.b64decode(profile.json()["bytes_b64"]),
+    )
     _install_as_r4(home, plan)
     return World(client, store, sshd, site, home, signer, offer)
 
@@ -302,7 +318,7 @@ def test_hello_reports_login_sha_signers_assocs_and_log_head(world):
     answer = world.call("hello")
     assert isinstance(answer, gate_client.GateResult), answer
     data = answer.data
-    assert (data["login"], data["site"], data["gate_version"]) == (LOGIN, SITE, "1")
+    assert (data["login"], data["site"], data["gate_version"]) == (LOGIN, SITE, hpc_gate.GATE_VERSION)
     assert data["gate_sha256"] == hpc_gate.gate_sha256() == hs.gate_sha256()
     assert data["log_head"] == {"n": 0, "h": "0" * 64}
     assert data["signers"] == [

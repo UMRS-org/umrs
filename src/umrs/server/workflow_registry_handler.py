@@ -19,7 +19,6 @@ import json
 import logging
 import os
 import threading
-import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
@@ -1158,6 +1157,7 @@ def _launch_workflow_from_catalog(
     user_work_project: str | None = None,
     workflow_version: str | None = None,
     source_sha256: str | None = None,
+    intent: dict[str, str] | None = None,
 ):
     source_path, workflow_json, step_count = _workflow_run_context(
         workflow_name,
@@ -1209,6 +1209,7 @@ def _launch_workflow_from_catalog(
         ),
         workflow_version=workflow_version,
         source_sha256=source_sha256,
+        intent=intent,
     )
     _take_over_prior_run(prior, record)
 
@@ -1282,6 +1283,7 @@ def _submit_durable_workflow_run(
     idempotency_key: str | None = None,
     workflow_version: str | None = None,
     source_sha256: str | None = None,
+    intent: dict[str, str] | None = None,
 ) -> str:
     spec: dict[str, Any] = {
         "workflow_name": workflow_name,
@@ -1301,6 +1303,7 @@ def _submit_durable_workflow_run(
     }
     if verified_project:
         spec[VERIFIED_PROJECT_SPEC_KEY] = verified_project
+    idempotency_key = _stamp_intent(spec, intent, idempotency_key)
     # ADR-105 D-5: the triggering session tags its own durable job.
     from umrs.jobs.job_events import stamp_origin_session
 
@@ -1338,10 +1341,45 @@ def _submit_durable_workflow_run(
             f"{durable_job_id or '<unknown>'} ({step_count} steps)"
         ),
     }
-    if run_id != execution_id:
+    if _existing_run(data, run_id, execution_id):
         # The idempotency key matched an existing job: no new run started.
         body["existing_run"] = True
-    return json.dumps(body, default=str)
+    return _submit_answer(body, intent)
+
+
+def _existing_run(data: dict[str, Any], run_id: str, execution_id: str) -> bool:
+    """The submit answered an existing job: another run id, or (a run id the
+    trigger fixed, as an intent's ``run_id``) the store's own duplicate."""
+    duplicate = str(data.get("message") or "").startswith("Job already exists")
+    return run_id != execution_id or duplicate
+
+
+def _stamp_intent(
+    spec: dict[str, Any], intent: dict[str, str] | None, key: str | None
+) -> str | None:
+    """ADR-112 B2: a gated run's signed intent rides in its spec, so every
+    dispatch (a retry, a restart) hands the same payload to the gate. Its id
+    keys the durable job, so a second trigger of one intent finds it. The
+    durable job's idempotency key (a plan's id, else the intent's)."""
+    if not intent:
+        return key
+    spec["intent"] = dict(intent)
+    return key or f"intent:{intent['id']}"
+
+
+def _submit_answer(body: dict[str, Any], intent: dict[str, str] | None) -> str:
+    """The submit's answer (with the run's ``intent_id``); a second trigger
+    of one intent is ``intent_used``."""
+    if intent:
+        body["intent_id"] = intent["id"]
+    if not (intent and body.get("existing_run")):
+        return json.dumps(body, default=str)
+    from umrs.server.run_intent_admission import error_json
+
+    return error_json(
+        "hpcaccess.intent_used",
+        f"run {body.get('execution_id')} of this intent already exists: sign a new one",
+    )
 
 
 def _run_workflow_request(payload_str: str) -> tuple[dict[str, Any], str | None]:
@@ -1365,14 +1403,21 @@ def _require_plan_refusal(
     workflow_name: str,
     params: dict[str, Any],
     job_backend: DurableJobCommandBackend | None,
+    signed: bool = False,
 ) -> str | None:
     """Error JSON when the run's project requires plan -> commit (ADR-105
     D-4) or its policy is unreadable (fail closed); None otherwise.
 
     The project is the one the durable job is recorded under
     (``params.project_id``, ``default`` when absent). Without a durable
-    store there is no policy table, so nothing is refused.
+    store there is no policy table, so nothing is refused. A *signed* run
+    (it carries the person's signed intent, ADR-112 B2) is not refused: the
+    signature over the exact run is the explicit approval a plan asks for,
+    and the intent admission accepts it or refuses it by name (plan §5 B2.0
+    §10.3, fixer amendment 2026-11-08).
     """
+    if signed:
+        return None
     from umrs.workflow_plans import (
         PlanPolicyUnavailable,
         plan_required_message,
@@ -1397,30 +1442,42 @@ def _require_plan_refusal(
     )
 
 
-def _hpc_user_work_refusal(
-    workflow_json: dict[str, Any],
-    source_path: str,
+def _hpc_admission(
+    target: _RunTarget,
     client_id: str,
-    hpc_project: str | None,
-) -> str | None:
-    """Error JSON (typed ``hpcaccess.*``) when the run would use this site's
-    HPC lane and the site's ``hpc_access`` does not admit the caller's
-    **verified** project (ADR-112 A.3.4); None otherwise. The admin bit is
-    the caller's user record, the same source the runner reads."""
-    from umrs.orchestrator.hpc_identity import refusal_message
-    from umrs.server.hpc_user_work import workflow_user_work_refusal
+    projects: tuple[str | None, str | None],
+    payload: dict[str, Any],
+) -> tuple[Any, str | None]:
+    """``(admission, None)`` or ``(None, error JSON)``: the typed
+    ``hpcaccess.*`` refusal when the run would use this site's HPC lane and
+    the site's ``hpc_access`` does not admit the caller's **verified**
+    project (ADR-112 A.3.4), and the signed-intent admission of a run under
+    the person's own account (B2 §10.3). *projects* is ``(verified caller
+    project, ingest event project)``; the HPC lane rule may use the second,
+    an intent binds only the first. The admin bit is the caller's user
+    record, the same source the runner reads."""
+    from umrs.orchestrator.hpc_identity import HpcAccessRefused, refusal_message
+    from umrs.server.hpc_user_work import workflow_user_work_identity
+    from umrs.server.run_intent_admission import admit_run, error_json, execution_exists
 
-    refused = workflow_user_work_refusal(
-        workflow_json,
-        source_path,
-        user_id=client_id,
-        project_id=hpc_project,
-    )
-    if refused is None:
-        return None
-    return json.dumps(
-        {"status": "error", "code": refused.code, "message": refusal_message(refused)}
-    )
+    caller_project, user_work_project = projects
+    try:
+        identity = workflow_user_work_identity(
+            target.workflow_json,
+            target.source_path,
+            user_id=client_id,
+            project_id=caller_project or user_work_project,
+        )
+    except HpcAccessRefused as refused:
+        return None, error_json(refused.code, refusal_message(refused))
+    run = {
+        "workflow": str(target.entry.get("name") or ""),
+        "version": target.version or "",
+        "project": caller_project or "",
+        "principal": client_id,
+    }
+    params = payload.get("params", {})
+    return admit_run(identity, payload, params, run, execution_exists)
 
 
 def _run_refusal(exc: ValueError) -> str:
@@ -1469,7 +1526,9 @@ def _handle_run_workflow(
         return error
     params = payload.get("params", {})
     if idempotency_key is None:
-        refusal = _require_plan_refusal(payload["workflow_name"], params, job_backend)
+        refusal = _require_plan_refusal(
+            payload["workflow_name"], params, job_backend, signed=bool(payload.get("intent"))
+        )
         if refusal:
             return refusal
 
@@ -1486,11 +1545,8 @@ def _handle_run_workflow(
         )
     except ValueError as exc:
         return _run_refusal(exc)
-    refused = _hpc_user_work_refusal(
-        target.workflow_json,
-        target.source_path,
-        client_id,
-        caller_project or user_work_project,
+    admission, refused = _hpc_admission(
+        target, client_id, (caller_project, user_work_project), payload
     )
     if refused:
         return refused
@@ -1499,8 +1555,8 @@ def _handle_run_workflow(
         return _submit_durable_workflow_run(
             client_id=client_id,
             workflow_name=str(target.entry.get("name")),
-            params=params,
-            execution_id=f"wf-{uuid.uuid4().hex[:12]}",
+            params=admission.params,
+            execution_id=admission.new_execution_id(),
             source_path=target.source_path,
             step_count=target.step_count,
             job_backend=job_backend,
@@ -1509,11 +1565,12 @@ def _handle_run_workflow(
             idempotency_key=idempotency_key,
             workflow_version=target.version,
             source_sha256=target.digest,
+            intent=admission.intent_spec(),
         )
     return _run_in_process(
         target,
         client_id,
-        params,
+        admission,
         identity_verified=identity_verified,
         user_work_project=user_work_project,
     )
@@ -1522,22 +1579,26 @@ def _handle_run_workflow(
 def _run_in_process(
     target: _RunTarget,
     client_id: str,
-    params: dict[str, Any],
+    admission: Any,
     *,
     identity_verified: bool,
     user_work_project: str | None,
 ) -> str:
-    """Start the run in this process (no durable job store)."""
+    """Start the run in this process (no durable job store). *admission* is
+    the run's :class:`~umrs.server.run_intent_admission.RunAdmission`."""
     workflow_name = str(target.entry.get("name"))
+    params = admission.params
     record, source_path, step_count = _launch_workflow_from_catalog(
         workflow_name=workflow_name,
         client_id=client_id,
         params=params,
+        execution_id=admission.execution_id,
         source_path=target.source_path,
         identity_verified=identity_verified,
         user_work_project=user_work_project,
         workflow_version=target.version,
         source_sha256=target.digest,
+        intent=admission.intent_spec(),
     )
     return json.dumps(
         {
@@ -1551,6 +1612,7 @@ def _run_in_process(
             "params": params,
             "execution_id": record.execution_id,
             "durable_job_id": record.durable_job_id,
+            "intent_id": record.intent_id,
             "message": f"Workflow '{workflow_name}' execution accepted ({step_count} steps)",
         },
         default=str,

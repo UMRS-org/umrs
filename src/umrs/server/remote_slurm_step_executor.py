@@ -272,6 +272,13 @@ class _StepJob:
     site_login: str = ""
     slurm_account: str = ""
     access_mode: str = ""
+    #: ADR-112 B2: how the job was reached: ``helper`` (the site's login and
+    #: the step helper) or ``gated:<venue>:<username>`` (the person's gate);
+    #: the reaper and the janitor route cleanup by it. ``intent_id`` and the
+    #: gate log head ``{n, h}`` of the submit belong to a gated job.
+    transport: str = "helper"
+    intent_id: str = ""
+    gate_log: dict[str, Any] | None = None
 
     @property
     def stem(self) -> str:
@@ -291,6 +298,9 @@ class _StepJob:
             "access_mode": self.access_mode,
             # A staged step is user work (ADR-112 D-2, I-10).
             "lane": "user_work",
+            "transport": self.transport,
+            "intent_id": self.intent_id,
+            "gate_log": self.gate_log,
         }
 
 
@@ -307,6 +317,9 @@ class _FoundJob:
 class _RunBinding:
     cancelled: Callable[[], bool] | None = None
     on_job: Callable[[str, dict[str, Any]], None] | None = None
+    #: ADR-112 B2: a run under the person's own account (a ``GatedRun``):
+    #: its steps go through the person's gate, never the helper.
+    gated: Any = None
 
 
 @dataclass
@@ -438,11 +451,13 @@ class RemoteSlurmStepExecutor(SlurmStepExecutor):
         *,
         cancelled: Callable[[], bool] | None = None,
         on_job: Callable[[str, dict[str, Any]], None] | None = None,
+        gated: Any = None,
     ) -> None:
         """The runner hands over the run's cancel flag and a sink for the
-        step record's job facts (job id, workdir, state)."""
+        step record's job facts (job id, workdir, state); for a run under
+        the person's own account, its ``GatedRun`` (ADR-112 B2)."""
         with self._lock:
-            self._runs[str(run_id)] = _RunBinding(cancelled, on_job)
+            self._runs[str(run_id)] = _RunBinding(cancelled, on_job, gated)
 
     # ── the step ────────────────────────────────────────────────────────────
 
@@ -459,6 +474,9 @@ class RemoteSlurmStepExecutor(SlurmStepExecutor):
     def _execute(
         self, entrypoint: str, config: dict[str, Any], ctx: StepContext
     ) -> StepResult:
+        gated = self._gated(ctx)
+        if gated is not None:
+            return self._execute_gated(gated, entrypoint, config, ctx)
         self._check_lane()
         image = self._lane_image(ctx)
         partitions = self._lane_partitions(ctx)
@@ -479,6 +497,29 @@ class RemoteSlurmStepExecutor(SlurmStepExecutor):
             return self._run_job(job, payload, ctx, plan, image, source_dir, partitions)
         finally:
             self._finish(job)
+
+    def _gated(self, ctx: StepContext) -> Any:
+        binding = self._runs.get(str(ctx.run_id))
+        return None if binding is None else binding.gated
+
+    def _execute_gated(
+        self, gated: Any, entrypoint: str, config: dict[str, Any], ctx: StepContext
+    ) -> StepResult:
+        """ADR-112 B2: the step goes through the person's gate (plan §5
+        B2.0 §10.5). The lane's opt-in still applies; the helper, venue
+        script and archive directory are not needed (the gate composes the
+        job from the signed intent and its own site profile)."""
+        from .gated_step_lane import GatedStepLane, transport_for
+
+        if not self.enabled:
+            raise StepExecutionError(
+                "setup",
+                "the connected-HPC step lane is not enabled here "
+                "(step_executor.remote_enabled); nothing was sent",
+            )
+        intent = gated.body()
+        transport = transport_for(gated.venue, gated.username, str(intent.get("login") or ""))
+        return GatedStepLane(self, gated, transport).execute(entrypoint, config, ctx)
 
     def _check_lane(self) -> None:
         required = (
@@ -930,32 +971,10 @@ class RemoteSlurmStepExecutor(SlurmStepExecutor):
         feed: Callable[[BinaryIO], Any] | None = None,
         drain: Callable[[BinaryIO], Any] | None = None,
     ) -> _Stream:
-        """One streaming helper call: *feed* writes its stdin, *drain* reads
-        its stdout; stderr goes to a file so neither side can block on it. A
-        transport that could not even start reports returncode -1."""
-        with tempfile.TemporaryFile() as err:
-            try:
-                proc = subprocess.Popen(
-                    self._remote_argv(command),
-                    stdin=subprocess.PIPE if feed else subprocess.DEVNULL,
-                    stdout=subprocess.PIPE,
-                    stderr=err,
-                )
-            except OSError as exc:
-                return _Stream(
-                    None, None, b"", f"ssh did not start: {exc}".encode(), -1
-                )
-            timer = threading.Timer(timeout, proc.kill)
-            timer.daemon = True
-            timer.start()
-            try:
-                value, error, stdout = _pump(proc, feed, drain)
-            finally:
-                # Armed until ssh exits: the timer bounds that wait too.
-                returncode = _close(proc)
-                timer.cancel()
-            err.seek(0)
-            return _Stream(value, error, stdout, err.read(64 * 1024), returncode)
+        """One streaming helper call (:func:`stream_argv`)."""
+        return stream_argv(
+            self._remote_argv(command), timeout=timeout, feed=feed, drain=drain
+        )
 
     # ── workdir and staging ─────────────────────────────────────────────────
 
@@ -1587,7 +1606,20 @@ class RemoteSlurmStepExecutor(SlurmStepExecutor):
         (a durable retry of the run may come) leaves live and COMPLETED jobs
         for that retry to resume or adopt. *facts* are the step's recorded
         jobs (one per workdir). Works with the lane switched off: a kill
-        switch must still kill. True when nothing is left."""
+        switch must still kill. True when nothing is left. A gated job
+        (ADR-112 B2: its ``transport`` is ``gated:*``) is reaped through that
+        person's gate."""
+        gated = [f for f in facts if _is_gated(f)]
+        helper = [f for f in facts if not _is_gated(f)]
+        done = _reap_gated(gated, for_retry) if gated else True
+        if gated and not helper:
+            return done
+        return self._reap_helper_step(run_id, step, *helper, for_retry=for_retry) and done
+
+    def _reap_helper_step(
+        self, run_id: str, step: str, *facts: dict[str, Any], for_retry: bool = False
+    ) -> bool:
+        """:meth:`reap_step` for the helper lane's jobs."""
         jobs = [_recorded_job(run_id, step, f) for f in facts]
         jobs = jobs or [_job_identity(run_id, step, 1)]
         try:
@@ -1654,7 +1686,10 @@ class RemoteSlurmStepExecutor(SlurmStepExecutor):
     def sweep_workdirs(self) -> dict[str, Any]:
         """``helper sweep``: remove the workdirs no queued or running job
         uses that sat idle past :meth:`sweep_age` (a server that died between
-        ``mkwd`` and ``submit``, or before it removed a finished job's)."""
+        ``mkwd`` and ``submit``, or before it removed a finished job's). A
+        server with no helper lane (only gated runs) has nothing to sweep."""
+        if not self.helper_path or not self.workdir_root:
+            return {"removed": []}
         out = self._checked(
             "sweep",
             self.workdir_root.rstrip("/"),
@@ -1675,6 +1710,40 @@ class RemoteSlurmStepExecutor(SlurmStepExecutor):
             logger.warning(
                 "step lane: recording job %s failed", job.job_id, exc_info=True
             )
+
+
+def stream_argv(
+    argv: list[str],
+    *,
+    timeout: float,
+    feed: Callable[[BinaryIO], Any] | None = None,
+    drain: Callable[[BinaryIO], Any] | None = None,
+) -> _Stream:
+    """One streaming call: *feed* writes its stdin, *drain* reads its
+    stdout; stderr goes to a file so neither side can block on it. A
+    transport that could not even start reports returncode -1. The helper
+    lane and the gated lane (ADR-112 B2) share it."""
+    with tempfile.TemporaryFile() as err:
+        try:
+            proc = subprocess.Popen(
+                argv,
+                stdin=subprocess.PIPE if feed else subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=err,
+            )
+        except OSError as exc:
+            return _Stream(None, None, b"", f"ssh did not start: {exc}".encode(), -1)
+        timer = threading.Timer(timeout, proc.kill)
+        timer.daemon = True
+        timer.start()
+        try:
+            value, error, stdout = _pump(proc, feed, drain)
+        finally:
+            # Armed until ssh exits: the timer bounds that wait too.
+            returncode = _close(proc)
+            timer.cancel()
+        err.seek(0)
+        return _Stream(value, error, stdout, err.read(64 * 1024), returncode)
 
 
 def _gpu_count(ctx: StepContext) -> int:
@@ -1700,6 +1769,16 @@ def _job_identity(run_id: str, step: str, attempt: int, tag: str = "") -> _StepJ
         comment=f"umrs-step:{run_tag(run_id)}:",
         tag=tag,
     )
+
+
+def _is_gated(facts: dict[str, Any]) -> bool:
+    return str(facts.get("transport") or "").startswith("gated:")
+
+
+def _reap_gated(facts: list[dict[str, Any]], for_retry: bool) -> bool:
+    from .gated_step_lane import reap_gated
+
+    return reap_gated(facts, for_retry)
 
 
 def _is_recorded(found: _FoundJob, jobs: list[_StepJob], workdirs: set[str]) -> bool:

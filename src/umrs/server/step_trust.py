@@ -90,17 +90,43 @@ def hpc_lane_available() -> bool:
     return all(map(_env_set, _LANE_REQUIRED_ENV))
 
 
+def gated_lane_available() -> bool:
+    """Whether this site's gated path (ADR-112 B2) is open: SSH submit, the
+    site's explicit ``remote_enabled``, a platform step image (the trusted
+    image) and ``user_account`` in ``hpc_access.modes_allowed``. The helper,
+    the workdir root, the venue script and the archive directory are not
+    needed on that path (plan §5 B2.0 §10.5): the person's gate composes the
+    job. Only a run that resolves to ``user_account`` may use it; a service
+    run on such a site still needs :func:`hpc_lane_available`."""
+    _load_site_env()
+    if os.environ.get("UMRS_SLURM_STEP_SUBMIT") != "remote":
+        return False
+    if os.environ.get("UMRS_STEP_REMOTE_ENABLED", "").strip().lower() not in _TRUE:
+        return False
+    return _env_set("UMRS_STEP_IMAGE") and _site_allows_user_account()
+
+
+def _site_allows_user_account() -> bool:
+    from umrs.orchestrator.hpc_identity import USER_ACCOUNT
+    from umrs.shared.hpc_user_work_access import current_site
+
+    # current_site() is None (never raises) without a readable site file.
+    hpc = getattr(getattr(current_site(), "scheduler", None), "hpc_access", None)
+    return USER_ACCOUNT in list(getattr(hpc, "modes_allowed", None) or [])
+
+
 def uploaded_code_lane(requested: str | None) -> str | None:
     """The executor for a workflow carrying uploaded code.
 
-    When the site's HPC lane is available, a requested HPC lane stands and
-    any other lane (``in_process``, the deployment's ``UMRS_STEP_EXECUTOR``,
-    the ``inproc`` default) becomes ``slurm``. Otherwise the transition switch
+    When the site's HPC lane (or its gated path, ADR-112 B2) is available, a
+    requested HPC lane stands and any other lane (``in_process``, the
+    deployment's ``UMRS_STEP_EXECUTOR``, the ``inproc`` default) becomes
+    ``slurm``. Otherwise the transition switch
     decides: :data:`LEGACY_IN_PROCESS` (the caller runs the pre-ADR-074
     lanes) or None (the run is refused by name) — a requested HPC lane does
     not stand while the site keeps its lane closed.
     """
-    if hpc_lane_available():
+    if hpc_lane_available() or gated_lane_available():
         effective = (
             (requested or os.environ.get("UMRS_STEP_EXECUTOR") or "inproc")
             .strip()

@@ -27,6 +27,12 @@ key, and nothing else (plan §4 B1.5a, amended 2026-11-08):
 - the gate answers one JSON object on stdout (exit 0), or refuses with
   ``{"error": "<name>", "detail": "<text>"}`` on stderr (exit 4).
 
+Wave B2 verbs take arguments (``mkwd <i> <step>``, ``stage-in <wd>``, ...):
+the remote command is the ``shlex``-joined verb line (``gate_line``), every
+word checked first, so the line is exactly what the gate parses from
+``SSH_ORIGINAL_COMMAND``. ``verb_timeout`` is a verb's session deadline at
+the gate plus 30 s (plan §5 B2.0 §5); the B1 verbs keep 20 s.
+
 Answers come back as ``GateResult`` or ``GateRefusal``. Refusal names are
 the gate's own, honoured only on the gate's refusal exit (4); the client
 adds names for failures the gate never saw: ``unreachable`` (ssh exit 255,
@@ -66,7 +72,21 @@ _EXIT_NAMES = {
 
 # A POSIX-ish login (never an option: no leading dash) and a bare verb word.
 _LOGIN = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}$")
-_VERB = re.compile(r"^[a-z][a-z_]{0,31}$")
+_VERB = re.compile(r"^[a-z][a-z_-]{0,31}$")
+# A verb argument (a workdir name, an intent id, a step, a job id, a count)
+# or the one option a B2 verb takes; never anything a shell would expand.
+_ARG = re.compile(r"^(?:--older-than|[A-Za-z0-9][A-Za-z0-9_.-]{0,127})$")
+# The gate's session deadline per B2 verb (plan §5 B2.0 §5); others 60 s.
+GATE_DEADLINES = {
+    "submit": 600,
+    "stage-in": 7200,
+    "collect-out": 7200,
+    "rmwd": 1800,
+    "sweep": 1800,
+}
+_B1_VERBS = frozenset({"hello", "probe", "revoke", "rotate"})
+GATE_DEFAULT_DEADLINE = 60
+CLIENT_SLACK_S = 30
 # A host alias or jump hop: no leading dash, nothing a shell would expand.
 _HOST = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.@:-]{0,254}$")
 # A value taken from ``ssh -G``: one word list, no quote or shell syntax.
@@ -114,12 +134,33 @@ class GateRefusal:
     exit_code: int = EXIT_REFUSED
 
 
-def _check_words(login: str, verb: str) -> None:
-    """Neither may become an ssh option or a second remote word."""
+def _check_words(login: str, verb: str, args: tuple[str, ...] = ()) -> None:
+    """None may become an ssh option or a word the gate did not expect."""
     if not _LOGIN.fullmatch(login or ""):
         raise ValueError(f"not a site login: {login!r}")
     if not _VERB.fullmatch(verb or ""):
         raise ValueError(f"not a gate verb: {verb!r}")
+    bad = [a for a in args if not _ARG.fullmatch(str(a))]
+    if bad:
+        raise ValueError(f"not a gate verb argument: {bad[0]!r}")
+
+
+def gate_line(verb: str, args: tuple[str, ...] = ()) -> str:
+    """The remote command: the ``shlex``-joined verb line (checked words)."""
+    import shlex
+
+    words = (verb, *(str(a) for a in args))
+    if not _VERB.fullmatch(verb or "") or not all(_ARG.fullmatch(w) for w in words[1:]):
+        raise ValueError(f"not a gate verb line: {words!r}")
+    return shlex.join(words)
+
+
+def verb_timeout(verb: str) -> float:
+    """The client's timeout for *verb*: the gate's deadline plus 30 s; the
+    B1 verbs keep :data:`DEFAULT_TIMEOUT_S`."""
+    if verb in _B1_VERBS:
+        return DEFAULT_TIMEOUT_S
+    return float(GATE_DEADLINES.get(verb, GATE_DEFAULT_DEADLINE) + CLIENT_SLACK_S)
 
 
 def site_target(site: Any) -> str:
@@ -172,18 +213,20 @@ def gate_argv(
     key_path: Path | str,
     verb: str,
     resolved: dict[str, str] | None = None,
+    args: tuple[str, ...] = (),
 ) -> list[str]:
     """The contract's exact ssh argv for ``verb`` (ValueError on bad input).
 
-    ``resolved`` is what ``resolve_target`` read for the site's target."""
-    _check_words(login, verb)
+    ``resolved`` is what ``resolve_target`` read for the site's target;
+    ``args`` are the verb's arguments (B2), joined into one verb line."""
+    _check_words(login, verb, args)
     target = site_target(site)
     found = dict(resolved or {})
     argv = ["ssh", "-F", "none", "-i", str(key_path)]
     for option in _FIXED_OPTIONS:
         argv += ["-o", option]
     argv += _resolved_options(found, _jump(site, found))
-    argv += ["-p", str(_port(site, found)), f"{login}@{target}", verb]
+    argv += ["-p", str(_port(site, found)), f"{login}@{target}", gate_line(verb, args)]
     return argv
 
 
@@ -195,6 +238,26 @@ def parse_ssh_g(out: bytes) -> dict[str, str]:
         if key.lower() in _RESOLVED_KEYS and key.lower() not in found:
             found[key.lower()] = value.strip()
     return found
+
+
+def resolve_target_sync(target: str, timeout: float = RESOLVE_TIMEOUT_S) -> dict[str, str]:
+    """``ssh -G -- <target>`` for a caller on a worker thread (the step
+    lane); the same values :func:`resolve_target` keeps."""
+    import subprocess
+
+    if not _HOST.fullmatch(target):
+        raise ValueError(f"not an ssh target: {target!r}")
+    proc = subprocess.run(
+        ["ssh", "-G", "--", target],
+        capture_output=True,
+        timeout=timeout,
+        check=False,
+        env=_child_env(),
+    )
+    if proc.returncode != 0:
+        tail = proc.stderr.decode("utf-8", "replace")[-200:]
+        raise ValueError(f"ssh -G {target} failed: {tail}")
+    return parse_ssh_g(proc.stdout)
 
 
 async def resolve_target(target: str, runner: Runner | None = None) -> dict[str, str]:
@@ -322,18 +385,22 @@ async def run_verb(
 
 __all__ = [
     "BAD_ANSWER",
+    "GATE_DEADLINES",
     "GATE_PROBE_REFUSAL",
     "UNREACHABLE",
     "GateRefusal",
     "GateResult",
     "encode_body",
     "gate_argv",
+    "gate_line",
     "no_resolution",
     "parse_answer",
     "parse_ssh_g",
     "proxy_command",
     "resolve_target",
+    "resolve_target_sync",
     "run_verb",
     "site_target",
     "subprocess_runner",
+    "verb_timeout",
 ]

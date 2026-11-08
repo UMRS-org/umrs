@@ -113,6 +113,13 @@
               "type": "integer",
               "minimum": 1,
               "description": "The oldest gate version the server accepts at verify."
+            },
+            "profile": {
+              "type": "object",
+              "propertyNames": {
+                "enum": ["slurm", "partitions", "gpu", "podman", "venue", "image_archive_dir", "caps", "endpoint", "watch_seconds"]
+              },
+              "description": "ADR-112 B2: overrides of the gate site profile the server publishes (GET /umrs/sites/me/hpc/site-profile); must name image_archive_dir for gated runs."
             }
           }
         }
@@ -283,6 +290,7 @@
           "description": "Transition switch for sites without a live HPC lane; ignored when the lane is available"
         },
         "image_archive_dir": { "type": "string", "description": "Cluster dir holding umrs-step-<sha12>-<arch>.tar (+ .sha256, .id)" },
+        "image_digests": { "type": "string", "description": "ADR-112 B2: server-local JSON {ref: {arch: {image_id, archive_sha256}}} written by the converge's image stage; gated intents pin images from it" },
         "allowed_images": {
           "type": "array",
           "items": { "type": "string" },

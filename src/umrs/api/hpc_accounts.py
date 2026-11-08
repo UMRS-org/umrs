@@ -19,6 +19,20 @@ changes another person's account here.
   listed for them; ``DELETE /links/{project_id}`` and ``DELETE`` (revoke:
   the transport key is destroyed) end them.
 
+Wave B2 (plan §5 B2.0 §2 and §10.3) adds three routes and one check:
+
+- ``GET /site-profile`` publishes the gate site profile (``{profile, sha256,
+  bytes_b64}``, read only) that r4 shows the person and installs as the
+  gate's ``site.json``;
+- ``GET /gate`` runs a live ``hello`` with no state change and says whether
+  the installed gate and site profile are the ones this server ships;
+- ``POST /control`` relays a signed ``revoke`` / ``rotate`` envelope to the
+  person's gate (the producer B1 deferred), the person's own act;
+- ``POST /verify`` also refuses ``hpcaccess.gate_version``
+  (``site_profile_missing``) when the gate has no site profile, and answers
+  ``site_profile_current``: an account whose installed profile differs is
+  still activated, and a proposal then refuses until ``r4 hpc profile``.
+
 Registration (the three POST routes) is open only where the site's
 ``scheduler.hpc_access.modes_allowed`` lists ``user_account``; elsewhere it
 refuses ``hpcaccess.mode_undeclared``. Reading and revoking stay open, so a
@@ -93,6 +107,14 @@ class VerifyRequest(BaseModel):
 class LinkRequest(BaseModel):
     project_id: str = Field(..., min_length=1, max_length=_FIELD_CAP)
     slurm_account: str = Field(..., min_length=1, max_length=_FIELD_CAP)
+
+
+class ControlRequest(BaseModel):
+    """A signed control envelope for the person's gate (B1.5a)."""
+
+    op: str = Field(..., pattern=r"^(revoke|rotate)$")
+    payload: str = Field(..., min_length=1, max_length=64 * 1024)
+    signature: str = Field(..., min_length=1, max_length=16 * 1024)
 
 
 # ── seams ────────────────────────────────────────────────────────────────
@@ -286,9 +308,11 @@ def issue_transport_key(
 # ── verify ───────────────────────────────────────────────────────────────
 
 
-def _call_gate(site: Any, login: str, key: Any, verb: str) -> Any:
+def _call_gate(
+    site: Any, login: str, key: Any, verb: str, body: dict[str, Any] | None = None
+) -> Any:
     call = functools.partial(
-        gate_client.run_verb, site, login, key.path, verb, runner=_gate_runner
+        gate_client.run_verb, site, login, key.path, verb, body, runner=_gate_runner
     )
     try:
         return anyio.from_thread.run(call)
@@ -494,6 +518,31 @@ def _verify_slot(venue: str, user: str) -> Iterator[None]:
         lock.release()
 
 
+def _require_site_profile(hello: dict[str, Any], venue: str) -> None:
+    """B2.0 §2: a gate without its ``site.json`` cannot run gated steps."""
+    if hello.get("site_profile_sha256"):
+        return
+    raise_typed(
+        PlatformError.hpcaccess(
+            "gate_version",
+            "site_profile_missing: the gate has no site profile installed: run 'r4 hpc profile' "
+            "(or 'r4 hpc add' again)",
+            site=venue,
+            reason="site_profile_missing",
+        )
+    )
+
+
+def _published_profile_sha(site: Any) -> str:
+    """The sha256 of the profile this server publishes ("" when none)."""
+    from umrs.hpc_accounts.site_profile import SiteProfileUnavailable, published
+
+    try:
+        return published(site)[2]
+    except SiteProfileUnavailable:
+        return ""
+
+
 def _checked_hello(
     store: Any, user: str, site: Any, body: VerifyRequest, key: Any, user_account: Any
 ) -> dict[str, Any]:
@@ -506,6 +555,7 @@ def _checked_hello(
         _require_gate_release(hello, user_account, store.venue)
         _require_site_openssh(hello, store.venue)
         _require_uv_policy(hello, user_account, store.venue)
+        _require_site_profile(hello, store.venue)
     except Exception:
         store.suspend_account(user)
         raise
@@ -555,7 +605,8 @@ def verify_account(
             _not_enrolled(venue, "the transport key changed during verify: verify again")
         _drop_replaced_keys(store, caller.user_id, key.key_id)
         _suspend_vanished_links(store, caller.user_id, account["verified_assocs"])
-    return {"account": account}
+    current = hello.get("site_profile_sha256") == _published_profile_sha(site)
+    return {"account": account, "site_profile_current": current}
 
 
 # ── read, links, revoke ──────────────────────────────────────────────────
@@ -654,11 +705,111 @@ def unlink_project(
     return {"status": "deleted"}
 
 
+# ── wave B2: the published site profile, a live hello, signed controls ──
+
+
+@router.get("/site-profile")
+def get_site_profile(
+    caller: CallerIdentity = Depends(get_verified_caller),
+) -> dict[str, Any]:
+    """The gate site profile this server publishes (read only).
+
+    # auth: verified
+    """
+    import base64
+
+    from umrs.hpc_accounts.site_profile import SiteProfileUnavailable, published
+
+    site, venue, _user_account = _registration_site()
+    try:
+        profile, data, sha = published(site)
+    except SiteProfileUnavailable as exc:
+        raise_typed(
+            PlatformError.hpcaccess(
+                "gate_version", str(exc), site=venue, reason="site_profile_unavailable"
+            )
+        )
+    return {
+        "profile": profile,
+        "sha256": sha,
+        "bytes_b64": base64.b64encode(data).decode("ascii"),
+    }
+
+
+def _active_key(store: Any, user: str) -> tuple[dict[str, Any], Any]:
+    """The caller's active account and its current transport key."""
+    account = _active_account(store, user)
+    key = _load_key(store.venue, user, str(account.get("transport_key_id") or ""))
+    if key is None:
+        _not_enrolled(store.venue, "the transport key is gone: run 'r4 hpc rotate'")
+    return account, key
+
+
+@router.get("/gate")
+def get_gate(
+    request: Request, caller: CallerIdentity = Depends(get_verified_caller)
+) -> dict[str, Any]:
+    """A live ``hello`` of the caller's gate; nothing is stored.
+
+    # auth: verified
+    """
+    site, venue, _user_account = _registration_site()
+    store = _make_store(request, venue)
+    account, key = _active_key(store, caller.user_id)
+    login = str(account.get("verified_login") or "")
+    hello = _require_hello(_call_gate(site, login, key, "hello"), login, venue)
+    _version, sha = _gate_manifest()
+    profile_sha = str(hello.get("site_profile_sha256") or "")
+    return {
+        "gate_version": str(hello.get("gate_version") or ""),
+        "gate_sha256": str(hello.get("gate_sha256") or ""),
+        "site_profile_sha256": profile_sha,
+        "log_head": hello.get("log_head"),
+        "current": {
+            "gate": hello.get("gate_sha256") == sha,
+            "site_profile": bool(profile_sha) and profile_sha == _published_profile_sha(site),
+        },
+    }
+
+
+@router.post("/control")
+def relay_control(
+    body: ControlRequest,
+    request: Request,
+    caller: CallerIdentity = Depends(get_verified_caller),
+) -> dict[str, Any]:
+    """Relay the caller's signed ``revoke`` / ``rotate`` to their gate.
+
+    # auth: verified
+    """
+    _require_person(request)
+    site, venue, _user_account = _registration_site()
+    store = _make_store(request, venue)
+    account, key = _active_key(store, caller.user_id)
+    login = str(account.get("verified_login") or "")
+    answer = _call_gate(
+        site, login, key, body.op, {"payload": body.payload, "signature": body.signature}
+    )
+    if isinstance(answer, gate_client.GateRefusal):
+        raise_typed(
+            PlatformError.hpcaccess(
+                "gate_refused",
+                f"{answer.error}: {answer.detail}".rstrip(": "),
+                site=venue,
+                gate=answer.error,
+            )
+        )
+    return {"result": answer.data}
+
+
 @router.delete("")
 def revoke_my_account(
     request: Request, caller: CallerIdentity = Depends(get_verified_caller)
 ) -> dict[str, Any]:
     """Revoke the caller's account here: the transport key is destroyed.
+    The person's live gated jobs here are cancelled through their gate
+    first, while the key still reaches it (as the account cascade does,
+    plan §5 B2.0 §10.6); ``gated_jobs_cancelled`` counts them.
 
     # auth: verified
     """
@@ -667,5 +818,21 @@ def revoke_my_account(
     store = _make_store(request, venue)
     if store.get_account(caller.user_id) is None:
         _not_enrolled(venue, "no account here")
+    cancelled = _cancel_my_gated_jobs(venue, caller.user_id)
     revoke_account(store, caller.user_id)
-    return {"status": "revoked"}
+    return {"status": "revoked", "gated_jobs_cancelled": cancelled}
+
+
+def _cancel_my_gated_jobs(venue: str, user_id: str) -> int:
+    """Best-effort (fixer finding 2026-11-08): without it a self-revoke left
+    running jobs on the person's allocation with nothing to collect them;
+    an unreachable gate cancels none (they still end by ``--time``)."""
+    try:
+        from umrs.server.gated_step_lane import cancel_person_jobs
+        from umrs.server.workflow_execution_registry import get_execution_registry
+
+        records = list(get_execution_registry().list(user_id=user_id))
+        return cancel_person_jobs(venue, user_id, records)
+    except Exception:
+        logger.warning("revoke: gated jobs of %s not cancelled", user_id, exc_info=True)
+        return 0

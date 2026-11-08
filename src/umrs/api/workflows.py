@@ -137,6 +137,16 @@ class WorkflowTriggerRequest(BaseModel):
             "when absent. `name@X` in the path names one too."
         ),
     )
+    intent: str | None = Field(
+        default=None,
+        description=(
+            "ADR-112 B2: base64 of the signed intent payload (from "
+            "POST .../intent-proposal), for a run under your own HPC account"
+        ),
+    )
+    signature: str | None = Field(
+        default=None, description="The intent's armored SSH signature"
+    )
 
     def resolved_params(self) -> dict[str, Any]:
         merged = dict(self.params)
@@ -191,6 +201,34 @@ class WorkflowPlanRequest(BaseModel):
         return WorkflowTriggerRequest(
             user_id=self.user_id,
             parameters=dict(self.parameters),
+            input_files=self.input_files,
+            project_id=self.project_id,
+            version=self.version,
+        )
+
+
+class IntentProposalRequest(BaseModel):
+    """``POST /umrs/workflows/{name}/intent-proposal`` (ADR-112 B2, plan §5
+    B2.0 §10.3): the run to sign; nothing runs and nothing is stored."""
+
+    user_id: str | None = Field(
+        default=None, min_length=1, description="Caller (MVP mode only)"
+    )
+    project_id: str | None = Field(
+        default=None, description="Project (strict uses the verified headers)"
+    )
+    version: str | None = Field(default=None, description="The version (ADR-113 D-3)")
+    params: dict[str, Any] = Field(default_factory=dict, description="Runtime parameters")
+    input_files: list[str] | None = Field(default=None, description="Optional input file keys")
+    inputs: dict[str, list[dict[str, Any]]] | None = Field(
+        default=None,
+        description="Per step: objects you chose, {bucket, key, sha256, size} (listed)",
+    )
+
+    def as_trigger(self) -> WorkflowTriggerRequest:
+        return WorkflowTriggerRequest(
+            user_id=self.user_id,
+            parameters=dict(self.params),
             input_files=self.input_files,
             project_id=self.project_id,
             version=self.version,
@@ -562,12 +600,27 @@ def _resolve_visible(
 
 
 def _typed_handler_error(data: dict[str, Any]) -> None:
-    """A handler error carrying an ADR-113 version code: its typed error."""
+    """A handler error carrying an ADR-113 version code or an ADR-112
+    ``hpcaccess.*`` code: its typed error."""
     code = data.get("code")
     if isinstance(code, str) and code in ERROR_HTTP_STATUS:
         _raise_version_error(
             WorkflowVersionError(code, str(data.get("message") or code))
         )
+    _raise_hpcaccess(code, data)
+
+
+def _raise_hpcaccess(code: Any, data: dict[str, Any]) -> None:
+    from r4_contracts.errors import HPCACCESS_ERRORS
+
+    if not isinstance(code, str) or code not in HPCACCESS_ERRORS:
+        return
+    detail = {k: data[k] for k in ("site", "reason") if isinstance(data.get(k), str)}
+    raise_typed(
+        PlatformError.hpcaccess(
+            code.split(".", 1)[1], str(data.get("message") or code), **detail
+        )
+    )
 
 
 def _parse_command_response(raw: str, *, action: str) -> dict[str, Any]:
@@ -2137,6 +2190,7 @@ def _run_workflow_payload(
     identity_verified: bool,
     session_header: Any,
     version: str | None = None,
+    signed: tuple[str | None, str | None] = (None, None),
 ) -> dict[str, Any]:
     """The RUN_WORKFLOW payload; a well-formed ``x-r4-session-id`` rides as
     ``_origin_session_id`` so the durable job carries ``spec.origin.session_id``
@@ -2153,6 +2207,9 @@ def _run_workflow_payload(
     sid = valid_session_id(session_header)
     if sid is not None:
         payload["_origin_session_id"] = sid
+    # ADR-112 B2: the signed intent and its signature, checked by the handler
+    # (the same rules as a ZMQ RUN_WORKFLOW that carries them).
+    payload.update({k: v for k, v in zip(("intent", "signature"), signed) if v})
     return payload
 
 
@@ -2175,7 +2232,11 @@ async def trigger_workflow(
 ):
     """Start a run. Refused (typed 403 ``workflows.plan_required``) when the
     project requires plan -> commit (ADR-105 D-4); a work level's request
-    needs its scope's ``workflow:<name>`` grant (ADR-108 D-3).
+    needs its scope's ``workflow:<name>`` grant (ADR-108 D-3). A trigger that
+    carries a signed intent (ADR-112 B2) is not refused ``plan_required``:
+    the person's signature over the exact run is the explicit approval a
+    plan asks for, and the dispatch admits the intent or refuses it (plan
+    §5 B2.0 §10.3, fixer amendment 2026-11-08; a plan cannot carry one).
     # auth: verified
     """
     _require_verified_workflow_identity(
@@ -2187,8 +2248,94 @@ async def trigger_workflow(
     resolved = _resolve_trigger(workflow_name, request, caller, memberships)
     _refuse_unscoped_trigger(scope_request, resolved.name, resolved)
     _refuse_hpc_user_work_trigger(workflow_name, resolved)
-    _refuse_unplanned_trigger(workflow_name, resolved.project_id)
+    if not resolved.signed[0]:
+        _refuse_unplanned_trigger(workflow_name, resolved.project_id)
     return _dispatch_trigger(resolved, x_r4_session_id)
+
+
+@router.post("/{workflow_name}/intent-proposal", operation_id="workflow_intent_proposal")
+def propose_workflow_intent(
+    workflow_name: str,
+    request: IntentProposalRequest,
+    scope_request: Request,
+    x_user_id: str | None = Header(None),
+    x_verified_project_id: str | None = Header(None),
+    x_verified_is_admin: str | None = Header(None),
+    x_verified_hmac: str | None = Header(None),
+    memberships: frozenset[str] = Depends(get_verified_memberships),
+):
+    """The server's proposed intent for a run under your own HPC account
+    (ADR-112 B2): ``{intent_b64, intent_id, site_profile_sha256, summary}``.
+    Refused ``hpcaccess.intent_invalid`` where the run does not resolve to
+    your own account, ``hpcaccess.gate_version`` where your gate or its
+    site profile is not current. A plain ``def`` route: the live ``hello``
+    and the input hashing block, so FastAPI runs it in its threadpool.
+    # auth: verified
+    """
+    _require_verified_workflow_identity(
+        x_user_id, x_verified_project_id, x_verified_is_admin, x_verified_hmac
+    )
+    caller = _WorkflowHeaders(
+        x_user_id, x_verified_project_id, x_verified_is_admin, x_verified_hmac
+    )
+    resolved = _resolve_trigger(workflow_name, request.as_trigger(), caller, memberships)
+    _refuse_unscoped_trigger(scope_request, resolved.name, resolved)
+    return _proposal(workflow_name, resolved, request.inputs)
+
+
+def _proposal(
+    workflow_name: str, resolved: _ResolvedTrigger, inputs: Any
+) -> dict[str, Any]:
+    from ..hpc_accounts.intents import IntentInvalid
+    from ..hpc_accounts.site_profile import SiteProfileUnavailable
+    from ..server.intent_proposal import GateStale
+    from ..server.step_executor import StepExecutionError
+
+    try:
+        return _proposal_or_raise(workflow_name, resolved, inputs)
+    except IntentInvalid as exc:
+        raise_typed(
+            PlatformError.hpcaccess("intent_invalid", str(exc), reason=exc.reason), cause=exc
+        )
+    except (GateStale, SiteProfileUnavailable) as exc:
+        reason = getattr(exc, "reason", "site_profile_unavailable")
+        raise_typed(
+            PlatformError.hpcaccess("gate_version", f"{reason}: {exc}", reason=reason), cause=exc
+        )
+    except StepExecutionError as exc:
+        raise_typed(_proposal_step_error(exc), cause=exc)
+
+
+def _proposal_step_error(exc: Any) -> PlatformError:
+    """A gate that refused or cannot be reached (``gate_refused`` /
+    ``not_enrolled``), or a stage plan the run could not have (``intent_invalid``)."""
+    from ..server.gated_step_lane import GateFailure
+
+    if isinstance(exc, GateFailure):
+        name = "not_enrolled" if exc.name == "not_enrolled" else "gate_refused"
+        return PlatformError.hpcaccess(name, exc.message, gate=exc.name)
+    return PlatformError.hpcaccess("intent_invalid", exc.message, reason="stage_plan")
+
+
+def _proposal_or_raise(
+    workflow_name: str, resolved: _ResolvedTrigger, inputs: Any
+) -> dict[str, Any]:
+    from ..hpc_accounts.intents import IntentInvalid
+    from ..server.hpc_user_work import is_user_account
+    from ..server.intent_proposal import propose
+
+    try:
+        source_path, workflow_json, _ = _workflow_run_context(
+            workflow_name,
+            resolved.user_id,
+            source_path=str(resolved.entry.get("source_path") or ""),
+        )
+    except ValueError as exc:
+        raise_typed(PlatformError.workflows("not_found", str(exc)), cause=exc)
+    identity = _refuse_hpc_user_work(workflow_json, source_path, resolved)
+    if not is_user_account(identity):
+        raise IntentInvalid("not_user_account", "this run does not run under your own HPC account")
+    return propose(resolved, workflow_json, source_path, identity, inputs)
 
 
 def _refuse_unscoped_trigger(
@@ -2254,6 +2401,8 @@ class _ResolvedTrigger:
     entry: dict[str, Any]
     is_admin: bool
     identity_verified: bool
+    #: ADR-112 B2: the trigger body's signed intent and signature, if any.
+    signed: tuple[str | None, str | None] = (None, None)
 
     @property
     def name(self) -> str:
@@ -2322,7 +2471,12 @@ def _resolve_trigger(
     schema = _describe_workflow_entry(entry).get("parameter_schema", {})
     _validate_params_against_schema(params, schema)
     return _ResolvedTrigger(
-        user_id, params, entry, caller.is_admin, caller.identity_verified()
+        user_id,
+        params,
+        entry,
+        caller.is_admin,
+        caller.identity_verified(),
+        (request.intent, request.signature),
     )
 
 
@@ -2344,6 +2498,7 @@ def _dispatch_trigger(
             resolved.identity_verified,
             session_header,
             resolved.version,
+            resolved.signed,
         )
     )
     # Wave-6 F1: the durable trust bridge reflects the verified flag, never
@@ -2404,7 +2559,7 @@ def _refuse_unplanned_trigger(workflow_name: str, project_id: str) -> None:
         )
 
 
-def _quote_resolved(workflow_name: str, resolved: _ResolvedTrigger) -> Any:
+def _quote_resolved(workflow_name: str, resolved: _ResolvedTrigger) -> _Quoted:
     """The run's quote; a workflow this site cannot run is a typed 409."""
     from ..workflow_plans import quote_workflow
 
@@ -2419,29 +2574,43 @@ def _quote_resolved(workflow_name: str, resolved: _ResolvedTrigger) -> Any:
     quote = quote_workflow(workflow_json, source_path)
     if quote.refusal:
         _plan_refusal("lane_unavailable", 409, quote.refusal)
-    _refuse_hpc_user_work(workflow_json, source_path, resolved)
-    return quote
+    identity = _refuse_hpc_user_work(workflow_json, source_path, resolved)
+    from ..server.hpc_user_work import is_user_account
+
+    return _Quoted(quote, is_user_account(identity))
+
+
+@dataclass(frozen=True)
+class _Quoted:
+    """A run's quote, and whether it needs a signed intent (ADR-112 B2: it
+    runs under the caller's own HPC account; a commit cannot start it)."""
+
+    quote: Any
+    requires_intent: bool
 
 
 def _refuse_hpc_user_work(
     workflow_json: dict[str, Any], source_path: str, resolved: _ResolvedTrigger
-) -> None:
+) -> Any:
     """Typed 403 ``hpcaccess.*`` when the run would use this site's HPC lane
     and the site's ``hpc_access`` does not admit the caller's verified
     project (ADR-112 A.3.4). Uses the verified project, never the claimed
     ``params.project_id``; the admin bit is the caller's user record, the
-    same source the runner reads, so an admitted run is not refused later."""
-    from ..orchestrator.hpc_identity import platform_error
-    from ..server.hpc_user_work import workflow_user_work_refusal
+    same source the runner reads, so an admitted run is not refused later.
+    Returns the lane's identity (None: the run does not use the HPC lane);
+    a ``user_account`` one needs a signed intent (B2, checked at dispatch)."""
+    from ..orchestrator.hpc_identity import HpcAccessRefused, platform_error
+    from ..server.hpc_user_work import workflow_user_work_identity
 
-    refused = workflow_user_work_refusal(
-        workflow_json,
-        source_path,
-        user_id=resolved.user_id,
-        project_id=resolved.verified_project,
-    )
-    if refused is not None:
-        raise_typed(platform_error(refused))
+    try:
+        return workflow_user_work_identity(
+            workflow_json,
+            source_path,
+            user_id=resolved.user_id,
+            project_id=resolved.verified_project,
+        )
+    except HpcAccessRefused as refused:
+        raise_typed(platform_error(refused), cause=refused)
 
 
 def _refuse_hpc_user_work_trigger(
@@ -2531,7 +2700,8 @@ async def plan_workflow(
     resolved = _resolve_trigger(
         workflow_name, request.as_trigger(), caller, memberships
     )
-    quote = _quote_resolved(workflow_name, resolved)
+    quoted = _quote_resolved(workflow_name, resolved)
+    quote = quoted.quote
     policy = _project_plan_policy(resolved.project_id)
     signed, digest, plan_id = sign_plan(_plan_fields(resolved, quote))
     return {
@@ -2554,6 +2724,7 @@ async def plan_workflow(
         "auto_commit_max_gpu_hours": policy.auto_commit_max_gpu_hours,
         "require_plan": policy.require_plan,
         "auto_commit_allowed": policy.auto_commit_allows(quote.max_gpu_hours),
+        "requires_intent": quoted.requires_intent,
     }
 
 
@@ -2661,7 +2832,7 @@ async def commit_workflow(
         workflow_name, _trigger_from_plan(signed), caller, memberships
     )
     _refuse_foreign_plan(signed, resolved)
-    quote = _quote_resolved(workflow_name, resolved)
+    quote = _quote_resolved(workflow_name, resolved).quote
     _refuse_stale_plan(signed, _plan_fields(resolved, quote))
     if request.auto:
         _refuse_auto_commit(resolved.project_id, quote.max_gpu_hours)

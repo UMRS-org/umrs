@@ -24,7 +24,12 @@
 FROM docker.io/library/python:3.11-slim@sha256:da047cb8f9d1d98e5c070f5300ba9f7274e33b8fc0e5be5ed88740aed1b95ba9
 
 ARG UMRS_REVISION=unknown
+# org.umrs.step-payload names the worker input modes this image's worker
+# reads: "pickle" (input.pkl, the staged and pool lanes) and "json" (the
+# gate-written input.json, ADR-112 wave B2). The gate refuses an image whose
+# label lacks "json" (image_label); rebuilding and re-staging is a converge leg.
 LABEL org.umrs.step-contract="1" \
+      org.umrs.step-payload="pickle,json" \
       org.opencontainers.image.title="umrs-step" \
       org.opencontainers.image.revision="${UMRS_REVISION}"
 

@@ -88,6 +88,9 @@ class UserAccountAccess:
     the ``from=`` option of the user's ``authorized_keys`` line ("" = none).
     ``uv_required`` asks the gate for the FIDO user-verification flag (a PIN);
     ``gate_min_version`` is the oldest gate the server accepts at verify.
+    ``profile`` (wave B2, plan §5 B2.0 §2) overrides keys of the gate site
+    profile the server publishes (``hpc_accounts.site_profile``); it must
+    name ``image_archive_dir`` for gated runs to be proposed.
     """
 
     methods: list[str] = field(default_factory=list)
@@ -95,6 +98,7 @@ class UserAccountAccess:
     from_address: str = ""
     uv_required: bool = False
     gate_min_version: int = 1
+    profile: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -319,6 +323,11 @@ class StepExecutorConfig:
     uploaded_code: str = "refuse"
     # Cluster dir holding umrs-step-<sha12>-<arch>.tar (+ .sha256, .id).
     image_archive_dir: str = ""
+    # ADR-112 B2 (plan §5 B2.0 §2): a server-local JSON file
+    # {"<ref>": {"<arch>": {"image_id": <64 hex>, "archive_sha256": <64 hex>}}}
+    # the converge's image stage writes; a gated run's intent pins its images
+    # from it. Empty: this site cannot propose gated runs (no_image_digests).
+    image_digests: str = ""
     # Images routing_hints.image may name besides the platform image (D-7).
     allowed_images: list[str] = field(default_factory=list)
     # Cluster paths of umrs_step_helper.py and mini-rivault-llm/venue.sh in
@@ -739,7 +748,29 @@ _SERVICE_ACCOUNT_KEYS = frozenset(
     {"login", "personal", "consent_ref", "allowed_projects"}
 )
 _USER_ACCOUNT_KEYS = frozenset(
-    {"methods", "signing_domain", "from_address", "uv_required", "gate_min_version"}
+    {
+        "methods",
+        "signing_domain",
+        "from_address",
+        "uv_required",
+        "gate_min_version",
+        "profile",
+    }
+)
+#: Top-level keys of the gate site profile a site may override (plan §5
+#: B2.0 §2); the gate validates the whole profile, values included.
+GATE_PROFILE_KEYS = frozenset(
+    {
+        "slurm",
+        "partitions",
+        "gpu",
+        "podman",
+        "venue",
+        "image_archive_dir",
+        "caps",
+        "endpoint",
+        "watch_seconds",
+    }
 )
 # A DNS name with at least one dot: lowercase labels of 1-63 characters.
 _DNS_NAME = re.compile(
@@ -824,6 +855,9 @@ def _parse_user_account(value: Any) -> UserAccountAccess:
         from_address=_from_address(data, where),
         uv_required=_hpc_bool(data, "uv_required", where),
         gate_min_version=_gate_min_version(data, where),
+        profile=dict(
+            _hpc_mapping(data.get("profile") or {}, f"{where}.profile", GATE_PROFILE_KEYS)
+        ),
     )
 
 

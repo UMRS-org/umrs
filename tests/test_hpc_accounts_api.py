@@ -52,6 +52,8 @@ def _hello(**over: Any) -> tuple[int, bytes, bytes]:
         "signers": [{"fingerprint": "SHA256:sig", "type": "sk-ssh-ed25519@openssh.com"}],
         "assocs": ASSOCS,
         "log_head": {"n": 0, "h": "0" * 64},
+        # B2.0 §2: a gate with its site profile installed (wave B2).
+        "site_profile_sha256": "ef" * 32,
     }
     data.update(over)
     return 0, json.dumps(data).encode(), b""
@@ -184,7 +186,8 @@ def test_reading_and_revoking_stay_open_after_the_mode_is_withdrawn(env):
     _register(client)
     state["site"] = _site(["service_account"])
     assert client.get("/umrs/sites/me/hpc", headers=ALICE).json()["account"]["status"] == "active"
-    assert client.delete("/umrs/sites/me/hpc", headers=ALICE).json() == {"status": "revoked"}
+    answer = client.delete("/umrs/sites/me/hpc", headers=ALICE).json()
+    assert answer == {"status": "revoked", "gated_jobs_cancelled": 0}
     assert list((keys / SITE / "alice").iterdir()) == []
 
 
@@ -492,13 +495,34 @@ def test_revoke_destroys_the_key_and_suspends_links(env):
     _link(client)
     bob_key = client.post("/umrs/sites/me/hpc/transport-key", headers=BOB).json()
     response = client.delete("/umrs/sites/me/hpc", headers=ALICE)
-    assert response.json() == {"status": "revoked"}
+    assert response.json() == {"status": "revoked", "gated_jobs_cancelled": 0}
     assert not (keys / SITE / "alice" / key["key_id"]).exists()
     assert (keys / SITE / "bob" / bob_key["key_id"]).exists()
     assert store.get_account("alice")["status"] == "revoked"
     assert [x["status"] for x in store.list_links("alice")] == ["suspended"]
     again = client.post("/umrs/sites/me/hpc/verify", json={"login": "alice1"}, headers=ALICE)
     assert _code(again) == "hpcaccess.not_enrolled"
+
+
+def test_revoke_cancels_the_persons_live_gated_jobs_before_the_key_goes(env, monkeypatch):
+    """Fixer finding 2026-11-08: as the account cascade does, a self-revoke
+    cancels the person's live gated jobs through their gate while the key
+    still reaches it; afterwards nothing could collect them."""
+    from umrs.server import gated_step_lane
+
+    client, _store, _gate, _state, keys = env
+    key, _ = _register(client)
+    seen = []
+
+    def cancel(venue, user, records):
+        seen.append((venue, user, (keys / SITE / "alice" / key["key_id"]).exists()))
+        return 2
+
+    monkeypatch.setattr(gated_step_lane, "cancel_person_jobs", cancel)
+    answer = client.delete("/umrs/sites/me/hpc", headers=ALICE).json()
+    assert answer == {"status": "revoked", "gated_jobs_cancelled": 2}
+    assert seen == [(SITE, "alice", True)]
+    assert not (keys / SITE / "alice" / key["key_id"]).exists()
 
 
 def test_revoke_without_an_account_is_not_enrolled(env):

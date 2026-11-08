@@ -33,6 +33,22 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
+#: ``{"b64", "signature", "id"}``: a run's signed intent as the trigger and
+#: the durable job spec carry it (ADR-112 B2).
+RunIntentFields = dict[str, str]
+
+
+def intent_fields(intent: RunIntentFields | None) -> dict[str, str | None]:
+    """The record's three intent fields from a spec's ``intent`` mapping."""
+    if not isinstance(intent, dict) or not intent.get("id"):
+        return {"intent_b64": None, "intent_signature": None, "intent_id": None}
+    return {
+        "intent_b64": str(intent.get("b64") or ""),
+        "intent_signature": str(intent.get("signature") or ""),
+        "intent_id": str(intent["id"]),
+    }
+
+
 # Terminal statuses (no further updates expected).
 _TERMINAL = {"succeeded", "failed", "cancelled"}
 
@@ -90,6 +106,14 @@ class ExecutionRecord:
     #: (ADR-113 D-4); None on runs started before ADR-113.
     workflow_version: str | None = None
     source_sha256: str | None = None
+    #: ADR-112 B2 (plan §5 B2.0 §10.4): the signed intent of a run under the
+    #: person's own HPC account: the payload (base64 of the exact bytes),
+    #: its armored signature and ``sha256(payload)``; None on other runs.
+    #: The status shows ``intent_id`` only; the executor hands the payload
+    #: and signature to the person's gate at each step's submit.
+    intent_b64: str | None = None
+    intent_signature: str | None = None
+    intent_id: str | None = None
     # Manual approval gates (W5). Decisions are serializable audit data;
     # the wait events are transient threading primitives (never serialized).
     gate_decisions: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -123,6 +147,7 @@ class ExecutionRecord:
                 "identity_provenance": self.identity_provenance,
                 "workflow_version": self.workflow_version,
                 "source_sha256": self.source_sha256,
+                "intent_id": self.intent_id,
                 "gates": {k: dict(v) for k, v in self.gate_decisions.items()},
             }
 
@@ -261,6 +286,7 @@ class WorkflowExecutionRegistry:
         identity_provenance: str = "unverified",
         workflow_version: str | None = None,
         source_sha256: str | None = None,
+        intent: RunIntentFields | None = None,
     ) -> ExecutionRecord:
         record = ExecutionRecord(
             execution_id=execution_id or f"wf-{uuid.uuid4().hex[:12]}",
@@ -271,6 +297,7 @@ class WorkflowExecutionRegistry:
             identity_provenance=identity_provenance,
             workflow_version=workflow_version,
             source_sha256=source_sha256,
+            **intent_fields(intent),
         )
         with self._lock:
             self._put_locked(record)

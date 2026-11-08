@@ -117,6 +117,15 @@ def _signing_key() -> bytes:
     return _per_process_key()
 
 
+def server_key(label: bytes) -> bytes:
+    """A server-only key for *label*: HMAC-SHA256 of ``UMRS_SECRET_KEY``
+    (else of the per-process key) over the label, so each use has its own
+    key and none of them is the plan key."""
+    secret = _configured_secret()
+    base = secret.encode("utf-8") if secret else _per_process_key()
+    return hmac.new(base, label, hashlib.sha256).digest()
+
+
 def plan_digest(signed: dict[str, Any]) -> str:
     """Hex HMAC-SHA256 of the canonical signed dict."""
     body = canonical_json(signed).encode("utf-8")
