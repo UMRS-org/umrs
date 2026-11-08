@@ -56,7 +56,7 @@ scheduler:
       login: rku00126  # must equal extra.ssh_user
       personal: true
       consent_ref: ""
-      allowed_projects: [bdr-opossum, spring-8, brc-mouse]
+      allowed_projects: [bdr-opossum, spring-8, brc-mouse, default]  # default: maintainer 2026-11-09, users who work in the default project keep user work
 
 runtime:
   kind: singularity                           # Apptainer on AI4S

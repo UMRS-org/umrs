@@ -370,7 +370,7 @@ def test_octopus_paths_are_on_the_octopus_home():
 
 
 #: ADR-112 G-8: the maintainer's interim per-site lists ([] = admins only).
-DEMO_PROJECTS = ["bdr-opossum", "spring-8", "brc-mouse"]
+DEMO_PROJECTS = ["bdr-opossum", "spring-8", "brc-mouse", "default"]  # default: 2026-11-09
 ALLOWED_PROJECTS = {
     "rccs-front": DEMO_PROJECTS,
     "ai4s-front": DEMO_PROJECTS,

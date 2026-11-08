@@ -18,7 +18,10 @@ typed ``hpcaccess.*`` reason. **No lane ever retries under another identity**
   ``not_enrolled`` until wave B lands.
 
 ``project_id`` must be the **verified** project; callers never pass the
-claimed one. ``None``, ``""`` and ``"default"`` never match a list.
+claimed one. ``None``, ``""`` and ``"default"`` (no verified project: the
+default bucket) match a list only when it names ``default`` explicitly
+(maintainer decision 2026-11-09: users who work in ``default`` keep the
+user-work lanes on sites that list it).
 """
 
 from __future__ import annotations
@@ -129,8 +132,12 @@ def _service_identity(
 
 
 def _project_listed(project_id: str | None, listed: list[str]) -> bool:
+    """A verified project in the list; a run without one (the default bucket)
+    only when the list names ``default`` explicitly."""
     project = str(project_id or "").strip()
-    return project not in _UNVERIFIED_PROJECTS and project in listed
+    if project in _UNVERIFIED_PROJECTS:
+        return "default" in listed
+    return project in listed
 
 
 def _project_verified(project_id: str | None) -> bool:

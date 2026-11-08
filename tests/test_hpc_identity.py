@@ -141,9 +141,18 @@ def test_empty_list_without_consent_is_admins_only() -> None:
 
 
 @pytest.mark.parametrize("project", [None, "", "default"])
-def test_unverified_project_never_matches_even_when_listed(project) -> None:
-    site = _site(listed=["default", ""])
-    assert _refusal(site, project).reason == "project_not_allowed"
+def test_unverified_project_needs_an_explicit_default_entry(project) -> None:
+    # The default bucket (no verified project) is refused unless the site
+    # lists ``default`` (maintainer decision 2026-11-09; before it, a listed
+    # ``default`` never matched).
+    assert _refusal(_site(), project).reason == "project_not_allowed"
+    assert _refusal(_site(listed=["proj-a", ""]), project).reason == "project_not_allowed"
+    assert _user_work(_site(listed=["proj-a", "default"]), project).login == "op1"
+
+
+def test_listing_default_admits_no_other_unlisted_project() -> None:
+    site = _site(listed=["default"])
+    assert _refusal(site, "proj-z").reason == "project_not_allowed"
 
 
 def test_a_claimed_project_only_counts_when_the_caller_passes_it_as_verified() -> None:
