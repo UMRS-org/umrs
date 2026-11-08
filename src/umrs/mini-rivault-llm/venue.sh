@@ -98,11 +98,22 @@ rivault_venue_network_backend() {
 #   points CONTAINERS_STORAGE_CONF / CONTAINERS_CONF at them, so every podman
 #   and podman-compose call of this job reads job-private configuration. The
 #   per-user files under ~/.config/containers are neither read nor written.
+#   RIVAULT_INIT_BINARY (optional): a static init (catatonit) for podman's
+#   --init on nodes whose podman ships none (RIKYU, 2026-11-08). It is copied
+#   into the node-local job conf dir (an init bind-mounted from Lustre fails
+#   with "exec /run/podman-init: Permission denied") and named as init_path.
 rivault_venue_write_container_configs() {
-    local cgroup_manager="${1:-cgroupfs}" network_backend="${2:-}" mount_program=""
+    local cgroup_manager="${1:-cgroupfs}" network_backend="${2:-}" mount_program="" init_path=""
     [[ -n "${RIVAULT_JOB_CONF_DIR:-}" ]] || rivault_venue_defaults
     mkdir -p "${RIVAULT_JOB_CONF_DIR}" "${RIVAULT_STORAGE_ROOT}" \
              "${RIVAULT_NETWORK_CONFIG_DIR}" "${RIVAULT_RUNROOT}" || return 1
+    if [[ -n "${RIVAULT_INIT_BINARY:-}" ]]; then
+        init_path="${RIVAULT_JOB_CONF_DIR}/catatonit"
+        install -m 0755 "${RIVAULT_INIT_BINARY}" "${init_path}" || {
+            rivault_log "venue: RIVAULT_INIT_BINARY ${RIVAULT_INIT_BINARY} cannot be installed"
+            return 1
+        }
+    fi
     if [[ -x /usr/bin/fuse-overlayfs ]]; then
         mount_program=/usr/bin/fuse-overlayfs
     elif command -v fuse-overlayfs >/dev/null 2>&1; then
@@ -126,6 +137,9 @@ rivault_venue_write_container_configs() {
         echo "cgroup_manager = \"${cgroup_manager}\""
         echo '[containers]'
         echo 'label = false'
+        if [[ -n "${init_path}" ]]; then
+            echo "init_path = \"${init_path}\""
+        fi
         echo '[network]'
         echo "network_config_dir = \"${RIVAULT_NETWORK_CONFIG_DIR}\""
         if [[ -n "${network_backend}" ]]; then

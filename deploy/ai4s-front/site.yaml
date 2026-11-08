@@ -193,6 +193,12 @@ extra:
     # node-local graphroot; each job's /tmp is private (TmpFS=/tmp). sbatch
     # exports the submit env; serving (Apptainer) ignores this variable.
     RIVAULT_VENUE_ROOT: "/tmp/umrs-venue"
+    # RIKYU's podman ships no init binary (no catatonit/tini): the step pod's
+    # --init failed "lookup init binary: catatonit" (runs wf-36be161ac031 /
+    # wf-1c2788f09d14 / wf-dfb3d4eb1f94, 2026-11-09). venue.sh copies this static
+    # aarch64 catatonit (Debian trixie 0.2.1-2+b14, sha256 2b4dd247...) into the
+    # job's node-local conf dir and names it as init_path; staged by hand.
+    RIVAULT_INIT_BINARY: "/data1/rkp00101/rku00126/bin/catatonit"
   knowledge_ingest:
     # Web sites UMRS may fetch for knowledge ingest (r4 knowledge ingest of a URL or git repo).
     # "*" = every public web site (maintainer decision 2026-10-25): an agent can already fetch any

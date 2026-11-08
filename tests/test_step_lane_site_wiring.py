@@ -555,6 +555,7 @@ def test_ai4s_exports_the_gpus_flag_and_a_job_private_venue_root():
     assert env["UMRS_STEP_REMOTE_ENABLED"] == "1"
     remote_env = cfg.extra["ssh_remote_env"]
     assert remote_env["RIVAULT_VENUE_ROOT"].startswith("/tmp/")  # shared nodes: no common graphroot
+    assert remote_env["RIVAULT_INIT_BINARY"].startswith("/data1/rkp00101/")  # RIKYU podman ships no catatonit
     assert remote_env["SLURM_CONF_SERVER"]
 
 
