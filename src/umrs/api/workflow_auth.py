@@ -297,6 +297,9 @@ def execution_payload_from_job(job: Job) -> dict[str, Any]:
     return {
         "execution_id": spec.get("execution_id"),
         "workflow_name": spec.get("workflow_name"),
+        # ADR-113 D-4: what the run pinned (None on pre-ADR-113 jobs).
+        "workflow_version": spec.get("workflow_version"),
+        "source_sha256": spec.get("source_sha256"),
         "user_id": job.user_id,
         "status": workflow_job_status(job.status),
         "submitted_at": job.created_at.timestamp() if job.created_at else None,

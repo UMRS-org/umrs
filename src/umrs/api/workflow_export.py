@@ -278,6 +278,8 @@ def _manifest(
     return {
         "workflow": name,
         "version": str(entry.get("version") or ""),
+        # ADR-113 D-2: the digest of the registered version's files.
+        "source_sha256": entry.get("source_sha256"),
         "exported_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "umrs_version": _umrs_version(),
         "workflow_json": origin,

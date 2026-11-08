@@ -153,6 +153,7 @@ def execution_manifest(
     trigger: str = "api",
     pipeline_name: str = "",
     tags: dict[str, str] | None = None,
+    pipeline_version: str = "",
     model_pins: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """One attempt's manifest, ready to persist under attempts.metrics.
@@ -161,12 +162,14 @@ def execution_manifest(
     is recorded; callers pass ``scheduled``/``webhook`` when known.
     ``model_pins`` is the verbatim spec-declared pin list (WP-10 round 2);
     an empty list is recorded honestly (nothing declared), never dropped.
+    ``pipeline_version`` is the workflow version a run pinned (ADR-113 D-4;
+    empty when the job recorded none).
     """
     from datetime import datetime, timezone
 
     return {
         "pipeline_name": pipeline_name,
-        "pipeline_version": "",
+        "pipeline_version": pipeline_version,
         "trigger": trigger,
         "tags": tags or {},
         "created_at": datetime.now(timezone.utc).isoformat(),

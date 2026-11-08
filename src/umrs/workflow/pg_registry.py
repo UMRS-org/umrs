@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 
 _COLUMNS = (
     "execution_id, workflow_name, user_id, status, submitted_at, record_json, "
-    "updated_at"
+    "updated_at, workflow_version, source_sha256"
 )
 
 
@@ -189,6 +189,8 @@ def _record_from_payload(data: dict[str, Any]) -> DurableExecutionRecord:
         durable_job_id=data.get("durable_job_id"),
         cancel_requested=bool(data.get("cancel_requested", False)),
         identity_provenance=str(data.get("identity_provenance", "unverified")),
+        workflow_version=data.get("workflow_version"),
+        source_sha256=data.get("source_sha256"),
     )
     record.steps = _steps_from_payload(data.get("steps"))
     results = dict(data.get("results") or {})
@@ -245,6 +247,8 @@ class PgWorkflowExecutionRegistry(WorkflowExecutionRegistry):
         execution_id: str | None = None,
         durable_job_id: str | None = None,
         identity_provenance: str = "unverified",
+        workflow_version: str | None = None,
+        source_sha256: str | None = None,
     ) -> ExecutionRecord:
         """Create a durable execution record (memory + PG mirror)."""
         import uuid
@@ -256,6 +260,8 @@ class PgWorkflowExecutionRegistry(WorkflowExecutionRegistry):
             params=dict(params or {}),
             durable_job_id=durable_job_id,
             identity_provenance=identity_provenance,
+            workflow_version=workflow_version,
+            source_sha256=source_sha256,
         )
         self._install_hooks(record)
         with self._lock:
@@ -290,14 +296,16 @@ class PgWorkflowExecutionRegistry(WorkflowExecutionRegistry):
             with self._cursor() as cur:
                 cur.execute(
                     f"INSERT INTO workflow_executions ({_COLUMNS}) "
-                    "VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s) "
+                    "VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s) "
                     "ON CONFLICT (execution_id) DO UPDATE SET "
                     "workflow_name = excluded.workflow_name, "
                     "user_id = excluded.user_id, "
                     "status = excluded.status, "
                     "submitted_at = excluded.submitted_at, "
                     "record_json = excluded.record_json, "
-                    "updated_at = excluded.updated_at",
+                    "updated_at = excluded.updated_at, "
+                    "workflow_version = excluded.workflow_version, "
+                    "source_sha256 = excluded.source_sha256",
                     (
                         record.execution_id,
                         record.workflow_name,
@@ -306,6 +314,8 @@ class PgWorkflowExecutionRegistry(WorkflowExecutionRegistry):
                         float(record.submitted_at or 0),
                         _record_json(record),
                         time.time(),
+                        record.workflow_version,
+                        record.source_sha256,
                     ),
                 )
         except Exception:

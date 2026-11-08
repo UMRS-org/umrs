@@ -29,7 +29,7 @@ _LLM = "umrs.pipeline_sdk.templates.llm_step:LLMStep"
 def _workflow(**overrides):
     wf = {
         "name": "contract",
-        "version": "1.0",
+        "version": "1.0.0",
         "description": "Segments an image, then measures each region.",
         "source": {"type": "local_path", "path": "."},
         "steps": [

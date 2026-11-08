@@ -3,7 +3,9 @@
 Purpose: token efficiency + reproducibility. A user's proven
 ``(workflow_name, params)`` pair is persisted server-side once; re-running it
 never requires an LLM to re-derive parameters, and the exact same inputs are
-replayed every time.
+replayed every time, against the workflow version the definition pinned
+(``workflow_version`` + ``source_sha256``, ADR-113 D-4; a definition saved
+before ADR-113 has neither and replays the default version).
 
 Storage mirrors the workflow catalog: a JSON catalog shared across the four
 umrs-front cluster servers via the same state dir (``UMRS_WORKFLOW_STATE_DIR``
@@ -67,8 +69,13 @@ def save_definition(
     user_id: str,
     project_id: str = "",
     description: str = "",
+    workflow_version: str | None = None,
+    source_sha256: str | None = None,
 ) -> dict[str, Any]:
-    """Create or update one run definition (upsert by (name, user_id))."""
+    """Create or update one run definition (upsert by (name, user_id)).
+
+    ``workflow_version`` and ``source_sha256`` pin the workflow version the
+    definition replays and the digest of its files (ADR-113 D-4)."""
     if not name or not workflow_name:
         raise ValueError("name and workflow_name are required")
     if not isinstance(params, dict):
@@ -81,6 +88,8 @@ def save_definition(
                 existing.update(
                     {
                         "workflow_name": workflow_name,
+                        "workflow_version": workflow_version,
+                        "source_sha256": source_sha256,
                         "params": params,
                         "project_id": project_id,
                         "description": description,
@@ -93,6 +102,8 @@ def save_definition(
         record = {
             "name": name,
             "workflow_name": workflow_name,
+            "workflow_version": workflow_version,
+            "source_sha256": source_sha256,
             "params": params,
             "user_id": user_id,
             "project_id": project_id,

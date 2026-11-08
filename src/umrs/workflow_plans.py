@@ -52,6 +52,7 @@ SIGNED_FIELDS: tuple[str, ...] = (
     "user_id",
     "workflow_name",
     "version",
+    "source_sha256",
     "parameters",
     "input_files",
     "lane",
@@ -65,6 +66,9 @@ SIGNED_FIELDS: tuple[str, ...] = (
 #: A commit re-resolves these; any change refuses it as stale.
 STALE_FIELDS: tuple[str, ...] = (
     "version",
+    # ADR-113 D-4: the digest of the version's files (closes the ADR-105
+    # known limit "signs the catalog version, not a hash").
+    "source_sha256",
     "lane",
     "partition",
     "account",

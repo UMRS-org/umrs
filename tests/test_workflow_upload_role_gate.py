@@ -17,6 +17,7 @@ from fastapi.testclient import TestClient
 
 # splice removed (ADR-053): pytest auto-inserts tests/ for sibling helpers; umrs editable
 from umrs.api import audit_events, workflows
+from umrs.server.file_handling import UploadOutcome
 
 
 @pytest.fixture(autouse=True)
@@ -41,7 +42,7 @@ def client(monkeypatch: pytest.MonkeyPatch):
 def _zip_bytes() -> bytes:
     buf = BytesIO()
     with zipfile.ZipFile(buf, "w") as archive:
-        archive.writestr("workflow.json", '{"version": "0.1", "description": "t"}')
+        archive.writestr("workflow.json", '{"version": "0.1.0", "description": "t"}')
     return buf.getvalue()
 
 
@@ -64,13 +65,13 @@ def _audits() -> list[dict]:
 
 
 def _stub_pipeline(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        workflows, "handle_upload_workflow", lambda *_a, **_k: (True, "/tmp/wf", "")
-    )
+    outcome = UploadOutcome(True, dest="/tmp/wf", version="0.1.0", source_sha256="d")
+    monkeypatch.setattr(workflows, "upload_workflow_bundle", lambda *_a, **_k: outcome)
+    monkeypatch.setattr(workflows, "ensure_catalog_layout", lambda: None)
     monkeypatch.setattr(
         workflows,
         "_load_extracted_workflow_json",
-        lambda *_a, **_k: ("0.1", {"description": "t"}),
+        lambda *_a, **_k: ("0.1.0", {"description": "t"}),
     )
     monkeypatch.setattr(workflows, "_register_uploaded_workflow", lambda **_k: None)
 

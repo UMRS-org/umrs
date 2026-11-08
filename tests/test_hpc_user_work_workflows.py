@@ -373,6 +373,7 @@ def ingest(hpc, monkeypatch):
     path = tmp_path / "relax" / "workflow.json"
     data = json.loads(path.read_text())
     path.write_text(json.dumps({**data, "triggers": [{"on": "ingest", "bucket": "up"}]}))
+    _repin_digests()  # the files of the registered version were edited in place
     members = {"alice": {"proj-a", LISTED}}
     monkeypatch.setattr(
         access, "user_in_project", lambda user, project: project in members.get(user, ())
@@ -387,6 +388,18 @@ def ingest(hpc, monkeypatch):
         lambda _self, record, runner: runner(record),
     )
     return seen, members
+
+
+def _repin_digests():
+    """ADR-113 D-4: a run refuses files that changed since registration; a
+    fixture that edits a registered tree records the new digest."""
+    from umrs.server import workflow_registry_handler as rh
+    from umrs.server.workflow_versions import tree_digest
+
+    catalog = rh._load_catalog()
+    for entry in catalog["workflows"]:
+        entry["source_sha256"] = tree_digest(entry["source_path"])
+    rh._save_catalog(catalog)
 
 
 def _ingest_run(payload, *, event_project):

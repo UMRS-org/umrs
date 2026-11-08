@@ -95,13 +95,18 @@ class TestRegisterWorkflow:
         assert parsed["count"] == 1
 
     def test_different_version_creates_new_entry(self):
+        """ADR-113 D-3: the list groups a name's versions in one row (the
+        default version, every version); ``all_versions`` lists each."""
         wf = _sample_workflow_json()
         register_workflow("wf1", "1.0", "alice", "/tmp/wf1", wf)
         register_workflow("wf1", "2.0", "alice", "/tmp/wf1_v2", wf)
 
-        raw = _handle_list_workflows("alice", "")
-        parsed = json.loads(raw)
-        assert parsed["count"] == 2
+        parsed = json.loads(_handle_list_workflows("alice", ""))
+        assert parsed["count"] == 1
+        row = parsed["workflows"][0]
+        assert (row["version"], row["versions"]) == ("2.0", ["2.0", "1.0"])
+        every = json.loads(_handle_list_workflows("alice", '{"all_versions": true}'))
+        assert [w["version"] for w in every["workflows"]] == ["2.0", "1.0"]
 
     def test_different_user_creates_new_entry(self):
         wf = _sample_workflow_json()

@@ -22,7 +22,7 @@ from umrs.server.file_handling import handle_upload_workflow, workflow_name_refu
 
 _WORKFLOW = {
     "name": "wf",
-    "version": "1.0",
+    "version": "1.0.0",
     "description": "One-step upload fixture.",
     "source": {"type": "local_path", "path": "."},
     "steps": [{"name": "s1", "entrypoint": "steps:StepOne", "depends_on": []}],
@@ -63,7 +63,9 @@ def test_a_name_that_is_not_one_directory_is_refused(tmp_path, state, name):
 def test_a_plain_name_extracts_under_the_owner(tmp_path, state):
     ok, dest, _ = handle_upload_workflow("alice", _zip(tmp_path), "demo08_yield-eval.v2")
     assert ok
-    assert Path(dest) == (state / "extracted" / "alice" / "demo08_yield-eval.v2").resolve()
+    # ADR-113 D-2: each version has its own directory under the name.
+    name_dir = (state / "extracted" / "alice" / "demo08_yield-eval.v2").resolve()
+    assert Path(dest) == name_dir / "1.0.0"
 
 
 def test_a_zip_member_in_a_sibling_directory_is_refused(tmp_path, state):

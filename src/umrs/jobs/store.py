@@ -46,6 +46,16 @@ from .schema import ensure_schema
 logger = logging.getLogger(__name__)
 
 
+
+def _manifest_identity(spec: dict[str, Any]) -> dict[str, str]:
+    """A job spec's manifest identity: trigger, workflow name and the
+    workflow version the run pinned (ADR-113 D-4; empty when none)."""
+    return {
+        "trigger": str(spec.get("trigger") or "api"),
+        "pipeline_name": str(spec.get("workflow_name") or ""),
+        "pipeline_version": str(spec.get("workflow_version") or ""),
+    }
+
 class JobStoreError(Exception):
     """Base exception for JobStore errors."""
 
@@ -1376,9 +1386,8 @@ class JobStore:
                         )
             manifest = execution_manifest(
                 provenance=build_provenance(job, attempts).to_dict(),
-                trigger=str(spec.get("trigger") or "api"),
-                pipeline_name=str(spec.get("workflow_name") or ""),
                 model_pins=pins,
+                **_manifest_identity(spec),
             )
             with self._get_conn() as conn, conn.cursor() as cur:
                 cur.execute(

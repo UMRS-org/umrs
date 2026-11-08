@@ -71,7 +71,7 @@ def _headers(user: str, project: str, admin: bool = False) -> dict[str, str]:
 def _definition(source_path: str = ".") -> dict:
     return {
         "name": NAME,
-        "version": "1.0",
+        "version": "1.0.0",
         "description": "export test",
         "source": {"type": "uploaded", "path": source_path},
         "steps": [
@@ -95,7 +95,7 @@ def _register(tmp_path, owner: str = "alice", access: list[str] | None = None):
     _write(source / "steps" / "stats.py", "class Stats:\n    pass\n")
     wrh.register_workflow(
         workflow_name=NAME,
-        version="1.0",
+        version="1.0.0",
         user_id=owner,
         source_path=str(source),
         workflow_json=definition,
@@ -321,6 +321,7 @@ def test_export_is_audited_and_the_temp_file_removed(client, tmp_path, audit):
     assert details.pop("bytes") > 0
     assert details == {
         "workflow": NAME,
+        "version": "1.0.0",
         "owner": "alice",
         "caller": "ryoshimi2",
         "project": "opossum",

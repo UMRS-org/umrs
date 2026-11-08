@@ -33,6 +33,7 @@ from fastapi import (
     HTTPException,
     Query,
     Request,
+    Response,
     UploadFile,
     status,
 )
@@ -48,20 +49,34 @@ from ..jobs.models import JobStatus
 from ..jobs.store import JobNotFoundError, JobStore
 from ..server.file_handling import (
     MAX_UPLOAD_BYTES,
-    handle_upload_workflow,
+    UploadOutcome,
+    upload_workflow_bundle,
     workflow_name_refusal,
 )
 from ..server.job_tracking_handler import DurableJobCommandBackend
 from ..server.workflow_registry_handler import (
+    ResolvedWorkflow,
     _resolve_workflow_catalog_entry,
     _workflow_run_context,
+    adopt_workflow,
     commit_workflow_run,
+    ensure_catalog_layout,
     handle_workflow_command,
     register_workflow,
+    require_code,
     resolve_workflow_for_caller,
+    resolve_workflow_version,
+    set_trigger_version,
     set_workflow_access,
     unregister_workflow,
     workflow_access_entries,
+)
+from ..server.workflow_versions import (
+    ERROR_HTTP_STATUS,
+    WorkflowVersionError,
+    requested_version,
+    sort_versions_desc,
+    split_version_ref,
 )
 from ._access import checked_access, resource_caller
 from ._verified_headers import get_verified_memberships
@@ -115,6 +130,13 @@ class WorkflowTriggerRequest(BaseModel):
         default=None,
         description="Project context (MVP mode only; strict uses verified headers)",
     )
+    version: str | None = Field(
+        default=None,
+        description=(
+            "The workflow version to run (ADR-113 D-3); the default version "
+            "when absent. `name@X` in the path names one too."
+        ),
+    )
 
     def resolved_params(self) -> dict[str, Any]:
         merged = dict(self.params)
@@ -161,6 +183,9 @@ class WorkflowPlanRequest(BaseModel):
         default=None,
         description="Project context (MVP mode only; strict uses verified headers)",
     )
+    version: str | None = Field(
+        default=None, description="The workflow version to plan (ADR-113 D-3)"
+    )
 
     def as_trigger(self) -> WorkflowTriggerRequest:
         return WorkflowTriggerRequest(
@@ -168,6 +193,7 @@ class WorkflowPlanRequest(BaseModel):
             parameters=dict(self.parameters),
             input_files=self.input_files,
             project_id=self.project_id,
+            version=self.version,
         )
 
 
@@ -193,11 +219,21 @@ class WorkflowCommitRequest(BaseModel):
 class WorkflowUploadResponse(BaseModel):
     """Workflow upload response body."""
 
-    status: str = Field(..., description="Operation result")
+    status: str = Field(
+        ..., description="'ok', or 'unchanged' when this version is already registered"
+    )
     workflow_name: str = Field(..., description="Registered workflow name")
     accepted: bool = Field(..., description="Whether the upload was accepted")
     source_path: str = Field(..., description="Extracted workflow directory")
     message: str = Field(..., description="Human-readable result message")
+    version: str = Field(default="", description="The registered version (ADR-113)")
+    source_sha256: str = Field(
+        default="", description="Digest of the version's files (ADR-113 D-2)"
+    )
+    warnings: list[str] = Field(
+        default_factory=list,
+        description="Advice, e.g. a version-like suffix in the name (ADR-113 D-1)",
+    )
 
 
 def _schema_from_item_list(items: list[Any]) -> dict[str, Any]:
@@ -251,13 +287,20 @@ def _read_entry_workflow_json(entry: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
-def _describe_workflow_entry(entry: dict[str, Any]) -> dict[str, Any]:
+def _describe_workflow_entry(
+    entry: dict[str, Any], versions: tuple[str, ...] | list[str] = ()
+) -> dict[str, Any]:
+    """The describe body of one resolved version. ADR-113: the row and its
+    own directory are one version, so catalog and workflow.json agree."""
     workflow_json = _read_entry_workflow_json(entry)
     return {
         "status": "ok",
         "contract_version": "1.0.0",
         "workflow_name": entry.get("name"),
         "version": entry.get("version") or workflow_json.get("version", ""),
+        "versions": list(versions) or [str(entry.get("version") or "")],
+        "source_sha256": entry.get("source_sha256"),
+        "code": entry.get("code") or "available",
         "description": entry.get("description") or workflow_json.get("description", ""),
         "scope": entry.get("scope", "user"),
         "user_id": entry.get("user_id", ""),
@@ -481,6 +524,52 @@ def _validate_params_against_schema(
     )
 
 
+def _raise_version_error(exc: WorkflowVersionError) -> NoReturn:
+    """A version refusal (ADR-113) as its typed HTTP error."""
+    raise_typed(
+        PlatformError(code=exc.code, message=str(exc), http_status=exc.http_status),
+        cause=exc,
+    )
+
+
+def _resolve_visible(
+    workflow_name: str,
+    caller: str,
+    *,
+    is_admin: bool,
+    caller_project: str | None,
+    version: str | None = None,
+) -> ResolvedWorkflow:
+    """The version a caller may see (ADR-074 D-8, ADR-080, ADR-113 D-3), or
+    the typed 404 (``workflows.not_found``; an unknown version of a known
+    name is ``workflows.version_not_found`` listing the versions)."""
+    try:
+        resolved = resolve_workflow_version(
+            workflow_name,
+            caller,
+            is_admin=is_admin,
+            caller_project=caller_project,
+            version=version,
+        )
+    except WorkflowVersionError as exc:
+        _raise_version_error(exc)
+    if resolved is None:
+        name = split_version_ref(workflow_name)[0]
+        raise_typed(
+            PlatformError.workflows("not_found", f"Workflow '{name}' not found")
+        )
+    return resolved
+
+
+def _typed_handler_error(data: dict[str, Any]) -> None:
+    """A handler error carrying an ADR-113 version code: its typed error."""
+    code = data.get("code")
+    if isinstance(code, str) and code in ERROR_HTTP_STATUS:
+        _raise_version_error(
+            WorkflowVersionError(code, str(data.get("message") or code))
+        )
+
+
 def _parse_command_response(raw: str, *, action: str) -> dict[str, Any]:
     """Parse a workflow command response and map JSON errors to HTTP errors."""
     try:
@@ -503,6 +592,7 @@ def _parse_command_response(raw: str, *, action: str) -> dict[str, Any]:
 
     if data.get("status") != "error":
         return data
+    _typed_handler_error(data)
 
     message = str(data.get("message", "Workflow operation failed"))
     lower_message = message.lower()
@@ -806,7 +896,16 @@ def _execution_payload(record, job=None) -> dict[str, Any]:
             or execution.get("status") == "submitted"
         ):
             execution["status"] = durable_status
+        _pinned_from_spec(execution, job)
     return execution
+
+
+def _pinned_from_spec(execution: dict[str, Any], job: Any) -> None:
+    """ADR-113 D-4: a record without the pinned version takes the job's."""
+    spec = getattr(job, "spec", None) or {}
+    for key in ("workflow_version", "source_sha256"):
+        if not execution.get(key) and spec.get(key):
+            execution[key] = spec[key]
 
 
 def _execution_payload_from_job(job) -> dict[str, Any]:
@@ -855,6 +954,13 @@ async def list_workflows(
         False,
         description="Admin-only: list the full catalog across owners",
     ),
+    all_versions: bool = Query(
+        False,
+        description=(
+            "One row per registered version (ADR-113); by default one row per "
+            "name with the default `version` and every `versions`"
+        ),
+    ),
     x_user_id: str | None = Header(None),
     x_verified_project_id: str | None = Header(None),
     x_verified_is_admin: str | None = Header(None),
@@ -872,6 +978,8 @@ async def list_workflows(
         verified_project=_header_str(x_verified_project_id),
         admin_all=all_users and _header_str(x_verified_is_admin) == "true",
     )
+    if all_versions:
+        payload["all_versions"] = True
     raw = handle_workflow_command(
         TaskCmd.LIST_WORKFLOWS,
         resolved_user_id or "_",
@@ -900,6 +1008,13 @@ class RunDefinitionRequest(BaseModel):
     workflow_name: str = Field(..., min_length=1)
     params: dict[str, Any] = Field(default_factory=dict)
     description: str = ""
+    version: str | None = Field(
+        default=None,
+        description=(
+            "The workflow version the definition pins (ADR-113 D-4); the "
+            "default version at save time when absent"
+        ),
+    )
 
 
 def _resolve_definition_for_caller(
@@ -926,6 +1041,45 @@ def _all_definitions() -> list[dict[str, Any]]:
     return list_definitions()
 
 
+def _definition_payload(record_dict: dict[str, Any]) -> dict[str, Any]:
+    """The contract record plus the version pin (ADR-113 D-4)."""
+    from r4_contracts.workflows import RunDefinitionRecord
+
+    payload = RunDefinitionRecord.from_dict(record_dict).to_dict()
+    for key in ("workflow_version", "source_sha256"):
+        payload[key] = record_dict.get(key)
+    return payload
+
+
+def _definition_target(
+    request: RunDefinitionRequest, caller: str, is_admin: bool, project: str | None
+) -> dict[str, Any]:
+    """The workflow version a run definition pins: run definitions must
+    reference a registered workflow, and the version resolved now (the one
+    asked for, else the default) is the one the definition replays."""
+    try:
+        resolved = resolve_workflow_version(
+            request.workflow_name,
+            caller,
+            is_admin=is_admin,
+            caller_project=project,
+            version=request.version,
+        )
+    except WorkflowVersionError as exc:
+        _raise_version_error(exc)
+    if resolved is None:
+        raise_typed(
+            PlatformError.workflows(
+                "not_found",
+                (
+                    f"Workflow '{request.workflow_name}' not found; "
+                    "run definitions must reference a registered workflow"
+                ),
+            )
+        )
+    return resolved.entry
+
+
 @router.put("/run-definitions")
 async def save_run_definition(
     request: RunDefinitionRequest,
@@ -937,42 +1091,29 @@ async def save_run_definition(
     _require_verified_workflow_identity(
         x_user_id, x_verified_project_id, x_verified_is_admin, x_verified_hmac
     )
-    from r4_contracts.workflows import RunDefinitionRecord
-
     from ..server.run_definition_registry import save_definition
 
     caller = _header_str(x_user_id) or ""
-    workflow_entry = resolve_workflow_for_caller(
-        request.workflow_name,
+    entry = _definition_target(
+        request,
         caller,
-        is_admin=_header_str(x_verified_is_admin) == "true",
-        caller_project=_header_str(x_verified_project_id),
+        _header_str(x_verified_is_admin) == "true",
+        _header_str(x_verified_project_id),
     )
-    if workflow_entry is None:
-        raise_typed(
-            PlatformError.workflows(
-                "not_found",
-                (
-                    f"Workflow '{request.workflow_name}' not found; "
-                    "run definitions must reference a registered workflow"
-                ),
-            )
-        )
     try:
         record_dict = save_definition(
             name=request.name,
-            workflow_name=request.workflow_name,
+            workflow_name=str(entry.get("name")),
             params=request.params,
             user_id=caller,
             project_id=_header_str(x_verified_project_id) or "",
             description=request.description,
+            workflow_version=entry.get("version"),
+            source_sha256=entry.get("source_sha256"),
         )
     except ValueError as exc:
         raise_typed(PlatformError.workflows("bad_request", str(exc)), cause=exc)
-    return {
-        "status": "ok",
-        "definition": RunDefinitionRecord.from_dict(record_dict).to_dict(),
-    }
+    return {"status": "ok", "definition": _definition_payload(record_dict)}
 
 
 @router.get("/run-definitions")
@@ -1045,6 +1186,31 @@ async def delete_run_definition(
     }
 
 
+def _refuse_changed_definition(
+    record: dict[str, Any], caller: str, is_admin: bool, project: str | None
+) -> None:
+    """A definition replays the files it pinned (ADR-113 D-4): when its
+    version now has other files (re-uploaded after a delete), refuse."""
+    pinned = record.get("source_sha256")
+    if not pinned:
+        return
+    entry = _resolve_visible(
+        str(record["workflow_name"]),
+        caller,
+        is_admin=is_admin,
+        caller_project=project,
+        version=record.get("workflow_version"),
+    ).entry
+    if entry.get("source_sha256") != pinned:
+        _raise_version_error(
+            WorkflowVersionError(
+                "workflows.source_mismatch",
+                f"Run definition '{record.get('name')}' pinned other files for "
+                f"{record['workflow_name']}@{record.get('workflow_version')}",
+            )
+        )
+
+
 @router.post("/run-definitions/{name}/trigger")
 async def trigger_run_definition(
     name: str,
@@ -1056,18 +1222,23 @@ async def trigger_run_definition(
     x_r4_session_id: str | None = Header(None, alias="x-r4-session-id"),
     memberships: frozenset[str] = Depends(get_verified_memberships),
 ):
-    """Replay one persisted (workflow_name, params) — exact same inputs.
+    """Replay one persisted (workflow_name, version, params) — exact same
+    inputs, the version the definition pinned (ADR-113 D-4; a definition
+    saved before ADR-113 runs the default version).
 
     No param overrides are accepted on purpose: a run definition is the
     reproducibility record; overriding would defeat it.
     """
     caller = _header_str(x_user_id) or ""
-    record = _resolve_definition_for_caller(
-        name, caller, _header_str(x_verified_is_admin) == "true"
+    is_admin = _header_str(x_verified_is_admin) == "true"
+    record = _resolve_definition_for_caller(name, caller, is_admin)
+    _refuse_changed_definition(
+        record, caller, is_admin, _header_str(x_verified_project_id)
     )
     request = WorkflowTriggerRequest(
         user_id=str(record.get("user_id") or caller),
         params=dict(record.get("params") or {}),
+        version=record.get("workflow_version") or None,
     )
     return await trigger_workflow(
         workflow_name=str(record["workflow_name"]),
@@ -1082,35 +1253,60 @@ async def trigger_run_definition(
     )
 
 
+def _trigger_entry(resolved: ResolvedWorkflow, caller: str, is_admin: bool, project):
+    """The row whose triggers fire (ADR-113 D-7): the owner's pin when it
+    resolves, else the default."""
+    pin = resolved.entry.get("trigger_version")
+    if not pin or str(pin) == str(resolved.entry.get("version")):
+        return resolved.entry
+    pinned = resolve_workflow_for_caller(
+        str(resolved.entry.get("name")),
+        caller,
+        is_admin=is_admin,
+        caller_project=project,
+        version=str(pin),
+    )
+    return pinned or resolved.entry
+
+
 @router.get("/{workflow_name}/triggers")
 async def list_workflow_triggers(
     workflow_name: str,
+    version: str | None = Query(None, description="One version's triggers"),
     x_user_id: str | None = Header(None),
     x_verified_project_id: str | None = Header(None),
     x_verified_is_admin: str | None = Header(None),
     x_verified_hmac: str | None = Header(None),
 ):
-    """W4: return the workflow's declared event trigger subscriptions."""
+    """W4: the workflow's declared event trigger subscriptions: those of the
+    version that fires (the owner's ``trigger_version`` pin, else the
+    default; ADR-113 D-7), or of ``?version=``."""
     _require_verified_workflow_identity(
         x_user_id, x_verified_project_id, x_verified_is_admin, x_verified_hmac
     )
     caller = _header_str(x_user_id) or ""
-    entry = resolve_workflow_for_caller(
+    is_admin = _header_str(x_verified_is_admin) == "true"
+    project = _header_str(x_verified_project_id)
+    resolved = _resolve_visible(
         workflow_name,
         caller,
-        is_admin=_header_str(x_verified_is_admin) == "true",
-        caller_project=_header_str(x_verified_project_id),
+        is_admin=is_admin,
+        caller_project=project,
+        version=version,
     )
-    if entry is None:
-        raise_typed(
-            PlatformError.workflows(
-                "not_found", f"Workflow '{workflow_name}' not found"
-            )
-        )
+    entry = (
+        resolved.entry
+        if version or "@" in workflow_name
+        else _trigger_entry(resolved, caller, is_admin, project)
+    )
     workflow_json = _read_entry_workflow_json(entry)
     return {
         "status": "ok",
-        "workflow_name": workflow_name,
+        "workflow_name": entry.get("name"),
+        "version": entry.get("version"),
+        "trigger_version": entry.get("trigger_version"),
+        "triggers_disabled": bool(entry.get("triggers_disabled")),
+        "adopted_as": entry.get("adopted_as"),
         "triggers": workflow_json.get("triggers", []),
     }
 
@@ -1165,9 +1361,121 @@ def _collect_package_files(source_path: str) -> tuple[list[dict[str, Any]], bool
     return rows, truncated
 
 
+class WorkflowTriggerPin(BaseModel):
+    """``PUT /umrs/workflows/{name}/triggers`` body (ADR-113 D-7)."""
+
+    version: str | None = Field(
+        default=None,
+        description="The version whose ingest triggers fire; null = the default version",
+    )
+
+
+@router.put("/{workflow_name}/triggers")
+async def put_workflow_triggers(
+    workflow_name: str,
+    body: WorkflowTriggerPin,
+    owner: str | None = Query(None, description="Admin-only: another owner's workflow"),
+    x_user_id: str | None = Header(None),
+    x_verified_project_id: str | None = Header(None),
+    x_verified_is_admin: str | None = Header(None),
+    x_verified_hmac: str | None = Header(None),
+):
+    """Pin (or unpin) the version whose ingest triggers fire for the caller's
+    workflow (owner, or admin with ``?owner=``; audited). One (owner, name)
+    fires once per event (ADR-113 D-7).
+    # auth: verified
+    """
+    _require_verified_workflow_identity(
+        x_user_id, x_verified_project_id, x_verified_is_admin, x_verified_hmac
+    )
+    caller = _header_str(x_user_id) or ""
+    is_admin = _header_str(x_verified_is_admin) == "true"
+    target_owner = _access_target_owner(workflow_name, caller, owner, is_admin)
+    try:
+        updated = set_trigger_version(workflow_name, target_owner, body.version)
+    except WorkflowVersionError as exc:
+        _raise_version_error(exc)
+    if not updated:
+        raise_typed(
+            PlatformError.workflows(
+                "not_found", f"Workflow '{workflow_name}' not found"
+            )
+        )
+    from .audit_events import emit_audit
+
+    emit_audit(
+        "workflow.trigger_version_changed",
+        project_id=_header_str(x_verified_project_id) or "",
+        details={
+            "workflow_name": workflow_name,
+            "owner": target_owner,
+            "trigger_version": body.version,
+            "by": caller,
+        },
+    )
+    return {
+        "status": "ok",
+        "workflow_name": workflow_name,
+        "owner": target_owner,
+        "trigger_version": body.version,
+        "updated": len(updated),
+    }
+
+
+class WorkflowAdoptRequest(BaseModel):
+    """``POST /umrs/workflows/adopt`` body (ADR-113 D-8)."""
+
+    from_name: str = Field(..., min_length=1, description="The name-versioned workflow")
+    name: str = Field(..., min_length=1, description="The stable name to register as")
+    version: str = Field(..., min_length=1, description="SemVer to register as")
+
+
+@router.post("/adopt")
+async def adopt_workflow_route(
+    body: WorkflowAdoptRequest,
+    x_user_id: str | None = Header(None),
+    x_verified_project_id: str | None = Header(None),
+    x_verified_is_admin: str | None = Header(None),
+    x_verified_hmac: str | None = Header(None),
+):
+    """Re-register a name-versioned workflow's files as (name, version):
+    access and triggers carried over, the old name's triggers disabled
+    (ADR-113 D-8). Owner or admin; audited.
+    # auth: verified
+    """
+    _require_verified_workflow_identity(
+        x_user_id, x_verified_project_id, x_verified_is_admin, x_verified_hmac
+    )
+    caller = _header_str(x_user_id) or ""
+    try:
+        result = adopt_workflow(
+            body.from_name,
+            body.name,
+            body.version,
+            caller=caller,
+            is_admin=_header_str(x_verified_is_admin) == "true",
+        )
+    except LookupError as exc:
+        raise_typed(PlatformError.workflows("not_found", str(exc)), cause=exc)
+    except PermissionError as exc:
+        raise_typed(PlatformError.workflows("forbidden", str(exc)), cause=exc)
+    except WorkflowVersionError as exc:
+        _raise_version_error(exc)
+    from .audit_events import emit_audit
+
+    emit_audit(
+        "workflow.adopted",
+        actor=caller,
+        project_id=_header_str(x_verified_project_id) or "",
+        details=result,
+    )
+    return {"status": "ok", **result}
+
+
 @router.get("/{workflow_name}/package")
 async def get_workflow_package(
     workflow_name: str,
+    version: str | None = Query(None, description="One version (ADR-113)"),
     x_user_id: str | None = Header(None),
     x_verified_project_id: str | None = Header(None),
     x_verified_is_admin: str | None = Header(None),
@@ -1182,16 +1490,18 @@ async def get_workflow_package(
     Without the verified project a project-shared workflow listed in /work
     opened as a 404 (live 2026-10-23). ``files`` carries registered sources
     with honest caps (``truncated`` flags); a missing source dir ships an
-    empty list, never an invented listing.
+    empty list, never an invented listing. ``?version=`` (or ``name@X``)
+    shows one version, else the default (ADR-113 D-3).
     """
-    entry = _visible_workflow_entry(
+    resolved = _visible_workflow_entry(
         workflow_name,
         x_user_id,
         x_verified_project_id,
         x_verified_is_admin,
         x_verified_hmac,
+        version,
     )
-    return _package_payload(entry)
+    return _package_payload(resolved.entry, resolved.versions)
 
 
 def _visible_workflow_entry(
@@ -1200,26 +1510,21 @@ def _visible_workflow_entry(
     x_verified_project_id: str | None,
     x_verified_is_admin: str | None,
     x_verified_hmac: str | None,
-) -> dict[str, Any]:
-    """The catalog entry ``/package`` and ``/export`` show the caller, or the
+    version: str | None = None,
+) -> ResolvedWorkflow:
+    """The version ``/package`` and ``/export`` show the caller, or the
     typed 404: verified identity, then the describe resolution (own, system,
     an ADR-080 share for the verified project, another owner's for admins)."""
     _require_verified_workflow_identity(
         x_user_id, x_verified_project_id, x_verified_is_admin, x_verified_hmac
     )
-    entry = resolve_workflow_for_caller(
+    return _resolve_visible(
         workflow_name,
         _header_str(x_user_id) or "",
         is_admin=_header_str(x_verified_is_admin) == "true",
         caller_project=_header_str(x_verified_project_id),
+        version=version,
     )
-    if entry is None:
-        raise_typed(
-            PlatformError.workflows(
-                "not_found", f"Workflow '{workflow_name}' not found"
-            )
-        )
-    return entry
 
 
 def _built_export(workflow_name: str, entry: dict[str, Any]) -> ExportResult:
@@ -1289,6 +1594,7 @@ def _export_response(workflow_name: str, handle: Any) -> StreamingResponse:
 )
 async def export_workflow(
     workflow_name: str,
+    version: str | None = Query(None, description="One version (ADR-113)"),
     x_user_id: str | None = Header(None),
     x_verified_project_id: str | None = Header(None),
     x_verified_is_admin: str | None = Header(None),
@@ -1306,6 +1612,7 @@ async def export_workflow(
     ``MAX_EXPORT_BYTES`` it is a typed 413. Audited as ``workflow.exported``.
     The temp archive is unlinked before the response starts and streamed
     whole (no Range support), so no request outcome leaves it on disk.
+    ``?version=`` (or ``name@X``) exports one version, else the default.
     """
     entry = _visible_workflow_entry(
         workflow_name,
@@ -1313,8 +1620,10 @@ async def export_workflow(
         x_verified_project_id,
         x_verified_is_admin,
         x_verified_hmac,
-    )
-    result, handle = await asyncio.to_thread(_opened_export, workflow_name, entry)
+        version,
+    ).entry
+    name = str(entry.get("name") or split_version_ref(workflow_name)[0])
+    result, handle = await asyncio.to_thread(_opened_export, name, entry)
     caller = _header_str(x_user_id) or ""
     project_id = _header_str(x_verified_project_id) or ""
     from .audit_events import emit_audit
@@ -1324,7 +1633,8 @@ async def export_workflow(
         actor=caller,
         project_id=project_id,
         details={
-            "workflow": workflow_name,
+            "workflow": name,
+            "version": entry.get("version"),
             "owner": str(entry.get("user_id", "")),
             "caller": caller,
             "project": project_id,
@@ -1333,13 +1643,16 @@ async def export_workflow(
             "excluded": result.excluded,
         },
     )
-    return _export_response(workflow_name, handle)
+    return _export_response(name, handle)
 
 
-def _package_payload(entry: dict[str, Any]) -> dict[str, Any]:
+def _package_payload(
+    entry: dict[str, Any], versions: tuple[str, ...] | list[str] = ()
+) -> dict[str, Any]:
     """The ``/package`` body for a resolved catalog *entry* (split out of the
-    route for the complexity ratchet, 2026-10-02; behaviour unchanged)."""
-    payload = _describe_workflow_entry(entry)
+    route for the complexity ratchet, 2026-10-02): the definition and the
+    files of that version's own directory (ADR-113)."""
+    payload = _describe_workflow_entry(entry, versions)
     workflow_json = _read_entry_workflow_json(entry)
     # Rich definition fields for the graph card: the REAL workflow.json
     # carries depends_on/config detail catalog rows flatten away — it wins
@@ -1361,27 +1674,12 @@ def _package_payload(entry: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
-@router.delete("/{workflow_name}")
-async def delete_workflow(
-    workflow_name: str,
-    x_user_id: str | None = Header(None),
-    x_verified_project_id: str | None = Header(None),
-    x_verified_is_admin: str | None = Header(None),
-    x_verified_hmac: str | None = Header(None),
-):
-    """Delete a registered workflow.
-
-    Authorization: caller must OWN the registration, unless the verified
-    caller is an admin. System-scope workflows always require admin — a
-    shared workflow must never be deletable by an arbitrary project member.
-    Governance ledger (ownership + quota) is updated best-effort.
-    """
-    _require_verified_workflow_identity(
-        x_user_id, x_verified_project_id, x_verified_is_admin, x_verified_hmac
-    )
-    caller = _header_str(x_user_id) or ""
-    is_admin = _header_str(x_verified_is_admin) == "true"
-
+def _deletable_entry(
+    workflow_name: str, caller: str, is_admin: bool
+) -> tuple[str, str]:
+    """(owner, scope) of the registration the caller may delete, or the
+    typed 404/403: the caller must OWN it unless an admin; system scope is
+    admin-only."""
     entry = _resolve_workflow_catalog_entry(workflow_name, caller)
     if entry is None:
         raise_typed(
@@ -1403,29 +1701,78 @@ async def delete_workflow(
                 "forbidden", f"Workflow '{workflow_name}' is owned by another user"
             )
         )
+    return owner, scope
 
-    result = unregister_workflow(
-        workflow_name,
-        user_id=owner,
-        scope=scope,
-    )
-    if result["removed"] == 0:
-        raise_typed(
-            PlatformError.workflows(
-                "not_found", f"Workflow '{workflow_name}' not found"
+
+def _refuse_nothing_deleted(name: str, version: str | None, owner: str, scope: str):
+    """No row matched: an unknown version names the versions there are."""
+    if version:
+        from ..server.workflow_registry_handler import workflow_access_entries as rows
+
+        available = sort_versions_desc(
+            e.get("version")
+            for e in rows(name, owner)
+            if e.get("scope", "user") == scope
+        )
+        _raise_version_error(
+            WorkflowVersionError(
+                "workflows.version_not_found",
+                f"Workflow '{name}' has no version {version}; available "
+                f"versions: {', '.join(available)}",
             )
         )
+    raise_typed(PlatformError.workflows("not_found", f"Workflow '{name}' not found"))
+
+
+@router.delete("/{workflow_name}")
+async def delete_workflow(
+    workflow_name: str,
+    version: str | None = Query(
+        None, description="Delete one version (ADR-113 D-6); all versions when absent"
+    ),
+    x_user_id: str | None = Header(None),
+    x_verified_project_id: str | None = Header(None),
+    x_verified_is_admin: str | None = Header(None),
+    x_verified_hmac: str | None = Header(None),
+):
+    """Delete a registered workflow: one version (``?version=`` or
+    ``name@X``), else every version of the name (ADR-113 D-6). A version's
+    files go once no queued or running run references it.
+
+    Authorization: caller must OWN the registration, unless the verified
+    caller is an admin. System-scope workflows always require admin — a
+    shared workflow must never be deletable by an arbitrary project member.
+    Governance ledger (ownership + quota) is updated best-effort.
+    """
+    _require_verified_workflow_identity(
+        x_user_id, x_verified_project_id, x_verified_is_admin, x_verified_hmac
+    )
+    caller = _header_str(x_user_id) or ""
+    try:
+        name, version = requested_version(workflow_name, version)
+    except WorkflowVersionError as exc:
+        _raise_version_error(exc)
+    owner, scope = _deletable_entry(
+        name, caller, _header_str(x_verified_is_admin) == "true"
+    )
+    result = unregister_workflow(name, user_id=owner, scope=scope, version=version)
+    if result["removed"] == 0:
+        _refuse_nothing_deleted(name, version, owner, scope)
 
     from .governance import record_resource_deleted
 
     record_resource_deleted(
-        "workflows", workflow_name, project_id=_header_str(x_verified_project_id) or ""
+        "workflows", name, project_id=_header_str(x_verified_project_id) or ""
     )
     return {
         "status": "ok",
-        "workflow_name": workflow_name,
+        "workflow_name": name,
         "removed": result["removed"],
-        "message": f"Workflow '{workflow_name}' deleted",
+        "versions": result["versions"],
+        "files_deferred": result["deferred"],
+        "message": f"Workflow '{name}'"
+        + (f" version {version}" if version else "")
+        + " deleted",
     }
 
 
@@ -1437,33 +1784,32 @@ async def delete_workflow(
 )
 async def describe_workflow(
     workflow_name: str,
+    version: str | None = Query(
+        None, description="One version (ADR-113 D-3); the default when absent"
+    ),
     x_user_id: str | None = Header(None),
     x_verified_project_id: str | None = Header(None),
     x_verified_is_admin: str | None = Header(None),
     x_verified_hmac: str | None = Header(None),
 ):
-    """Return declared parameter schema and metadata for a workflow.
+    """Return declared parameter schema and metadata for a workflow version.
 
     Owner-scoped (ADR-074 D-8): the caller's own or a system workflow;
-    another owner's only for admins.
+    another owner's only for admins. ``?version=`` (or ``name@X``) names a
+    version; an unknown one is ``workflows.version_not_found`` listing the
+    versions. ``versions`` lists every version, highest first.
     """
     _require_verified_workflow_identity(
         x_user_id, x_verified_project_id, x_verified_is_admin, x_verified_hmac
     )
-    caller = _header_str(x_user_id) or ""
-    entry = resolve_workflow_for_caller(
+    resolved = _resolve_visible(
         workflow_name,
-        caller,
+        _header_str(x_user_id) or "",
         is_admin=_header_str(x_verified_is_admin) == "true",
         caller_project=_header_str(x_verified_project_id),
+        version=version,
     )
-    if entry is None:
-        raise_typed(
-            PlatformError.workflows(
-                "not_found", f"Workflow '{workflow_name}' not found"
-            )
-        )
-    return _describe_workflow_entry(entry)
+    return _describe_workflow_entry(resolved.entry, resolved.versions)
 
 
 class WorkflowAccessUpdate(BaseModel):
@@ -1639,24 +1985,25 @@ def _load_extracted_workflow_json(dest: str) -> tuple[str, dict[str, Any]]:
 def _register_uploaded_workflow(
     *,
     resolved_workflow_name: str,
-    version: str,
+    outcome: UploadOutcome,
     resolved_user_id: str,
-    dest: str,
     workflow_json: dict[str, Any],
     scope: str,
     project_id: str,
 ) -> None:
-    """Register the workflow in the catalog + governance ledger."""
+    """Register the uploaded version in the catalog + governance ledger."""
     result = register_workflow(
         workflow_name=resolved_workflow_name,
-        version=version,
+        version=outcome.version,
         user_id=resolved_user_id,
-        source_path=dest,
+        source_path=str(outcome.dest),
         workflow_json=workflow_json,
         scope=scope,
         description=workflow_json.get("description", ""),
+        source_sha256=outcome.source_sha256,
     )
     if result.get("status") == "error":
+        _typed_handler_error(result)
         raise_typed(
             PlatformError.workflows(
                 "failure", str(result.get("message", "Workflow registration failed"))
@@ -1680,12 +2027,39 @@ def _upload_message(workflow_name: str, notice: str | None) -> str:
     return f"{message}; {notice}" if notice else message
 
 
+def _refuse_upload(outcome: UploadOutcome) -> NoReturn:
+    """A typed upload refusal (ADR-113 version codes), else the legacy map."""
+    if outcome.code:
+        _raise_version_error(WorkflowVersionError(outcome.code, str(outcome.message)))
+    _raise_upload_error(outcome.message or "Workflow upload failed")
+    raise AssertionError("unreachable")  # _raise_upload_error always raises
+
+
+def _upload_response(
+    workflow_name: str, outcome: UploadOutcome, response: Response
+) -> WorkflowUploadResponse:
+    if outcome.unchanged:
+        # ADR-113 D-2: the same bundle again is a no-op success.
+        response.status_code = status.HTTP_200_OK
+    return WorkflowUploadResponse(
+        status="unchanged" if outcome.unchanged else "ok",
+        workflow_name=workflow_name,
+        accepted=True,
+        source_path=str(outcome.dest),
+        message=_upload_message(workflow_name, outcome.message),
+        version=outcome.version,
+        source_sha256=outcome.source_sha256,
+        warnings=list(outcome.warnings),
+    )
+
+
 @router.post(
     "/upload",
     response_model=WorkflowUploadResponse,
     status_code=status.HTTP_202_ACCEPTED,
 )
 async def upload_workflow(
+    response: Response,
     file: UploadFile = File(...),
     user_id: str | None = Form(None),
     workflow_name: str | None = Form(None),
@@ -1697,6 +2071,11 @@ async def upload_workflow(
     x_verified_workflow_author_hmac: str | None = Header(None),
     x_verified_hmac: str | None = Header(None),
 ):
+    """Upload one workflow version (ADR-113 D-1/D-2): ``workflow.json`` must
+    carry a SemVer ``version`` (else ``workflows.invalid_version``); the
+    version is stored once, immutably — the same bundle again answers 200
+    ``unchanged``, other content under that version is 409
+    ``workflows.version_exists``."""
     _require_verified_workflow_identity(
         x_user_id, x_verified_project_id, x_verified_is_admin, x_verified_hmac
     )
@@ -1718,18 +2097,19 @@ async def upload_workflow(
         temp_path = temp_file.name
     await _spool_upload(file, temp_path)
 
-    ok, dest, notice = handle_upload_workflow(
+    # D-8: a catalog from before ADR-113 moves to per-version dirs first.
+    ensure_catalog_layout()
+    outcome = upload_workflow_bundle(
         resolved_user_id, temp_path, resolved_workflow_name
     )
-    if not ok:
-        _raise_upload_error(notice or "Workflow upload failed")
+    if not outcome.ok:
+        _refuse_upload(outcome)
 
-    version, workflow_json = _load_extracted_workflow_json(dest)
+    _version, workflow_json = _load_extracted_workflow_json(str(outcome.dest))
     _register_uploaded_workflow(
         resolved_workflow_name=resolved_workflow_name,
-        version=version,
+        outcome=outcome,
         resolved_user_id=resolved_user_id,
-        dest=dest,
         workflow_json=workflow_json,
         scope=scope,
         project_id=project_id,
@@ -1740,17 +2120,15 @@ async def upload_workflow(
         "workflow_upload",
         actor=resolved_user_id,
         project_id=project_id,
-        outcome="success",
+        outcome="unchanged" if outcome.unchanged else "success",
         scope=scope,
-        details={"workflow": resolved_workflow_name, "version": version},
+        details={
+            "workflow": resolved_workflow_name,
+            "version": outcome.version,
+            "source_sha256": outcome.source_sha256,
+        },
     )
-    return WorkflowUploadResponse(
-        status="ok",
-        workflow_name=resolved_workflow_name,
-        accepted=True,
-        source_path=dest,
-        message=_upload_message(resolved_workflow_name, notice),
-    )
+    return _upload_response(resolved_workflow_name, outcome, response)
 
 
 def _run_workflow_payload(
@@ -1758,14 +2136,17 @@ def _run_workflow_payload(
     params: dict[str, Any],
     identity_verified: bool,
     session_header: Any,
+    version: str | None = None,
 ) -> dict[str, Any]:
     """The RUN_WORKFLOW payload; a well-formed ``x-r4-session-id`` rides as
     ``_origin_session_id`` so the durable job carries ``spec.origin.session_id``
-    (ADR-105 D-5). Absent or malformed: the payload is unchanged."""
+    (ADR-105 D-5). Absent or malformed: the payload is unchanged. *version*
+    is the version the trigger resolved (ADR-113 D-3)."""
     from ..jobs.job_events import valid_session_id
 
     payload: dict[str, Any] = {
         "workflow_name": workflow_name,
+        "version": version,
         "params": params,
         "_identity_verified": identity_verified,
     }
@@ -1804,10 +2185,10 @@ async def trigger_workflow(
         x_user_id, x_verified_project_id, x_verified_is_admin, x_verified_hmac
     )
     resolved = _resolve_trigger(workflow_name, request, caller, memberships)
-    _refuse_unscoped_trigger(scope_request, workflow_name, resolved)
+    _refuse_unscoped_trigger(scope_request, resolved.name, resolved)
     _refuse_hpc_user_work_trigger(workflow_name, resolved)
     _refuse_unplanned_trigger(workflow_name, resolved.project_id)
-    return _dispatch_trigger(workflow_name, resolved, x_r4_session_id)
+    return _dispatch_trigger(resolved, x_r4_session_id)
 
 
 def _refuse_unscoped_trigger(
@@ -1875,6 +2256,17 @@ class _ResolvedTrigger:
     identity_verified: bool
 
     @property
+    def name(self) -> str:
+        """The workflow's name (never ``name@X``)."""
+        return str(self.entry.get("name") or "")
+
+    @property
+    def version(self) -> str | None:
+        """The resolved version (ADR-113 D-3)."""
+        value = self.entry.get("version")
+        return None if value in (None, "") else str(value)
+
+    @property
     def project_id(self) -> str:
         """The project the durable job is recorded under (``default`` when
         none), as ``workflow_registry_handler._workflow_project_id``."""
@@ -1897,7 +2289,8 @@ def _resolve_trigger(
     caller: _WorkflowHeaders,
     memberships: frozenset[str] | None,
 ) -> _ResolvedTrigger:
-    """Identity, project authorization, owner-scoped resolution and the full
+    """Identity, project authorization, owner-scoped resolution of the
+    version asked for (else the default, ADR-113 D-3) and the full
     parameter-schema validation: the one path trigger, plan and commit share.
     Each route also calls ``_require_verified_workflow_identity`` itself, so
     the H-1 scope guard sees the resolver in the handler."""
@@ -1915,18 +2308,17 @@ def _resolve_trigger(
         caller.x_verified_is_admin,
     )
     # ADR-074 D-8: owner-scoped, the same resolution the run uses.
-    entry = resolve_workflow_for_caller(
+    entry = _resolve_visible(
         workflow_name,
         user_id,
         is_admin=caller.is_admin,
         caller_project=_header_str(caller.x_verified_project_id),
-    )
-    if entry is None:
-        raise_typed(
-            PlatformError.workflows(
-                "not_found", f"Workflow '{workflow_name}' not found"
-            )
-        )
+        version=request.version,
+    ).entry
+    try:
+        require_code(entry)
+    except WorkflowVersionError as exc:
+        _raise_version_error(exc)
     schema = _describe_workflow_entry(entry).get("parameter_schema", {})
     _validate_params_against_schema(params, schema)
     return _ResolvedTrigger(
@@ -1935,19 +2327,23 @@ def _resolve_trigger(
 
 
 def _dispatch_trigger(
-    workflow_name: str,
     resolved: _ResolvedTrigger,
     session_header: Any,
     *,
     idempotency_key: str | None = None,
 ) -> dict[str, Any]:
-    """RUN_WORKFLOW through the registry handler; a plan commit carries its
-    plan id as the durable job's idempotency key."""
+    """RUN_WORKFLOW through the registry handler, for exactly the version
+    resolved (ADR-113 D-3); a plan commit carries its plan id as the durable
+    job's idempotency key."""
     store = get_optional_job_store()
     job_backend = DurableJobCommandBackend(store) if store is not None else None
     payload = json.dumps(
         _run_workflow_payload(
-            workflow_name, resolved.params, resolved.identity_verified, session_header
+            resolved.name,
+            resolved.params,
+            resolved.identity_verified,
+            session_header,
+            resolved.version,
         )
     )
     # Wave-6 F1: the durable trust bridge reflects the verified flag, never
@@ -2067,17 +2463,17 @@ def _refuse_hpc_user_work_trigger(
 _PLATFORM_PARAM_KEYS = ("input_files", "project_id")
 
 
-def _plan_fields(
-    workflow_name: str, resolved: _ResolvedTrigger, quote: Any
-) -> dict[str, Any]:
+def _plan_fields(resolved: _ResolvedTrigger, quote: Any) -> dict[str, Any]:
     """The values a plan signs (``workflow_plans.SIGNED_FIELDS`` minus
-    ``expires_at``)."""
+    ``expires_at``): the resolved version and the digest of its files
+    (ADR-113 D-4)."""
     params = resolved.params
     return {
         "project_id": resolved.project_id,
         "user_id": resolved.user_id,
-        "workflow_name": workflow_name,
+        "workflow_name": resolved.name,
         "version": resolved.entry.get("version"),
+        "source_sha256": resolved.entry.get("source_sha256"),
         "parameters": {
             k: v for k, v in params.items() if k not in _PLATFORM_PARAM_KEYS
         },
@@ -2137,15 +2533,16 @@ async def plan_workflow(
     )
     quote = _quote_resolved(workflow_name, resolved)
     policy = _project_plan_policy(resolved.project_id)
-    signed, digest, plan_id = sign_plan(_plan_fields(workflow_name, resolved, quote))
+    signed, digest, plan_id = sign_plan(_plan_fields(resolved, quote))
     return {
         "status": "ok",
         "plan_id": plan_id,
         "digest": digest,
         "expires_at": signed["expires_at"],
         "signed": signed,
-        "workflow_name": workflow_name,
+        "workflow_name": resolved.name,
         "version": signed["version"],
+        "source_sha256": signed["source_sha256"],
         "steps": [step.to_dict() for step in quote.steps],
         "lane": quote.lane,
         "partition": quote.partition,
@@ -2173,21 +2570,24 @@ def _verified_plan(workflow_name: str, body: WorkflowCommitRequest) -> dict[str,
             409,
             f"plan expired at {signed.get('expires_at')}; plan again",
         )
-    if signed.get("workflow_name") != workflow_name:
+    if signed.get("workflow_name") != split_version_ref(workflow_name)[0]:
         _plan_refusal("plan_mismatch", 403, "the plan was made for another workflow")
     return signed
 
 
 def _trigger_from_plan(signed: dict[str, Any]) -> WorkflowTriggerRequest:
-    """The trigger request a plan was made from (its signed inputs)."""
+    """The trigger request a plan was made from (its signed inputs, for the
+    version it signed: a newer upload meanwhile does not change it)."""
     parameters = dict(signed.get("parameters") or {})
     if signed.get("input_files") is not None:
         parameters["input_files"] = signed["input_files"]
     project = signed.get("project_id")
+    version = signed.get("version")
     return WorkflowTriggerRequest(
         user_id=signed.get("user_id") or None,
         parameters=parameters,
         project_id=None if project in (None, "", "default") else project,
+        version=str(version) if version not in (None, "") else None,
     )
 
 
@@ -2262,7 +2662,7 @@ async def commit_workflow(
     )
     _refuse_foreign_plan(signed, resolved)
     quote = _quote_resolved(workflow_name, resolved)
-    _refuse_stale_plan(signed, _plan_fields(workflow_name, resolved, quote))
+    _refuse_stale_plan(signed, _plan_fields(resolved, quote))
     if request.auto:
         _refuse_auto_commit(resolved.project_id, quote.max_gpu_hours)
     if get_optional_job_store() is None:
@@ -2272,9 +2672,7 @@ async def commit_workflow(
     from ..workflow_plans import plan_id_for
 
     plan_id = plan_id_for(request.digest)
-    payload = _dispatch_trigger(
-        workflow_name, resolved, x_r4_session_id, idempotency_key=plan_id
-    )
+    payload = _dispatch_trigger(resolved, x_r4_session_id, idempotency_key=plan_id)
     payload["plan_id"] = plan_id
     return payload
 
@@ -2323,6 +2721,8 @@ async def get_execution_results(
 
     For unfinished executions, returns the partial results gathered so
     far (so clients can render progressive UIs without retrying).
+    ``workflow_version`` and ``source_sha256`` name what the run pinned
+    (ADR-113 D-4).
     """
     from ..server.workflow_runner import list_artifacts
 
@@ -2342,6 +2742,8 @@ async def get_execution_results(
             "execution_status": execution["status"],
             "progress": execution["progress"],
             "error": execution["error"],
+            "workflow_version": execution.get("workflow_version"),
+            "source_sha256": execution.get("source_sha256"),
             "results": {"steps": {}, "final": None},
             "artifacts": [],
             "durable_job_id": job.job_id,
@@ -2360,6 +2762,8 @@ async def get_execution_results(
         "execution_status": execution["status"],
         "progress": execution["progress"],
         "error": execution["error"],
+        "workflow_version": execution.get("workflow_version"),
+        "source_sha256": execution.get("source_sha256"),
         "results": {
             "steps": record.results.get("steps", {}),
             "final": record.results.get("final"),

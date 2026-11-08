@@ -45,9 +45,10 @@ def _first(*values, default):
     return default
 
 
-def _owner_source_path(workflow_name: str, owner: str, verified: str | None) -> str:
-    """The registered source of a workflow *owner* may run (ADR-074 D-8,
-    ADR-080; *verified* admits ``project:`` shares), or a RuntimeError by name."""
+def _owner_entry(workflow_name: str, owner: str, verified: str | None) -> dict:
+    """The registered version of a workflow *owner* may run (ADR-074 D-8,
+    ADR-080; *verified* admits ``project:`` shares; ``name@X`` names a
+    version, else the default, ADR-113 D-3), or a RuntimeError by name."""
     from umrs.server.workflow_registry_handler import resolve_workflow_for_caller
 
     entry = (
@@ -61,7 +62,7 @@ def _owner_source_path(workflow_name: str, owner: str, verified: str | None) -> 
             "its owner or those its access list admits, a system workflow "
             "for anyone (ADR-074 D-8, ADR-080)"
         )
-    return source_path
+    return entry
 
 
 def _refuse_unplanned_run(store, workflow_name: str, project_id: str) -> None:
@@ -119,14 +120,17 @@ class UmrsWorkflowExecutionPort(WorkflowExecutionPort):
         params = {k: v for k, v in params.items() if k != "user_id"}
         project_id = str(params.get("project_id") or "research")
         verified = owner_project if owner and owner_project == project_id else None
-        source_path = _owner_source_path(workflow_name, owner, verified)
+        entry = _owner_entry(workflow_name, owner, verified)
         _refuse_unplanned_run(self._store, workflow_name, project_id)
         execution_id = f"exec-{uuid4().hex}"
         spec = {
-            "workflow_name": workflow_name,
+            "workflow_name": entry.get("name") or workflow_name,
             "params": params,
             "execution_id": execution_id,
-            "source_path": source_path,
+            # ADR-113 D-4: the iteration pins the version it resolved.
+            "source_path": entry["source_path"],
+            "workflow_version": entry.get("version"),
+            "source_sha256": entry.get("source_sha256"),
         }
         if verified:
             spec[VERIFIED_PROJECT_SPEC_KEY] = verified

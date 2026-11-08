@@ -50,7 +50,7 @@ def tmp_catalog(tmp_path):
 def _workflow_json(name: str = "ct-analysis", *, with_required_bucket: bool = False):
     payload = {
         "name": name,
-        "version": "1.0",
+        "version": "1.0.0",
         "description": "workflow test",
         "source": {"type": "local_path", "path": "."},
         "steps": [

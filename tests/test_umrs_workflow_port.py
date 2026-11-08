@@ -113,6 +113,24 @@ def test_trigger_creates_workflow_run_job(store, registry):
     assert kwargs["max_attempts"] == 1
 
 
+def test_a_loop_iteration_pins_the_resolved_version(store, monkeypatch):
+    """ADR-113 D-4: the job spec names the version and digest the iteration
+    resolved (before: only the name and directory)."""
+    from umrs.server import workflow_registry_handler as handler
+
+    entry = {
+        "name": "fit",
+        "version": "1.2.0",
+        "source_path": "/wf/alice/fit/1.2.0",
+        "source_sha256": "abc",
+    }
+    monkeypatch.setattr(handler, "resolve_workflow_for_caller", lambda *_a, **_k: entry)
+    UmrsWorkflowExecutionPort(store).trigger_as("fit@1.2.0", {"project_id": "p"}, owner="alice")
+    spec = store.create_job.call_args.kwargs["spec"]
+    assert (spec["workflow_name"], spec["workflow_version"]) == ("fit", "1.2.0")
+    assert (spec["source_path"], spec["source_sha256"]) == ("/wf/alice/fit/1.2.0", "abc")
+
+
 def test_a_planner_user_id_param_names_nobody(store):
     # Experiment parameters come from the LLM planner (steerable through the
     # research goal): a user_id there must not run another owner's code.

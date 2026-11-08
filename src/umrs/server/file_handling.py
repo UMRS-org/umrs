@@ -6,8 +6,18 @@ import os
 import re
 import shutil
 import struct
+import uuid
 import zipfile
+from dataclasses import dataclass
 
+from umrs.server.workflow_versions import (
+    invalid_version_message,
+    is_semver,
+    name_suffix_warning,
+    tree_digest,
+    tree_digest_or_none,
+    version_dir_name,
+)
 from umrs.shared.auth import sanitize_username, validate_config_identity
 from umrs.shared.config import (
     get_default_tmp_subdir,
@@ -127,7 +137,11 @@ MAX_WORKFLOW_JSON_BYTES = 1024 * 1024
 
 
 class _UploadRefused(Exception):
-    """Ends an upload with this message."""
+    """Ends an upload with this message (*code*: a typed refusal, ADR-113)."""
+
+    def __init__(self, message: str, code: str = "") -> None:
+        super().__init__(message)
+        self.code = code
 
 
 def workflow_name_refusal(workflow_name: object) -> str | None:
@@ -205,19 +219,26 @@ class _CountedDirectory:
         return getattr(self._raw, name)
 
 
-def _upload_dest(client_id: str, workflow_name: str) -> str:
-    """The extraction directory, an ABSOLUTE path so that the stored
-    ``source_path`` resolves regardless of the reader's working directory
-    (the durable-job backend). UMRS_WORKFLOW_STATE_DIR relocates extracted
-    workflows to a durable bind-mounted dir on deployed servers."""
+def workflows_root(client_id: str) -> str:
+    """The owner's extracted-workflows directory (real, absolute path):
+    ``<UMRS_WORKFLOW_STATE_DIR>/extracted/<owner>`` on deployed servers
+    (a durable bind-mounted dir), else the umrs tmp tree."""
     state_dir = os.environ.get("UMRS_WORKFLOW_STATE_DIR", "").strip()
     if state_dir:
-        workflows_root: str = os.path.join(state_dir, "extracted", client_id)
+        workflows_dir: str = os.path.join(state_dir, "extracted", client_id)
     else:
-        workflows_root = get_resolved_umrs_subdir(
+        workflows_dir = get_resolved_umrs_subdir(
             get_default_tmp_subdir(), "user_workflows", client_id
         )
-    root = os.path.realpath(workflows_root)
+    return os.path.realpath(workflows_dir)
+
+
+def _upload_dest(client_id: str, workflow_name: str) -> str:
+    """The workflow's NAME directory, an ABSOLUTE path so that the stored
+    ``source_path`` resolves regardless of the reader's working directory
+    (the durable-job backend). Each registered version lives in its own
+    subdirectory, ``<name>/<version>/`` (ADR-113 D-2)."""
+    root = workflows_root(client_id)
     dest_dir = os.path.realpath(os.path.join(root, workflow_name))
     if dest_dir == root or not _within(root, dest_dir):
         raise _UploadRefused(
@@ -260,11 +281,13 @@ def _check_zip_size(zf) -> None:
             )
 
 
-def _package_check(raw: bytes) -> list[str]:
+def _package_check(raw: bytes) -> tuple[list[str], str]:
     """The upload contract (r4_contracts.workflow_package, 2026-10-02): a
     description and an explicit flow graph (every step's ``depends_on``)
     are mandatory, so an error refuses the upload, every problem named at
-    once. Warnings come back as advice lines for the upload notice."""
+    once; ``version`` must be a semantic version (ADR-113 D-1, refused by
+    name as ``workflows.invalid_version``). Returns the contract's warnings
+    as advice lines for the upload notice, and the version."""
     from r4_contracts.workflow_package import (
         errors_of,
         format_problems,
@@ -286,53 +309,82 @@ def _package_check(raw: bytes) -> list[str]:
         WorkflowDefinition.from_dict(data)
     except (KeyError, ValueError) as e:
         raise _UploadRefused(f"Invalid workflow.json: {e}") from e
-    return [str(p) for p in warnings_of(problems)]
+    version = data.get("version") if isinstance(data, dict) else None
+    if not is_semver(version):
+        raise _UploadRefused(
+            invalid_version_message(version), "workflows.invalid_version"
+        )
+    return [str(p) for p in warnings_of(problems)], str(version)
 
 
-def _extract_checked(zf, dest_dir: str) -> list[str]:
+def _workflow_json_member(names: list[str]) -> str:
+    """The bundle's workflow.json: the root one, else the first (sorted) one
+    exactly one level deep. A deeper one never defines the bundle (before,
+    whichever came first in the archive was checked, and another used)."""
+    if "workflow.json" in names:
+        return "workflow.json"
+    nested = sorted(
+        n for n in names if n.count("/") == 1 and n.endswith("/workflow.json")
+    )
+    if not nested:
+        raise _UploadRefused(
+            "Zip archive does not contain a workflow.json at its root or one level deep"
+        )
+    return nested[0]
+
+
+def _extract_checked(zf, dest_dir: str) -> tuple[list[str], str, str]:
     """Extract after every member is checked to stay inside *dest_dir*, the
-    archive fits the source caps and a ``workflow.json`` (root or one level
+    archive fits the source caps and its ``workflow.json`` (root or one level
     deep) meets the upload contract and parses. Returns the contract's
-    warnings."""
+    warnings, the workflow.json member and the bundle's version."""
 
     _check_zip_size(zf)
     for member in zf.namelist():
         if not _within(dest_dir, os.path.realpath(os.path.join(dest_dir, member))):
             raise _UploadRefused(f"Zip contains unsafe path: {member}")
-    candidates = [n for n in zf.namelist() if os.path.basename(n) == "workflow.json"]
-    if not candidates:
-        raise _UploadRefused("Zip archive does not contain a workflow.json")
-    for name in candidates:
+    for name in zf.namelist():
         # Parsed whole into server memory: a small zip of a compressible
         # one expanded to max_src_bytes of JSON objects (~20 GiB of Python).
         declared = zf.getinfo(name).file_size
-        if declared > MAX_WORKFLOW_JSON_BYTES:
+        if os.path.basename(name) == "workflow.json" and (
+            declared > MAX_WORKFLOW_JSON_BYTES
+        ):
             raise _UploadRefused(
                 f"{name} is {declared} bytes (max {MAX_WORKFLOW_JSON_BYTES})"
             )
-    warnings = _package_check(zf.read(candidates[0]))
+    member = _workflow_json_member(zf.namelist())
+    warnings, version = _package_check(zf.read(member))
     os.makedirs(dest_dir, exist_ok=True)
     zf.extractall(dest_dir)
-    return warnings
+    return warnings, member, version
 
 
-def _flatten_nested(dest_dir: str) -> None:
-    """A workflow.json one level deep (``myworkflow/workflow.json``): its
-    directory's contents move up so *dest_dir* holds workflow.json."""
-    if os.path.isfile(os.path.join(dest_dir, "workflow.json")):
+def _flatten_nested(dest_dir: str, member: str = "workflow.json") -> None:
+    """A workflow.json one level deep (``myworkflow/workflow.json``): that
+    directory's contents move up so *dest_dir* holds workflow.json. The
+    directory is renamed aside first, so an item named like it moves too
+    (``wf/wf/``), and an item also present at the root is refused, never
+    merged."""
+    if member == "workflow.json":
         return
-    for name in os.listdir(dest_dir):
-        sub_dir = os.path.join(dest_dir, name)
-        if os.path.isfile(os.path.join(sub_dir, "workflow.json")):
-            for item in os.listdir(sub_dir):
-                shutil.move(os.path.join(sub_dir, item), dest_dir)
-            os.rmdir(sub_dir)
-            return
+    sub_dir = os.path.join(dest_dir, member.split("/", 1)[0])
+    aside = os.path.join(dest_dir, f".flatten-{uuid.uuid4().hex}")
+    os.rename(sub_dir, aside)
+    for item in sorted(os.listdir(aside)):
+        target = os.path.join(dest_dir, item)
+        if os.path.lexists(target):
+            raise _UploadRefused(
+                f"Zip member {item!r} exists both at the root and next to {member}"
+            )
+        shutil.move(os.path.join(aside, item), target)
+    os.rmdir(aside)
 
 
-def _mark_uploaded(dest_dir: str) -> None:
+def _mark_uploaded(dest_dir: str, final_dir: str | None = None) -> None:
     """Rewrite workflow.json's source to the UPLOADED tree, which must lie
-    inside *dest_dir*."""
+    inside *dest_dir*; the path written is where the tree will live
+    (*final_dir*, the version directory it is renamed to)."""
     actual_wf = os.path.join(dest_dir, "workflow.json")
     if not os.path.isfile(actual_wf):
         return
@@ -349,60 +401,200 @@ def _mark_uploaded(dest_dir: str) -> None:
         raise _UploadRefused(
             f"Workflow source directory missing after extraction: {resolved_source}"
         )
-    wf_data["source"] = {"type": "uploaded", "path": resolved_source}
+    final_source = os.path.normpath(
+        os.path.join(final_dir or dest_dir, os.path.relpath(resolved_source, dest_dir))
+    )
+    wf_data["source"] = {"type": "uploaded", "path": final_source}
     with open(actual_wf, "w", encoding="utf-8") as fh:
         json.dump(wf_data, fh, indent=2)
 
 
-def handle_upload_workflow(client_id, zip_path, workflow_name):
-    """Validate and extract an uploaded workflow zip to the user_workflows directory.
+@dataclass(frozen=True)
+class UploadOutcome:
+    """One upload's result (ADR-113): where the version lives, its digest,
+    and whether the same bundle was already registered (``unchanged``)."""
 
-    The zip must contain a ``workflow.json`` at its root (or one level deep)
-    that meets the upload contract (a description and every step's
-    ``depends_on``, ``r4_contracts.workflow_package``) and parses as a
-    :class:`WorkflowDefinition`; *workflow_name* must match
-    :data:`WORKFLOW_NAME_RE` (one directory under the owner's tree).
+    ok: bool
+    dest: str | None = None
+    message: str | None = None
+    code: str = ""
+    version: str = ""
+    source_sha256: str = ""
+    unchanged: bool = False
+    warnings: tuple[str, ...] = ()
 
-    Returns ``(success: bool, dest_dir: str | None, message: str | None)``:
-    the error on failure; on success an optional notice for the uploader
-    (a Dockerfile in the upload is ignored, never built — ADR-074 D-7; the
-    contract's advice, e.g. parameters no parameter_schema declares).
-    """
-    try:
-        _precheck_upload(zip_path, workflow_name)
-        dest_dir = _upload_dest(client_id, workflow_name)
-    except _UploadRefused as refused:
-        return False, None, str(refused)
 
+def _staging_dir(name_dir: str) -> str:
+    """An empty directory beside the owner's workflows (``.incoming`` never
+    names a workflow: a name starts with a letter or digit)."""
+    return os.path.join(os.path.dirname(name_dir), ".incoming", uuid.uuid4().hex)
+
+
+def _extract_to(zip_path: str, staging: str) -> tuple[list[str], str]:
+    """Checked extraction into the empty *staging* dir; (advice, version)."""
     from umrs.server.step_staging import DEFAULT_CAPS
 
-    try:
-        with open(zip_path, "rb") as raw:
-            guarded = _CountedDirectory(raw, 2 * DEFAULT_CAPS.max_src_files)
-            with zipfile.ZipFile(guarded) as zf:
-                guarded.armed = False
-                advice = _extract_checked(zf, dest_dir)
-        _flatten_nested(dest_dir)
-        _mark_uploaded(dest_dir)
-    except _UploadRefused as refused:
-        return False, None, str(refused)
-    except zipfile.BadZipFile:
-        return False, None, f"Corrupted zip archive: {zip_path}"
-    except Exception as e:
-        return False, None, f"Failed to extract workflow: {e}"
-    finally:
-        # Clean up the uploaded temp zip
-        try:
-            os.remove(zip_path)
-        except Exception as e:
-            logger.info(f"Warning: failed to clean up zip file '{zip_path}': {e}")
+    with open(zip_path, "rb") as raw:
+        guarded = _CountedDirectory(raw, 2 * DEFAULT_CAPS.max_src_files)
+        with zipfile.ZipFile(guarded) as zf:
+            guarded.armed = False
+            advice, member, version = _extract_checked(zf, staging)
+    _flatten_nested(staging, member)
+    return advice, version
 
+
+def _same_version(final_dir: str, digest: str, version: str) -> None:
+    """A registered version is immutable (ADR-113 D-2): the same bundle
+    again is a no-op, other content is refused by name."""
+    if tree_digest_or_none(final_dir) != digest:
+        raise _UploadRefused(
+            f"version {version} already exists with different content; "
+            "bump `version` in workflow.json",
+            "workflows.version_exists",
+        )
+
+
+def _place_version(staging: str, name_dir: str, version: str) -> tuple[str, str, bool]:
+    """Move the staged tree to ``<name>/<version>/``: (dir, digest, unchanged)."""
+    digest = tree_digest(staging)
+    final_dir = os.path.join(name_dir, version_dir_name(version))
+    if os.path.isdir(final_dir):
+        _same_version(final_dir, digest, version)
+        return final_dir, digest, True
+    _mark_uploaded(staging, final_dir)
+    os.makedirs(name_dir, exist_ok=True)
+    try:
+        os.rename(staging, final_dir)
+    except OSError:
+        if not os.path.isdir(final_dir):
+            raise
+        _same_version(final_dir, digest, version)  # a concurrent upload won
+        return final_dir, digest, True
+    return final_dir, digest, False
+
+
+def _discard_upload(staging: str | None, zip_path: str) -> None:
+    if staging and os.path.isdir(staging):
+        shutil.rmtree(staging, ignore_errors=True)
+    try:
+        os.remove(zip_path)
+    except Exception as e:
+        logger.info(f"Warning: failed to clean up zip file '{zip_path}': {e}")
+
+
+def _uploaded(
+    client_id: str,
+    workflow_name: str,
+    version: str,
+    placed: tuple[str, str, bool],
+    advice: list[str],
+) -> UploadOutcome:
+    final_dir, digest, unchanged = placed
     logger.info(
-        f"Workflow '{workflow_name}' for user '{client_id}' extracted to {dest_dir}"
+        "Workflow '%s' v%s for user '%s' %s %s",
+        workflow_name,
+        version,
+        client_id,
+        "already registered at" if unchanged else "extracted to",
+        final_dir,
+    )
+    warning = name_suffix_warning(workflow_name)
+    notices = [_dockerfile_notice(final_dir, workflow_name), *advice, warning]
+    return UploadOutcome(
+        True,
+        dest=final_dir,
+        message="; ".join(n for n in notices if n) or None,
+        version=version,
+        source_sha256=digest,
+        unchanged=unchanged,
+        warnings=(warning,) if warning else (),
     )
 
-    notices = [_dockerfile_notice(dest_dir, workflow_name), *advice]
-    return True, dest_dir, "; ".join(n for n in notices if n) or None
+
+def upload_workflow_bundle(
+    client_id: str, zip_path: str, workflow_name: str
+) -> UploadOutcome:
+    """Validate an uploaded workflow zip and store it as one immutable
+    version, ``<owner>/<name>/<version>/`` (ADR-113 D-2).
+
+    The zip must contain a ``workflow.json`` at its root (or one level deep)
+    that meets the upload contract (a description, every step's
+    ``depends_on``, ``r4_contracts.workflow_package``), carries a SemVer
+    ``version`` and parses as a :class:`WorkflowDefinition`; *workflow_name*
+    must match :data:`WORKFLOW_NAME_RE`. The tree is extracted into an empty
+    staging directory and renamed into place: a version is never written
+    over. The same bundle again is ``unchanged``; other content under an
+    existing version is refused (``workflows.version_exists``). The uploaded
+    zip is always removed.
+    """
+    staging: str | None = None
+    try:
+        _precheck_upload(zip_path, workflow_name)
+        name_dir = _upload_dest(client_id, workflow_name)
+        staging = _staging_dir(name_dir)
+        advice, version = _extract_to(zip_path, staging)
+        placed = _place_version(staging, name_dir, version)
+    except _UploadRefused as refused:
+        return UploadOutcome(False, message=str(refused), code=refused.code)
+    except zipfile.BadZipFile:
+        return UploadOutcome(False, message=f"Corrupted zip archive: {zip_path}")
+    except Exception as e:
+        return UploadOutcome(False, message=f"Failed to extract workflow: {e}")
+    finally:
+        _discard_upload(staging, zip_path)
+    return _uploaded(client_id, workflow_name, version, placed, advice)
+
+
+def _set_identity(tree: str, old_root: str, workflow_name: str, version: str) -> None:
+    """An adopted tree's workflow.json names its new identity, and an
+    absolute ``source.path`` into the old tree becomes relative."""
+    path = os.path.join(tree, "workflow.json")
+    with open(path, encoding="utf-8") as fh:
+        data = json.load(fh)
+    source = data.get("source")
+    old = source.get("path") if isinstance(source, dict) else None
+    if isinstance(old, str) and os.path.isabs(old):
+        real_old = os.path.realpath(old)
+        if _within(old_root, real_old):
+            source["path"] = os.path.relpath(real_old, old_root)
+    data["version"] = version
+    if "name" in data:
+        data["name"] = workflow_name
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(data, fh, indent=2)
+
+
+def adopt_version_tree(
+    client_id: str, source_dir: str, workflow_name: str, version: str
+) -> UploadOutcome:
+    """Store a copy of a registered tree as (*workflow_name*, *version*) of
+    the same owner (ADR-113 D-8 adopt): the same staging, immutability and
+    digest rules as an upload. Symlinks are copied as links (never
+    followed) and are not part of the digest."""
+    staging: str | None = None
+    try:
+        name_dir = _upload_dest(client_id, workflow_name)
+        staging = _staging_dir(name_dir)
+        shutil.copytree(source_dir, staging, symlinks=True)
+        _set_identity(staging, os.path.realpath(source_dir), workflow_name, version)
+        placed = _place_version(staging, name_dir, version)
+    except _UploadRefused as refused:
+        return UploadOutcome(False, message=str(refused), code=refused.code)
+    except (OSError, ValueError) as e:
+        return UploadOutcome(False, message=f"Failed to adopt workflow: {e}")
+    finally:
+        if staging and os.path.isdir(staging):
+            shutil.rmtree(staging, ignore_errors=True)
+    return _uploaded(client_id, workflow_name, version, placed, [])
+
+
+def handle_upload_workflow(client_id, zip_path, workflow_name):
+    """:func:`upload_workflow_bundle` as ``(success, dest_dir, message)``:
+    the error on failure; on success the version directory and an optional
+    notice for the uploader (a Dockerfile in the upload is ignored, never
+    built — ADR-074 D-7; the contract's advice; a version-like name)."""
+    outcome = upload_workflow_bundle(client_id, zip_path, workflow_name)
+    return outcome.ok, outcome.dest, outcome.message
 
 
 def persist_uploaded_user_config(

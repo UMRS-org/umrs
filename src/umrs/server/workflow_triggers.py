@@ -18,6 +18,10 @@ batches live only in-process — a server restart drops them).
 Cron subscriptions are handled separately by the SchedulerService
 (W4 cron half) — this module covers event dispatch.
 
+One (owner, name) fires once per event (ADR-113 D-7): the version its owner
+pinned (``trigger_version``), else the default version, with that version's
+own ``triggers``; a name adopted under another name fires nothing.
+
 Philosophy mirrors the connector triggers: dispatch is best-effort and
 never raises — a broken workflow subscription must not break the
 post-upload ingestion path.
@@ -101,12 +105,16 @@ def _owner_event_project(client_id: str, project_id: str | None) -> str | None:
 
 
 def _run_triggered(
-    workflow_name: str, client_id: str, params: dict[str, Any]
+    workflow_name: str,
+    client_id: str,
+    params: dict[str, Any],
+    version: str | None = None,
 ) -> str:
-    """Launch one ingest-triggered run of *workflow_name* for its owner."""
+    """Launch one ingest-triggered run of *workflow_name* (the *version*
+    whose triggers fired, ADR-113 D-7) for its owner."""
     from umrs.server.workflow_registry_handler import run_ingest_workflow
 
-    payload = {"workflow_name": workflow_name, "params": params}
+    payload = {"workflow_name": workflow_name, "version": version, "params": params}
     return run_ingest_workflow(
         client_id,
         json.dumps(payload),
@@ -127,9 +135,11 @@ def _collect_batch_fire(
     """Timer expiry: launch ONE run with only_videos=<comma-joined stems>."""
     params = dict(trigger.get("_params") or {})
     params["only_videos"] = ",".join(sorted(stems))
-    params["_trigger"] = {k: v for k, v in trigger.items() if k != "_params"}
+    params["_trigger"] = {
+        k: v for k, v in trigger.items() if k not in ("_params", "_version")
+    }
     try:
-        raw = _run_triggered(workflow_name, client_id, params)
+        raw = _run_triggered(workflow_name, client_id, params, trigger.get("_version"))
         execution_id = _execution_id_from_response(raw)
         logger.info(
             "Ingest batch fired: workflow=%s execution=%s files=%d",
@@ -195,6 +205,7 @@ def _dispatch_entry(
     if not workflow_name:
         return []
     client_id = entry.get("user_id") or owner
+    version = entry.get("version")
     execution_ids: list[str] = []
     for trigger in _entry_triggers(entry):
         if not _trigger_matches(
@@ -209,7 +220,7 @@ def _dispatch_entry(
         }
         if _queue_batch(
             workflow_name, client_id,
-            {**trigger, "_params": dict(base)}, stem,
+            {**trigger, "_params": dict(base), "_version": version}, stem,
         ):
             execution_ids.append("batch-queued")
             continue
@@ -219,7 +230,7 @@ def _dispatch_entry(
         }
         if trigger.get("stem_key_only"):
             params["only_videos"] = stem
-        raw = _run_triggered(workflow_name, client_id, params)
+        raw = _run_triggered(workflow_name, client_id, params, version)
         execution_id = _execution_id_from_response(raw)
         if execution_id:
             execution_ids.append(execution_id)
@@ -230,6 +241,35 @@ def _dispatch_entry(
             s3_key,
         )
     return execution_ids
+
+
+def _pinned_row(rows: list[dict[str, Any]], available: list[dict[str, Any]]):
+    """The available row of the owner's ``trigger_version`` pin, or None."""
+    pins = {str(r["trigger_version"]) for r in rows if r.get("trigger_version")}
+    return next((r for r in available if str(r.get("version")) in pins), None)
+
+
+def _trigger_target(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """The one row of (owner, name) whose triggers fire (ADR-113 D-7): the
+    owner's ``trigger_version`` pin when that version has code, else the
+    default version; none once the name was adopted under another name."""
+    from umrs.server.workflow_versions import default_entry, entry_available
+
+    available = [r for r in rows if entry_available(r)]
+    if not available or any(r.get("triggers_disabled") for r in rows):
+        return None
+    return _pinned_row(rows, available) or default_entry(available)
+
+
+def trigger_targets(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """One row per (owner, name): before ADR-113 every registered version
+    fired its own run for one event."""
+    groups: dict[tuple[Any, Any], list[dict[str, Any]]] = {}
+    for entry in entries:
+        if isinstance(entry, dict):
+            groups.setdefault((entry.get("user_id"), entry.get("name")), []).append(entry)
+    targets = (_trigger_target(rows) for rows in groups.values())
+    return [t for t in targets if t is not None]
 
 
 def dispatch_catalog_event(
@@ -251,7 +291,7 @@ def dispatch_catalog_event(
         )
         return execution_ids
 
-    for entry in catalog.get("workflows", []):
+    for entry in trigger_targets(catalog.get("workflows", [])):
         try:
             execution_ids.extend(
                 _dispatch_entry(

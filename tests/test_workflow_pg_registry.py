@@ -15,9 +15,10 @@ from umrs.server.workflow_execution_registry import (
     WorkflowExecutionRegistry,
 )
 
-_MIGRATION = (
-    Path(__file__).resolve().parents[1] / "src/umrs/migrations/0062_workflow_executions.sql"
-)
+_MIGRATIONS = Path(__file__).resolve().parents[1] / "src/umrs/migrations"
+_MIGRATION = _MIGRATIONS / "0062_workflow_executions.sql"
+#: ADR-113 D-4: the run's pinned version and file digest columns.
+_VERSION_MIGRATION = _MIGRATIONS / "0133_workflow_execution_versions.sql"
 
 
 def _pg_pool_or_skip():
@@ -32,6 +33,7 @@ def _pg_pool_or_skip():
     try:
         with conn, conn.cursor() as cur:
             cur.execute(_MIGRATION.read_text())
+            cur.execute(_VERSION_MIGRATION.read_text())
             cur.execute("TRUNCATE workflow_executions")
     finally:
         pool.putconn(conn)
@@ -58,6 +60,21 @@ def test_create_get_round_trip(registry):
     assert loaded.user_id == "alice"
     assert loaded.params == {"k": 1}
     assert registry.get("wf-missing") is None
+
+
+def test_the_pinned_version_round_trips(registry):
+    """ADR-113 D-4: the record carries the version and digest the run
+    pinned; the PG mirror stores them in its own columns too."""
+    rec = registry.create("demo-wf", "alice", workflow_version="1.2.0", source_sha256="ab" * 32)
+    data = registry.get(rec.execution_id).to_dict()
+    assert (data["workflow_version"], data["source_sha256"]) == ("1.2.0", "ab" * 32)
+    row = getattr(registry, "_fetch", lambda _eid: None)(rec.execution_id)
+    if row is not None:
+        assert (row["workflow_version"], row["source_sha256"]) == ("1.2.0", "ab" * 32)
+        from umrs.workflow.pg_registry import _record_from_payload
+
+        restored = _record_from_payload(row["record_json"])
+        assert restored.workflow_version == "1.2.0"
 
 
 def test_update_persists_mutation(registry):

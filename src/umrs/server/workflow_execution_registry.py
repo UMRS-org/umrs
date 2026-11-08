@@ -86,6 +86,10 @@ class ExecutionRecord:
     durable_job_id: str | None = None
     cancel_requested: bool = False
     identity_provenance: str = "unverified"
+    #: The registered version the run executes and the digest of its files
+    #: (ADR-113 D-4); None on runs started before ADR-113.
+    workflow_version: str | None = None
+    source_sha256: str | None = None
     # Manual approval gates (W5). Decisions are serializable audit data;
     # the wait events are transient threading primitives (never serialized).
     gate_decisions: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -117,6 +121,8 @@ class ExecutionRecord:
                 "durable_job_id": self.durable_job_id,
                 "cancel_requested": self.cancel_requested,
                 "identity_provenance": self.identity_provenance,
+                "workflow_version": self.workflow_version,
+                "source_sha256": self.source_sha256,
                 "gates": {k: dict(v) for k, v in self.gate_decisions.items()},
             }
 
@@ -253,6 +259,8 @@ class WorkflowExecutionRegistry:
         execution_id: str | None = None,
         durable_job_id: str | None = None,
         identity_provenance: str = "unverified",
+        workflow_version: str | None = None,
+        source_sha256: str | None = None,
     ) -> ExecutionRecord:
         record = ExecutionRecord(
             execution_id=execution_id or f"wf-{uuid.uuid4().hex[:12]}",
@@ -261,6 +269,8 @@ class WorkflowExecutionRegistry:
             params=dict(params or {}),
             durable_job_id=durable_job_id,
             identity_provenance=identity_provenance,
+            workflow_version=workflow_version,
+            source_sha256=source_sha256,
         )
         with self._lock:
             self._put_locked(record)
