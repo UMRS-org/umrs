@@ -247,6 +247,11 @@ class StepExecutorConfig:
     # driver libraries found on the node; podman builds without CDI support,
     # RCCS GB10). The lane refuses any other value before submitting.
     gpu_form: str = "cdi"
+    # How a step that needs a GPU asks Slurm for it when its partition's
+    # profile sets no gpu_request (ADR-109 D-3): "gres" --gres=gpu:<gpus>
+    # (default), or "gpus" --gpus=<gpus> (RIKYU's submit filter refuses
+    # --gres=gpu:N and accepts only --gpus=N, 2026-11-08).
+    gpu_flag: str = "gres"
     # Parent of the per-step workdirs; must be on a filesystem the compute
     # nodes see (required for slurm-remote: a path on the CLUSTER).
     workdir_root: str = ""
@@ -520,6 +525,7 @@ def _step_lane_env(cfg: StepExecutorConfig) -> dict[str, str]:
         "UMRS_STEP_CGROUPS": cfg.cgroups,
         "UMRS_STEP_NPROC_LIMIT": str(int(cfg.nproc_limit)),
         "UMRS_STEP_GPU_FORM": cfg.gpu_form,
+        "UMRS_STEP_GPU_FLAG": cfg.gpu_flag,
         "UMRS_STEP_ENDPOINT_WAIT_SEC": str(int(cfg.endpoint_wait_sec)),
         "UMRS_STEP_ENDPOINT_MAX_REQUEST_BYTES": str(
             int(cfg.endpoint_max_request_bytes)

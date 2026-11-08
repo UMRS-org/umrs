@@ -130,6 +130,20 @@ def test_site_yaml_exports_the_gpu_form_cdi_by_default(tmp_path):
     assert default["UMRS_STEP_GPU_FORM"] == "cdi"
 
 
+def test_site_yaml_exports_the_gpu_flag_gres_by_default(tmp_path):
+    default = load_site_config(str(_site_yaml(tmp_path, {}))).to_env()
+    assert default["UMRS_STEP_GPU_FLAG"] == "gres"
+    rikyu = load_site_config(str(_site_yaml(tmp_path, {**_FULL_LANE, "gpu_flag": "gpus"}))).to_env()
+    assert rikyu["UMRS_STEP_GPU_FLAG"] == "gpus"
+
+
+def test_schema_refuses_an_unknown_gpu_flag():
+    schema = json.loads(SCHEMA.read_text())
+    jsonschema.validate({"name": "s", "step_executor": {**_FULL_LANE, "gpu_flag": "gpus"}}, schema)
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate({"name": "s", "step_executor": {**_FULL_LANE, "gpu_flag": "gpu"}}, schema)
+
+
 def test_default_site_exports_refuse_and_no_lane(tmp_path):
     env = load_site_config(str(_site_yaml(tmp_path, {}))).to_env()
     assert "UMRS_STEP_REMOTE_ENABLED" not in env

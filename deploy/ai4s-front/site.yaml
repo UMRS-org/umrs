@@ -41,7 +41,7 @@ scheduler:
   time_limit: "96:00:00"                      # RIKYU gpu partition MaxTime 4-00:00:00; long-lived system-tier endpoints
   gpus: 1                                     # --gpus-per-node=1 by default
   cpus: 32                                    # GB200 node has 144 cores; give model load + sparse-attn enough parallelism
-  memory: "1400G"                            # AI4S rejects --mem=0; node RealMemory=1562.5G. 64G OOM-killed DeepSeek-V4 at 1M context (host KV/sparse-attn structures). Request near-full node RAM.
+  memory: "1400G"                            # AI4S rejects --mem=0; node RealMemory=1720000M (2026-11-08; 1562.5G was stale). 64G OOM-killed DeepSeek-V4 at 1M context (host KV/sparse-attn structures). Request near-full node RAM.
   slurm_delegation: per_user_ssh
   service_pubkey_path: /data1/rkp00043/rku00126/ai4s-platform/keys/umrs-service.pub
   slurm_proxy_path: /data1/rkp00043/rku00126/ai4s-platform/bin/umrs-slurm-proxy
@@ -91,20 +91,44 @@ vllm:
 # mode for RCCS / AI4S deployments where UMRS runs on a login node
 # and steps must execute on compute nodes with GPUs.
 step_executor:
-  kind: slurm                                 # Submit steps as Slurm jobs to GPU compute nodes
-  partition: gpu                              # RIKYU GB200 partition (1 GPU per step)
-  gpus: 1                                     # 1 B200 GPU per step
-  cpus: 32                                    # 32 CPUs per step (GB200 has 144 cores)
-  memory: "1400G"                             # Near-full node RAM
-  time_limit: "01:00:00"                      # 1 hour per step
-  account: rkp00043                           # RIKYU project account
-  image: ""                                   # No default image; use routing_hints.image
-  gpu: true                                   # Attach GPU by default
-  # Uploaded step code (ADR-074, 2026-09-26): no HPC lane here yet (no
-  # workdir_root; Apptainer venue, data0 reachability open), so it is refused
-  # by name instead of failing at step time.
-  remote_enabled: false
-  uploaded_code: refuse
+  # 2026-11-08: the staged HPC lane (ADR-074 D-5) opens on RIKYU — maintainer:
+  # "let's use rikyu" for the partner demo workflows, charged to rkp00101.
+  # Same podman venue as rccs (podman 4.9.3 on login + GB200 nodes; rootless
+  # GPU proven by probe jobs 157652/157653, 2026-10-02, and 298949/298964,
+  # 2026-11-08). The earlier
+  # "Apptainer venue, data0 reachability open" note is obsolete: the lane
+  # stages files over SSH, compute nodes never reach data0.
+  kind: inproc                                # platform templates stay in-process; uploaded code goes to the lane
+  partition: gpu                              # RIKYU GB200 NVL4 (4-day MaxTime; nodes shared, ExclusiveUser=NO)
+  gpus: 1                                     # a GPU step asks for one B200
+  gpu_flag: gpus                              # RIKYU refuses --gres=gpu:N; --gpus=N only (sbatch --test-only 2026-11-08)
+  cpus: 32                                    # RIKYU per-GPU job limit: 32 cores, 400 GB
+  memory: "240G"                              # a step never takes a whole node; serving keeps its own 1400G
+  time_limit: "24:00:00"                      # --time = min(this, the step's timeout_seconds)
+  account: rkp00101                           # AIMON allocation for the demo workflows (serving stays on rkp00043)
+  image: ""                                   # composed by the converge after the archive verifies
+  gpu: true                                   # site gate; a step still needs routing_hints.gpu
+  # nvidia-devices (device nodes + host driver libs, no hook): the CDI hook
+  # (nvidia-cdi-hook) fails under the pod's --read-only rootfs (probe job
+  # 298949, 2026-11-08); this form gave torch 1x GB200 sm_100 + a matmul in the
+  # torch and opossum images (probe 298964). ConstrainDevices shows only the
+  # allocated GPU, so mapping every /dev/nvidia* is correct.
+  gpu_form: nvidia-devices
+  cgroups: enabled
+  pids_limit: 0                               # rootless podman holds no pids cgroup under Slurm cgroup v2
+  nproc_limit: 8192                           # RLIMIT_NPROC counts every thread of rku00126 on a shared node
+  workdir_root: /data1/rkp00101/rku00126/umrs_steps
+  image_archive_dir: /data1/rkp00101/rku00126/umrs_models/images
+  helper_path: /data1/rkp00043/rku00126/ai4s-platform/umrs/deploy/_common/umrs_step_helper.py
+  venue_script: /data1/rkp00043/rku00126/ai4s-platform/umrs/src/umrs/mini-rivault-llm/venue.sh
+  # Same admin-curated images as rccs-front (ADR-074 D-7); archives + .id
+  # staged in image_archive_dir by hand (the converge ships the platform image).
+  allowed_images:
+    - localhost/umrs-step-opossum-cnn:7afb44c12c0e-a51b1fa4
+    - localhost/umrs-step-torch:1a3a58ab2a9e-23889fd6
+    - localhost/umrs-step-mouse:1a3a58ab2a9e-9073f644
+  remote_enabled: true
+  uploaded_code: refuse                       # nothing runs in-process; uploaded code takes the lane
 
 database:
   host: localhost                             # Shared with umrs-front postgres
@@ -153,6 +177,11 @@ extra:
   ssh_remote_env:
     SLURM_CONF_SERVER: "sctl1:6817,sctl2:6817"
     PATH: "/shared/software/apptainer/bin:$PATH"
+    # Step lane (2026-11-08): RIKYU nodes are shared (ExclusiveUser=NO), so two
+    # step jobs of rku00126 on one node must not share venue.sh's default
+    # node-local graphroot; each job's /tmp is private (TmpFS=/tmp). sbatch
+    # exports the submit env; serving (Apptainer) ignores this variable.
+    RIVAULT_VENUE_ROOT: "/tmp/umrs-venue"
   knowledge_ingest:
     # Web sites UMRS may fetch for knowledge ingest (r4 knowledge ingest of a URL or git repo).
     # "*" = every public web site (maintainer decision 2026-10-25): an agent can already fetch any

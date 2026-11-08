@@ -404,6 +404,9 @@ class StagedJob:
     #: (else ``gpu:<gres_gpus>``) for a step that needs a GPU.
     gpu_request: str = ""
     gres: str = ""
+    #: ``step_executor.gpu_flag`` for the site-wide rule (``gpu_request`` ""):
+    #: "gres" ``--gres=gpu:<gres_gpus>`` or "gpus" ``--gpus=<gres_gpus>``.
+    gpu_flag: str = "gres"
     #: The partition allocates whole nodes: the job says ``--exclusive``.
     exclusive: bool = False
     #: The site's platform step image (``UMRS_STEP_IMAGE``): trusted code that
@@ -530,6 +533,9 @@ _STAGED_ENV = (
 #: (``${_step_gpu[@]}``, :func:`_staged_gpu_lines`) — RCCS GB10: podman 4.9.3
 #: there cannot resolve ``nvidia.com/gpu=all`` (R2 2026-10-01; the serving
 #: path maps devices directly for the same reason, x_nvidia-override.yaml).
+#: ``step_executor.gpu_flag`` values: how a GPU step asks Slurm (--gres / --gpus).
+STAGED_GPU_FLAGS: tuple[str, ...] = ("gres", "gpus")
+
 STAGED_GPU_DEVICES: dict[str, tuple[str, ...]] = {
     "cdi": ("--device", "nvidia.com/gpu=all"),
     "rocm": ("--device", "/dev/kfd", "--device", "/dev/dri"),
@@ -724,17 +730,30 @@ def _staged_directives(job: StagedJob) -> list[str]:
 
 
 def _staged_gpu_request_lines(job: StagedJob) -> list[str]:
-    """``--gres`` (a step that needs a GPU, as its partition's profile asks:
-    ADR-109 D-3) and ``--exclusive`` (a whole-node partition)."""
+    """``--gres`` / ``--gpus`` (a step that needs a GPU, as its partition's
+    profile asks: ADR-109 D-3, else the site's ``gpu_flag``) and
+    ``--exclusive`` (a whole-node partition)."""
+    if job.gpu_flag not in STAGED_GPU_FLAGS:
+        raise StepExecutionError("setup", f"step_executor.gpu_flag {job.gpu_flag!r} is not gres|gpus")
+    request = _staged_gpu_request(job) if job.needs_gpu else None
+    lines = [f"#SBATCH {request}"] if request else []
+    if job.exclusive:
+        lines.append("#SBATCH --exclusive")
+    return lines
+
+
+def _staged_gpu_request(job: StagedJob) -> str | None:
+    """The GPU option of a step that needs one: the site-wide rule (profile
+    ``gpu_request`` "") with ``gpu_flag`` "gpus" asks ``--gpus=<n>`` (RIKYU
+    refuses ``--gres=gpu:N``); otherwise ``--gres`` as the profile asks."""
+    if job.gpu_flag == "gpus" and not job.gpu_request and job.gres_gpus > 0:
+        return f"--gpus={int(job.gres_gpus)}"
     legacy = f"gpu:{int(job.gres_gpus)}" if job.gres_gpus > 0 else None
     try:
         gres = pc.gres_request(job.gpu_request, job.gres, job.gres_gpus, legacy)
     except ValueError as exc:
         raise StepExecutionError("setup", str(exc)) from exc
-    lines = [f"#SBATCH --gres={gres}"] if job.needs_gpu and gres else []
-    if job.exclusive:
-        lines.append("#SBATCH --exclusive")
-    return lines
+    return f"--gres={gres}" if gres else None
 
 
 def _endpoint_stop_lines(job: StagedJob) -> list[str]:

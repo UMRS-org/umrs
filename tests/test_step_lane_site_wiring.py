@@ -8,7 +8,8 @@ image only after it verified the staged archive — so the lane opens only when
 ``remote_enabled`` AND an image are present. bdrt and octopus carry their lane sizing and gpu_form, closed and
 without lane paths until onboarded (2026-09-27: bdrt awaits its R2 probe,
 octopus a runtime decision; a declared helper + workdir root starts the
-reaper's hourly SSH); ai4s has none. All four refuse uploaded code by name, and
+reaper's hourly SSH). ai4s (RIKYU) opens like rccs since 2026-11-08 (gpus flag,
+rkp00101). All four refuse uploaded code in-process by name, and
 each umrs-front server reads only its own cluster's UMRS_<C>_STEP_* from the
 converge's .env.
 """
@@ -39,7 +40,7 @@ UMRS_ROOT = Path(__file__).resolve().parents[1]
 DEPLOY = UMRS_ROOT / "deploy"
 FRONTS = ("rccs-front", "ai4s-front", "bdrt-front", "octopus-front")
 #: rccs opened its lane 2026-10-02 (maintainer, after R2); the rest stay closed.
-CLOSED_FRONTS = ("ai4s-front", "bdrt-front", "octopus-front")
+CLOSED_FRONTS = ("bdrt-front", "octopus-front")
 RCCS_CHECKOUT = "/lvs0/rccs-dmp/masaru.nagaso/ai4s-platform"
 HELPER_REL = "umrs/deploy/_common/umrs_step_helper.py"
 VENUE_REL = "umrs/src/umrs/mini-rivault-llm/venue.sh"
@@ -480,3 +481,38 @@ def test_rccs_serving_args_of_every_gb10_candidate_are_unchanged(site):
     assert shape(args, "ai-pro6000")[3:6] == [
         "--partition=ai-pro6000", "--gres=gpu:PRO6000-96GB:2", "--exclusive",
     ]  # fmt: skip
+
+
+# ── RIKYU (ai4s-front): the lane opens 2026-11-08 ────────────────────────────
+
+AI4S_CHECKOUT = "/data1/rkp00043/rku00126/ai4s-platform"
+
+
+def test_ai4s_lane_is_declared_open_like_rccs_with_rikyu_limits():
+    step = _step("ai4s-front")
+    assert (step.kind, step.partition, step.account, step.image) == ("inproc", "gpu", "rkp00101", "")
+    assert (step.remote_enabled, step.uploaded_code, step.gpu, step.gpu_form) == (True, "refuse", True, "nvidia-devices")
+    # RIKYU per-GPU job limit: 32 cores / 400 GB; refuses --gres=gpu:N, takes --gpus=N.
+    assert (step.gpus, step.gpu_flag, step.cpus, step.memory) == (1, "gpus", 32, "240G")
+    assert step.workdir_root == "/data1/rkp00101/rku00126/umrs_steps"
+    assert step.image_archive_dir == "/data1/rkp00101/rku00126/umrs_models/images"
+    assert step.helper_path == f"{AI4S_CHECKOUT}/{HELPER_REL}"
+    assert step.venue_script == f"{AI4S_CHECKOUT}/{VENUE_REL}"
+    assert step.allowed_images == _step("rccs-front").allowed_images
+
+
+def test_ai4s_exports_the_gpus_flag_and_a_job_private_venue_root():
+    cfg = load_site_config(str(DEPLOY / "ai4s-front" / "site.yaml"))
+    env = cfg.to_env()
+    assert env["UMRS_STEP_GPU_FLAG"] == "gpus"
+    assert env["UMRS_SLURM_ACCOUNT"] == "rkp00101"
+    assert env["UMRS_STEP_REMOTE_ENABLED"] == "1"
+    remote_env = cfg.extra["ssh_remote_env"]
+    assert remote_env["RIVAULT_VENUE_ROOT"].startswith("/tmp/")  # shared nodes: no common graphroot
+    assert remote_env["SLURM_CONF_SERVER"]
+
+
+def test_ai4s_executor_renders_gpus_not_gres(monkeypatch):
+    executor = _site_executor(monkeypatch, "ai4s-front")
+    assert executor.gpu_flag == "gpus"
+    assert executor.account == "rkp00101"

@@ -65,6 +65,7 @@ from umrs.pipeline_sdk.step import StepContext, StepResult
 from .slurm_step_executor import (
     ENDPOINT_CREDENTIAL_FILE,
     STAGED_GPU_DEVICES,
+    STAGED_GPU_FLAGS,
     TERMINAL_FAILURES,
     TERMINAL_STATES,
     UNKNOWN,
@@ -370,6 +371,9 @@ class RemoteSlurmStepExecutor(SlurmStepExecutor):
     #: ``step_executor.gpu_form``: the devices a step that needs a GPU gets
     #: ("cdi" NVIDIA, "rocm" AMD); any other value refuses before any SSH.
     gpu_form: str = field(default_factory=lambda: _env("UMRS_STEP_GPU_FORM") or "cdi")
+    #: ``step_executor.gpu_flag``: "gres" (--gres=gpu:N) or "gpus" (--gpus=N)
+    #: for a step that needs a GPU on a partition without a gpu_request.
+    gpu_flag: str = field(default_factory=lambda: _env("UMRS_STEP_GPU_FLAG") or "gres")
     #: ADR-109 D-5 byte caps of the step's endpoint forwarder
     #: (``step_executor.endpoint_max_{request,response,total}_bytes``).
     endpoint_max_request_bytes: int = field(
@@ -500,6 +504,12 @@ class RemoteSlurmStepExecutor(SlurmStepExecutor):
                 "setup",
                 f"step_executor.gpu_form {self.gpu_form!r} is not "
                 f"{'|'.join(STAGED_GPU_DEVICES)}; nothing was submitted",
+            )
+        if self.gpu_flag not in STAGED_GPU_FLAGS:
+            raise StepExecutionError(
+                "setup",
+                f"step_executor.gpu_flag {self.gpu_flag!r} is not "
+                f"{'|'.join(STAGED_GPU_FLAGS)}; nothing was submitted",
             )
         if self.cgroups not in ("enabled", "disabled"):
             raise StepExecutionError(
@@ -808,6 +818,7 @@ class RemoteSlurmStepExecutor(SlurmStepExecutor):
                 needs_gpu=self._needs_gpu(ctx),
                 endpoint=_forward_of(self._endpoint(ctx)),
                 gpu_form=self.gpu_form,
+                gpu_flag=self.gpu_flag,
                 pids_limit=self.pids_limit,
                 cgroups_disabled=self.cgroups == "disabled",
                 nproc_limit=self.nproc_limit,
