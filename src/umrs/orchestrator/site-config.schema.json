@@ -57,6 +57,19 @@
       "additionalProperties": false,
       "description": "ADR-112 D-1: the site's declared HPC access modes. Absent = undeclared (user-work lanes refuse non-admins).",
       "required": ["modes_allowed", "default_mode"],
+      "if": {
+        "required": ["modes_allowed"],
+        "properties": { "modes_allowed": { "contains": { "const": "user_account" } } }
+      },
+      "then": {
+        "required": ["user_account"],
+        "properties": {
+          "user_account": {
+            "required": ["signing_domain"],
+            "properties": { "signing_domain": { "minLength": 1 } }
+          }
+        }
+      },
       "properties": {
         "operator": { "type": "string", "description": "Who runs the system." },
         "modes_allowed": {
@@ -83,7 +96,24 @@
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "methods": { "type": "array", "items": { "type": "string" } }
+            "methods": { "type": "array", "items": { "type": "string" } },
+            "signing_domain": {
+              "type": "string",
+              "description": "ADR-112 B1.5a: the platform's DNS name; signature namespaces end in @<signing_domain>. Required when modes_allowed lists user_account."
+            },
+            "from_address": {
+              "type": "string",
+              "description": "The address the site sees the front connect from; written as from= on the user's authorized_keys line. Empty = no from= option."
+            },
+            "uv_required": {
+              "type": "boolean",
+              "description": "Require the FIDO user-verification flag (a PIN) on signatures."
+            },
+            "gate_min_version": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "The oldest gate version the server accepts at verify."
+            }
           }
         }
       }

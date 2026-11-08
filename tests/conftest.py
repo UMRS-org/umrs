@@ -33,6 +33,10 @@ for _xdg_var, _xdg_sub in (
 # Inherited overrides would route the same writes outside the scratch home.
 for _path_var in ("UMRS_CONFIG", "RIVAULT_OUTPUT_DIR", "SLURM_JOB_INFO_DIR"):
     os.environ.pop(_path_var, None)
+# ADR-112 B1: transport keys live under UMRS_TRANSPORT_KEY_DIR (default
+# /var/lib/umrs/transport-keys). The account cascade's site-account leg
+# removes key files, so the suite never points it at a real key directory.
+os.environ["UMRS_TRANSPORT_KEY_DIR"] = os.path.join(TEST_HOME, "transport-keys")
 atexit.register(shutil.rmtree, TEST_HOME, True)
 
 # Belt-and-braces: the ADR-026 sat_kg import hook already detects pytest via

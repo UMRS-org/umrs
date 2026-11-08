@@ -385,6 +385,9 @@ RETIRED_SCHEDULER_KEYS = (
 )
 
 
+USER_ACCOUNT_MODES = {"bdrt-front": ["service_account", "user_account"]}
+
+
 @pytest.mark.parametrize("front", FRONTS)
 def test_every_front_declares_its_personal_service_account(front):
     # ADR-112 D-1: per_user_ssh is retired; each front declares the login every
@@ -393,7 +396,10 @@ def test_every_front_declares_its_personal_service_account(front):
     assert not set(RETIRED_SCHEDULER_KEYS) & set(raw["scheduler"]), front
     hpc = load_site_config(str(DEPLOY / front / "site.yaml")).scheduler.hpc_access
     assert hpc is not None and hpc.operator, front
-    assert (hpc.modes_allowed, hpc.default_mode) == (["service_account"], "service_account")
+    # ADR-112 B1 (2026-11-08): bdrt also allows registration of user accounts;
+    # the default (who runs user work) stays the service account everywhere.
+    want = (USER_ACCOUNT_MODES.get(front, ["service_account"]), "service_account")
+    assert (hpc.modes_allowed, hpc.default_mode) == want, front
     service = hpc.service_account
     assert service is not None
     assert service.login == raw["extra"]["ssh_user"]

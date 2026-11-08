@@ -2533,6 +2533,11 @@ def build_parser() -> argparse.ArgumentParser:
     slurm_p = sub.add_parser("slurm", help="Slurm helpers (read-only)")
     _add_slurm_parsers(slurm_p.add_subparsers(dest="action", required=True))
 
+    # ADR-112 wave B1: users' own HPC site accounts (reads the site database).
+    from .site_accounts import add_site_accounts_parser
+
+    add_site_accounts_parser(sub)
+
     zmq_p = sub.add_parser(
         "zmq",
         help="ZMQ CURVE key management",

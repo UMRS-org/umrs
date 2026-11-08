@@ -238,8 +238,9 @@ async def test_cluster_submit_records_the_account_the_wrapper_charges(declared_s
 async def test_a_loop_never_takes_the_gateway_secret_off_the_platform_login(declared_site):
     """Plan I-2 (review 2026-11-08): the loop job's env carries the operator's
     gateway secret, so only the platform login (``service_account``) may run
-    it; a user-account identity (wave B) is refused before any submit."""
-    from umrs.orchestrator.hpc_identity import HpcIdentity, Lane
+    it; a user-account identity (wave B) is refused before any submit, with
+    the terminal ``HpcAccessRefused`` the scheduler never retries (B1.4)."""
+    from umrs.orchestrator.hpc_identity import HpcAccessRefused, HpcIdentity, Lane
     from umrs.shared import handshake as _vh
 
     declared_site.setattr(_vh, "handshake_secret", lambda: "s")
@@ -258,7 +259,8 @@ async def test_a_loop_never_takes_the_gateway_secret_off_the_platform_login(decl
     submitter = ClusterSlurmSubmitter(
         submit_wrapped=recorder.submit_wrapped, identity=lambda _job: user_identity
     )
-    with pytest.raises(RuntimeError, match="gateway secret"):
+    with pytest.raises(HpcAccessRefused, match="gateway secret") as caught:
         await submitter.submit(job=_job(spec), attempt=attempt, spec=spec)
+    assert (caught.value.code, caught.value.site) == ("hpcaccess.mode_undeclared", "rccs")
     assert recorder.kwargs is None
     assert "hpc_identity" not in attempt.metrics

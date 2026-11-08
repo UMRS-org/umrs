@@ -73,23 +73,27 @@ def _job_identity(job: Job) -> Any:
 
 
 def _platform_login_identity(identity: Any) -> Any:
-    """*identity* when it is the platform login, else a ``RuntimeError``.
+    """*identity* when it is the platform login, else ``HpcAccessRefused``.
 
     A loop is user work for admission, but its job environment carries the
     operator's gateway secret (``UMRS_GATEWAY_HMAC_SECRET_HEX``), and plan
     invariant I-2 keeps such jobs on the platform login. Wave A resolves user
     work only to ``service_account``, so this never fires today; once wave B
     resolves ``user_account``, a loop must not carry the secret into a user's
-    own job (review 2026-11-08). Raised before any SSH."""
-    from umrs.orchestrator.hpc_identity import SERVICE_ACCOUNT
+    own job (review 2026-11-08). Raised before any SSH, and terminal: the
+    scheduler fails the attempt instead of retrying it (plan B1.4 carry-over,
+    I-1: never retried under another identity)."""
+    from umrs.orchestrator.hpc_identity import SERVICE_ACCOUNT, HpcAccessRefused
 
     mode = getattr(identity, "mode", "")
     if mode == SERVICE_ACCOUNT:
         return identity
-    raise RuntimeError(
+    raise HpcAccessRefused(
+        "mode_undeclared",
+        str(getattr(identity, "site", "") or ""),
         f"cluster loop refused: its job carries the platform's gateway secret "
         f"and runs only under the platform login, not access mode {mode!r} "
-        f"(ADR-112 invariant I-2)"
+        f"(ADR-112 invariant I-2)",
     )
 
 

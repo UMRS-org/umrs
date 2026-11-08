@@ -1140,6 +1140,12 @@ def _create_app():
 
     app.include_router(sites_router)
 
+    # ADR-112 wave B1 (2026-11-08): the caller's own HPC account at this site
+    # (transport key, gate verify, project links), beside /umrs/sites/me.
+    from umrs.api.hpc_accounts import router as hpc_accounts_router
+
+    app.include_router(hpc_accounts_router)
+
     # ADR-086 (2026-10-05): circles — project-scoped context/audience cells
     # (supersedes the ADR-050 §3 groups authority).
     from umrs.api.circles import router as circles_router

@@ -78,14 +78,94 @@ def test_block_survives_load_from_a_file(tmp_path: Path) -> None:
     assert hpc.service_account.allowed_projects == ["proj-a", "proj-b"]
 
 
-def test_user_account_block_is_parsed() -> None:
-    raw = _raw(
+_USER_ACCOUNT: dict[str, Any] = {
+    "methods": ["gated_key"],
+    "signing_domain": "platform.example.org",
+}
+
+
+def _user_raw(**user_overrides: Any) -> dict[str, Any]:
+    return _raw(
         modes_allowed=["service_account", "user_account"],
-        user_account={"methods": ["gated_key"]},
+        user_account={**_USER_ACCOUNT, **user_overrides},
     )
-    hpc = _parse_raw(raw).scheduler.hpc_access
+
+
+def test_user_account_block_is_parsed() -> None:
+    hpc = _parse_raw(_user_raw()).scheduler.hpc_access
     assert hpc is not None
-    assert hpc.user_account == UserAccountAccess(methods=["gated_key"])
+    assert hpc.user_account == UserAccountAccess(
+        methods=["gated_key"], signing_domain="platform.example.org"
+    )
+
+
+def test_user_account_wire_keys_are_parsed() -> None:
+    # Plan §4 B1.5a: the four keys the gate, the server and r4 agree on.
+    raw = _user_raw(
+        from_address="10.0.0.0/8,front.example.org", uv_required=True, gate_min_version=2
+    )
+    ua = _parse_raw(raw).scheduler.hpc_access.user_account  # type: ignore[union-attr]
+    assert ua is not None
+    assert (ua.from_address, ua.uv_required, ua.gate_min_version) == (
+        "10.0.0.0/8,front.example.org",
+        True,
+        2,
+    )
+
+
+def test_user_account_defaults_are_the_contract_defaults() -> None:
+    ua = _parse_raw(_user_raw()).scheduler.hpc_access.user_account  # type: ignore[union-attr]
+    assert ua is not None
+    assert (ua.from_address, ua.uv_required, ua.gate_min_version) == ("", False, 1)
+
+
+def test_signing_domain_is_not_required_while_user_account_is_not_allowed() -> None:
+    raw = _raw(user_account={"methods": ["gated_key"]})
+    hpc = _parse_raw(raw).scheduler.hpc_access
+    assert hpc is not None and hpc.user_account is not None
+    assert hpc.user_account.signing_domain == ""
+
+
+@pytest.mark.parametrize(
+    "user_account",
+    [
+        None,  # user_account allowed but no block at all
+        {"methods": ["gated_key"]},
+        {**_USER_ACCOUNT, "signing_domain": ""},
+        {**_USER_ACCOUNT, "signing_domain": "<platform DNS name>"},
+        {**_USER_ACCOUNT, "signing_domain": "localhost"},
+        {**_USER_ACCOUNT, "signing_domain": "Platform.Example.org"},
+        {**_USER_ACCOUNT, "signing_domain": "a..b"},
+        {**_USER_ACCOUNT, "signing_domain": "-bad.example.org"},
+    ],
+)
+def test_user_account_without_a_dns_signing_domain_refuses_to_load(user_account) -> None:
+    raw = _raw(modes_allowed=["service_account", "user_account"], user_account=user_account)
+    with pytest.raises(ValueError, match="signing_domain"):
+        _parse_raw(raw)
+
+
+@pytest.mark.parametrize(
+    ("overrides", "names"),
+    [
+        ({"uv_required": "yes"}, "uv_required"),
+        ({"gate_min_version": 0}, "gate_min_version"),
+        ({"gate_min_version": "1"}, "gate_min_version"),
+        ({"gate_min_version": True}, "gate_min_version"),
+        ({"from_address": 'a" ,command="x'}, "from_address"),
+        ({"from_address": "a b"}, "from_address"),
+        # 2026-11-08 integration: the old pattern accepted these, which the
+        # gate's own authorized_keys builder then refused at `r4 hpc add`.
+        ({"from_address": "10.0.0.1,,10.0.0.2"}, "from_address"),
+        ({"from_address": "10.0.0.1,"}, "from_address"),
+        ({"from_address": "[::1]"}, "from_address"),
+        ({"from_address": "10.0.0.!1"}, "from_address"),
+        ({"signing_key": "x"}, "signing_key"),
+    ],
+)
+def test_invalid_user_account_values_refuse_to_load(overrides, names) -> None:
+    with pytest.raises(ValueError, match=names):
+        _parse_raw(_user_raw(**overrides))
 
 
 def test_empty_consent_with_empty_list_is_valid_and_means_admins_only() -> None:
@@ -183,3 +263,25 @@ def test_a_service_account_site_logs_no_retirement_error(caplog) -> None:
     with caplog.at_level(logging.ERROR, logger="umrs.orchestrator.site_config"):
         _parse_raw(_raw())
     assert not [r for r in caplog.records if r.levelno == logging.ERROR]
+
+
+_SCHEMA = (
+    Path(__file__).resolve().parents[1]
+    / "src"
+    / "umrs"
+    / "orchestrator"
+    / "site-config.schema.json"
+)
+
+
+def test_the_schema_accepts_the_wire_keys_and_requires_the_domain() -> None:
+    import json
+
+    jsonschema = pytest.importorskip("jsonschema")
+    schema = json.loads(_SCHEMA.read_text())
+    jsonschema.validate(_user_raw(from_address="", uv_required=False, gate_min_version=1), schema)
+    missing = _raw(
+        modes_allowed=["service_account", "user_account"], user_account={"methods": ["gated_key"]}
+    )
+    with pytest.raises(jsonschema.ValidationError, match="signing_domain"):
+        jsonschema.validate(missing, schema)

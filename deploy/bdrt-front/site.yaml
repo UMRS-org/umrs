@@ -46,15 +46,28 @@ scheduler:
   # runs only for admins and allowed_projects until the operator consents
   # (consent_ref). allowed_projects: [] = admins only, the maintainer's
   # interim choice (ADR-112 G-8).
+  #
+  # ADR-112 wave B1 (2026-11-08): bdrt also allows user_account, so a person
+  # can register their own login here (r4 hpc add bdrt-front) and the server
+  # verifies it through the gate. default_mode stays service_account: B1
+  # opens registration only; nothing runs under a user's login until B2.
+  # signing_domain is the platform's public DNS name (the edge every r4
+  # gateway URL names); signature namespaces end in @<signing_domain>.
   hpc_access:
     operator: "unconfirmed (ask the operator; investigation 2026-11-08)"
-    modes_allowed: [service_account]
+    modes_allowed: [service_account, user_account]
     default_mode: service_account
     service_account:
       login: "mnagaso"  # must equal extra.ssh_user
       personal: true
       consent_ref: ""
       allowed_projects: []
+    user_account:
+      methods: [gated_key]
+      signing_domain: data0.ai.r-ccs.riken.jp
+      from_address: ""      # empty = no from= option on the authorized_keys line
+      uv_required: false
+      gate_min_version: 1
 
 runtime:
   kind: podman-compose

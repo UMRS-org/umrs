@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -79,9 +80,21 @@ class ServiceAccountAccess:
 
 @dataclass
 class UserAccountAccess:
-    """``scheduler.hpc_access.user_account`` (ADR-112 D-3; wave B)."""
+    """``scheduler.hpc_access.user_account`` (ADR-112 D-3; wave B1).
+
+    ``signing_domain`` is the platform's DNS name: every signature namespace
+    ends in ``@<signing_domain>`` (plan §4 B1.5a). It is required when
+    ``modes_allowed`` lists ``user_account``. ``from_address`` is written as
+    the ``from=`` option of the user's ``authorized_keys`` line ("" = none).
+    ``uv_required`` asks the gate for the FIDO user-verification flag (a PIN);
+    ``gate_min_version`` is the oldest gate the server accepts at verify.
+    """
 
     methods: list[str] = field(default_factory=list)
+    signing_domain: str = ""
+    from_address: str = ""
+    uv_required: bool = False
+    gate_min_version: int = 1
 
 
 @dataclass
@@ -725,7 +738,14 @@ _HPC_ACCESS_KEYS = frozenset(
 _SERVICE_ACCOUNT_KEYS = frozenset(
     {"login", "personal", "consent_ref", "allowed_projects"}
 )
-_USER_ACCOUNT_KEYS = frozenset({"methods"})
+_USER_ACCOUNT_KEYS = frozenset(
+    {"methods", "signing_domain", "from_address", "uv_required", "gate_min_version"}
+)
+# A DNS name with at least one dot: lowercase labels of 1-63 characters.
+_DNS_NAME = re.compile(
+    r"^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
+    r"(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$"
+)
 
 
 def _hpc_mapping(value: Any, where: str, allowed: frozenset[str]) -> dict[str, Any]:
@@ -763,12 +783,63 @@ def _parse_service_account(value: Any) -> ServiceAccountAccess:
     )
 
 
+def _hpc_bool(data: dict[str, Any], key: str, where: str) -> bool:
+    value = data.get(key, False)
+    if not isinstance(value, bool):
+        raise ValueError(f"site.yaml {where}.{key} must be true or false")  # noqa: TRY004
+    return value
+
+
+def _gate_min_version(data: dict[str, Any], where: str) -> int:
+    value = data.get("gate_min_version", 1)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError(f"site.yaml {where}.gate_min_version must be an integer >= 1")
+    return value
+
+
+def _from_address(data: dict[str, Any], where: str) -> str:
+    """The gate's own rule (``hpc_gate.check_from_address``), so a site never
+    publishes a ``from=`` list that r4 or the gate then refuses to write."""
+    value = str(data.get("from_address") or "").strip()
+    if not value:
+        return ""
+    from r4_contracts.hpc_gate import check_from_address
+
+    try:
+        return check_from_address(value)
+    except ValueError as exc:
+        raise ValueError(
+            f"site.yaml {where}.from_address must be sshd from= patterns, "
+            "comma-separated (hosts, addresses, CIDR, wildcards, a leading '!'; "
+            f"no quotes, spaces or empty items): {exc}"
+        ) from None
+
+
 def _parse_user_account(value: Any) -> UserAccountAccess:
     where = "scheduler.hpc_access.user_account"
     data = _hpc_mapping(value, where, _USER_ACCOUNT_KEYS)
     return UserAccountAccess(
-        methods=_hpc_str_list(data.get("methods"), f"{where}.methods")
+        methods=_hpc_str_list(data.get("methods"), f"{where}.methods"),
+        signing_domain=str(data.get("signing_domain") or "").strip(),
+        from_address=_from_address(data, where),
+        uv_required=_hpc_bool(data, "uv_required", where),
+        gate_min_version=_gate_min_version(data, where),
     )
+
+
+def _check_user_account(cfg: HpcAccessConfig) -> None:
+    """A site that allows ``user_account`` names its signing domain (plan
+    §4 B1.5a): the namespaces end in it, so an empty or malformed one would
+    let a signature for another platform verify here."""
+    if "user_account" not in cfg.modes_allowed:
+        return
+    domain = cfg.user_account.signing_domain if cfg.user_account else ""
+    if not _DNS_NAME.fullmatch(domain):
+        raise ValueError(
+            "site.yaml scheduler.hpc_access.user_account.signing_domain is "
+            "required when modes_allowed lists user_account: the platform's "
+            f"lowercase DNS name (got {domain!r})"
+        )
 
 
 def _check_hpc_modes(cfg: HpcAccessConfig) -> None:
@@ -819,6 +890,7 @@ def _parse_hpc_access(value: Any, extra: Any) -> HpcAccessConfig:
     )
     _check_hpc_modes(cfg)
     _check_service_login(cfg, extra)
+    _check_user_account(cfg)
     return cfg
 
 

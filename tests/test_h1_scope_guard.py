@@ -140,6 +140,8 @@ SCOPE_GUARDS: dict[str, str] = {
     "umrs.api.grants._may_revoke": "grantor, asset writer or verified admin",
     "umrs.api.models._member_may_write": "signed member project, project_writable",
     "umrs.api.models._caller_job_partition": "job partition via writable_project_for",
+    # ADR-112 wave B1 (2026-11-08): a project link to the caller's own allocation.
+    "umrs.api.hpc_accounts._require_live_member": "ADR-097 live membership of the requested project",
 }
 # CallerIdentity methods (``_verified_headers``): matched by attribute name,
 # since ``caller.scope_filter(...)`` names no module object.
@@ -234,6 +236,10 @@ _ADMIN_TOKEN = "ADMIN-ONLY: x-admin-token must equal UMRS_ADMIN_TOKEN"
 _MODEL_ADMIN = "ADMIN-ONLY: ctx.is_admin from the HMAC-verified get_access_context"
 
 ALLOWLIST: dict[str, str] = {
+    "DELETE /umrs/sites/me/hpc/links/{project_id}": (
+        "IDENTITY-ONLY: deletes only the verified caller's own link row (keyed venue, project, caller);"
+        " reads no project data, and an ex-member must still be able to unlink (ADR-112 B1, 2026-11-08)"
+    ),
     "POST /umrs/buckets": (
         "NOT-SCOPE: project is a free experiment label in the caller's own <user>.<project>.<alias> bucket name"
         " (ADR-079 D-2); owner is the verified caller, and access changes audit under the caller's verified"
