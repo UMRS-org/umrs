@@ -5,6 +5,9 @@ Revoking an account destroys every transport key the person has at the
 venue (the files; the gate can no longer be reached), marks the account
 ``revoked`` and suspends its project links. A project removal suspends only
 that project's link and keeps the account and its key.
+
+Wave C (plan §6 C/D.0 C4): a revoke (and so the account cascade) also ends
+every active grant of the person at the venue (``account_revoked``).
 """
 
 from __future__ import annotations
@@ -13,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from . import transport_keys
+from .grants import end_account_grants
 
 ACCOUNT_REVOKED = "account_revoked"
 
@@ -28,6 +32,7 @@ def revoke_account(
     destroyed = transport_keys.destroy(store.venue, username, root=root)
     if store.get_account(username) is not None:
         store.revoke_account(username)
+        end_account_grants(store, username)
     return destroyed, store.suspend_links(username, reason)
 
 

@@ -43,7 +43,7 @@ logger = logging.getLogger(__name__)
 _COLUMNS = (
     "execution_id, workflow_name, user_id, status, submitted_at, record_json, "
     "updated_at, workflow_version, source_sha256, intent_b64, intent_signature, "
-    "intent_id"
+    "intent_id, grant_id, run_spec_b64, run_spec_id, workflow_steps_b64"
 )
 
 
@@ -195,6 +195,8 @@ def _record_from_payload(data: dict[str, Any]) -> DurableExecutionRecord:
         workflow_version=data.get("workflow_version"),
         source_sha256=data.get("source_sha256"),
         intent_id=data.get("intent_id"),
+        grant_id=data.get("grant_id"),
+        run_spec_id=data.get("run_spec_id"),
     )
     record.steps = _steps_from_payload(data.get("steps"))
     results = dict(data.get("results") or {})
@@ -215,6 +217,9 @@ def _record_from_row(row: dict[str, Any]) -> DurableExecutionRecord:
     record.intent_b64 = row.get("intent_b64") or record.intent_b64
     record.intent_signature = row.get("intent_signature") or record.intent_signature
     record.intent_id = row.get("intent_id") or record.intent_id
+    # Wave C (0137): a grant run's spec and skeleton live in their columns.
+    for key in ("grant_id", "run_spec_b64", "run_spec_id", "workflow_steps_b64"):
+        setattr(record, key, row.get(key) or getattr(record, key))
     return record
 
 
@@ -315,7 +320,8 @@ class PgWorkflowExecutionRegistry(WorkflowExecutionRegistry):
             with self._cursor() as cur:
                 cur.execute(
                     f"INSERT INTO workflow_executions ({_COLUMNS}) "
-                    "VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s) "
+                    "VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, "
+                    "%s, %s, %s, %s) "
                     "ON CONFLICT (execution_id) DO UPDATE SET "
                     "workflow_name = excluded.workflow_name, "
                     "user_id = excluded.user_id, "
@@ -330,7 +336,15 @@ class PgWorkflowExecutionRegistry(WorkflowExecutionRegistry):
                     "excluded.intent_b64), "
                     "intent_signature = COALESCE("
                     "workflow_executions.intent_signature, excluded.intent_signature), "
-                    "intent_id = COALESCE(workflow_executions.intent_id, excluded.intent_id)",
+                    "intent_id = COALESCE(workflow_executions.intent_id, excluded.intent_id), "
+                    # Wave C (0137): the grant is fixed at create; the run
+                    # spec may be composed again before the first submit (K19).
+                    "grant_id = COALESCE(workflow_executions.grant_id, excluded.grant_id), "
+                    "run_spec_b64 = COALESCE(excluded.run_spec_b64, "
+                    "workflow_executions.run_spec_b64), "
+                    "run_spec_id = COALESCE(excluded.run_spec_id, workflow_executions.run_spec_id), "
+                    "workflow_steps_b64 = COALESCE(workflow_executions.workflow_steps_b64, "
+                    "excluded.workflow_steps_b64)",
                     (
                         record.execution_id,
                         record.workflow_name,
@@ -344,6 +358,10 @@ class PgWorkflowExecutionRegistry(WorkflowExecutionRegistry):
                         record.intent_b64,
                         record.intent_signature,
                         record.intent_id,
+                        record.grant_id,
+                        record.run_spec_b64,
+                        record.run_spec_id,
+                        record.workflow_steps_b64,
                     ),
                 )
         except Exception:

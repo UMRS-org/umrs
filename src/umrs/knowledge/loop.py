@@ -44,6 +44,16 @@ class WorkflowRunFailed(RuntimeError):
     logs one WARNING, no traceback (Ops Watch #557, 2026-10-27)."""
 
 
+class GrantEnded(WorkflowRunFailed):
+    """ADR-112 wave C (K12): the standing grant this loop recorded ended
+    (cancelled, expired, or the account re-enrolled). The loop stops with
+    ``state_reason`` ``grant_ended:<grant_id>``; it never picks another."""
+
+    def __init__(self, grant_id: str, detail: str = "") -> None:
+        super().__init__(f"grant_ended:{grant_id}" + (f" ({detail})" if detail else ""))
+        self.grant_id = grant_id
+
+
 _LEGACY_DEMO08_WORKFLOW_NAME = "demo08_yield_eval"
 # Kept for FakeWorkflowExecutionPort / docs. Real mode no longer falls back.
 _TOKEN_RE = re.compile(r"[a-z0-9]{3,}", re.IGNORECASE)
@@ -899,12 +909,16 @@ class AutonomousResearchLoop:
         port = self._workflow_port
         if callable(getattr(type(port), "trigger_as", None)):
             owner = str(loop.metadata.get("owner_user_id") or "")
-            return port.trigger_as(
+            grant_id = str(loop.metadata.get("grant_id") or "")
+            execution_id = port.trigger_as(
                 workflow_name,
                 params,
                 owner=owner,
                 owner_project=verified_loop_project(loop),
+                **({"grant_id": grant_id} if grant_id else {}),
             )
+            _record_grant(loop, port, execution_id)
+            return execution_id
         return port.trigger(workflow_name, params)
 
     def _execute_experiment(
@@ -1289,8 +1303,30 @@ class AutonomousResearchLoop:
 # ── Helper Functions ───────────────────────────────────────────────────────
 
 
+def _record_grant(loop: ResearchLoop, port: Any, execution_id: str) -> None:
+    """K12: the first run under a grant records it; every later iteration
+    passes it (a loop never moves onto another grant)."""
+    used = getattr(port, "grant_for", None)
+    grant_id = used(execution_id) if callable(used) else ""
+    if grant_id and not loop.metadata.get("grant_id"):
+        loop.metadata["grant_id"] = grant_id
+
+
+def _mark_grant_ended(loop: ResearchLoop, exc: GrantEnded) -> None:
+    loop.status = LoopStatus.STOPPED
+    loop.phase = LoopPhase.COMPLETED
+    loop.metadata["state_reason"] = f"grant_ended:{exc.grant_id}"
+    loop.metadata["error"] = str(exc)
+    if not loop.completed_at:
+        loop.completed_at = datetime.now(timezone.utc).isoformat()
+
+
 def _mark_failed(loop: ResearchLoop, exc: Exception) -> None:
-    """The loop's terminal ERROR state, with the reason the user sees."""
+    """The loop's terminal ERROR state, with the reason the user sees; a
+    loop whose grant ended stops instead (K12)."""
+    if isinstance(exc, GrantEnded):
+        _mark_grant_ended(loop, exc)
+        return
     loop.status = LoopStatus.ERROR
     loop.phase = LoopPhase.FAILED
     loop.metadata["error"] = str(exc)

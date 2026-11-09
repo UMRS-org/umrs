@@ -240,6 +240,11 @@ ALLOWLIST: dict[str, str] = {
         "IDENTITY-ONLY: deletes only the verified caller's own link row (keyed venue, project, caller);"
         " reads no project data, and an ex-member must still be able to unlink (ADR-112 B1, 2026-11-08)"
     ),
+    "GET /umrs/sites/me/hpc/usage": (
+        "IDENTITY-ONLY: `project` only filters the verified caller's own usage ledger rows at this"
+        " venue (person = caller); no other person's rows and no project data are read (ADR-112"
+        " wave D, 2026-11-09); the project report is GET /umrs/projects/{project_id}/hpc-usage"
+    ),
     "POST /umrs/buckets": (
         "NOT-SCOPE: project is a free experiment label in the caller's own <user>.<project>.<alias> bucket name"
         " (ADR-079 D-2); owner is the verified caller, and access changes audit under the caller's verified"

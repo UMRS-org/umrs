@@ -36,7 +36,11 @@ from umrs.server.step_executor import (
     build_step_executor,
 )
 from umrs.server.step_reaper import step_jobs, unreaped_steps
-from umrs.server.step_staging import STAGE_REQUEST_METADATA_KEY, register_bucket_registry
+from umrs.server.step_staging import (
+    STAGE_PROJECT_ID_METADATA_KEY,
+    STAGE_REQUEST_METADATA_KEY,
+    register_bucket_registry,
+)
 
 OWNER = "alice"
 IN_BUCKET = "alice.proj.data"
@@ -64,6 +68,7 @@ def tree(tmp_path) -> Path:
 def _ctx(s3, tree, *, step="s1", stage_inputs=None, params=None, metadata=None) -> StepContext:
     meta = {
         EXECUTOR_SOURCE_DIR_METADATA_KEY: str(tree),
+        STAGE_PROJECT_ID_METADATA_KEY: "spring-8",
         STAGE_REQUEST_METADATA_KEY: {
             "owner": OWNER,
             "step": step,
@@ -359,6 +364,56 @@ def test_the_job_record_names_the_login_account_and_mode(cluster, tree):
     )
     # I-10 names the lane too (review 2026-11-08): a staged step is user work.
     assert job["lane"] == "user_work"
+
+
+def test_the_job_account_uses_the_verified_project_override(cluster, tree):
+    """The allocation override never trusts the separate routing project claim."""
+    from umrs.server import workflow_runner as wr
+    from umrs.server.workflow_execution_registry import ExecutionRecord
+
+    cluster.behave(run=False, states=["RUNNING", "FAILED"])
+    record = ExecutionRecord(execution_id=RUN, workflow_name="lane", user_id=OWNER)
+    workflow = {"steps": [{"name": "s1", "entrypoint": "steps.lane:Upper", "config": {}}]}
+    executor = cluster.executor(keep_workdir=True)
+    executor.project_accounts = {"spring-8": "rkp00101"}
+    wr.run_workflow_record(
+        record,
+        source_path=str(tree),
+        workflow_json=workflow,
+        project_id="an-unrelated-routing-project",
+        verified_project="spring-8",
+        executor=executor,
+    )
+    [job] = step_jobs(record.steps["s1"]).values()
+    assert job["slurm_account"] == "rkp00101"
+    script = (Path(job["workdir"]) / "job.sbatch").read_text()
+    assert "#SBATCH --account=rkp00101\n" in script
+
+
+def test_parallel_steps_share_the_verified_project_account(cluster, tree):
+    from umrs.server import workflow_runner as wr
+    from umrs.server.workflow_execution_registry import ExecutionRecord
+
+    cluster.behave(run=False, states=["RUNNING", "FAILED"])
+    record = ExecutionRecord(execution_id=RUN, workflow_name="lane", user_id=OWNER)
+    workflow = {
+        "steps": [
+            {"name": "s1", "entrypoint": "steps.lane:Upper", "config": {}, "depends_on": []},
+            {"name": "s2", "entrypoint": "steps.lane:Upper", "config": {}, "depends_on": []},
+        ]
+    }
+    executor = cluster.executor(keep_workdir=True)
+    executor.project_accounts = {"spring-8": "rkp00101"}
+    wr.run_workflow_record(
+        record,
+        source_path=str(tree),
+        workflow_json=workflow,
+        verified_project="spring-8",
+        executor=executor,
+    )
+    jobs = [job for name in ("s1", "s2") for job in step_jobs(record.steps[name]).values()]
+    assert len(jobs) == 2
+    assert {job["slurm_account"] for job in jobs} == {"rkp00101"}
 
 
 # ── factory and site wiring (unchanged) ─────────────────────────────────────

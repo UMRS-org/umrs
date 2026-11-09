@@ -22,6 +22,7 @@ from .research_loop_backend import REF_PREFIX
 logger = logging.getLogger(__name__)
 
 LOOP_WRAPPER_REL = str(Path("deploy") / "rccs" / "loop-job.slurm")
+LOOP_WRAPPER_WALL_SECONDS = 2 * 3600  # #SBATCH --time=2:00:00 in the wrapper
 
 
 def _hmac_hex(secret: str) -> str:
@@ -151,6 +152,7 @@ class ClusterSlurmSubmitter:
         # WP-12 round 2: OTel trace-context propagation across the durable-job
         # boundary — only when the server-side boot is active; never fabricate.
         env.update(_otel_job_env())
+        unit = _ledger_pending(job, attempt, identity, loop_id)
         if self._submit is None:
             from umrs.orchestrator.base import OrchestratorConfig
             from umrs.orchestrator.remote_slurm_backend import RemoteSlurmBackend
@@ -158,11 +160,84 @@ class ClusterSlurmSubmitter:
             submitter = RemoteSlurmBackend(OrchestratorConfig())
             result = await submitter.submit_job(
                 None,
+                job_name=unit.tag,
                 env={"SLURM_WRAPPER_SCRIPT": wrapper, **env},
             )
         else:
             result = await self._submit(wrapper, env)
-        return _runtime_ref(result, spec)
+        ref = _runtime_ref(result, spec)
+        _ledger_submitted(unit, ref)
+        return ref
+
+
+def _loop_wall_seconds() -> int:
+    """The CLI walltime override, else the wrapper's real two-hour limit."""
+    from umrs.orchestrator.site_config import load_site_config
+
+    from .hpc_ledger import _time_seconds
+
+    try:
+        configured = str(load_site_config().scheduler.time_limit or "")
+    except (OSError, AttributeError, TypeError, ValueError):
+        configured = ""
+    return _time_seconds(configured) or LOOP_WRAPPER_WALL_SECONDS
+
+
+def _ledger_pending(job: Job, attempt: JobAttempt, identity: Any, loop_id: str) -> Any:
+    """ADR-112 wave D (plan §6 C/D.0 D2): the loop job's pending ledger row
+    before ``sbatch`` (binding; a refusal raises before any SSH). The loop
+    wrapper's resources are the site's; the estimate names one CPU."""
+    from umrs.hpc_accounts.usage_ledger import estimate, write_pending
+
+    from .hpc_ledger import job_unit, recovery_tag
+
+    tag = recovery_tag("umrs-loop", job.project_id, job.user_id, attempt.attempt_id)
+    unit = job_unit(job, attempt, identity, lane="cluster_loop", tag=tag)
+    write_pending(unit, estimate(1, 0, _loop_wall_seconds()))
+    return unit
+
+
+def _ref_slurm_id(ref: str) -> str:
+    return ref.rsplit("slurm_id=", 1)[-1] if "slurm_id=" in ref else ""
+
+
+def _ledger_submitted(unit: Any, ref: str) -> None:
+    from umrs.hpc_accounts.usage_ledger import write_after
+
+    slurm_id = _ref_slurm_id(ref)
+    op, args = (
+        ("submitted", (slurm_id, None)) if slurm_id else ("not_submitted", ("sacct",))
+    )
+    write_after(op, unit, *args)
+
+
+async def settle_cluster_loop(
+    attempt: JobAttempt, job: Job, backend_ref: str, ssh_factory: Any = None
+) -> None:
+    """Best-effort terminal sacct settlement; loop status remains authoritative."""
+    slurm_id = _ref_slurm_id(backend_ref)
+    if not slurm_id:
+        return
+    try:
+        from .hpc_ledger import (
+            job_unit,
+            recovery_tag,
+            sacct_command,
+            settle_job_from_sacct,
+        )
+        from .hpc_script import _default_ssh_factory
+
+        factory = ssh_factory or _default_ssh_factory
+        ssh = await factory()
+        identity = dict(attempt.metrics.get("hpc_identity") or {})
+        tag = recovery_tag("umrs-loop", job.project_id, job.user_id, attempt.attempt_id)
+        unit = job_unit(job, attempt, identity, lane="cluster_loop", tag=tag)
+        row = await ssh.run_remote(sacct_command(slurm_id), timeout=30)
+        settle_job_from_sacct(unit, slurm_id, row.stdout)
+    except Exception:
+        logger.warning(
+            "cluster loop: ledger of %s not settled", slurm_id, exc_info=True
+        )
 
 
 def _otel_job_env() -> dict[str, str]:

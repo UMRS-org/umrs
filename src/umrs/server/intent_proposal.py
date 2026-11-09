@@ -96,12 +96,15 @@ class _Hasher:
             raise
         except Exception as exc:  # an object gone since listing, S3 down: by name
             raise IntentInvalid(
-                "input_unreadable", f"s3://{bucket}/{key}: {type(exc).__name__}: {exc}"[:300]
+                "input_unreadable",
+                f"s3://{bucket}/{key}: {type(exc).__name__}: {exc}"[:300],
             ) from exc
 
     def _hash(self, bucket: str, key: str) -> tuple[str, int]:
         if time.monotonic() > self.deadline:
-            raise IntentInvalid("inputs_too_slow", "list the inputs yourself, or split the data")
+            raise IntentInvalid(
+                "inputs_too_slow", "list the inputs yourself, or split the data"
+            )
         body = self.s3.get_object(Bucket=bucket, Key=key)["Body"]
         data = body if isinstance(body, (bytes, bytearray)) else None
         if data is not None:
@@ -111,7 +114,9 @@ class _Hasher:
             digest.update(chunk)
             size += len(chunk)
             if time.monotonic() > self.deadline:
-                raise IntentInvalid("inputs_too_slow", f"s3://{bucket}/{key} did not hash in time")
+                raise IntentInvalid(
+                    "inputs_too_slow", f"s3://{bucket}/{key} did not hash in time"
+                )
         return digest.hexdigest(), size
 
 
@@ -131,7 +136,9 @@ def _graph(steps: list[dict[str, Any]]) -> list[tuple[str, list[str], list[str]]
         raise IntentInvalid("bad_step_name", str(exc)[:200]) from exc
     reserved = _gate().RESERVED_STEP_NAME
     if any(name == reserved for name, _a, _c in graph):
-        raise IntentInvalid("bad_step_name", f"the step name {reserved!r} is reserved by the gate")
+        raise IntentInvalid(
+            "bad_step_name", f"the step name {reserved!r} is reserved by the gate"
+        )
     return graph
 
 
@@ -148,7 +155,9 @@ def check_no_endpoints(steps: list[dict[str, Any]]) -> None:
             )
 
 
-def check_one_arch(profile: dict[str, Any], steps: list[dict[str, Any]], arch: str) -> None:
+def check_one_arch(
+    profile: dict[str, Any], steps: list[dict[str, Any]], arch: str
+) -> None:
     """Every step's partition has the trusted image's *arch*."""
     for step in steps:
         part_arch = profile["partitions"][step["partition"]]["arch"]
@@ -184,7 +193,8 @@ def check_lanes(req: ProposalRequest) -> None:
         )
         if _is_manual(step) or builtin:
             raise IntentInvalid(
-                "mixed_lanes", f"step {step.get('name')!r} would not run on the gated lane"
+                "mixed_lanes",
+                f"step {step.get('name')!r} would not run on the gated lane",
             )
 
 
@@ -195,26 +205,40 @@ def _is_manual(step: dict[str, Any]) -> bool:
 def load_image_digests(site: Any) -> dict[str, Any]:
     path = str(getattr(site.step_executor, "image_digests", "") or "")
     if not path:
-        raise IntentInvalid("no_image_digests", "this site publishes no step image digests")
+        raise IntentInvalid(
+            "no_image_digests", "this site publishes no step image digests"
+        )
     try:
         with open(path, encoding="utf-8") as handle:
             data = json.load(handle)
     except (OSError, ValueError) as exc:
-        raise IntentInvalid("no_image_digests", f"image digests unreadable: {exc}") from exc
+        raise IntentInvalid(
+            "no_image_digests", f"image digests unreadable: {exc}"
+        ) from exc
     if not isinstance(data, dict):
         raise IntentInvalid("no_image_digests", "image digests are not a mapping")
     return data
 
 
 def _image(digests: dict[str, Any], ref: str, arch: str) -> dict[str, str]:
-    entry = (digests.get(ref) or {}).get(arch) if isinstance(digests.get(ref), dict) else None
+    entry = (
+        (digests.get(ref) or {}).get(arch)
+        if isinstance(digests.get(ref), dict)
+        else None
+    )
     if not isinstance(entry, dict):
         raise IntentInvalid("no_image_digests", f"no digests for {ref} on {arch}")
-    return {"ref": ref, "image_id": str(entry.get("image_id") or ""), "archive_sha256": str(entry.get("archive_sha256") or "")}
+    return {
+        "ref": ref,
+        "image_id": str(entry.get("image_id") or ""),
+        "archive_sha256": str(entry.get("archive_sha256") or ""),
+    }
 
 
 def platform_image(site: Any) -> str:
-    image = os.environ.get("UMRS_STEP_IMAGE", "").strip() or str(site.step_executor.image or "")
+    image = os.environ.get("UMRS_STEP_IMAGE", "").strip() or str(
+        site.step_executor.image or ""
+    )
     if not image:
         raise IntentInvalid("no_image_digests", "the lane has no platform step image")
     return image
@@ -235,13 +259,19 @@ def _partition(profile: dict[str, Any], gpus: int) -> str:
     for name, part in profile["partitions"].items():
         if int(part["max_gpus"]) >= gpus:
             return name
-    raise IntentInvalid("resource_not_allowed", f"no partition of the profile gives {gpus} GPUs")
+    raise IntentInvalid(
+        "resource_not_allowed", f"no partition of the profile gives {gpus} GPUs"
+    )
 
 
 def _time(step: dict[str, Any], part: dict[str, Any]) -> int:
     limit = int(part["max_time"])
     timeout = step.get("timeout_seconds")
-    if isinstance(timeout, (int, float)) and not isinstance(timeout, bool) and timeout > 0:
+    if (
+        isinstance(timeout, (int, float))
+        and not isinstance(timeout, bool)
+        and timeout > 0
+    ):
         limit = min(limit, int(timeout))
     return max(_MIN_TIME, limit)
 
@@ -261,6 +291,19 @@ def _resources(req: ProposalRequest, step: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def resource_estimates(req: ProposalRequest) -> list[dict[str, Any]]:
+    """The routed resources of each step, without signing or input I/O.
+
+    The service-account admission budget uses the same K4 choices as an
+    intent/grant estimate, but must not inherit the gated lane's restrictions.
+    """
+    return [
+        _resources(req, step)
+        for step in req.workflow_json.get("steps") or []
+        if isinstance(step, dict)
+    ]
+
+
 # ── inputs ───────────────────────────────────────────────────────────────────
 
 
@@ -269,7 +312,9 @@ def _buckets(params: dict[str, Any]) -> tuple[str, str]:
     return bucket, bucket + "-output"
 
 
-def _plan_objects(req: ProposalRequest, step: dict[str, Any], name: str, s3: Any) -> list[Any]:
+def _plan_objects(
+    req: ProposalRequest, step: dict[str, Any], name: str, s3: Any
+) -> list[Any]:
     """The objects the step's stage plan names now (params and prefixes)."""
     from umrs.pipeline_sdk.step import StepContext
     from umrs.server.step_staging import (
@@ -294,20 +339,42 @@ def _plan_objects(req: ProposalRequest, step: dict[str, Any], name: str, s3: Any
     return list(build_stage_plan(ctx).objects)
 
 
-def _listed(req: ProposalRequest, name: str, hasher: _Hasher, planned: set[tuple[str, str]]) -> list[dict[str, Any]]:
+def _listed(
+    req: ProposalRequest, name: str, hasher: _Hasher, planned: set[tuple[str, str]]
+) -> list[dict[str, Any]]:
     out = []
     for entry in req.listed.get(name) or []:
         bucket, key = str(entry.get("bucket") or ""), str(entry.get("key") or "")
         if (bucket, key) not in planned:
-            raise IntentInvalid("input_not_in_plan", f"s3://{bucket}/{key} is not in step {name}'s stage plan")
+            raise IntentInvalid(
+                "input_not_in_plan",
+                f"s3://{bucket}/{key} is not in step {name}'s stage plan",
+            )
         sha, size = hasher.digest(bucket, key)
         if (sha, size) != (entry.get("sha256"), entry.get("size")):
-            raise IntentInvalid("input_changed", f"s3://{bucket}/{key} differs from the digest you listed")
-        out.append({"mode": "listed", "bucket": bucket, "key": key, "sha256": sha, "size": size})
+            raise IntentInvalid(
+                "input_changed",
+                f"s3://{bucket}/{key} differs from the digest you listed",
+            )
+        out.append(
+            {
+                "mode": "listed",
+                "bucket": bucket,
+                "key": key,
+                "sha256": sha,
+                "size": size,
+            }
+        )
     return out
 
 
-def _inputs(req: ProposalRequest, step: dict[str, Any], name: str, chained: list[str], hasher: _Hasher) -> dict[str, Any]:
+def _inputs(
+    req: ProposalRequest,
+    step: dict[str, Any],
+    name: str,
+    chained: list[str],
+    hasher: _Hasher,
+) -> dict[str, Any]:
     planned = {(o.bucket, o.key) for o in _plan_objects(req, step, name, hasher.s3)}
     listed = _listed(req, name, hasher, planned)
     named = {(e["bucket"], e["key"]) for e in listed}
@@ -356,16 +423,26 @@ def src_manifest(source_path: str, steps: dict[str, dict[str, Any]]) -> dict[str
             raise IntentInvalid("bad_src_path", f"source path {rel!r} cannot be signed")
         with open(full, "rb") as handle:
             data = handle.read()
-        files.append({"path": rel, "sha256": hashlib.sha256(data).hexdigest(), "size": len(data)})
+        files.append(
+            {"path": rel, "sha256": hashlib.sha256(data).hexdigest(), "size": len(data)}
+        )
     files.sort(key=lambda f: f["path"].encode("utf-8"))
-    entrypoints = {name: str(step.get("entrypoint") or "") for name, step in steps.items()}
+    entrypoints = {
+        name: str(step.get("entrypoint") or "") for name, step in steps.items()
+    }
     return {"files": files, "entrypoints": entrypoints}
 
 
 # ── the intent ───────────────────────────────────────────────────────────────
 
 
-def _step_object(req: ProposalRequest, raw: dict[str, Any], graph: tuple[str, list[str], list[str]], images: tuple[dict[str, Any], str], hasher: _Hasher) -> dict[str, Any]:
+def _step_object(
+    req: ProposalRequest,
+    raw: dict[str, Any],
+    graph: tuple[str, list[str], list[str]],
+    images: tuple[dict[str, Any], str],
+    hasher: _Hasher,
+) -> dict[str, Any]:
     name, after, chained = graph
     digests, ref = images
     res = _resources(req, raw)
@@ -386,7 +463,9 @@ def _max_run(steps: list[dict[str, Any]], queue_seconds: int) -> int:
     return max(_MIN_TIME, min(RUN_MAX_SECONDS, total))
 
 
-def build_intent(req: ProposalRequest, s3: Any, *, now: int | None = None) -> dict[str, Any]:
+def build_intent(
+    req: ProposalRequest, s3: Any, *, now: int | None = None
+) -> dict[str, Any]:
     """The intent body for *req* (validated by the gate's own schema)."""
     check_lanes(req)
     raw_steps = [s for s in req.workflow_json.get("steps") or [] if isinstance(s, dict)]
@@ -394,21 +473,37 @@ def build_intent(req: ProposalRequest, s3: Any, *, now: int | None = None) -> di
     graph = _graph(raw_steps)
     digests, ref = load_image_digests(req.site), platform_image(req.site)
     hasher = _Hasher(s3, time.monotonic() + HASH_BUDGET_SECONDS)
-    steps = [_step_object(req, raw, g, (digests, ref), hasher) for raw, g in zip(raw_steps, graph)]
+    steps = [
+        _step_object(req, raw, g, (digests, ref), hasher)
+        for raw, g in zip(raw_steps, graph)
+    ]
     issued = int(time.time() if now is None else now)
     input_bucket, output_bucket = _buckets(req.params)
     first_arch = req.profile["partitions"][steps[0]["partition"]]["arch"]
     check_one_arch(req.profile, steps, first_arch)
     body = {
-        "v": 1, "type": "intent", "site": str(req.site.name), "principal": req.principal,
-        "login": req.login, "account": req.account, "project": req.project,
-        "workflow": req.workflow, "version": req.version, "source_sha256": req.source_sha256,
-        "run_id": "", "input_bucket": input_bucket,
-        "output_bucket": output_bucket, "params": dict(req.params),
+        "v": 1,
+        "type": "intent",
+        "site": str(req.site.name),
+        "principal": req.principal,
+        "login": req.login,
+        "account": req.account,
+        "project": req.project,
+        "workflow": req.workflow,
+        "version": req.version,
+        "source_sha256": req.source_sha256,
+        "run_id": "",
+        "input_bucket": input_bucket,
+        "output_bucket": output_bucket,
+        "params": dict(req.params),
         "site_profile_sha256": req.profile_sha256,
         "trusted_image": _image(digests, ref, first_arch),
-        "src_manifest": src_manifest(req.source_path, {g[0]: r for r, g in zip(raw_steps, graph)}),
-        "steps": steps, "nonce": secrets.token_hex(16), "issued": issued,
+        "src_manifest": src_manifest(
+            req.source_path, {g[0]: r for r, g in zip(raw_steps, graph)}
+        ),
+        "steps": steps,
+        "nonce": secrets.token_hex(16),
+        "issued": issued,
         "expires": issued + INTENT_WINDOW,
         "max_run_seconds": _max_run(steps, req.profile["slurm"]["queue_seconds"]),
     }
@@ -437,7 +532,12 @@ def summary(body: dict[str, Any]) -> dict[str, Any]:
         "login": body["login"],
         "account": body["account"],
         "steps": [
-            {"name": s["name"], "partition": s["partition"], "gpus": s["gpus"], "time": s["time"]}
+            {
+                "name": s["name"],
+                "partition": s["partition"],
+                "gpus": s["gpus"],
+                "time": s["time"],
+            }
             for s in body["steps"]
         ],
         "expires": body["expires"],
@@ -467,9 +567,15 @@ def require_current_gate(identity: Any, profile_sha: str) -> None:
     transport = transport_for(identity.site, identity.principal, identity.login)
     hello = _live_hello(_checked, transport)
     if hello.get("gate_sha256") != hpc_gate.gate_sha256():
-        raise GateStale("gate_stale", "the installed gate is not this server's release: run 'r4 hpc add' again")
+        raise GateStale(
+            "gate_stale",
+            "the installed gate is not this server's release: run 'r4 hpc add' again",
+        )
     if hello.get("site_profile_sha256") != profile_sha:
-        raise GateStale("site_profile_stale", "your gate's site profile is not the one this site publishes: run 'r4 hpc profile'")
+        raise GateStale(
+            "site_profile_stale",
+            "your gate's site profile is not the one this site publishes: run 'r4 hpc profile'",
+        )
 
 
 def _live_hello(checked: Any, transport: Any) -> dict[str, Any]:
@@ -507,7 +613,11 @@ def proposal_s3(params: dict[str, Any], project: str) -> Any:
 
 
 def propose(
-    resolved: Any, workflow_json: dict[str, Any], source_path: str, identity: Any, inputs: Any
+    resolved: Any,
+    workflow_json: dict[str, Any],
+    source_path: str,
+    identity: Any,
+    inputs: Any,
 ) -> dict[str, Any]:
     """The whole proposal for a resolved trigger whose identity is the
     person's own account (plan §10.3 steps 2-4)."""
@@ -546,5 +656,6 @@ __all__ = [
     "load_image_digests",
     "proposal_answer",
     "propose",
+    "resource_estimates",
     "src_manifest",
 ]

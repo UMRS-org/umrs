@@ -322,6 +322,39 @@ class TestChecker:
         no_ref = asyncio.run(checker.check_status(_attempt(ref=None), _job({})))
         assert no_ref.status == "failed"
 
+    def test_a_terminal_cluster_loop_settles_from_sacct(self):
+        from umrs.hpc_accounts.usage_ledger import get_usage_ledger
+
+        store = LoopStore.memory()
+        store.save(_loop("loop-c", status=LoopStatus.STOPPED, done=4))
+        _wire(store)
+        attempt = _attempt(ref="research_loop_job|loop_id=loop-c|driver=slurm|slurm_id=777")
+        attempt.metrics = {"hpc_identity": {"site": "site-x", "access_mode": "service_account"}}
+        commands: list[str] = []
+
+        class _Ssh:
+            async def run_remote(self, command, **_kw):
+                commands.append(command)
+                row = "777|COMPLETED|00:05:00|cpu=2,gres/gpu=1|2|2026-11-09T01:00:00|2026-11-09T01:05:00\n"
+                return SimpleNamespace(stdout=row)
+
+        async def factory():
+            return _Ssh()
+
+        checker = ResearchLoopStatusChecker(cluster_ssh_factory=factory)
+        result = asyncio.run(checker.check_status(attempt, _job({})))
+        assert result.status == "succeeded"
+        rows = get_usage_ledger().tables["rows"]
+        assert [r["state"] for r in rows] == ["submitted", "COMPLETED"]
+        row = rows[-1]
+        assert (row["state"], row["source"], row["scheduler_job_id"]) == (
+            "COMPLETED",
+            "sacct",
+            "777",
+        )
+        assert row["tag"].startswith("umrs-loop-") and row["tag"] != "umrs-loop-job"
+        assert "Elapsed,AllocTRES" in commands[0]
+
     def test_a_foreign_instances_attempt_is_never_failed_for_a_driver_it_cannot_see(self):
         store = LoopStore.memory()
         store.save(_loop("loop-f"))  # RUNNING; no driver registered in this process
@@ -389,12 +422,8 @@ class TestGpuCostAccumulation:
     def test_measured_steps_accumulate(self, monkeypatch):
         record = _FakeExecution(
             {
-                "train": _FakeStep(
-                    {"output_keys": [], "extra": {"slurm": {"gpu_seconds": 100.5}}}
-                ),
-                "eval": _FakeStep(
-                    {"output_keys": [], "extra": {"slurm": {"gpu_seconds": 50.0}}}
-                ),
+                "train": _FakeStep({"output_keys": [], "extra": {"slurm": {"gpu_seconds": 100.5}}}),
+                "eval": _FakeStep({"output_keys": [], "extra": {"slurm": {"gpu_seconds": 50.0}}}),
                 "cpu-only": _FakeStep({"output_keys": [], "extra": {}}),
             }
         )
@@ -427,22 +456,16 @@ class TestGpuCostAccumulation:
 
     def test_registry_failure_never_crashes(self, monkeypatch):
         loop = _loop("loop-g")
-        ledger = self._hook_run(
-            monkeypatch, _FakeRegistry(boom=True), loop, self._iteration()
-        )
+        ledger = self._hook_run(monkeypatch, _FakeRegistry(boom=True), loop, self._iteration())
         assert ledger == {}
 
     def test_unknown_execution_no_ledger(self, monkeypatch):
         loop = _loop("loop-g")
-        ledger = self._hook_run(
-            monkeypatch, _FakeRegistry({}), loop, self._iteration()
-        )
+        ledger = self._hook_run(monkeypatch, _FakeRegistry({}), loop, self._iteration())
         assert ledger == {}
 
     def test_idempotent_per_iteration(self, monkeypatch):
-        record = _FakeExecution(
-            {"train": _FakeStep({"extra": {"slurm": {"gpu_seconds": 10.0}}})}
-        )
+        record = _FakeExecution({"train": _FakeStep({"extra": {"slurm": {"gpu_seconds": 10.0}}})})
         registry = _FakeRegistry({"wf-1": record})
         loop = _loop("loop-g")
         iteration = self._iteration()

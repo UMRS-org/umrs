@@ -457,8 +457,12 @@ def test_the_scheduler_fails_a_refused_job_terminally_without_degrading():
     store = _SchedStore()
     sched = scheduler_mod.Scheduler(store, lambda _t: HpcScriptBackend(ssh=None))
     job = SimpleNamespace(
-        job_id="j-1", user_id="u", project_id="other", spec={"script_path": "/x"},
-        job_type=JT.HPC_SCRIPT, next_run_at=None,
+        job_id="j-1",
+        user_id="u",
+        project_id="other",
+        spec={"script_path": "/x"},
+        job_type=JT.HPC_SCRIPT,
+        next_run_at=None,
     )
     for _ in range(3):
         _run(sched._schedule_job("j-1", job))
@@ -474,6 +478,35 @@ def test_a_generic_submit_failure_still_retries():
     from umrs.jobs.store import _terminal_exit_reason
 
     assert _terminal_exit_reason("a-1", "backend_submission_failed: hpcaccess.x") is False
+
+
+class _LedgerRefusingBackend:
+    backend_name = "hpc_script"
+
+    def __init__(self, code: str) -> None:
+        self.code = code
+
+    async def submit_job(self, _job, _attempt):
+        from umrs.hpc_accounts.usage_ledger import LedgerRefused
+
+        raise LedgerRefused(self.code, "nothing was submitted")
+
+
+@pytest.mark.parametrize("code", ["hpcaccess.budget_exceeded", "hpcaccess.ledger_unavailable"])
+def test_a_ledger_refusal_is_terminal_without_degradation(code):
+    from umrs.jobs import scheduler as scheduler_mod
+    from umrs.jobs.store import _terminal_exit_reason
+
+    store = _SchedStore()
+    sched = scheduler_mod.Scheduler(store, lambda _t: _LedgerRefusingBackend(code))
+    attempt = _attempt()
+    job = SimpleNamespace()
+    _run(sched._submit_attempt("j-1", job, ("a-1", attempt), _LedgerRefusingBackend(code)))
+    [(attempt_id, reason, retry_delay)] = store.failed
+    assert attempt_id == "a-1" and reason.startswith(code)
+    assert retry_delay is None and _terminal_exit_reason(attempt_id, reason) is True
+    assert getattr(sched, "_consecutive_failures", 0) == 0
+    assert store.submitted == []
 
 
 class _MetricsDownStore(_SchedStore):

@@ -490,13 +490,26 @@ def _record_final_attempt_failure(
         get_feedback_store().record_failure(decision.endpoint_id)
 
 
+def _is_gated(record: Any) -> bool:
+    """A run under the person's own account: a signed intent (B2) or a
+    standing grant (wave C, plan §6 C/D.0 C4)."""
+    return bool(getattr(record, "intent_id", None) or getattr(record, "grant_id", None))
+
+
 def _max_attempts(policy: StepPolicy, record: ExecutionRecord) -> int:
     """How many attempts one step may take. A run under the person's own
     HPC account (ADR-112 B2: it carries a signed intent) takes exactly one:
     the gate's nonce makes a second submit ``replayed``, a gate refusal is
     never retried, and recovery within the attempt is the gated lane's own
     (plan §5 B2.0 §10.5)."""
-    return 1 if record.intent_id else policy.max_retries + 1
+    return 1 if _is_gated(record) else policy.max_retries + 1
+
+
+def _retry_left(attempt: int, max_attempts: int, exc: StepExecutionError) -> bool:
+    """Another attempt follows unless this was the last one, or the failure
+    is final (``exc.final``: a usage-ledger refusal before submit, ADR-112
+    wave D K14: the step fails without retry and the run stops)."""
+    return attempt < max_attempts and not getattr(exc, "final", False)
 
 
 def _execute_with_retry(
@@ -563,7 +576,7 @@ def _execute_with_retry(
                 attempt,
                 max_attempts,
             )
-            if attempt < max_attempts:
+            if _retry_left(attempt, max_attempts, exc):
                 logger.warning(
                     "Step %s attempt %d/%d failed: %s. Retrying in %.1fs...",
                     step_name,
@@ -1063,6 +1076,7 @@ def _bind_step_lane(
     spec: dict[str, Any],
     metadata: dict[str, Any],
     record: ExecutionRecord,
+    verified_project: str | None = None,
 ) -> None:
     """The staged HPC lane's per-step context (build spec 2026-09-26 §5, §8):
     the run owner and declared inputs for the stager, the step's soft
@@ -1075,8 +1089,13 @@ def _bind_step_lane(
     if not callable(bind):
         return
     from umrs.server.remote_slurm_step_executor import STEP_TIMEOUT_METADATA_KEY
-    from umrs.server.step_staging import STAGE_REQUEST_METADATA_KEY, stage_request
+    from umrs.server.step_staging import (
+        STAGE_PROJECT_ID_METADATA_KEY,
+        STAGE_REQUEST_METADATA_KEY,
+        stage_request,
+    )
 
+    metadata[STAGE_PROJECT_ID_METADATA_KEY] = verified_project
     try:
         request = stage_request(spec, record.params, record.user_id)
     except StepExecutionError:
@@ -1088,6 +1107,7 @@ def _bind_step_lane(
             "stage_inputs": spec.get("stage_inputs"),
         }
     metadata[STAGE_REQUEST_METADATA_KEY] = request
+    metadata.update(_ledger_metadata(record))
     timeout = StepPolicy.from_mapping(spec).timeout_seconds
     if timeout:
         metadata[STEP_TIMEOUT_METADATA_KEY] = float(timeout)
@@ -1101,13 +1121,22 @@ def _bind_step_lane(
     )
 
 
+def _ledger_metadata(record: ExecutionRecord) -> dict[str, Any]:
+    """ADR-112 wave D: the run's owner and project for the usage ledger's
+    service-lane rows (the gated lane reads its run spec or intent)."""
+    from umrs.server.step_ledger import LEDGER_METADATA_KEY
+
+    project = str((record.params or {}).get("project_id") or "")
+    return {LEDGER_METADATA_KEY: {"person": record.user_id, "project_id": project}}
+
+
 def _require_gated_lane(executor: StepExecutor, record: ExecutionRecord) -> None:
     """I-1 backstop: a run with a signed intent never reaches a Slurm
     executor without a gated path (a local ``sbatch`` lane would submit as
     the server's own login); the step fails by name before anything is
     sent. Non-HPC executors (a platform-template step's in-process lane)
     are untouched."""
-    if not record.intent_id:
+    if not _is_gated(record):
         return
     from umrs.server.slurm_step_executor import SlurmStepExecutor
 
@@ -1130,7 +1159,7 @@ def _gated_binding(record: ExecutionRecord) -> dict[str, Any]:
     """ADR-112 B2: a run with a signed intent runs under the person's own
     account; its steps go through the person's gate (the lane's
     ``bind_run(gated=...)``). Other runs bind nothing more."""
-    if not record.intent_id:
+    if not _is_gated(record):
         return {}
     from umrs.server.gated_step_lane import gated_run_for
 
@@ -1217,6 +1246,7 @@ def _execute_step(
     state_lock: threading.Lock,
     executor: StepExecutor,
     source_path: str | None = None,
+    verified_project: str | None = None,
 ) -> tuple[str, StepResult | None, str | None]:
     """Execute a single step. Returns ``(step_name, result_or_None, error_or_None)``.
 
@@ -1299,7 +1329,7 @@ def _execute_step(
     metadata = _executor_metadata(
         image_hint, gpu_hint, source_path, routed_keys, _gpu_count_hint(spec)
     )
-    _bind_step_lane(executor, spec, metadata, record)
+    _bind_step_lane(executor, spec, metadata, record, verified_project)
     _bind_step_endpoint(executor, metadata, decision)
     payload_s3_enabled, payload_bucket, payload_s3_prefix = _payload_s3_hint(metadata)
     _annotate_payload_mode(
@@ -1552,7 +1582,7 @@ def _settle_before_run(
         steps_spec,
         source_path,
         injected=executor is not None,
-        run_identity=(record.user_id, verified_project, bool(record.intent_id)),
+        run_identity=(record.user_id, verified_project, _is_gated(record)),
     )
     if refusal:
         record.update(status="failed", error=refusal, finished_at=time.time())
@@ -1801,6 +1831,7 @@ def _run_wave(
     state_lock: threading.Lock,
     max_workers_cap: int,
     source_path: str | None = None,
+    verified_project: str | None = None,
 ) -> list[str]:
     """Execute one DAG wave (directly when linear, pooled when parallel).
 
@@ -1833,6 +1864,7 @@ def _run_wave(
             state_lock=state_lock,
             executor=executor,
             source_path=source_path,
+            verified_project=verified_project,
         )
         if err is not None:
             wave_errors.append(f"{name}: {err}")
@@ -1855,6 +1887,7 @@ def _run_wave(
             bucket=bucket,
             state_lock=state_lock,
             source_path=source_path,
+            verified_project=verified_project,
         )
 
     wave_duration_ms = (time.monotonic() - wave_started) * 1000.0
@@ -1888,6 +1921,7 @@ def _run_wave_parallel(
     bucket: str,
     state_lock: threading.Lock,
     source_path: str | None = None,
+    verified_project: str | None = None,
 ) -> None:
     """Fan a parallel wave over the thread pool and collect errors."""
     workers = min(len(level), max_workers_cap)
@@ -1913,6 +1947,7 @@ def _run_wave_parallel(
                 state_lock=state_lock,
                 executor=executor,
                 source_path=source_path,
+                verified_project=verified_project,
             )
             for spec in level
         ]
@@ -2059,6 +2094,37 @@ def run_workflow_record(
     prelaunch: Callable[[ExecutionRecord], None] | None = None,
     verified_project: str | None = None,
 ) -> None:
+    """Run a record and release its process-local K19 state on every exit."""
+    try:
+        _run_workflow_record(
+            record,
+            source_path=source_path,
+            workflow_json=workflow_json,
+            router=router,
+            project_id=project_id,
+            user_id=user_id,
+            executor=executor,
+            prelaunch=prelaunch,
+            verified_project=verified_project,
+        )
+    finally:
+        from .gated_step_lane import clear_run_respec
+
+        clear_run_respec(record)
+
+
+def _run_workflow_record(
+    record: ExecutionRecord,
+    *,
+    source_path: str | None,
+    workflow_json: dict[str, Any],
+    router: StepRouter | None = None,
+    project_id: str | None = None,
+    user_id: str | None = None,
+    executor: StepExecutor | None = None,
+    prelaunch: Callable[[ExecutionRecord], None] | None = None,
+    verified_project: str | None = None,
+) -> None:
     """Execute the workflow described by ``workflow_json`` in-process.
 
     Updates ``record`` as steps progress. Sets a terminal status
@@ -2165,6 +2231,7 @@ def run_workflow_record(
             state_lock=state_lock,
             max_workers_cap=max_workers_cap,
             source_path=source_path,
+            verified_project=verified_project,
         )
         completed += len(level)
         record.update(progress=completed / total)

@@ -59,6 +59,9 @@ logger = logging.getLogger(__name__)
 #: ``ctx.metadata`` key under which the runner hands the executor the step's
 #: staging request (see :func:`stage_request`).
 STAGE_REQUEST_METADATA_KEY = "_umrs_stage_request"
+#: The run's gateway-verified project for staged-lane policy (for example
+#: per-project Slurm accounting). Internal only: never sent to the worker.
+STAGE_PROJECT_ID_METADATA_KEY = "_umrs_verified_project"
 
 #: Synthetic buckets of the runner's in-memory S3 shim.
 IN_MEMORY_BUCKET = "wf-runner"
@@ -245,7 +248,6 @@ def bucket_owned_by(bucket: str, owner: str) -> bool:
     return registry is not None and _registered_owner(registry, bucket) == owner
 
 
-
 def bucket_purgeable_by(bucket: str, owner: str) -> bool:
     """Whether *owner* may purge *bucket*: the exact provisioned shape
     ``<owner>.<xp>.<alias>[-output]`` (a prefix alone let user ``first``
@@ -279,6 +281,7 @@ def database_table_owned_by(database: str, table: str, owner: str) -> bool:
         and getattr(entry, "table_name", None) == table
         for entry in registry.values()
     )
+
 
 def _check_registered(bucket: str, owner: str) -> None:
     registry = _bucket_registry

@@ -72,9 +72,13 @@ def _enrol(tables: dict, user: str = "alice", project: str = "proj-a") -> None:
         user,
         "tk-000000000001",
         {
-            "site_login": "alice_hpc", "verified_login": "alice_hpc",
-            "verified_assocs": [{"account": "grp-a"}], "gate_version": "2",
-            "gate_sha256": "0" * 64, "signer_fingerprints": [], "uv_required": False,
+            "site_login": "alice_hpc",
+            "verified_login": "alice_hpc",
+            "verified_assocs": [{"account": "grp-a"}],
+            "gate_version": "2",
+            "gate_sha256": "0" * 64,
+            "signer_fingerprints": [],
+            "uv_required": False,
         },
     )
     store.upsert_link(user, project, "grp-a")
@@ -181,7 +185,9 @@ def test_each_proposed_config_is_the_shared_expected_config(gated):
 def test_the_proposal_needs_a_current_gate_and_site_profile(gated):
     client, _store, _tmp, gate_dir = gated
     (gate_dir / "plan.json").write_text(json.dumps({"hello": {"gate_sha256": "0" * 64}}))
-    r = client.post("/umrs/workflows/relax/intent-proposal", json={"params": {"steps": 3}}, headers=_h())
+    r = client.post(
+        "/umrs/workflows/relax/intent-proposal", json={"params": {"steps": 3}}, headers=_h()
+    )
     assert (r.status_code, r.headers[CODE]) == (409, "hpcaccess.gate_version")
 
 
@@ -201,7 +207,9 @@ def test_an_unreachable_gate_is_gate_refused_unreachable_not_intent_invalid(gate
     client, _store, _tmp, gate_dir = gated
     plan = json.loads((gate_dir / "plan.json").read_text())
     (gate_dir / "plan.json").write_text(json.dumps({**plan, "fail": {"hello": code}}))
-    r = client.post("/umrs/workflows/relax/intent-proposal", json={"params": {"steps": 3}}, headers=_h())
+    r = client.post(
+        "/umrs/workflows/relax/intent-proposal", json={"params": {"steps": 3}}, headers=_h()
+    )
     assert (r.status_code, r.headers[CODE]) == (403, "hpcaccess.gate_refused")
     assert "unreachable" in r.text and "try again later" in r.text
 
@@ -249,7 +257,9 @@ def test_a_signed_trigger_starts_the_intents_run_and_keeps_the_envelope(gated):
     assert data["intent_id"] == answer["intent_id"]
     [job] = store.jobs.values()
     assert job.spec["intent"] == {
-        "b64": answer["intent_b64"], "signature": SIGNATURE, "id": answer["intent_id"],
+        "b64": answer["intent_b64"],
+        "signature": SIGNATURE,
+        "id": answer["intent_id"],
     }
     assert job.spec["params"] == _body(answer)["params"]
 
@@ -357,12 +367,37 @@ def test_a_service_account_run_is_unchanged(gated, monkeypatch):
     assert "intent" not in job.spec
 
 
+def test_an_intent_run_checks_the_whole_run_budget(gated):
+    from umrs.hpc_accounts.usage_ledger import get_usage_ledger
+
+    client, store, _tmp, _gate = gated
+    get_usage_ledger().tables["budgets"]["proj-a"] = 0.4  # s1 reserves 1 GPU x 1800 s
+    answer = _propose(client)
+    r = _trigger(client, answer["intent_b64"])
+    assert (r.status_code, r.headers.get(CODE)) == (403, "hpcaccess.budget_exceeded")
+    assert store.jobs == {}
+
+
+def test_a_service_account_run_checks_the_whole_run_budget(gated, monkeypatch):
+    from umrs.hpc_accounts.usage_ledger import get_usage_ledger
+
+    client, store, _tmp, _gate = gated
+    monkeypatch.setattr(access, "user_is_admin", lambda _u: True)
+    monkeypatch.setattr(access, "_store_factory", lambda v: InMemorySiteAccountStore(v))
+    get_usage_ledger().tables["budgets"]["proj-a"] = 0.4
+    r = _trigger(client)
+    assert (r.status_code, r.headers.get(CODE)) == (403, "hpcaccess.budget_exceeded")
+    assert store.jobs == {}
+
+
 # ── plan, commit and the ZMQ handler ─────────────────────────────────────────
 
 
 def test_the_plan_says_the_run_needs_an_intent_and_commit_refuses(gated):
     client, store, _tmp, _gate = gated
-    plan = client.post("/umrs/workflows/relax/plan", json={"parameters": {"steps": 3}}, headers=_h())
+    plan = client.post(
+        "/umrs/workflows/relax/plan", json={"parameters": {"steps": 3}}, headers=_h()
+    )
     assert plan.status_code == 200 and plan.json()["requires_intent"] is True
     body = {"signed": plan.json()["signed"], "digest": plan.json()["digest"]}
     r = client.post("/umrs/workflows/relax/commit", json=body, headers=_h())
@@ -389,8 +424,12 @@ def _zmq(store, extra: dict) -> dict:
     from umrs.server.workflow_registry_handler import _handle_run_workflow
 
     payload = json.dumps(
-        {"workflow_name": "relax", "params": {"project_id": "proj-a", "steps": 3},
-         "_identity_verified": True, **extra}
+        {
+            "workflow_name": "relax",
+            "params": {"project_id": "proj-a", "steps": 3},
+            "_identity_verified": True,
+            **extra,
+        }
     )
     raw = _handle_run_workflow(
         "alice", payload, DurableJobCommandBackend(store), trusted_identity=True

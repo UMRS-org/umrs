@@ -1099,12 +1099,22 @@ def _take_over_prior_run(prior: Any, record: Any) -> None:
 
     if prior is not None:
         carry_step_jobs(prior, record)
+        _keep_run_spec(prior, record)
     if durable_job_cancelled(record.durable_job_id):
         logger.info(
             "workflow execution %s was cancelled; its dispatch runs nothing",
             record.execution_id,
         )
         record.update(cancel_requested=True)
+
+
+def _keep_run_spec(prior: Any, record: Any) -> None:
+    """Wave C (K19): a grant run's spec may be composed again before its
+    first submit; a re-dispatch keeps the one the record already holds
+    (the durable job spec carries the first)."""
+    same = getattr(prior, "grant_id", None) and prior.grant_id == getattr(record, "grant_id", None)
+    if same and prior.run_spec_b64 and prior.run_spec_id != record.run_spec_id:
+        record.update(run_spec_b64=prior.run_spec_b64, run_spec_id=prior.run_spec_id)
 
 
 #: ``record.results`` key listing what the trigger-time ensure started.
@@ -1364,14 +1374,24 @@ def _stamp_intent(
     if not intent:
         return key
     spec["intent"] = dict(intent)
+    if intent.get("grant_id"):  # wave C: one durable job per grant run
+        return key or f"grant-run:{intent['grant_id']}:{spec.get('execution_id')}"
     return key or f"intent:{intent['id']}"
+
+
+def _gated_answer(gated: dict[str, str]) -> dict[str, str]:
+    """The answer's ids of a gated run: ``intent_id``, or (wave C) the
+    run's ``grant_id`` and ``run_spec_id``."""
+    if gated.get("grant_id"):
+        return {"grant_id": gated["grant_id"], "run_spec_id": gated.get("run_spec_id", "")}
+    return {"intent_id": gated["id"]}
 
 
 def _submit_answer(body: dict[str, Any], intent: dict[str, str] | None) -> str:
     """The submit's answer (with the run's ``intent_id``); a second trigger
     of one intent is ``intent_used``."""
     if intent:
-        body["intent_id"] = intent["id"]
+        body.update(_gated_answer(intent))
     if not (intent and body.get("existing_run")):
         return json.dumps(body, default=str)
     from umrs.server.run_intent_admission import error_json
@@ -1477,7 +1497,7 @@ def _hpc_admission(
         "principal": client_id,
     }
     params = payload.get("params", {})
-    return admit_run(identity, payload, params, run, execution_exists)
+    return admit_run(identity, payload, params, run, execution_exists, target)
 
 
 def _run_refusal(exc: ValueError) -> str:
@@ -1613,6 +1633,8 @@ def _run_in_process(
             "execution_id": record.execution_id,
             "durable_job_id": record.durable_job_id,
             "intent_id": record.intent_id,
+            "grant_id": getattr(record, "grant_id", None),
+            "run_spec_id": getattr(record, "run_spec_id", None),
             "message": f"Workflow '{workflow_name}' execution accepted ({step_count} steps)",
         },
         default=str,

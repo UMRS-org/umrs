@@ -10,4 +10,12 @@
 
 Nothing here runs work under a user's login. Wave B1 registers and verifies
 accounts only; execution arrives in B2.
+
+Waves C and D (plan §6 C/D.0):
+
+- ``grants`` / ``grant_service``: the standing grants a person signed
+  (migration 0137), their checks, views and the grant proposal;
+- ``usage_ledger`` / ``usage_reports`` / ``ledger_sweep``: the append-only
+  HPC usage ledger of user work (migration 0138), the binding budget check,
+  the reports and the recovery sweep.
 """

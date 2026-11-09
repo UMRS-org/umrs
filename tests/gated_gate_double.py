@@ -11,7 +11,8 @@ answers and exit codes, records every verb line and every stdin it got in
 - ``states``: the job states ``status`` answers in turn (last repeats);
 - ``reply``: the reply object ``read-reply`` returns;
 - ``out``: ``{member: text}`` that ``collect-out`` streams;
-- ``nonce``: ``{"job_id", "state"}`` a ``lookup`` finds before any submit.
+- ``nonce``: ``{"job_id", "state"}`` a ``lookup`` finds before any submit;
+- ``refuse_once``: ``{verb: [name, detail]}`` refuses that verb once (wave C).
 """
 
 from __future__ import annotations
@@ -139,6 +140,11 @@ def main(argv: list[str]) -> int:
         log.write(json.dumps({"line": [verb, *args], "stdin": len(data)}) + "\n")
     if verb in (plan.get("refuse") or {}):
         name, detail = plan["refuse"][verb]
+        return _refuse(name, detail)
+    once = plan.get("refuse_once") or {}
+    if verb in once:  # wave C (K6): a refusal the next call no longer gets
+        name, detail = once.pop(verb)
+        _save(os.path.join(root, "plan.json"), plan)
         return _refuse(name, detail)
     fails = plan.get("fail") or {}
     if verb in fails:

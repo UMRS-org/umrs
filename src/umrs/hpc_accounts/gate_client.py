@@ -83,6 +83,8 @@ GATE_DEADLINES = {
     "collect-out": 7200,
     "rmwd": 1800,
     "sweep": 1800,
+    # Wave C (plan §6 C/D.0 C3): grant-check settles with one sacct first.
+    "grant-check": 180,
 }
 _B1_VERBS = frozenset({"hello", "probe", "revoke", "rotate"})
 GATE_DEFAULT_DEADLINE = 60

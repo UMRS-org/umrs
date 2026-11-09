@@ -86,9 +86,15 @@ def _endpoint_caps(se: Any) -> dict[str, int]:
     from umrs.server import step_endpoint_forwarder as fw
 
     return {
-        "max_request_bytes": int(se.endpoint_max_request_bytes or fw.DEFAULT_MAX_REQUEST_BYTES),
-        "max_response_bytes": int(se.endpoint_max_response_bytes or fw.DEFAULT_MAX_RESPONSE_BYTES),
-        "max_total_bytes": int(se.endpoint_max_total_bytes or fw.DEFAULT_MAX_TOTAL_BYTES),
+        "max_request_bytes": int(
+            se.endpoint_max_request_bytes or fw.DEFAULT_MAX_REQUEST_BYTES
+        ),
+        "max_response_bytes": int(
+            se.endpoint_max_response_bytes or fw.DEFAULT_MAX_RESPONSE_BYTES
+        ),
+        "max_total_bytes": int(
+            se.endpoint_max_total_bytes or fw.DEFAULT_MAX_TOTAL_BYTES
+        ),
     }
 
 
@@ -97,7 +103,9 @@ def _base_profile(site: Any, domain: str) -> dict[str, Any]:
     from umrs.server.slurm_step_executor import WALL_GRACE_SEC, WATCH_SECONDS
 
     se = site.step_executor
-    names = pc.split_partitions(se.partition) or ([se.partition] if se.partition else [])
+    names = pc.split_partitions(se.partition) or (
+        [se.partition] if se.partition else []
+    )
     return {
         "v": 1,
         "site": str(site.name),
@@ -133,7 +141,11 @@ def _override(profile: dict[str, Any], overrides: dict[str, Any]) -> dict[str, A
     merged = dict(profile)
     for key, value in overrides.items():
         base = merged.get(key)
-        merged[key] = {**base, **value} if isinstance(base, dict) and isinstance(value, dict) else value
+        merged[key] = (
+            {**base, **value}
+            if isinstance(base, dict) and isinstance(value, dict)
+            else value
+        )
     return merged
 
 
@@ -147,13 +159,24 @@ def _user_account(site: Any) -> Any:
     return user_account
 
 
+def service_pricing_profile(site: Any) -> dict[str, Any]:
+    """The site's K4 pricing context without gated-user requirements.
+
+    Ordinary service-account jobs use the same partition resources as the
+    published gate profile, but need no signing domain, user profile, image
+    manifest or gate-only validation.
+    """
+    return _base_profile(site, "")
+
+
 def build_site_profile(site: Any) -> dict[str, Any]:
     """The gate site profile of *site* (validated by the gate's own rules)."""
     from r4_contracts import hpc_gate
 
     user_account = _user_account(site)
     profile = _override(
-        _base_profile(site, user_account.signing_domain), dict(user_account.profile or {})
+        _base_profile(site, user_account.signing_domain),
+        dict(user_account.profile or {}),
     )
     if not profile.get("image_archive_dir"):
         raise SiteProfileUnavailable(
@@ -162,7 +185,9 @@ def build_site_profile(site: Any) -> dict[str, Any]:
     try:
         hpc_gate.validate_site_profile(profile)
     except (ValueError, hpc_gate.GateError) as exc:
-        raise SiteProfileUnavailable(f"the site's gate profile is invalid: {exc}") from exc
+        raise SiteProfileUnavailable(
+            f"the site's gate profile is invalid: {exc}"
+        ) from exc
     return profile
 
 
@@ -189,4 +214,5 @@ __all__ = [
     "profile_bytes",
     "profile_sha256",
     "published",
+    "service_pricing_profile",
 ]

@@ -147,6 +147,14 @@ class WorkflowTriggerRequest(BaseModel):
     signature: str | None = Field(
         default=None, description="The intent's armored SSH signature"
     )
+    grant_id: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{32}$",
+        description=(
+            "ADR-112 wave C: run under this standing grant of yours (without "
+            "one, the single grant that covers the run is used)"
+        ),
+    )
 
     def resolved_params(self) -> dict[str, Any]:
         merged = dict(self.params)
@@ -2191,6 +2199,7 @@ def _run_workflow_payload(
     session_header: Any,
     version: str | None = None,
     signed: tuple[str | None, str | None] = (None, None),
+    grant_id: str | None = None,
 ) -> dict[str, Any]:
     """The RUN_WORKFLOW payload; a well-formed ``x-r4-session-id`` rides as
     ``_origin_session_id`` so the durable job carries ``spec.origin.session_id``
@@ -2210,6 +2219,8 @@ def _run_workflow_payload(
     # ADR-112 B2: the signed intent and its signature, checked by the handler
     # (the same rules as a ZMQ RUN_WORKFLOW that carries them).
     payload.update({k: v for k, v in zip(("intent", "signature"), signed) if v})
+    if grant_id:  # wave C: the standing grant the trigger names
+        payload["grant_id"] = grant_id
     return payload
 
 
@@ -2403,6 +2414,8 @@ class _ResolvedTrigger:
     identity_verified: bool
     #: ADR-112 B2: the trigger body's signed intent and signature, if any.
     signed: tuple[str | None, str | None] = (None, None)
+    #: ADR-112 wave C: the standing grant the trigger names, if any.
+    grant_id: str | None = None
 
     @property
     def name(self) -> str:
@@ -2477,6 +2490,7 @@ def _resolve_trigger(
         caller.is_admin,
         caller.identity_verified(),
         (request.intent, request.signature),
+        getattr(request, "grant_id", None),
     )
 
 
@@ -2499,6 +2513,7 @@ def _dispatch_trigger(
             session_header,
             resolved.version,
             resolved.signed,
+            resolved.grant_id,
         )
     )
     # Wave-6 F1: the durable trust bridge reflects the verified flag, never
@@ -2575,9 +2590,13 @@ def _quote_resolved(workflow_name: str, resolved: _ResolvedTrigger) -> _Quoted:
     if quote.refusal:
         _plan_refusal("lane_unavailable", 409, quote.refusal)
     identity = _refuse_hpc_user_work(workflow_json, source_path, resolved)
+    from ..server.grant_admission import covering_grant_id
     from ..server.hpc_user_work import is_user_account
 
-    return _Quoted(quote, is_user_account(identity))
+    if not is_user_account(identity):
+        return _Quoted(quote, False)
+    run = {"workflow": resolved.name, "version": resolved.version or "", "project": resolved.verified_project or ""}
+    return _Quoted(quote, True, covering_grant_id(identity, run))
 
 
 @dataclass(frozen=True)
@@ -2587,6 +2606,8 @@ class _Quoted:
 
     quote: Any
     requires_intent: bool
+    #: Wave C (plan §6 C/D.0 C4): the one standing grant that covers the run.
+    grant_id: str | None = None
 
 
 def _refuse_hpc_user_work(
@@ -2725,6 +2746,7 @@ async def plan_workflow(
         "require_plan": policy.require_plan,
         "auto_commit_allowed": policy.auto_commit_allows(quote.max_gpu_hours),
         "requires_intent": quoted.requires_intent,
+        "grant_id": quoted.grant_id,
     }
 
 

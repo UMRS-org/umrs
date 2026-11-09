@@ -18,7 +18,7 @@ from types import SimpleNamespace
 
 import pytest
 from test_workflow_plans import CODE, SECRET, _h, wf  # noqa: F401 — fixture
-from umrs.orchestrator.site_config import HpcAccessConfig, ServiceAccountAccess
+from umrs.orchestrator.site_config import HpcAccessConfig, ServiceAccountAccess, SiteConfig
 from umrs.server import step_trust
 from umrs.server import workflow_runner as wr
 from umrs.server.workflow_execution_registry import ExecutionRecord
@@ -102,6 +102,52 @@ def test_an_admitted_admin_run_is_not_refused_by_the_runner(hpc):
     client, store, _ = hpc
     assert _trigger(client, _admin_headers()).status_code == 200
     assert wr._hpc_identity_refusal("ops", "proj-a") == ""
+
+
+def test_a_no_budget_service_run_does_not_build_a_gate_profile(hpc, monkeypatch):
+    """Legacy service-only sites do not publish gated signing profiles."""
+    from umrs.hpc_accounts import site_profile
+
+    client, store, _ = hpc
+
+    def forbidden(_site):
+        raise AssertionError("an uncapped service run must not build a gate profile")
+
+    monkeypatch.setattr(site_profile, "published", forbidden)
+    r = _trigger(client, _h(project=LISTED))
+    assert r.status_code == 200, r.text
+    assert len(store.jobs) == 1
+
+
+def _service_pricing_site() -> SiteConfig:
+    site = SiteConfig(name="cluster-a", extra={"ssh_user": "operator"})
+    site.scheduler.hpc_access = _site().scheduler.hpc_access
+    se = site.step_executor
+    se.partition, se.cpus, se.memory, se.gpus = "gpu", 8, "", 1
+    se.time_limit = "02:00:00"
+    return site
+
+
+def test_a_positively_budgeted_service_run_uses_its_service_pricing(hpc, monkeypatch):
+    """No user_account profile is needed to price an ordinary service job."""
+    from umrs.hpc_accounts.usage_ledger import get_usage_ledger
+
+    client, store, _ = hpc
+    monkeypatch.setattr(access, "current_site", _service_pricing_site)
+    get_usage_ledger().tables["budgets"][LISTED] = 0.4
+    r = _trigger(client, _h(project=LISTED))
+    assert (r.status_code, r.headers.get(CODE)) == (403, "hpcaccess.budget_exceeded")
+    assert store.jobs == {}
+
+
+def test_a_positive_budget_without_pricing_context_fails_closed_typed(hpc):
+    from umrs.hpc_accounts.usage_ledger import get_usage_ledger
+
+    client, store, _ = hpc
+    get_usage_ledger().tables["budgets"][LISTED] = 0.4
+    r = _trigger(client, _h(project=LISTED))
+    assert (r.status_code, r.headers.get(CODE)) == (503, "hpcaccess.ledger_unavailable")
+    assert store.jobs == {}
 
 
 def test_a_token_admin_without_an_admin_record_is_refused_at_the_door(hpc):
@@ -405,7 +451,9 @@ def _repin_digests():
 def _ingest_run(payload, *, event_project):
     from umrs.server.workflow_registry_handler import run_ingest_workflow
 
-    return json.loads(run_ingest_workflow("alice", json.dumps(payload), event_project=event_project))
+    return json.loads(
+        run_ingest_workflow("alice", json.dumps(payload), event_project=event_project)
+    )
 
 
 def _dispatch(project):

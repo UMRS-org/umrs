@@ -333,6 +333,7 @@ class RemoteSlurmBackend(SlurmBackend):
         output_dir = self._job_info_dir()
 
         # Resource sizing (popped up-front so partition selection can use them).
+        job_name = kwargs.pop("job_name", None)
         gpu_count = kwargs.pop("gpu_count", None)
         node_count = kwargs.pop("node_count", None)
         candidates = self._partition_candidates(
@@ -383,6 +384,7 @@ class RemoteSlurmBackend(SlurmBackend):
                 requesting_user=requesting_user,
                 project_id=project_id,
                 requested_env=requested_env,
+                job_name=job_name,
             )
         )
 
@@ -628,7 +630,10 @@ class RemoteSlurmBackend(SlurmBackend):
             return None
         pc.recent_picks.note(target)
         logger.info(
-            "Moved pending job %s from %s to blank partition %s", job_id, current, target
+            "Moved pending job %s from %s to blank partition %s",
+            job_id,
+            current,
+            target,
         )
         return target
 
@@ -716,6 +721,14 @@ class RemoteSlurmBackend(SlurmBackend):
         sbatch_args.extend(getattr(sched, "extra_sbatch", []))
         return sbatch_args
 
+    @staticmethod
+    def _job_name_args(job_name: str | None) -> list[str]:
+        if not job_name:
+            return []
+        if not re.fullmatch(r"[A-Za-z0-9_.-]{1,128}", str(job_name)):
+            raise ValueError(f"invalid Slurm job name: {job_name!r}")
+        return [f"--job-name={shlex.quote(str(job_name))}"]
+
     def _build_wrapper_job_exports(
         self,
         *,
@@ -725,6 +738,7 @@ class RemoteSlurmBackend(SlurmBackend):
         requesting_user: str | None,
         project_id: str | None,
         requested_env: Any,
+        job_name: str | None = None,
     ) -> list[str]:
         """Build the ``--comment`` and ``--export`` sbatch args for a wrapper job.
 
@@ -763,7 +777,7 @@ class RemoteSlurmBackend(SlurmBackend):
         # Attribution: export the requesting user/project identity for Slurm
         # accounting (UMRS_* env vars) and sacct (--comment), so containers can
         # log the originating user even when submitted via the master account.
-        args: list[str] = []
+        args: list[str] = self._job_name_args(job_name)
         attribution_parts = []
         if requesting_user:
             env_overrides.setdefault("UMRS_USER", requesting_user)
@@ -820,7 +834,9 @@ class RemoteSlurmBackend(SlurmBackend):
             return None
         state, _, exit_code = lines[0].partition("|")
         detail = f"Slurm state {state.strip()}"
-        return f"{detail}, exit code {exit_code.strip()}" if exit_code.strip() else detail
+        return (
+            f"{detail}, exit code {exit_code.strip()}" if exit_code.strip() else detail
+        )
 
     async def _job_status(self, job_id: str, *, before_ready: bool) -> JobInfo:
         # Try job info file first (read remotely).

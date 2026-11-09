@@ -218,7 +218,12 @@ def check_trigger_intent(
 def intent_from_spec(spec: Any) -> dict[str, str] | None:
     """The ``{"b64", "signature", "id"}`` a durable job spec carries."""
     raw = spec.get("intent") if isinstance(spec, dict) else None
-    if not isinstance(raw, dict) or not raw.get("id"):
+    if not isinstance(raw, dict):
+        return None
+    if raw.get("grant_id"):  # wave C: a grant run's fields (plan §6 C/D.0 C4)
+        keys: tuple[str, ...] = ("grant_id", "run_spec_b64", "run_spec_id", "workflow_steps_b64")
+        return {k: str(raw.get(k) or "") for k in keys}
+    if not raw.get("id"):
         return None
     return {k: str(raw.get(k) or "") for k in ("b64", "signature", "id")}
 

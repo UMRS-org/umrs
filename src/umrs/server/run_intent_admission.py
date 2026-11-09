@@ -9,6 +9,13 @@ anything is created. An intent on any other run is ``intent_invalid``. An
 intent whose ``run_id`` already names a run is ``intent_used`` (409). The
 run then executes the intent's ``params`` under ``execution_id = run_id``.
 
+Wave C (plan §6 C/D.0 C4): a ``user_account`` run without an intent runs
+under one of the person's standing grants (:mod:`.grant_admission`): the
+trigger may name it (``grant_id``); an intent together with a ``grant_id``
+is ``intent_invalid`` (``both``); a ``grant_id`` on any other run is
+``grant_invalid`` (``not_covered``). Without a single covering grant the
+run is still ``signature_required`` (428), naming the candidates.
+
 Errors are the handler's JSON (``{"status": "error", "code", "message"}``);
 the HTTP route maps the ``hpcaccess.*`` code to its typed status.
 """
@@ -40,21 +47,30 @@ def error_json(code: str, message: str, **extra: Any) -> str:
 
 @dataclass(frozen=True)
 class RunAdmission:
-    """What the run starts with: its params and, for a gated run, its intent."""
+    """What the run starts with: its params and, for a gated run, its
+    intent or its grant run (wave C)."""
 
     params: dict[str, Any]
     intent: SignedIntent | None = None
+    grant: Any = None
 
     @property
     def execution_id(self) -> str | None:
-        return self.intent.run_id if self.intent is not None else None
+        if self.intent is not None:
+            return self.intent.run_id
+        return self.grant.run_id if self.grant is not None else None
 
     def new_execution_id(self) -> str:
-        """The run's execution id: the intent's ``run_id``, else a fresh one."""
+        """The run's execution id: the intent's or run spec's ``run_id``,
+        else a fresh one."""
         return self.execution_id or f"wf-{uuid.uuid4().hex[:12]}"
 
     def intent_spec(self) -> dict[str, str] | None:
-        return self.intent.spec() if self.intent is not None else None
+        """The gated run's mapping the spec and the record keep: the
+        intent's ``{b64, signature, id}`` or the grant run's fields."""
+        if self.intent is not None:
+            return self.intent.spec()
+        return self.grant.spec() if self.grant is not None else None
 
 
 def _carries_params(params: dict[str, Any]) -> bool:
@@ -109,25 +125,109 @@ def _check_project_param(intent: SignedIntent) -> None:
         )
 
 
+def _budget_refusal(body: dict[str, Any]) -> str | None:
+    from umrs.hpc_accounts.site_profile import published
+    from umrs.hpc_accounts.usage_ledger import BudgetExceeded, LedgerUnavailable
+    from umrs.shared.hpc_user_work_access import current_site
+
+    from .grant_admission import check_run_budget
+
+    try:
+        check_run_budget(body, published(current_site())[0])
+    except (BudgetExceeded, LedgerUnavailable) as exc:
+        return error_json(exc.code, str(exc))
+    return None
+
+
+def _service_budget_refusal(
+    identity: HpcIdentity | None,
+    run: dict[str, Any],
+    params: dict[str, Any],
+    target: Any,
+) -> str | None:
+    if identity is None or target is None:
+        return None
+    from umrs.hpc_accounts.usage_ledger import BudgetExceeded, LedgerUnavailable
+
+    from .grant_admission import check_service_run_budget
+
+    try:
+        check_service_run_budget(target, identity, run, params)
+    except (BudgetExceeded, LedgerUnavailable) as exc:
+        return error_json(exc.code, str(exc))
+    return None
+
+
+def _not_gated(
+    identity: HpcIdentity | None,
+    payload: dict[str, Any],
+    params: dict[str, Any],
+    run: dict[str, Any],
+    target: Any,
+) -> tuple[RunAdmission | None, str | None]:
+    """A run on any other identity carries neither an intent nor a grant."""
+    if _signed(payload):
+        return None, _invalid(IntentInvalid("not_user_account", "no gated identity"))
+    if payload.get("grant_id"):
+        return None, error_json(
+            "hpcaccess.grant_invalid",
+            "this run does not run under your own HPC account: it takes no grant",
+            reason="not_covered",
+        )
+    refused = _service_budget_refusal(identity, run, params, target)
+    if refused is not None:
+        return None, refused
+    return RunAdmission(params), None
+
+
+def _grant_admission(
+    identity: HpcIdentity,
+    payload: dict[str, Any],
+    params: dict[str, Any],
+    run: dict[str, Any],
+    target: Any,
+) -> tuple[RunAdmission | None, str | None]:
+    """Wave C: the run under one of the person's grants (or the refusal)."""
+    from .grant_admission import admit_grant, refusal_json
+
+    if target is None:
+        return None, _signature_required(identity)
+    try:
+        gated = admit_grant(identity, payload, params, run, target)
+    except Exception as exc:
+        refused = refusal_json(exc)
+        if refused is None:
+            raise
+        return None, refused
+    return RunAdmission(dict(gated.body["params"]), grant=gated), None
+
+
 def admit_run(
     identity: HpcIdentity | None,
     payload: dict[str, Any],
     params: dict[str, Any],
     run: dict[str, Any],
     run_exists: Any = None,
+    target: Any = None,
 ) -> tuple[RunAdmission | None, str | None]:
     """``(admission, None)`` or ``(None, error JSON)`` for one run.
 
     *run* names ``workflow``, ``version``, ``project`` (verified) and
     ``principal`` (the caller). *run_exists* answers whether an execution id
-    already has a run (``intent_used``)."""
+    already has a run (``intent_used``). *target* (the run's definition:
+    ``entry``, ``source_path``, ``workflow_json``) lets a run without an
+    intent run under a grant (wave C)."""
     if not is_user_account(identity):
-        if _signed(payload):
-            return None, _invalid(IntentInvalid("not_user_account", "no gated identity"))
-        return RunAdmission(params), None
+        return _not_gated(identity, payload, params, run, target)
     assert identity is not None
     if not _signed(payload):
-        return None, _signature_required(identity)
+        return _grant_admission(identity, payload, params, run, target)
+    if payload.get("grant_id"):
+        return None, _invalid(
+            IntentInvalid(
+                "both", "a run carries a signed intent or a grant_id, not both"
+            )
+        )
     try:
         intent = decode_signed_intent(payload.get("intent"), payload.get("signature"))
         check_trigger_intent(intent, _binding(identity, run, params))
@@ -139,6 +239,9 @@ def admit_run(
             "hpcaccess.intent_used",
             f"run {intent.run_id} of this intent already exists: sign a new one",
         )
+    refused = _budget_refusal(intent.body)
+    if refused is not None:
+        return None, refused
     return RunAdmission(dict(intent.body["params"]), intent), None
 
 

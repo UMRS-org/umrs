@@ -10,6 +10,9 @@ from __future__ import annotations
 
 import subprocess
 
+import pytest
+from umrs.orchestrator.ssh_control import SSHControlConfig
+from umrs.server.remote_slurm_step_executor import RemoteSlurmStepExecutor
 from umrs.server.slurm_step_executor import SlurmStepExecutor
 
 
@@ -69,3 +72,32 @@ def test_sacct_branch_fallback_after_squeue_empty(monkeypatch):
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     assert _executor()._check_job_status("123") == "COMPLETED"
+
+
+@pytest.mark.parametrize(
+    "raw",
+    ["not-json", "[]", '{"spring-8": 1}', '{"spring-8": "bad account"}', '{"": "rkp00101"}'],
+)
+def test_project_account_overrides_refuse_malformed_values(monkeypatch, raw):
+    monkeypatch.setenv("UMRS_SLURM_PROJECT_ACCOUNTS", raw)
+    with pytest.raises(ValueError, match="UMRS_SLURM_PROJECT_ACCOUNTS"):
+        RemoteSlurmStepExecutor(ssh_config=SSHControlConfig(ssh_target="login"))
+
+
+def test_project_account_field_preserves_positional_constructor_arguments(monkeypatch):
+    monkeypatch.delenv("UMRS_SLURM_PROJECT_ACCOUNTS", raising=False)
+    executor = RemoteSlurmStepExecutor(
+        "gpu",
+        1,
+        8,
+        "32G",
+        "01:00:00",
+        "acct",
+        "img:1",
+        ssh_config=SSHControlConfig(ssh_target="login"),
+    )
+    assert (executor.account, executor.image, executor.project_accounts) == (
+        "acct",
+        "img:1",
+        {},
+    )

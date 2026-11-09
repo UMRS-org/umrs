@@ -15,6 +15,7 @@ import base64
 import hashlib
 import io
 import json
+import subprocess
 import sys
 import tarfile
 from pathlib import Path
@@ -50,10 +51,19 @@ def _intent(src_sha: str, entrypoint: str = "steps.m:Upper") -> dict:
             {
                 "name": "s1",
                 "after": [],
+                "partition": "gpu",
+                "cpus": 1,
+                "gpus": 0,
                 "time": 120,
                 "inputs": {
                     "objects": [
-                        {"mode": "listed", "bucket": "data", "key": "in.txt", "sha256": DATA_SHA, "size": len(DATA)}
+                        {
+                            "mode": "listed",
+                            "bucket": "data",
+                            "key": "in.txt",
+                            "sha256": DATA_SHA,
+                            "size": len(DATA),
+                        }
                     ],
                     "prefixes": [],
                     "chained": [],
@@ -87,6 +97,10 @@ def gate(tmp_path, monkeypatch):
 
     monkeypatch.setattr(executor, "_ssh_run", no_helper)
     monkeypatch.setattr(executor, "_stream", no_helper)
+    profile = {"partitions": {"gpu": {"exclusive": False, "max_cpus": 64, "max_gpus": 8}}}
+    monkeypatch.setattr(
+        "umrs.hpc_accounts.site_profile.published", lambda _site: (profile, b"", "sha")
+    )
     yield state, src, executor
     lane.set_transport_factory(None)
 
@@ -132,7 +146,12 @@ def _ctx(src: Path, s3: FakeS3, parents: dict | None = None) -> StepContext:
         output_bucket=OUT,
         config={},
         metadata={
-            STAGE_REQUEST_METADATA_KEY: {"owner": "alice", "step": "s1", "params": {}, "stage_inputs": None},
+            STAGE_REQUEST_METADATA_KEY: {
+                "owner": "alice",
+                "step": "s1",
+                "params": {},
+                "stage_inputs": None,
+            },
             EXECUTOR_SOURCE_DIR_METADATA_KEY: str(src),
         },
         run_id=RUN,
@@ -145,19 +164,36 @@ def _run(executor, src: Path, s3: FakeS3, entrypoint: str = "steps.m:Upper"):
 
 
 SRC_SHA = hashlib.sha256(SRC).hexdigest()
-REPLY = {"status": "ok", "result": {"output_keys": ["s3://wf-runner-output/res.txt"], "extra": {"slurm": "forged"}}}
+REPLY = {
+    "status": "ok",
+    "result": {"output_keys": ["s3://wf-runner-output/res.txt"], "extra": {"slurm": "forged"}},
+}
 
 
 def test_a_gated_step_drives_the_gate_verbs_in_order(gate):
     state, src, executor = gate
-    _plan(state, states=["PENDING", "RUNNING", "COMPLETED"], reply=REPLY, out={f"{OUT}/res.txt": "result"})
+    _plan(
+        state,
+        states=["PENDING", "RUNNING", "COMPLETED"],
+        reply=REPLY,
+        out={f"{OUT}/res.txt": "result"},
+    )
     records: list = []
     run = _bind(executor, SRC_SHA, records)
     s3 = FakeS3({("data", "in.txt"): DATA})
     result = _run(executor, src, s3)
     assert _verbs(state) == [
-        "lookup", "mkwd", "stage-in", "submit", "status", "status", "status",
-        "read-reply", "collect-out", "usage", "rmwd",
+        "lookup",
+        "mkwd",
+        "stage-in",
+        "submit",
+        "status",
+        "status",
+        "status",
+        "read-reply",
+        "collect-out",
+        "usage",
+        "rmwd",
     ]
     lookup, mkwd = _calls(state)[:2]
     assert lookup == ["lookup", run.intent_id, "s1"] and mkwd == ["mkwd", run.intent_id, "s1"]
@@ -182,7 +218,9 @@ def test_submit_sends_the_signed_payload_and_signature_and_nothing_else(gate):
     _plan(state, reply=REPLY, out={f"{OUT}/res.txt": "x"})
     run = _bind(executor, SRC_SHA, [])
     _run(executor, src, FakeS3({("data", "in.txt"): DATA}))
-    assert _gate_state(state)["envelopes"] == [{"payload": run.intent_b64, "signature": run.signature}]
+    assert _gate_state(state)["envelopes"] == [
+        {"payload": run.intent_b64, "signature": run.signature}
+    ]
 
 
 def test_the_step_record_names_the_gated_transport_intent_and_log_head(gate):
@@ -194,7 +232,11 @@ def test_the_step_record_names_the_gated_transport_intent_and_log_head(gate):
     last = records[-1]
     assert last["transport"] == "gated:site-x:alice"
     assert (last["intent_id"], last["gate_log"]) == (run.intent_id, {"n": 7, "h": "ab" * 32})
-    assert (last["access_mode"], last["site_login"], last["slurm_account"]) == ("user_account", "alice_hpc", "grp-a")
+    assert (last["access_mode"], last["site_login"], last["slurm_account"]) == (
+        "user_account",
+        "alice_hpc",
+        "grp-a",
+    )
     assert last["workdir"].startswith(run.intent_id[:16] + "-s1-") and last["cleaned"] is True
 
 
@@ -213,8 +255,45 @@ def test_a_lost_submit_without_a_nonce_starts_over_with_a_fresh_workdir(gate):
     _plan(state, fail={"submit": 255}, reply=REPLY, out={f"{OUT}/res.txt": "x"})
     _bind(executor, SRC_SHA, [])
     _run(executor, src, FakeS3({("data", "in.txt"): DATA}))
-    assert _verbs(state)[:8] == ["lookup", "mkwd", "stage-in", "submit", "lookup", "rmwd", "mkwd", "stage-in"]
+    assert _verbs(state)[:8] == [
+        "lookup",
+        "mkwd",
+        "stage-in",
+        "submit",
+        "lookup",
+        "rmwd",
+        "mkwd",
+        "stage-in",
+    ]
     assert _verbs(state).count("submit") == 2
+
+
+def test_a_lost_submit_and_unreachable_lookup_leave_pending(gate, monkeypatch):
+    from umrs.hpc_accounts.usage_ledger import get_usage_ledger
+
+    state, src, executor = gate
+    executor.unreachable_budget = 0
+    original = lane.GateTransport.call
+    lookups: list[str] = []
+    submits: list[str] = []
+
+    def uncertain(self, verb, *args, **kwargs):
+        if verb == "submit":
+            submits.append(verb)
+            return subprocess.CompletedProcess([verb], 255, b"", b"connection lost")
+        if verb == "lookup":
+            lookups.append(verb)
+            if len(lookups) > 1:
+                return subprocess.CompletedProcess([verb], -1, b"", b"still unreachable")
+        return original(self, verb, *args, **kwargs)
+
+    monkeypatch.setattr(lane.GateTransport, "call", uncertain)
+    _bind(executor, SRC_SHA, [])
+    with pytest.raises(StepExecutionError):
+        _run(executor, src, FakeS3({("data", "in.txt"): DATA}))
+    assert len(submits) == 1 and len(lookups) == 2
+    assert [r["state"] for r in get_usage_ledger().tables["rows"]] == ["pending"]
+    assert "rmwd" not in _verbs(state)
 
 
 def test_a_failed_stage_in_is_abandoned_for_a_fresh_workdir(gate):
@@ -227,7 +306,12 @@ def test_a_failed_stage_in_is_abandoned_for_a_fresh_workdir(gate):
 
 def test_an_earlier_attempts_job_is_adopted_never_submitted_twice(gate):
     state, src, executor = gate
-    _plan(state, nonce={"wd": "w-1", "job_id": "777", "state": "RUNNING"}, reply=REPLY, out={f"{OUT}/res.txt": "x"})
+    _plan(
+        state,
+        nonce={"wd": "w-1", "job_id": "777", "state": "RUNNING"},
+        reply=REPLY,
+        out={f"{OUT}/res.txt": "x"},
+    )
     _bind(executor, SRC_SHA, [])
     _run(executor, src, FakeS3({("data", "in.txt"): DATA}))
     assert "submit" not in _verbs(state) and "mkwd" not in _verbs(state)
@@ -258,7 +342,10 @@ def test_a_routed_endpoint_the_intent_did_not_sign_sends_nothing(gate):
     state, src, executor = gate
     _bind(executor, SRC_SHA, [])
     ctx = _ctx(src, FakeS3({("data", "in.txt"): DATA}))
-    ctx.metadata[EXECUTOR_ENDPOINT_METADATA_KEY] = {"api_base": "http://10.0.0.5:8000/v1", "kind": "vllm"}
+    ctx.metadata[EXECUTOR_ENDPOINT_METADATA_KEY] = {
+        "api_base": "http://10.0.0.5:8000/v1",
+        "kind": "vllm",
+    }
     with pytest.raises(StepExecutionError) as info:
         executor.execute(entrypoint="steps.m:Upper", config={}, ctx=ctx)
     assert "endpoint_changed" in info.value.message and _calls(state) == []
@@ -269,9 +356,23 @@ def test_the_platform_key_never_rides_as_an_endpoint_credential(gate, monkeypatc
 
     state, src, executor = gate
     monkeypatch.setenv("OPENAI_API_KEY", "sk-platform")
-    _bind(executor, SRC_SHA, [], steps=[{**_intent(SRC_SHA)["steps"][0], "endpoint": {"host": "10.0.0.5", "port": 8000, "kind": "vllm"}}])
+    _bind(
+        executor,
+        SRC_SHA,
+        [],
+        steps=[
+            {
+                **_intent(SRC_SHA)["steps"][0],
+                "endpoint": {"host": "10.0.0.5", "port": 8000, "kind": "vllm"},
+            }
+        ],
+    )
     ctx = _ctx(src, FakeS3({("data", "in.txt"): DATA}))
-    ctx.metadata[EXECUTOR_ENDPOINT_METADATA_KEY] = {"api_base": "http://10.0.0.5:8000/v1", "kind": "vllm", "api_key": "sk-platform"}
+    ctx.metadata[EXECUTOR_ENDPOINT_METADATA_KEY] = {
+        "api_base": "http://10.0.0.5:8000/v1",
+        "kind": "vllm",
+        "api_key": "sk-platform",
+    }
     with pytest.raises(StepExecutionError) as info:
         executor.execute(entrypoint="steps.m:Upper", config={}, ctx=ctx)
     assert "endpoint_credential_not_scoped" in info.value.message and _calls(state) == []
@@ -379,13 +480,28 @@ def test_the_daily_sweep_asks_each_recent_active_person(gate, monkeypatch):
     store = InMemorySiteAccountStore("site-x")
     for user in ("alice", "bob"):
         store.issue_key(user, "tk-000000000001", "SHA256:x")
-    store.record_verified("alice", "tk-000000000001", {
-        "site_login": "a", "verified_login": "a", "verified_assocs": [], "gate_version": "2",
-        "gate_sha256": "", "signer_fingerprints": [], "uv_required": False,
-    })
-    step = StepProgress(name="s1", extra={"slurm_jobs": {
-        "w-1": {"transport": "gated:site-x:alice"}, "w-2": {"transport": "gated:site-x:bob"},
-    }})
+    store.record_verified(
+        "alice",
+        "tk-000000000001",
+        {
+            "site_login": "a",
+            "verified_login": "a",
+            "verified_assocs": [],
+            "gate_version": "2",
+            "gate_sha256": "",
+            "signer_fingerprints": [],
+            "uv_required": False,
+        },
+    )
+    step = StepProgress(
+        name="s1",
+        extra={
+            "slurm_jobs": {
+                "w-1": {"transport": "gated:site-x:alice"},
+                "w-2": {"transport": "gated:site-x:bob"},
+            }
+        },
+    )
     record = SimpleNamespace(submitted_at=1000.0, steps={"s1": step})
     swept = step_reaper.sweep_gated_accounts([record], now=2000.0, store=store)
     assert list(swept) == ["alice"]  # bob's account is not active
@@ -461,7 +577,9 @@ def test_the_cascade_leg_counts_what_the_gate_cancelled(gate):
     from umrs.admin import account_cascade as ac
 
     state, _src, _executor = gate
-    records = _records_with({"transport": "gated:site-x:alice", "job_id": "991", "state": "PENDING"})
+    records = _records_with(
+        {"transport": "gated:site-x:alice", "job_id": "991", "state": "PENDING"}
+    )
     result = ac.CascadeResult(user="alice", project="", reason="r", trigger="t", venue="site-x")
     ac.cancel_gated_jobs(result, records)
     assert result.gated_jobs_cancelled == 1 and _calls(state) == [["cancel", "991"]]
@@ -472,7 +590,9 @@ def test_a_project_removal_cancels_no_gated_job(gate):
     from umrs.admin import account_cascade as ac
 
     state, _src, _executor = gate
-    records = _records_with({"transport": "gated:site-x:alice", "job_id": "991", "state": "PENDING"})
+    records = _records_with(
+        {"transport": "gated:site-x:alice", "job_id": "991", "state": "PENDING"}
+    )
     result = ac.CascadeResult(user="alice", project="p1", reason="r", trigger="t", venue="site-x")
     ac.cancel_gated_jobs(result, records)
     assert result.gated_jobs_cancelled == 0 and _calls(state) == []
@@ -492,7 +612,13 @@ def test_run_cascade_cancels_gated_jobs_before_it_destroys_the_keys(monkeypatch)
             return []
 
     ac.run_cascade(
-        "alice", project=None, reason="r", actor="a", trigger="t", broker=_Broker(), site_accounts=object()
+        "alice",
+        project=None,
+        reason="r",
+        actor="a",
+        trigger="t",
+        broker=_Broker(),
+        site_accounts=object(),
     )
     assert order == ["cancel", "keys"]
 
@@ -502,7 +628,9 @@ def test_an_unreachable_gate_cancels_nothing_and_never_raises(gate, caplog):
         raise lane.GateFailure("not_enrolled", "no key", "setup")
 
     lane.set_transport_factory(gone)
-    records = _records_with({"transport": "gated:site-x:alice", "job_id": "991", "state": "RUNNING"})
+    records = _records_with(
+        {"transport": "gated:site-x:alice", "job_id": "991", "state": "RUNNING"}
+    )
     assert lane.cancel_person_jobs("site-x", "alice", records) == 0
     assert "gate unreachable" in caplog.text
 
@@ -528,7 +656,9 @@ def test_a_gated_step_takes_one_attempt_whatever_its_retry_policy(intent_id, att
     from umrs.server.workflow_execution_registry import ExecutionRecord
 
     executor = _Refusing()
-    record = ExecutionRecord(execution_id=RUN, workflow_name="w", user_id="alice", intent_id=intent_id)
+    record = ExecutionRecord(
+        execution_id=RUN, workflow_name="w", user_id="alice", intent_id=intent_id
+    )
     result, error, used, _ms = wr._execute_with_retry(
         executor=executor,
         spec={"entrypoint": "m:S", "max_retries": 2, "retry_delay": 0},

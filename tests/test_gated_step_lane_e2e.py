@@ -589,8 +589,8 @@ def _install_as_r4(w: World) -> None:
     key = _signing_key()
     plan = hs.build_install(
         offer, principal=USER, home=str(w.cluster.home), signer=key, kind="ed25519",
-        site_profile=profile.data,
-    )  # fmt: skip
+        site_profile=profile.data, epoch=int(time.time()), fresh_epoch=None,
+    )  # fmt: skip  # a new account, matching `r4 hpc add`'s K7 bootstrap
     proc = subprocess.run(
         ["sh", "-c", hpc_remote.INSTALL_SCRIPT],
         input=hpc_remote.install_payload(plan),
@@ -599,7 +599,7 @@ def _install_as_r4(w: World) -> None:
         timeout=60,
         check=False,
     )
-    assert proc.returncode == 0 and proc.stdout.strip() == b"installed", proc.stderr
+    assert proc.returncode == 0 and proc.stdout.strip().splitlines()[-1:] == [b"installed"], proc.stderr
     hs.record_site_signer(SITE, "ed25519", key)
     hpc_site_profile.remember(SITE, profile)
     hs.update_site_record(SITE, venue=offer.site, domain=offer.domain, site_profile_sha256=profile.sha256)

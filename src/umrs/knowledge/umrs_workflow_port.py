@@ -87,6 +87,113 @@ def _refuse_unplanned_run(store, workflow_name: str, project_id: str) -> None:
         )
 
 
+def _grant_target(entry: dict) -> tuple[dict, str]:
+    import json
+    import os
+
+    source = str(entry.get("source_path") or "")
+    with open(os.path.join(source, "workflow.json"), encoding="utf-8") as handle:
+        return json.load(handle), source
+
+
+def _user_account_identity(
+    entry: dict, owner: str, project: str | None, *, any_mode: bool = False
+):
+    """The run identity, or None without HPC work or on a prior refusal."""
+    from umrs.orchestrator.hpc_identity import HpcAccessRefused
+    from umrs.server.hpc_user_work import is_user_account, workflow_user_work_identity
+
+    try:
+        workflow_json, source = _grant_target(entry)
+        identity = workflow_user_work_identity(
+            workflow_json, source, user_id=owner, project_id=project
+        )
+    except (OSError, ValueError, HpcAccessRefused):
+        return None
+    return identity if any_mode or is_user_account(identity) else None
+
+
+def _grant_run(
+    entry: dict, owner: str, project: str | None, params: dict, grant_id: str | None
+):
+    """ADR-112 wave C (K12): a loop iteration on a site that runs the
+    owner's work under their own HPC account runs under a standing grant:
+    the one the loop recorded, else the one that covers the run. None: the
+    run does not use the person's account. A recorded grant that ended
+    stops the loop (:class:`~umrs.knowledge.loop.GrantEnded`)."""
+    from types import SimpleNamespace
+
+    from umrs.server.hpc_user_work import is_user_account
+    from umrs.server.run_intent_admission import admit_run
+
+    identity = _user_account_identity(entry, owner, project, any_mode=True)
+    if identity is None:
+        return None
+    workflow_json, source = _grant_target(entry)
+    run_project = project or (
+        "" if is_user_account(identity) else str(params.get("project_id") or "")
+    )
+    run = {
+        "workflow": entry.get("name"),
+        "version": entry.get("version") or "",
+        "project": run_project,
+        "principal": owner,
+    }
+    target = SimpleNamespace(
+        entry=entry, source_path=source, workflow_json=workflow_json
+    )
+    admission, error = admit_run(
+        identity, {"grant_id": grant_id} if grant_id else {}, params, run, None, target
+    )
+    if error:
+        raise _grant_refusal(error, grant_id)
+    return admission.grant
+
+
+def _grant_refusal(error: str, grant_id: str | None) -> Exception:
+    """A recorded grant that ended is ``GrantEnded``; anything else is a
+    RuntimeError by name (this port's convention)."""
+    import json
+
+    from umrs.knowledge.loop import GrantEnded
+
+    body = json.loads(error)
+    ended = body.get("code") == "hpcaccess.grant_not_found" or body.get("reason") in (
+        "expired",
+        "cancelled",
+    )
+    if grant_id and ended:
+        return GrantEnded(grant_id, str(body.get("message") or ""))
+    return RuntimeError(
+        f"research loop run refused: {body.get('message')} ({body.get('code')})"
+    )
+
+
+def _run_spec(
+    entry: dict, workflow_name: str, params: dict, verified: str | None, gated
+) -> dict:
+    """The iteration's durable job spec; a grant run (wave C) keeps its run
+    spec's params and its ``run_id`` as the execution id."""
+    spec = {
+        "workflow_name": entry.get("name") or workflow_name,
+        "params": params,
+        "execution_id": f"exec-{uuid4().hex}",
+        # ADR-113 D-4: the iteration pins the version it resolved.
+        "source_path": entry["source_path"],
+        "workflow_version": entry.get("version"),
+        "source_sha256": entry.get("source_sha256"),
+    }
+    if verified:
+        spec[VERIFIED_PROJECT_SPEC_KEY] = verified
+    if gated is not None:
+        spec.update(
+            params=dict(gated.body["params"]),
+            execution_id=gated.run_id,
+            intent=gated.spec(),
+        )
+    return spec
+
+
 class UmrsWorkflowExecutionPort(WorkflowExecutionPort):
     """WorkflowExecutionPort backed by JobStore + execution registry."""
 
@@ -96,6 +203,12 @@ class UmrsWorkflowExecutionPort(WorkflowExecutionPort):
         # execution_id -> job_id for jobs this process submitted (registry
         # records don't carry it until the backend writes them).
         self._jobs: dict[str, str] = {}
+        # ADR-112 wave C (K12): execution_id -> the grant its run uses.
+        self._grants: dict[str, str] = {}
+
+    def grant_for(self, execution_id: str) -> str:
+        """The standing grant *execution_id* runs under ("" for none)."""
+        return self._grants.get(execution_id, "")
 
     # -- registration --------------------------------------------------------
 
@@ -109,6 +222,7 @@ class UmrsWorkflowExecutionPort(WorkflowExecutionPort):
         *,
         owner: str,
         owner_project: str | None = None,
+        grant_id: str | None = None,
     ) -> str:
         """Start *workflow_name* as *owner* (the loop's verified owner; ""
         for an ownerless loop). *owner_project* is the loop's project when
@@ -122,18 +236,11 @@ class UmrsWorkflowExecutionPort(WorkflowExecutionPort):
         verified = owner_project if owner and owner_project == project_id else None
         entry = _owner_entry(workflow_name, owner, verified)
         _refuse_unplanned_run(self._store, workflow_name, project_id)
-        execution_id = f"exec-{uuid4().hex}"
-        spec = {
-            "workflow_name": entry.get("name") or workflow_name,
-            "params": params,
-            "execution_id": execution_id,
-            # ADR-113 D-4: the iteration pins the version it resolved.
-            "source_path": entry["source_path"],
-            "workflow_version": entry.get("version"),
-            "source_sha256": entry.get("source_sha256"),
-        }
-        if verified:
-            spec[VERIFIED_PROJECT_SPEC_KEY] = verified
+        gated = _grant_run(entry, owner, verified, params, grant_id)
+        spec = _run_spec(entry, workflow_name, params, verified, gated)
+        execution_id = spec["execution_id"]
+        if gated is not None:
+            self._grants[execution_id] = gated.grant_id
         job_id = self._store.create_job(
             project_id=project_id,
             user_id=owner or "research-loop",

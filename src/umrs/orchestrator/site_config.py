@@ -21,6 +21,7 @@ Usage::
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -298,7 +299,7 @@ class StepExecutorConfig:
     cpus: int = 8  # CPUs per task
     memory: str = "32G"  # Memory per node
     time_limit: str = "01:00:00"  # Time limit
-    account: str = ""  # Slurm account (optional)
+    account: str = ""  # Default Slurm account (optional)
     image: str = ""  # Default container image for steps
     gpu: bool = True  # Whether to attach GPU by default
     # How the HPC lane hands a step that needs a GPU its devices: "cdi"
@@ -356,6 +357,9 @@ class StepExecutorConfig:
     endpoint_max_request_bytes: int = 0
     endpoint_max_response_bytes: int = 0
     endpoint_max_total_bytes: int = 0
+    # Verified-project → Slurm account overrides; an unlisted project uses account.
+    # Appended after every existing positional field for constructor compatibility.
+    project_accounts: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -569,6 +573,10 @@ def _step_executor_env(cfg: StepExecutorConfig) -> dict[str, str]:
         env["UMRS_SLURM_TIME"] = cfg.time_limit
         if cfg.account:
             env["UMRS_SLURM_ACCOUNT"] = cfg.account
+        if cfg.project_accounts:
+            env["UMRS_SLURM_PROJECT_ACCOUNTS"] = json.dumps(
+                cfg.project_accounts, sort_keys=True, separators=(",", ":")
+            )
     env.update(_step_lane_env(cfg))
     return env
 
@@ -856,7 +864,9 @@ def _parse_user_account(value: Any) -> UserAccountAccess:
         uv_required=_hpc_bool(data, "uv_required", where),
         gate_min_version=_gate_min_version(data, where),
         profile=dict(
-            _hpc_mapping(data.get("profile") or {}, f"{where}.profile", GATE_PROFILE_KEYS)
+            _hpc_mapping(
+                data.get("profile") or {}, f"{where}.profile", GATE_PROFILE_KEYS
+            )
         ),
     )
 

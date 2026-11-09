@@ -8,8 +8,9 @@ image only after it verified the staged archive — so the lane opens only when
 ``remote_enabled`` AND an image are present. bdrt and octopus carry their lane sizing and gpu_form, closed and
 without lane paths until onboarded (2026-09-27: bdrt awaits its R2 probe,
 octopus a runtime decision; a declared helper + workdir root starts the
-reaper's hourly SSH). ai4s (RIKYU) opens like rccs since 2026-11-08 (gpus flag,
-rkp00101). All four refuse uploaded code in-process by name, and
+reaper's hourly SSH). ai4s (RIKYU) opens like rccs since 2026-11-08 (gpus flag);
+since 2026-11-09 only spring-8 charges rkp00101, all other projects rkp00043.
+All four refuse uploaded code in-process by name, and
 each umrs-front server reads only its own cluster's UMRS_<C>_STEP_* from the
 converge's .env.
 """
@@ -34,6 +35,7 @@ from umrs.server.step_executor import (
     EXECUTOR_GPU_METADATA_KEY,
     StepExecutionError,
 )
+from umrs.server.step_staging import STAGE_PROJECT_ID_METADATA_KEY
 from umrs.server.step_trust import hpc_lane_available, uploaded_code_lane
 
 UMRS_ROOT = Path(__file__).resolve().parents[1]
@@ -529,7 +531,7 @@ def test_ai4s_lane_is_declared_open_like_rccs_with_rikyu_limits():
     assert (step.kind, step.partition, step.account, step.image) == (
         "inproc",
         "gpu",
-        "rkp00101",
+        "rkp00043",
         "",
     )
     assert (step.remote_enabled, step.uploaded_code, step.gpu, step.gpu_form) == (
@@ -547,19 +549,46 @@ def test_ai4s_lane_is_declared_open_like_rccs_with_rikyu_limits():
     assert step.allowed_images == _step("rccs-front").allowed_images
 
 
+def test_ai4s_account_override_is_scoped_to_spring8():
+    assert _step("ai4s-front").project_accounts == {"spring-8": "rkp00101"}
+
+
+def test_ai4s_serving_account_does_not_change():
+    cfg = load_site_config(str(DEPLOY / "ai4s-front" / "site.yaml"))
+    assert cfg.scheduler.account == "rkp00043"
+
+
 def test_ai4s_exports_the_gpus_flag_and_a_job_private_venue_root():
     cfg = load_site_config(str(DEPLOY / "ai4s-front" / "site.yaml"))
     env = cfg.to_env()
     assert env["UMRS_STEP_GPU_FLAG"] == "gpus"
-    assert env["UMRS_SLURM_ACCOUNT"] == "rkp00101"
+    assert env["UMRS_SLURM_ACCOUNT"] == "rkp00043"
+    assert json.loads(env["UMRS_SLURM_PROJECT_ACCOUNTS"]) == {"spring-8": "rkp00101"}
     assert env["UMRS_STEP_REMOTE_ENABLED"] == "1"
     remote_env = cfg.extra["ssh_remote_env"]
     assert remote_env["RIVAULT_VENUE_ROOT"].startswith("/tmp/")  # shared nodes: no common graphroot
-    assert remote_env["RIVAULT_INIT_BINARY"].startswith("/data1/rkp00101/")  # RIKYU podman ships no catatonit
+    assert remote_env["RIVAULT_INIT_BINARY"].startswith(
+        "/data1/rkp00101/"
+    )  # RIKYU podman ships no catatonit
     assert remote_env["SLURM_CONF_SERVER"]
 
 
 def test_ai4s_executor_renders_gpus_not_gres(monkeypatch):
     executor = _site_executor(monkeypatch, "ai4s-front")
     assert executor.gpu_flag == "gpus"
-    assert executor.account == "rkp00101"
+    assert executor.account == "rkp00043"
+    assert executor.project_accounts == {"spring-8": "rkp00101"}
+
+
+def test_ai4s_steps_charge_only_spring8_to_aimon(monkeypatch):
+    executor = _site_executor(monkeypatch, "ai4s-front")
+    cases = {
+        "spring-8": "rkp00101",
+        "bdr-opossum": "rkp00043",
+        "brc-mouse": "rkp00043",
+        "default": "rkp00043",
+        None: "rkp00043",
+    }
+    for project, account in cases.items():
+        script = _rendered(executor, metadata={STAGE_PROJECT_ID_METADATA_KEY: project})
+        assert f"#SBATCH --account={account}\n" in script, project

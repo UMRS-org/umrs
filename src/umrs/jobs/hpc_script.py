@@ -7,6 +7,11 @@ lifecycle mapping (squeue/sacct → attempt states).
 
 Ref grammar: ``hpc_script|script=<path>|slurm=<job-id>`` (slurm is the
 scheduler-side id; the durable job id remains the caller's handle).
+
+ADR-112 wave D (plan §6 C/D.0 D2): each submit writes the usage ledger
+(pending before ``sbatch``, binding; submitted after the job id), and the
+lifecycle's terminal ``sacct`` query gains ``Elapsed``, ``AllocTRES`` and
+``AllocCPUS`` to settle it (:mod:`.hpc_ledger`).
 """
 
 from __future__ import annotations
@@ -115,29 +120,60 @@ class HpcScriptBackend:
 
     async def submit_job(self, job: Job, attempt: JobAttempt) -> str:
         spec = validate_hpc_script_spec(dict(job.spec or {}))
-        attempt.metrics["hpc_identity"] = self._identity(job).to_metrics()
+        identity = self._identity(job)
+        attempt.metrics["hpc_identity"] = identity.to_metrics()
         script_path = spec["script_path"]
-        if self._ssh_factory is None:
+        if self._ssh_factory is None or not callable(self._ssh_factory):
             return f"hpc_script|script={script_path}|degraded=no_ssh"
-        ssh = self._ssh_factory
-        if not callable(ssh):
-            return f"hpc_script|script={script_path}|degraded=no_ssh"
-        ssh = await ssh()
+        unit = _ledger_pending(job, attempt, identity, spec)
+        ssh = await self._ssh_factory()
         result = await ssh.run_remote(
             _sbatch_command(script_path, spec["sbatch_args"]), timeout=60
         )
-        if not result.ok:
-            raise RuntimeError(
-                f"sbatch failed (rc={result.returncode}): {result.stderr.strip()[:500]}"
-            )
-        m = _SLURM_SUBMIT_RE.search(result.stdout)
-        if not m:
-            raise RuntimeError(
-                f"sbatch produced no job id: {result.stdout.strip()[:300]}"
-            )
-        slurm_id = m.group(1)
+        slurm_id = _submitted_id(result, unit)
         attempt.metrics["slurm_job_id"] = slurm_id
+        _ledger_after("submitted", unit, slurm_id, None)
         return f"hpc_script|script={script_path}|slurm={slurm_id}"
+
+
+def _ledger_pending(job: Job, attempt: JobAttempt, identity: Any, spec: dict) -> Any:
+    """The binding pending write (raises before any SSH when refused)."""
+    from umrs.hpc_accounts.usage_ledger import write_pending
+
+    from .hpc_ledger import (
+        job_unit,
+        script_estimate,
+        script_estimate_complete,
+        script_tag,
+    )
+
+    args = spec["sbatch_args"]
+    unit = job_unit(job, attempt, identity, lane="hpc_script", tag=script_tag(spec))
+    write_pending(
+        unit,
+        script_estimate(args),
+        estimate_complete=script_estimate_complete(args),
+    )
+    return unit
+
+
+def _ledger_after(op: str, unit: Any, *args: Any) -> None:
+    from umrs.hpc_accounts.usage_ledger import write_after
+
+    write_after(op, unit, *args)
+
+
+def _submitted_id(result: Any, unit: Any) -> str:
+    """The Slurm job id ``sbatch`` printed; a refusal is ``not_submitted``."""
+    m = _SLURM_SUBMIT_RE.search(result.stdout) if result.ok else None
+    if m is not None:
+        return m.group(1)
+    _ledger_after("not_submitted", unit, "sacct")
+    if not result.ok:
+        raise RuntimeError(
+            f"sbatch failed (rc={result.returncode}): {result.stderr.strip()[:500]}"
+        )
+    raise RuntimeError(f"sbatch produced no job id: {result.stdout.strip()[:300]}")
 
 
 def _parse_ref(ref: str) -> tuple[str, str]:
@@ -193,15 +229,46 @@ class HpcScriptStatusChecker(BackendStatusChecker):
             return AttemptCheckResult.failed(
                 f"Slurm job {slurm_id} not found in squeue/sacct (state unknown)"
             )
-        if state == "COMPLETED":
-            return AttemptCheckResult.succeeded(
-                metrics={"slurm_state": state, "slurm_job_id": slurm_id}
-            )
-        if state in _SACCT_TERMINAL:
-            failure = AttemptCheckResult.failed(f"slurm state {state}")
-            failure.metrics = {"slurm_state": state, "slurm_job_id": slurm_id}
-            return failure
-        return AttemptCheckResult.running(detail=f"slurm state {state}")
+        if state not in _SACCT_TERMINAL:
+            return AttemptCheckResult.running(detail=f"slurm state {state}")
+        await _settle_ledger(ssh, slurm_id, attempt, job)
+        return _terminal_result(state, slurm_id)
+
+
+def _terminal_result(state: str, slurm_id: str) -> AttemptCheckResult:
+    """The attempt's result at a terminal ``sacct`` state."""
+    metrics = {"slurm_state": state, "slurm_job_id": slurm_id}
+    if state == "COMPLETED":
+        return AttemptCheckResult.succeeded(metrics=metrics)
+    failure = AttemptCheckResult.failed(f"slurm state {state}")
+    failure.metrics = metrics
+    return failure
+
+
+async def _settle_ledger(
+    ssh: Any, slurm_id: str, attempt: JobAttempt, job: Job
+) -> None:
+    """The terminal ``sacct`` row (Elapsed, AllocTRES, AllocCPUS) settles
+    the attempt's ledger row; best-effort (the sweep recovers a miss)."""
+    import logging
+
+    from .hpc_ledger import job_unit, sacct_command, script_tag, settle_from_sacct
+
+    try:
+        identity = dict(attempt.metrics.get("hpc_identity") or {})
+        unit = job_unit(
+            job,
+            attempt,
+            identity,
+            lane="hpc_script",
+            tag=script_tag(dict(job.spec or {})),
+        )
+        row = await ssh.run_remote(sacct_command(slurm_id), timeout=30)
+        settle_from_sacct(unit, row.stdout)
+    except Exception:
+        logging.getLogger(__name__).warning(
+            "hpc_script: ledger of %s not settled", slurm_id, exc_info=True
+        )
 
 
 async def _default_ssh_factory():

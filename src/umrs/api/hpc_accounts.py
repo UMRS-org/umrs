@@ -61,6 +61,7 @@ from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
 
 from umrs.hpc_accounts import gate_client, transport_keys
+from umrs.hpc_accounts.grants import end_account_grants
 from umrs.hpc_accounts.revoke import revoke_account
 from umrs.hpc_accounts.store import SiteAccountStore
 
@@ -107,6 +108,25 @@ class VerifyRequest(BaseModel):
 class LinkRequest(BaseModel):
     project_id: str = Field(..., min_length=1, max_length=_FIELD_CAP)
     slurm_account: str = Field(..., min_length=1, max_length=_FIELD_CAP)
+
+
+class GrantWorkflowRef(BaseModel):
+    name: str = Field(..., min_length=1, max_length=_FIELD_CAP)
+    version: str | None = Field(default=None, max_length=64)
+
+
+class GrantProposalRequest(BaseModel):
+    """``POST /grant-proposal`` (plan §6 C/D.0 C4, X6)."""
+
+    project_id: str = Field(..., min_length=1, max_length=_FIELD_CAP)
+    workflows: list[GrantWorkflowRef] = Field(..., min_length=1, max_length=16)
+
+
+class SignedEnvelope(BaseModel):
+    """A signed grant, or a signed ``grant-cancel`` control (base64 + SSHSIG)."""
+
+    payload: str = Field(..., min_length=1, max_length=3 * 1024 * 1024)
+    signature: str = Field(..., min_length=1, max_length=16 * 1024)
 
 
 class ControlRequest(BaseModel):
@@ -341,6 +361,7 @@ def _require_probe_refused(store: Any, user: str, answer: Any) -> None:
     store.record_probe(user, state)
     if state == "refused":
         return
+    end_account_grants(store, user)
     name = getattr(answer, "error", "answered")
     raise_typed(
         PlatformError.hpcaccess(
@@ -557,7 +578,8 @@ def _checked_hello(
         _require_uv_policy(hello, user_account, store.venue)
         _require_site_profile(hello, store.venue)
     except Exception:
-        store.suspend_account(user)
+        if store.suspend_account(user):
+            end_account_grants(store, user)
         raise
     return hello
 
@@ -836,3 +858,322 @@ def _cancel_my_gated_jobs(venue: str, user_id: str) -> int:
     except Exception:
         logger.warning("revoke: gated jobs of %s not cancelled", user_id, exc_info=True)
         return 0
+
+
+# ── wave C: grants (plan §6 C/D.0 C4) ────────────────────────────────────
+
+
+def _grant_store(store: Any) -> Any:
+    from umrs.hpc_accounts.grants import grant_store_for
+
+    return grant_store_for(store)
+
+
+def _usage_ledger() -> Any:
+    from umrs.hpc_accounts.usage_ledger import LedgerUnavailable, get_usage_ledger
+
+    try:
+        return get_usage_ledger()
+    except LedgerUnavailable as exc:
+        raise_typed(PlatformError.hpcaccess("ledger_unavailable", str(exc)))
+
+
+def _grant_invalid(exc: Any) -> NoReturn:
+    raise_typed(
+        PlatformError.hpcaccess("grant_invalid", str(exc), reason=exc.reason), cause=exc
+    )
+
+
+def _grant_typed(exc: Exception) -> NoReturn:
+    """The typed refusal of a grant check (C4 error codes)."""
+    from umrs.hpc_accounts.grants import GrantGateStale, GrantInvalid
+    from umrs.hpc_accounts.usage_ledger import BudgetExceeded
+
+    if isinstance(exc, GrantInvalid):
+        _grant_invalid(exc)
+    if isinstance(exc, GrantGateStale):
+        raise_typed(
+            PlatformError.hpcaccess("gate_version", str(exc), reason=exc.reason), cause=exc
+        )
+    if isinstance(exc, BudgetExceeded):
+        raise_typed(
+            PlatformError.hpcaccess("budget_exceeded", str(exc), project_id=exc.project), cause=exc
+        )
+    raise exc
+
+
+def _call_grant_verb(site: Any, login: str, key: Any, verb: str, body: dict[str, Any]) -> Any:
+    """``grant-check`` / ``grant-cancel`` with the verb's own timeout (the
+    gate settles with one ``sacct`` before it answers)."""
+    call = functools.partial(
+        gate_client.run_verb, site, login, key.path, verb, body,
+        runner=_gate_runner, timeout=gate_client.verb_timeout(verb),
+    )
+    return anyio.from_thread.run(call)
+
+
+def _gate_refused(answer: Any, venue: str) -> NoReturn:
+    raise_typed(
+        PlatformError.hpcaccess(
+            "gate_refused", f"{answer.error}: {answer.detail}".rstrip(": "),
+            site=venue, gate=answer.error,
+        )
+    )
+
+
+def _grant_context(request: Request, store: Any, user: str, site: Any) -> Any:
+    from umrs.hpc_accounts.grant_service import build_context
+
+    return build_context(store.venue, user, store, _live_memberships(request, user), site)
+
+
+def _live_check(site: Any, account: dict[str, Any], key: Any, row: dict[str, Any]) -> Any:
+    login = str(account.get("verified_login") or "")
+    body = {"payload": row["payload_b64"], "signature": row["signature"]}
+    return _call_grant_verb(site, login, key, "grant-check", body)
+
+
+def _require_live_state(answer: Any, venue: str) -> dict[str, Any]:
+    """C4 step 8: a refusal is ``gate_refused``; ``expired`` / ``cancelled``
+    are ``grant_invalid`` with that reason."""
+    from umrs.hpc_accounts.grants import GrantInvalid
+
+    if isinstance(answer, gate_client.GateRefusal):
+        _gate_refused(answer, venue)
+    state = str(answer.data.get("state") or "")
+    if state in ("expired", "cancelled"):
+        _grant_invalid(GrantInvalid(state, f"the gate reports this grant {state}"))
+    return dict(answer.data.get("usage") or {})
+
+
+@router.post("/grant-proposal")
+def propose_grant(
+    body: GrantProposalRequest,
+    request: Request,
+    caller: CallerIdentity = Depends(get_verified_caller),
+) -> dict[str, Any]:
+    """What a grant for these workflows would pin (advisory; r4 recomputes).
+
+    # auth: verified
+    """
+    from umrs.hpc_accounts.grants import GrantInvalid
+    from umrs.hpc_accounts.site_profile import SiteProfileUnavailable, published
+
+    site, venue, user_account = _registration_site()
+    store = _make_store(request, venue)
+    account = _active_account(store, caller.user_id)
+    _require_live_member(request, caller.user_id, body.project_id)
+    link = _active_link(store, caller.user_id, body.project_id)
+    try:
+        profile, _data, profile_sha = published(site)
+        answer = _proposal_body(body, caller, site, profile)
+    except GrantInvalid as exc:
+        _grant_invalid(exc)
+    except SiteProfileUnavailable as exc:
+        raise_typed(
+            PlatformError.hpcaccess("gate_version", str(exc), reason="site_profile_unavailable")
+        )
+    return {
+        "site": venue,
+        "domain": user_account.signing_domain,
+        "login": str(account.get("verified_login") or ""),
+        "accounts": [link["slurm_account"]],
+        **answer,
+        "site_profile_sha256": profile_sha,
+        "budget": _usage_ledger().budget(body.project_id),
+    }
+
+
+def _active_link(store: Any, user: str, project_id: str) -> dict[str, Any]:
+    from umrs.hpc_accounts.grants import GrantInvalid
+
+    for link in store.list_links(user):
+        if link["project_id"] == project_id and link["status"] == "active":
+            return dict(link)
+    _grant_invalid(
+        GrantInvalid("not_linked", f"project {project_id!r} has no active link of yours here")
+    )
+
+
+def _proposal_body(
+    body: GrantProposalRequest, caller: CallerIdentity, site: Any, profile: Any
+) -> dict[str, Any]:
+    from umrs.hpc_accounts.grant_service import proposal_versions, proposal_workflow
+
+    refs = [ref.model_dump() for ref in body.workflows]
+    versions = proposal_versions(refs, caller.user_id, body.project_id, is_admin=caller.is_admin)
+    return {"workflows": [proposal_workflow(v, site, profile) for v in versions]}
+
+
+@router.post("/grants")
+def store_grant(
+    body: SignedEnvelope,
+    request: Request,
+    caller: CallerIdentity = Depends(get_verified_caller),
+) -> dict[str, Any]:
+    """Store the caller's signed grant after the C4 checks and a live
+    ``grant-check`` at their gate.
+
+    # auth: verified
+    """
+    from umrs.hpc_accounts.grants import (
+        GrantGateStale,
+        GrantInvalid,
+        check_grant,
+        decode_grant,
+        grant_view,
+        row_from_grant,
+    )
+    from umrs.hpc_accounts.usage_ledger import BudgetExceeded
+
+    _require_person(request)
+    site, venue, _user_account = _registration_site()
+    store = _make_store(request, venue)
+    account, key = _active_key(store, caller.user_id)
+    grants, ctx = _grant_store(store), _grant_context(request, store, caller.user_id, site)
+    if ctx.memberships is None:
+        raise_typed(
+            PlatformError.projects("unavailable", "live project memberships are unreadable")
+        )
+    try:
+        grant = decode_grant(body.payload, body.signature)
+        check_grant(grant, ctx, grants, _usage_ledger())
+    except (GrantInvalid, GrantGateStale, BudgetExceeded) as exc:
+        _grant_typed(exc)
+    row = row_from_grant(venue, caller.user_id, grant, {})
+    usage = _require_live_state(_live_check(site, account, key, row), venue)
+    try:
+        stored = grants.insert({**row, "usage": usage})
+    except GrantInvalid as exc:
+        _grant_invalid(exc)
+    return {"grant": grant_view(stored, ctx)}
+
+
+_REFRESH_CAP = 20
+
+
+def _refresh_usage(grants: Any, rows: list[dict[str, Any]], site: Any, store: Any, user: str) -> None:
+    """``refresh=1``: ``grant-check`` for at most 20 active grants; the
+    mirror is updated (display only); a gate that cannot answer leaves it."""
+    found = _refresh_key(store, user)
+    if found is None:
+        return
+    account, key = found
+    for row in [r for r in rows if r["status"] == "active"][:_REFRESH_CAP]:
+        answer = _live_check(site, account, key, row)
+        if isinstance(answer, gate_client.GateResult):
+            grants.set_usage(user, row["grant_id"], dict(answer.data.get("usage") or {}))
+
+
+def _refresh_key(store: Any, user: str) -> tuple[dict[str, Any], Any] | None:
+    """The active account and its transport key, else None (no refresh)."""
+    account = store.get_account(user) or {}
+    if account.get("status") != "active":
+        return None
+    key = _load_key(store.venue, user, str(account.get("transport_key_id") or ""))
+    return None if key is None else (account, key)
+
+
+@router.get("/grants")
+def list_grants(
+    request: Request,
+    refresh: int = 0,
+    caller: CallerIdentity = Depends(get_verified_caller),
+) -> dict[str, Any]:
+    """The caller's grants here, with ``covers_now`` and ``stale`` (K11).
+
+    # auth: verified
+    """
+    from umrs.hpc_accounts.grants import grant_view
+
+    site, venue, _user_account = _registration_site()
+    store = _make_store(request, venue)
+    grants = _grant_store(store)
+    rows = grants.list(caller.user_id)
+    if refresh:
+        _refresh_usage(grants, rows, site, store, caller.user_id)
+        rows = grants.list(caller.user_id)  # the mirror as stored (usage_at)
+    ctx = _grant_context(request, store, caller.user_id, site)
+    return {"grants": [grant_view(r, ctx) for r in rows]}
+
+
+def _cancel_target(grants: Any, user: str, grant_id: str) -> dict[str, Any]:
+    from umrs.hpc_accounts.grants import GrantNotFound, check_grant_id
+
+    try:
+        row = grants.get(user, check_grant_id(grant_id))
+    except GrantNotFound as exc:
+        raise_typed(PlatformError.hpcaccess("grant_not_found", str(exc)), cause=exc)
+    if row is None:
+        raise_typed(
+            PlatformError.hpcaccess("grant_not_found", f"no grant {grant_id} of yours here")
+        )
+    return dict(row)
+
+
+def _signed_cancel_names(body: SignedEnvelope, grant_id: str) -> None:
+    """The signed control names this grant (the gate checks the signature)."""
+    import base64
+    import json
+
+    try:
+        control = json.loads(base64.b64decode(body.payload, validate=True))
+    except ValueError:
+        control = None
+    names = isinstance(control, dict) and control.get("op") == "grant-cancel"
+    if not names or control.get("grant_id") != grant_id:
+        raise_typed(
+            PlatformError.hpcaccess(
+                "gate_refused",
+                "the signed control is not a grant-cancel of this grant",
+                gate="bad_request",
+            )
+        )
+
+
+def _unreachable(answer: Any) -> bool:
+    """A transport failure (ssh exit 255 or a timeout): not the gate's word."""
+    return (
+        isinstance(answer, gate_client.GateRefusal)
+        and answer.error == gate_client.UNREACHABLE
+    )
+
+
+@router.post("/grants/{grant_id}/cancel")
+def cancel_grant(
+    grant_id: str,
+    body: SignedEnvelope,
+    request: Request,
+    caller: CallerIdentity = Depends(get_verified_caller),
+) -> dict[str, Any]:
+    """Relay the caller's signed ``grant-cancel`` to their gate, then end
+    the grant here. An unreachable gate still ends it here, with
+    ``gate_cancel: pending`` and ``relayed: false`` (K8); a gate refusal
+    leaves the row unchanged.
+
+    # auth: verified
+    """
+    from umrs.hpc_accounts.grants import grant_view
+
+    _require_person(request)
+    site, venue, _user_account = _registration_site()
+    store = _make_store(request, venue)
+    grants = _grant_store(store)
+    _cancel_target(grants, caller.user_id, grant_id)
+    _signed_cancel_names(body, grant_id)
+    account, key = _active_key(store, caller.user_id)
+    login = str(account.get("verified_login") or "")
+    answer = _call_grant_verb(
+        site, login, key, "grant-cancel", {"payload": body.payload, "signature": body.signature}
+    )
+    relayed = not _unreachable(answer)
+    if relayed and isinstance(answer, gate_client.GateRefusal):
+        _gate_refused(answer, venue)
+    row = grants.set_status(
+        caller.user_id, grant_id, "cancelled", "cancelled", "recorded" if relayed else "pending"
+    )
+    ctx = _grant_context(request, store, caller.user_id, site)
+    result: dict[str, Any] = {"grant": grant_view(row or {}, ctx), "relayed": relayed}
+    if relayed:
+        result["result"] = answer.data
+    return result

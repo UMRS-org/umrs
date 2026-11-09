@@ -90,6 +90,12 @@ class WorkflowTriggerResponse(_OpenModel):
         default=None,
         description="sha256 of the signed intent of a run under your own HPC account (ADR-112)",
     )
+    grant_id: str | None = Field(
+        default=None, description="The standing grant the run executes under (ADR-112 wave C)"
+    )
+    run_spec_id: str | None = Field(
+        default=None, description="sha256 of the run spec the server composed under the grant"
+    )
 
 
 class WorkflowExecution(_OpenModel):
@@ -235,6 +241,13 @@ class WorkflowPlanResponse(_OpenModel):
             "The run executes under your own HPC account (ADR-112): it starts "
             "only from a signed intent (r4 workflow trigger --site), never "
             "from a commit"
+        ),
+    )
+    grant_id: str | None = Field(
+        default=None,
+        description=(
+            "The one standing grant of yours that covers this run (ADR-112 wave "
+            "C), else null; a grant is not a per-run approval: plan and commit still apply"
         ),
     )
 

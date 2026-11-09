@@ -38,15 +38,28 @@ logger = logging.getLogger(__name__)
 RunIntentFields = dict[str, str]
 
 
+#: Wave C (plan §6 C/D.0 C4): a grant run's fields (migration 0137).
+GRANT_FIELDS = ("grant_id", "run_spec_b64", "run_spec_id", "workflow_steps_b64")
+
+
 def intent_fields(intent: RunIntentFields | None) -> dict[str, str | None]:
-    """The record's three intent fields from a spec's ``intent`` mapping."""
-    if not isinstance(intent, dict) or not intent.get("id"):
-        return {"intent_b64": None, "intent_signature": None, "intent_id": None}
-    return {
-        "intent_b64": str(intent.get("b64") or ""),
-        "intent_signature": str(intent.get("signature") or ""),
-        "intent_id": str(intent["id"]),
+    """The record's gated-run fields from a spec's ``intent`` mapping: the
+    three intent fields (B2), or the four grant-run fields (wave C)."""
+    fields_: dict[str, str | None] = {
+        "intent_b64": None, "intent_signature": None, "intent_id": None,
+        **dict.fromkeys(GRANT_FIELDS),
     }
+    if not isinstance(intent, dict):
+        return fields_
+    if intent.get("grant_id"):
+        fields_.update({k: str(intent.get(k) or "") for k in GRANT_FIELDS})
+    elif intent.get("id"):
+        fields_.update(
+            intent_b64=str(intent.get("b64") or ""),
+            intent_signature=str(intent.get("signature") or ""),
+            intent_id=str(intent["id"]),
+        )
+    return fields_
 
 
 # Terminal statuses (no further updates expected).
@@ -114,6 +127,14 @@ class ExecutionRecord:
     intent_b64: str | None = None
     intent_signature: str | None = None
     intent_id: str | None = None
+    #: Wave C (plan §6 C/D.0 C4, migration 0137): a run under a standing
+    #: grant: the grant, the server-composed run spec (base64 of its
+    #: canonical bytes, and their sha256) and the step skeleton the grant
+    #: pins. The status shows ``grant_id`` and ``run_spec_id`` only.
+    grant_id: str | None = None
+    run_spec_b64: str | None = None
+    run_spec_id: str | None = None
+    workflow_steps_b64: str | None = None
     # Manual approval gates (W5). Decisions are serializable audit data;
     # the wait events are transient threading primitives (never serialized).
     gate_decisions: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -148,6 +169,8 @@ class ExecutionRecord:
                 "workflow_version": self.workflow_version,
                 "source_sha256": self.source_sha256,
                 "intent_id": self.intent_id,
+                "grant_id": self.grant_id,
+                "run_spec_id": self.run_spec_id,
                 "gates": {k: dict(v) for k, v in self.gate_decisions.items()},
             }
 

@@ -266,7 +266,12 @@
         "cpus": { "type": "integer", "minimum": 0 },
         "memory": { "type": "string" },
         "time_limit": { "type": "string" },
-        "account": { "type": "string" },
+        "account": { "type": "string", "description": "Default Slurm account for workflow steps" },
+        "project_accounts": {
+          "type": "object",
+          "additionalProperties": { "type": "string" },
+          "description": "Verified-project to Slurm account overrides; unlisted projects use account"
+        },
         "image": { "type": "string" },
         "gpu": { "type": "boolean" },
         "gpu_form": {

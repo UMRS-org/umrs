@@ -18,8 +18,12 @@ _ELAPSED_RE = re.compile(
 )
 
 # AllocTRES%gres shapes across Slurm versions: "gres:gpu=2", "gres/gpu=2",
-# "gpu=2", "gpu:2". Take the FIRST gpu allocation found.
-_GPU_TRES_RE = re.compile(r"(?:^|[,])\s*gres[:/]gpu[=:](\d+)|(?:^|[,])\s*gpu[=:](\d+)")
+# "gpu=2", "gpu:2" (untyped), and "gres/gpu:h100=2" (typed; group 1 is the
+# type). The untyped entry wins; a typed-only configuration sums the typed
+# entries (ADR-112 review 2026-11-09: it reported 0 GPUs before).
+_GPU_TRES_RE = re.compile(
+    r"\s*(?:gres[:/])?gpu(?::([A-Za-z0-9_.-]*[A-Za-z_.-][A-Za-z0-9_.-]*))?[=:](\d+)\s*"
+)
 
 
 def parse_slurm_elapsed(text: str) -> float | None:
@@ -36,14 +40,15 @@ def parse_slurm_elapsed(text: str) -> float | None:
 
 def parse_alloc_tres_gpus(text: str) -> int:
     """Count GPUs in an ``AllocTRES%gres`` value; 0 = none (CPU job)."""
-    raw = str(text or "").strip()
-    if not raw:
-        return 0
-    match = _GPU_TRES_RE.search(raw)
-    if match is None:
-        return 0
-    first = match.group(1) or match.group(2)
-    return int(first) if first else 0
+    typed = 0
+    for part in str(text or "").split(","):
+        match = _GPU_TRES_RE.fullmatch(part)
+        if match is None:
+            continue
+        if not match.group(1):
+            return int(match.group(2))
+        typed += int(match.group(2))
+    return typed
 
 
 def measured_gpu_seconds(elapsed: float | None, gpus: int) -> float:

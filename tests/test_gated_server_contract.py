@@ -140,7 +140,7 @@ def test_the_run_status_shows_the_intent_id_only():
 def test_the_durable_record_persists_the_three_columns_and_round_trips_the_id():
     from umrs.workflow import pg_registry
 
-    assert pg_registry._COLUMNS.endswith("intent_b64, intent_signature, intent_id")
+    assert "intent_b64, intent_signature, intent_id" in pg_registry._COLUMNS
     record = pg_registry._record_from_payload(
         {"execution_id": "wf-0123456789ab", "intent_id": "c" * 64}
     )

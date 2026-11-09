@@ -751,6 +751,20 @@ def _start_account_sweep() -> AccountStandingSweep | None:
         return None
 
 
+def _start_ledger_sweep() -> object:
+    """ADR-112 wave D (plan §6 C/D.0 D2): this venue's usage ledger
+    recovery sweep every 300 s (``UMRS_LEDGER_SWEEP_ENABLED=false`` turns it
+    off). A server without a site has no venue and starts none."""
+    try:
+        from umrs.hpc_accounts.ledger_sweep import start_usage_ledger_sweep
+        from umrs.shared.hpc_user_work_access import current_site
+
+        return start_usage_ledger_sweep(str(getattr(current_site(), "name", "") or ""))
+    except Exception:
+        logger.warning("usage ledger sweep not started", exc_info=True)
+        return None
+
+
 class _SingleConnPool:
     """Minimal psycopg2 pool: fresh conn per lease (cheap, always-returned)."""
 
@@ -977,6 +991,7 @@ def _create_app():
         _start_durable_runtime()
         _rehydrate_loop_drivers()
         account_sweep = _start_account_sweep()
+        _start_ledger_sweep()
         try:
             yield
         finally:
@@ -1145,6 +1160,11 @@ def _create_app():
     from umrs.api.hpc_accounts import router as hpc_accounts_router
 
     app.include_router(hpc_accounts_router)
+
+    # ADR-112 wave D (2026-11-09): the caller's own HPC usage ledger rows here.
+    from umrs.api.hpc_usage import router as hpc_usage_router
+
+    app.include_router(hpc_usage_router)
 
     # ADR-086 (2026-10-05): circles — project-scoped context/audience cells
     # (supersedes the ADR-050 §3 groups authority).

@@ -58,6 +58,7 @@ os.environ.setdefault("UMRS_AUTH_MODE", "mvp")
 # tests opt in per test.
 os.environ.setdefault("UMRS_ADMIN_CLI_DB", "off")
 os.environ.setdefault("UMRS_ACCOUNT_SWEEP_ENABLED", "false")
+os.environ.setdefault("UMRS_LEDGER_SWEEP_ENABLED", "false")
 
 # Knowledge-export output root (2026-09-16 dust policy): the export backend's
 # env fallback is Path(cwd)/.kb_exports — under pytest that is the checked-out
@@ -243,6 +244,20 @@ def _reset_skill_store_between_tests() -> Generator:
     module = sys.modules.get("umrs.api.skills")
     if module is not None:
         module._skill_store = None
+
+
+@pytest.fixture(autouse=True)
+def _in_memory_usage_ledger_per_test() -> Generator:
+    """ADR-112 wave D: the HPC usage ledger (``usage_ledger._ledger``) is
+    module-global and, unset, resolves to Postgres wherever a database is
+    named in the environment. Every test starts with its own in-memory
+    ledger (hermetic: no test writes the shared database's ledger by
+    accident); the real-PG tests build a ``PgUsageLedger`` explicitly."""
+    from umrs.hpc_accounts import usage_ledger
+
+    usage_ledger.set_usage_ledger(usage_ledger.InMemoryUsageLedger())
+    yield
+    usage_ledger.set_usage_ledger(None)
 
 
 @pytest.fixture(autouse=True)

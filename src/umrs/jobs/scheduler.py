@@ -258,12 +258,13 @@ class Scheduler:
     ) -> None:
         """Submit one attempt; record the outcome (split out of
         :meth:`_schedule_job` for its complexity budget)."""
+        from umrs.hpc_accounts.usage_ledger import LedgerRefused
         from umrs.orchestrator.hpc_identity import HpcAccessRefused
 
         attempt_id, attempt = attempt_pair
         try:
             backend_ref = await backend.submit_job(job, attempt)
-        except HpcAccessRefused as e:
+        except (HpcAccessRefused, LedgerRefused) as e:
             self._fail_refused_attempt(job_id, attempt_id, e)
             return
         except Exception as e:
@@ -279,8 +280,7 @@ class Scheduler:
         self._consecutive_failures = 0
         METRICS.degradation_level("scheduler", 0)
         logger.info(
-            f"Job {job_id} submitted (attempt={attempt_id}, "
-            f"backend_ref={backend_ref})"
+            f"Job {job_id} submitted (attempt={attempt_id}, backend_ref={backend_ref})"
         )
 
     def _fail_refused_attempt(
