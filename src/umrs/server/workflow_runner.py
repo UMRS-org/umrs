@@ -1063,6 +1063,7 @@ def _bind_step_lane(
     spec: dict[str, Any],
     metadata: dict[str, Any],
     record: ExecutionRecord,
+    verified_project: str | None = None,
 ) -> None:
     """The staged HPC lane's per-step context (build spec 2026-09-26 §5, §8):
     the run owner and declared inputs for the stager, the step's soft
@@ -1075,8 +1076,13 @@ def _bind_step_lane(
     if not callable(bind):
         return
     from umrs.server.remote_slurm_step_executor import STEP_TIMEOUT_METADATA_KEY
-    from umrs.server.step_staging import STAGE_REQUEST_METADATA_KEY, stage_request
+    from umrs.server.step_staging import (
+        STAGE_PROJECT_ID_METADATA_KEY,
+        STAGE_REQUEST_METADATA_KEY,
+        stage_request,
+    )
 
+    metadata[STAGE_PROJECT_ID_METADATA_KEY] = verified_project
     try:
         request = stage_request(spec, record.params, record.user_id)
     except StepExecutionError:
@@ -1217,6 +1223,7 @@ def _execute_step(
     state_lock: threading.Lock,
     executor: StepExecutor,
     source_path: str | None = None,
+    verified_project: str | None = None,
 ) -> tuple[str, StepResult | None, str | None]:
     """Execute a single step. Returns ``(step_name, result_or_None, error_or_None)``.
 
@@ -1299,7 +1306,7 @@ def _execute_step(
     metadata = _executor_metadata(
         image_hint, gpu_hint, source_path, routed_keys, _gpu_count_hint(spec)
     )
-    _bind_step_lane(executor, spec, metadata, record)
+    _bind_step_lane(executor, spec, metadata, record, verified_project)
     _bind_step_endpoint(executor, metadata, decision)
     payload_s3_enabled, payload_bucket, payload_s3_prefix = _payload_s3_hint(metadata)
     _annotate_payload_mode(
@@ -1801,6 +1808,7 @@ def _run_wave(
     state_lock: threading.Lock,
     max_workers_cap: int,
     source_path: str | None = None,
+    verified_project: str | None = None,
 ) -> list[str]:
     """Execute one DAG wave (directly when linear, pooled when parallel).
 
@@ -1833,6 +1841,7 @@ def _run_wave(
             state_lock=state_lock,
             executor=executor,
             source_path=source_path,
+            verified_project=verified_project,
         )
         if err is not None:
             wave_errors.append(f"{name}: {err}")
@@ -1855,6 +1864,7 @@ def _run_wave(
             bucket=bucket,
             state_lock=state_lock,
             source_path=source_path,
+            verified_project=verified_project,
         )
 
     wave_duration_ms = (time.monotonic() - wave_started) * 1000.0
@@ -1888,6 +1898,7 @@ def _run_wave_parallel(
     bucket: str,
     state_lock: threading.Lock,
     source_path: str | None = None,
+    verified_project: str | None = None,
 ) -> None:
     """Fan a parallel wave over the thread pool and collect errors."""
     workers = min(len(level), max_workers_cap)
@@ -1913,6 +1924,7 @@ def _run_wave_parallel(
                 state_lock=state_lock,
                 executor=executor,
                 source_path=source_path,
+                verified_project=verified_project,
             )
             for spec in level
         ]
@@ -2165,6 +2177,7 @@ def run_workflow_record(
             state_lock=state_lock,
             max_workers_cap=max_workers_cap,
             source_path=source_path,
+            verified_project=verified_project,
         )
         completed += len(level)
         record.update(progress=completed / total)

@@ -51,6 +51,7 @@ from umrs.server.step_executor import (
 from umrs.server.step_reply import reply_to_json
 from umrs.server.step_staging import (
     DEFAULT_CAPS,
+    STAGE_PROJECT_ID_METADATA_KEY,
     STAGE_REQUEST_METADATA_KEY,
     build_stage_plan,
     inputs_tag,
@@ -190,6 +191,71 @@ def test_an_adopted_earlier_job_is_recorded_with_its_identity(cluster, tree):
         adopted["lane"],
     )
     assert identity == ("op", "cloud-users", "service_account", "user_work")
+
+
+def _policy_changed_executor(cluster, recorded):
+    ex = cluster.executor(account="rkp00043", project_accounts={"spring-8": "rkp00101"})
+    ex.bind_run(RUN, on_job=lambda _step, job: recorded.append(dict(job)))
+    return ex
+
+
+def test_adoption_preserves_the_account_before_an_account_policy_change(cluster, tree):
+    _completed_earlier(cluster, _tag(cluster, tree), account="rkp00101")
+    recorded = []
+    ex = _policy_changed_executor(cluster, recorded)
+    ex.execute(
+        entrypoint="steps.lane:Upper",
+        config={},
+        ctx=_ctx(tree, FakeS3(), **{STAGE_PROJECT_ID_METADATA_KEY: "bdr-opossum"}),
+    )
+    [adopted] = [job for job in recorded if job["job_id"] == "900"]
+    assert adopted["slurm_account"] == "rkp00101"
+
+
+def test_resume_preserves_the_account_before_an_account_policy_change(cluster, tree):
+    _completed_earlier(
+        cluster,
+        _tag(cluster, tree),
+        job_id="901",
+        states=("RUNNING", "COMPLETED"),
+        account="rkp00101",
+    )
+    recorded = []
+    ex = _policy_changed_executor(cluster, recorded)
+    ex.execute(
+        entrypoint="steps.lane:Upper",
+        config={},
+        ctx=_ctx(tree, FakeS3(), **{STAGE_PROJECT_ID_METADATA_KEY: "bdr-opossum"}),
+    )
+    resumed = [job for job in recorded if job["job_id"] == "901"][-1]
+    assert resumed["slurm_account"] == "rkp00101"
+
+
+def test_an_unverifiable_earlier_account_is_not_relabelled(cluster, tree):
+    _completed_earlier(cluster, _tag(cluster, tree), account="rkp00101")
+    cluster.behave(acct_rc=1)
+    recorded = []
+    ex = _policy_changed_executor(cluster, recorded)
+    with pytest.raises(StepExecutionError, match="cannot be confirmed"):
+        ex.execute(
+            entrypoint="steps.lane:Upper",
+            config={},
+            ctx=_ctx(tree, FakeS3(), **{STAGE_PROJECT_ID_METADATA_KEY: "bdr-opossum"}),
+        )
+
+
+def test_other_inputs_do_not_require_an_account_lookup(cluster, tree):
+    _completed_earlier(cluster, "0" * 12, account="rkp00101")
+    cluster.behave(acct_rc=1)
+    recorded = []
+    ex = _policy_changed_executor(cluster, recorded)
+    result = ex.execute(
+        entrypoint="steps.lane:Upper",
+        config={},
+        ctx=_ctx(tree, FakeS3(), **{STAGE_PROJECT_ID_METADATA_KEY: "bdr-opossum"}),
+    )
+    assert result.output_keys == [f"runs/{RUN}/s1/result/out.txt"]
+    assert len(cluster.calls("sbatch")) == 1
 
 
 def test_a_completed_job_that_ran_on_other_inputs_is_not_adopted(cluster, tree):

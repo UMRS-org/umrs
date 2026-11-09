@@ -78,6 +78,7 @@ from .slurm_step_executor import (
     StagedJob,
     image_archive_stem,
     measure_slurm_accounting,
+    read_slurm_account,
     render_staged_job_script,
     slurm_duration_seconds,
     stamp_slurm_accounting,
@@ -106,6 +107,7 @@ from .step_executor import (
 from .step_reply import result_from_json
 from .step_staging import (
     DEFAULT_CAPS,
+    STAGE_PROJECT_ID_METADATA_KEY,
     STAGE_REQUEST_METADATA_KEY,
     OutputUploadError,
     StageCaps,
@@ -122,6 +124,37 @@ from .step_staging import (
 )
 
 logger = logging.getLogger(__name__)
+
+_SLURM_ACCOUNT = re.compile(r"[A-Za-z0-9_.:@+-]{1,128}")
+_PROJECT_ACCOUNT_ERROR = (
+    "UMRS_SLURM_PROJECT_ACCOUNTS must be a JSON object mapping each project "
+    "to a Slurm account containing only letters, digits, '_', '.', ':', '@', '+', '-'"
+)
+
+
+def _valid_project_accounts(raw: Any) -> bool:
+    """Whether *raw* is a project → safe Slurm account mapping."""
+    if not isinstance(raw, dict):
+        return False
+    return all(
+        isinstance(project, str)
+        and isinstance(account, str)
+        and project.strip()
+        and _SLURM_ACCOUNT.fullmatch(account.strip())
+        for project, account in raw.items()
+    )
+
+
+def _project_accounts_from_env() -> dict[str, str]:
+    """Optional verified-project → Slurm allocation overrides."""
+    try:
+        raw = json.loads(os.environ.get("UMRS_SLURM_PROJECT_ACCOUNTS", "{}"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(_PROJECT_ACCOUNT_ERROR) from exc
+    if not _valid_project_accounts(raw):
+        raise ValueError(_PROJECT_ACCOUNT_ERROR)
+    return {project.strip(): account.strip() for project, account in raw.items()}
+
 
 #: ``ctx.metadata`` key under which the runner hands over the step's own
 #: soft deadline (``timeout_seconds``), so the job is ``scancel``-ed with it.
@@ -174,6 +207,7 @@ _INTERNAL_METADATA_KEYS = frozenset(
         STAGE_REQUEST_METADATA_KEY,
         STEP_TIMEOUT_METADATA_KEY,
         EXECUTOR_ENDPOINT_METADATA_KEY,
+        STAGE_PROJECT_ID_METADATA_KEY,
     }
 )
 #: Platform routing values: useless without a network, never on the cluster.
@@ -425,6 +459,9 @@ class RemoteSlurmStepExecutor(SlurmStepExecutor):
     #: How long a job whose ``scancel`` has not gone through yet is chased;
     #: None is the site's longest ``--time`` plus the grace.
     cancel_patience: float | None = None
+    #: Verified-project Slurm account overrides, appended after every existing
+    #: positional field so downstream constructor calls stay compatible.
+    project_accounts: dict[str, str] = field(default_factory=_project_accounts_from_env)
     _ssh: Any = field(default=None, init=False, repr=False)
     _lock: Any = field(default_factory=threading.Lock, init=False, repr=False)
     _runs: dict[str, _RunBinding] = field(default_factory=dict, init=False, repr=False)
@@ -518,7 +555,9 @@ class RemoteSlurmStepExecutor(SlurmStepExecutor):
                 "(step_executor.remote_enabled); nothing was sent",
             )
         intent = gated.body()
-        transport = transport_for(gated.venue, gated.username, str(intent.get("login") or ""))
+        transport = transport_for(
+            gated.venue, gated.username, str(intent.get("login") or "")
+        )
         return GatedStepLane(self, gated, transport).execute(entrypoint, config, ctx)
 
     def _check_lane(self) -> None:
@@ -678,22 +717,44 @@ class RemoteSlurmStepExecutor(SlurmStepExecutor):
             return None
         return parsed[0]
 
+    def _account_for(self, ctx: StepContext) -> str:
+        """Service-account lane only: the verified project, else its default.
+
+        A gated ``user_account`` run returns through ``_execute_gated`` before
+        this helper path, so its signed allocation cannot be overridden here.
+        """
+        project = str(ctx.metadata.get(STAGE_PROJECT_ID_METADATA_KEY) or "").strip()
+        return self.project_accounts.get(project, self.account)
+
+    def _existing_account(self, job: _StepJob, found: _FoundJob) -> str:
+        """The earlier job's actual allocation, never today's relabel."""
+        if not self.project_accounts:
+            return job.slurm_account
+        account = read_slurm_account(found.job_id, run=self._run_cmd)
+        if not account:
+            raise StepExecutionError(
+                "setup",
+                f"Slurm account of earlier job {found.job_id} cannot be confirmed "
+                "after an account-policy change; resume/adoption refused",
+            )
+        return account
+
     def _begin(self, ctx: StepContext, step: str, tag: str) -> _StepJob:
         key = (str(ctx.run_id), step)
         with self._lock:
             attempt = self._attempts.get(key, 0) + 1
             self._attempts[key] = attempt
-        return self._stamp_identity(_job_identity(str(ctx.run_id), step, attempt, tag))
+        job = _job_identity(str(ctx.run_id), step, attempt, tag)
+        return self._stamp_identity(job, account=self._account_for(ctx))
 
-    def _stamp_identity(self, job: _StepJob) -> _StepJob:
+    def _stamp_identity(self, job: _StepJob, *, account: str) -> _StepJob:
         """Record who the job runs as (ADR-112 I-10). This lane implements the
         ``service_account`` mode only: the site's login over this executor's
-        SSH config and its Slurm account; the run's project was checked
-        against the site's ``hpc_access`` before the run started."""
+        SSH config and the allocation selected from the run's verified project."""
         from umrs.orchestrator.hpc_identity import SERVICE_ACCOUNT
 
         job.site_login = self.ssh_config.ssh_user
-        job.slurm_account = self.account or ""
+        job.slurm_account = account
         job.access_mode = SERVICE_ACCOUNT
         return job
 
@@ -751,6 +812,7 @@ class RemoteSlurmStepExecutor(SlurmStepExecutor):
         lost sight of it: an SSH outage, a restart): wait for it instead of
         cancelling it and running the step twice."""
         job.workdir, job.job_id, job.state = found.workdir, found.job_id, found.state
+        job.slurm_account = self._existing_account(job, found)
         self._notify(job)
         logger.warning(
             "step lane: resuming job %s of an earlier attempt of %s",
@@ -869,7 +931,7 @@ class RemoteSlurmStepExecutor(SlurmStepExecutor):
                 attempt=job.attempt,
                 run_tag=run_tag(job.run_id),
                 **self._partition_request(ctx, partition),
-                account=self.account,
+                account=self._account_for(ctx),
                 cpus=self.cpus,
                 memory=self.memory,
                 time_limit=self._format_time_limit(seconds) or "01:00:00",
@@ -1434,6 +1496,9 @@ class RemoteSlurmStepExecutor(SlurmStepExecutor):
             blob = self._read_reply_at(found.workdir, earlier)
             if blob is None:
                 return None
+            # Only a real adoption needs the old allocation confirmed. Other inputs
+            # and a missing reply rerun without depending on sacct availability.
+            earlier.slurm_account = self._existing_account(job, found)
             logger.warning(
                 "step lane: job %s of an earlier attempt of %s completed; adopting "
                 "its reply instead of running the step again",
@@ -1614,7 +1679,9 @@ class RemoteSlurmStepExecutor(SlurmStepExecutor):
         done = _reap_gated(gated, for_retry) if gated else True
         if gated and not helper:
             return done
-        return self._reap_helper_step(run_id, step, *helper, for_retry=for_retry) and done
+        return (
+            self._reap_helper_step(run_id, step, *helper, for_retry=for_retry) and done
+        )
 
     def _reap_helper_step(
         self, run_id: str, step: str, *facts: dict[str, Any], for_retry: bool = False

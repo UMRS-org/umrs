@@ -102,8 +102,9 @@ vllm:
 # mode for RCCS / AI4S deployments where UMRS runs on a login node
 # and steps must execute on compute nodes with GPUs.
 step_executor:
-  # 2026-11-08: the staged HPC lane (ADR-074 D-5) opens on RIKYU — maintainer:
-  # "let's use rikyu" for the partner demo workflows, charged to rkp00101.
+  # 2026-11-08: the staged HPC lane (ADR-074 D-5) opens on RIKYU.
+  # 2026-11-09 (maintainer): charge spring-8 to rkp00101 (AIMON); every other
+  # project uses the rkp00043 default. Model serving stays on scheduler.account.
   # Same podman venue as rccs (podman 4.9.3 on login + GB200 nodes; rootless
   # GPU proven by probe jobs 157652/157653, 2026-10-02, and 298949/298964,
   # 2026-11-08). The earlier
@@ -116,7 +117,9 @@ step_executor:
   cpus: 32                                    # RIKYU per-GPU job limit: 32 cores, 400 GB
   memory: "240G"                              # a step never takes a whole node; serving keeps its own 1400G
   time_limit: "24:00:00"                      # --time = min(this, the step's timeout_seconds)
-  account: rkp00101                           # AIMON allocation for the demo workflows (serving stays on rkp00043)
+  account: rkp00043                           # default for every project except spring-8
+  project_accounts:
+    spring-8: rkp00101                        # AIMON; selected from the run's verified project
   image: ""                                   # composed by the converge after the archive verifies
   gpu: true                                   # site gate; a step still needs routing_hints.gpu
   # nvidia-devices (device nodes + host driver libs, no hook): the CDI hook

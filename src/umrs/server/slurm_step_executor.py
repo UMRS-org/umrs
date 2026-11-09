@@ -95,13 +95,49 @@ WALL_GRACE_SEC = 300
 UNREACHABLE_BUDGET_SEC = 600
 
 
+def read_slurm_account(job_id: str, run: Any = None) -> str:
+    """The account Slurm reports for an existing job, or ``""`` if unknown.
+
+    Resume/adoption uses this instead of relabelling an older job with a
+    newly configured allocation. An empty answer is never treated as proof.
+    """
+    cmd = [
+        "sacct",
+        "--job",
+        str(job_id),
+        "--format=Account",
+        "--noheader",
+        "--parsable2",
+    ]
+    runner = run or _run_local
+    try:
+        result = runner(cmd, timeout=15)
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return ""
+    if result.returncode != 0:
+        return ""
+    for line in result.stdout.splitlines():
+        account = line.split("|", 1)[0].strip()
+        if account:
+            return account
+    return ""
+
+
+def _with_slurm_account(accounting: dict[str, Any], parts: list[str]) -> dict[str, Any]:
+    """Add Slurm's account only when the installed sacct returns it."""
+    if len(parts) > 2 and parts[2].strip():
+        return {**accounting, "account": parts[2].strip()}
+    return accounting
+
+
 def measure_slurm_accounting(
     job_id: str,
     run: Any = None,
 ) -> dict[str, Any]:
     """D-36 leg B: sacct-measured cost for a FINISHED slurm job.
 
-    One ``sacct -o Elapsed,AllocTRES%gres`` read → seconds × GPUs.
+    One ``sacct -o Elapsed,AllocTRES%gres,Account`` read → seconds × GPUs,
+    plus the account Slurm itself reports when available.
     Empty dict when sacct is unavailable or answers garbage — unmeasured,
     never approximated (ADR-067's never-approximate rule).
     """
@@ -115,7 +151,7 @@ def measure_slurm_accounting(
         "sacct",
         "--job",
         str(job_id),
-        "--format=Elapsed,AllocTRES%gres",
+        "--format=Elapsed,AllocTRES%gres,Account",
         "--noheader",
         "--parsable2",
     ]
@@ -131,12 +167,13 @@ def measure_slurm_accounting(
     gpus = parse_alloc_tres_gpus(parts[1]) if len(parts) > 1 else 0
     if elapsed is None:
         return {}
-    return {
+    accounting = {
         "job_id": str(job_id),
         "elapsed_seconds": elapsed,
         "gpus": gpus,
         "gpu_seconds": measured_gpu_seconds(elapsed, gpus),
     }
+    return _with_slurm_account(accounting, parts)
 
 
 def _run_local(cmd: list[str], *, timeout: int) -> subprocess.CompletedProcess:
@@ -734,7 +771,9 @@ def _staged_gpu_request_lines(job: StagedJob) -> list[str]:
     profile asks: ADR-109 D-3, else the site's ``gpu_flag``) and
     ``--exclusive`` (a whole-node partition)."""
     if job.gpu_flag not in STAGED_GPU_FLAGS:
-        raise StepExecutionError("setup", f"step_executor.gpu_flag {job.gpu_flag!r} is not gres|gpus")
+        raise StepExecutionError(
+            "setup", f"step_executor.gpu_flag {job.gpu_flag!r} is not gres|gpus"
+        )
     request = _staged_gpu_request(job) if job.needs_gpu else None
     lines = [f"#SBATCH {request}"] if request else []
     if job.exclusive:

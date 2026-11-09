@@ -9,7 +9,11 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from umrs.server.slurm_step_executor import measure_slurm_accounting, stamp_slurm_accounting
+from umrs.server.slurm_step_executor import (
+    measure_slurm_accounting,
+    read_slurm_account,
+    stamp_slurm_accounting,
+)
 from umrs.shared.slurm_accounting import (
     measured_gpu_seconds,
     parse_alloc_tres_gpus,
@@ -90,6 +94,14 @@ class TestMeasureSlurmAccounting:
         assert acct["gpus"] == 0
         assert acct["gpu_seconds"] == 0.0
 
+    def test_reports_the_account_slurm_returns(self):
+        with patch(
+            "umrs.server.slurm_step_executor.subprocess.run",
+            _sacct_run(stdout="00:10:00|billing=2,cpu=2|rkp00101\n"),
+        ):
+            acct = measure_slurm_accounting("42")
+        assert acct["account"] == "rkp00101"
+
     def test_garbage_elapsed_is_unmeasured(self):
         with patch(
             "umrs.server.slurm_step_executor.subprocess.run",
@@ -110,6 +122,22 @@ class TestMeasureSlurmAccounting:
 
         with patch("umrs.server.slurm_step_executor.subprocess.run", boom):
             assert measure_slurm_accounting("42") == {}
+
+
+class TestReadSlurmAccount:
+    def test_existing_job_account_is_returned(self):
+        with patch(
+            "umrs.server.slurm_step_executor.subprocess.run",
+            _sacct_run(stdout="rkp00101\n"),
+        ):
+            assert read_slurm_account("42") == "rkp00101"
+
+    def test_unavailable_account_is_not_invented(self):
+        with patch(
+            "umrs.server.slurm_step_executor.subprocess.run",
+            _sacct_run(returncode=1),
+        ):
+            assert read_slurm_account("42") == ""
 
 
 class TestStampSlurmAccounting:
