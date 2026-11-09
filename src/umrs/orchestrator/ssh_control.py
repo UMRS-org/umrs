@@ -102,6 +102,18 @@ class CommandResult:
         return self.returncode == 0
 
 
+def _auto_control_path(config: SSHControlConfig) -> str:
+    """The default ControlMaster socket: one per target **and login**.
+
+    A socket keyed on the target alone lets a second login's ``ssh`` attach to
+    the first login's master and run as that login (ADR-112 A.3.6), so the
+    login is part of the name. Stable across restarts.
+    """
+    run_dir = os.environ.get("XDG_RUNTIME_DIR", tempfile.gettempdir())
+    login = f"-{config.ssh_user}" if config.ssh_user else ""
+    return os.path.join(run_dir, f"umrs-ssh-{config.ssh_target}{login}-%p")
+
+
 class SSHControlManager:
     """Manages a persistent SSH ControlMaster connection for remote commands.
 
@@ -129,14 +141,7 @@ class SSHControlManager:
         self._health_task: asyncio.Task | None = None
 
         # Determine control socket path.
-        if config.control_path:
-            self._control_path = config.control_path
-        else:
-            # Use a stable path based on target to survive restarts.
-            run_dir = os.environ.get("XDG_RUNTIME_DIR", tempfile.gettempdir())
-            self._control_path = os.path.join(
-                run_dir, f"umrs-ssh-{config.ssh_target}-%p"
-            )
+        self._control_path = config.control_path or _auto_control_path(config)
 
     @property
     def connected(self) -> bool:
@@ -172,7 +177,10 @@ class SSHControlManager:
         if self._config.proxy_jump:
             args.extend(["-J", self._config.proxy_jump])
         if self._config.identity_file:
-            args.extend(["-i", self._config.identity_file])
+            # Only this key: with an agent present ssh would otherwise offer
+            # other keys too, and the login could succeed under one of them
+            # (ADR-112 A.3.6).
+            args.extend(["-o", "IdentitiesOnly=yes", "-i", self._config.identity_file])
         return args
 
     def command_argv(self, command: str) -> list[str]:

@@ -31,10 +31,22 @@ def _persist_backend_metrics(job_store: Any, attempt_id: str, attempt: Any) -> N
     The knowledge backends write their result (counts, per-item failure
     reasons, degraded notes) there; it never left memory, so `r4 job
     describe` could only say "all 1 artifact(s) failed" (2026-10-09).
+
+    Best effort (ADR-112 wave A review, 2026-11-08): it runs after the
+    backend accepted the job, and every hpc_script, endpoint and cluster-loop
+    submit now records its identity here. A store error must neither fail an
+    attempt the cluster already runs (a retry would submit it twice) nor
+    leave it unmarked, so it is logged and dropped.
     """
     metrics = getattr(attempt, "metrics", None)
-    if metrics:
+    if not metrics:
+        return
+    try:
         job_store.update_attempt_metrics(attempt_id, metrics)
+    except Exception:
+        logger.warning(
+            "attempt %s: backend metrics not persisted", attempt_id, exc_info=True
+        )
 
 
 class OrchestratorBackend(Protocol):
@@ -230,40 +242,7 @@ class Scheduler:
             )
 
             # Submit to backend
-            try:
-                backend_ref = await backend.submit_job(job, attempt)
-
-                # Mark submitted
-                self.job_store.mark_attempt_submitted(attempt_id, backend_ref)
-                _persist_backend_metrics(self.job_store, attempt_id, attempt)
-
-                self._stats["jobs_scheduled"] += 1
-                METRICS.job_submitted(backend.backend_name)
-                METRICS.jobs_created(backend.backend_name)
-                self._consecutive_failures = 0
-                METRICS.degradation_level("scheduler", 0)
-                logger.info(
-                    f"Job {job_id} submitted (attempt={attempt_id}, "
-                    f"backend_ref={backend_ref})"
-                )
-
-            except Exception as e:
-                # Backend submission failed - mark attempt as failed
-                logger.error(f"Backend submission failed for {job_id}: {e}")
-                self.job_store.mark_attempt_failed(
-                    attempt_id,
-                    exit_reason=f"backend_submission_failed: {e}",
-                    retry_delay=30,  # Retry in 30 seconds
-                )
-                self._stats["jobs_failed"] += 1
-                self._consecutive_failures = (
-                    getattr(self, "_consecutive_failures", 0) + 1
-                )
-                if self._consecutive_failures >= 3:
-                    METRICS.retry_burst(backend.backend_name)
-                    METRICS.degradation_level("scheduler", 1)
-                    self._consecutive_failures = 0
-                METRICS.scheduler_cycle("submission_error")
+            await self._submit_attempt(job_id, job, (attempt_id, attempt), backend)
 
         except JobStoreError as e:
             logger.error(f"JobStore error scheduling {job_id}: {e}")
@@ -273,6 +252,66 @@ class Scheduler:
             logger.error(f"Unexpected error scheduling {job_id}: {e}", exc_info=True)
             self._stats["jobs_failed"] += 1
             METRICS.scheduler_cycle("unexpected_error")
+
+    async def _submit_attempt(
+        self, job_id: str, job: Job, attempt_pair: tuple[str, Any], backend: Any
+    ) -> None:
+        """Submit one attempt; record the outcome (split out of
+        :meth:`_schedule_job` for its complexity budget)."""
+        from umrs.hpc_accounts.usage_ledger import LedgerRefused
+        from umrs.orchestrator.hpc_identity import HpcAccessRefused
+
+        attempt_id, attempt = attempt_pair
+        try:
+            backend_ref = await backend.submit_job(job, attempt)
+        except (HpcAccessRefused, LedgerRefused) as e:
+            self._fail_refused_attempt(job_id, attempt_id, e)
+            return
+        except Exception as e:
+            self._fail_submitted_attempt(job_id, attempt_id, backend, e)
+            return
+        # Mark submitted
+        self.job_store.mark_attempt_submitted(attempt_id, backend_ref)
+        _persist_backend_metrics(self.job_store, attempt_id, attempt)
+
+        self._stats["jobs_scheduled"] += 1
+        METRICS.job_submitted(backend.backend_name)
+        METRICS.jobs_created(backend.backend_name)
+        self._consecutive_failures = 0
+        METRICS.degradation_level("scheduler", 0)
+        logger.info(
+            f"Job {job_id} submitted (attempt={attempt_id}, backend_ref={backend_ref})"
+        )
+
+    def _fail_refused_attempt(
+        self, job_id: str, attempt_id: str, refused: Exception
+    ) -> None:
+        """A policy refusal (ADR-112): terminal, typed, never retried and never
+        counted as backend degradation. The exit reason starts with the
+        ``hpcaccess.*`` code, which the store treats as terminal."""
+        logger.warning(f"Job {job_id} refused by the site's hpc_access: {refused}")
+        self.job_store.mark_attempt_failed(attempt_id, exit_reason=str(refused))
+        self._stats["jobs_failed"] += 1
+        METRICS.scheduler_cycle("submission_refused")
+
+    def _fail_submitted_attempt(
+        self, job_id: str, attempt_id: str, backend: Any, e: Exception
+    ) -> None:
+        """Backend submission failed: mark the attempt failed (retry in 30 s)
+        and count it toward the retry burst / degradation signal."""
+        logger.error(f"Backend submission failed for {job_id}: {e}")
+        self.job_store.mark_attempt_failed(
+            attempt_id,
+            exit_reason=f"backend_submission_failed: {e}",
+            retry_delay=30,  # Retry in 30 seconds
+        )
+        self._stats["jobs_failed"] += 1
+        self._consecutive_failures = getattr(self, "_consecutive_failures", 0) + 1
+        if self._consecutive_failures >= 3:
+            METRICS.retry_burst(backend.backend_name)
+            METRICS.degradation_level("scheduler", 1)
+            self._consecutive_failures = 0
+        METRICS.scheduler_cycle("submission_error")
 
     @property
     def stats(self) -> dict[str, Any]:

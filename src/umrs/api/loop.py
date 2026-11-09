@@ -966,6 +966,28 @@ def _refuse_foreign_loop_venue(venue: str) -> None:
         raise_typed(PlatformError.loops("forbidden", refusal))
 
 
+def _refuse_cluster_loop_identity(
+    venue: str, http_request: Request, owner: str
+) -> None:
+    """Typed 403 ``hpcaccess.*`` for a ``cluster:<site>`` loop the site's
+    ``hpc_access`` does not admit (ADR-112 A.3.3): the driver runs on the
+    site's login, so it is user work. Checked before the loop record exists.
+    The project is the verified header (none for an ownerless mvp start,
+    which is then refused); the admin bit is the owner's user record, the
+    same source the durable submit reads. A frontend loop is not checked."""
+    if not venue.startswith("cluster:"):
+        return
+    from umrs.orchestrator.hpc_identity import platform_error
+    from umrs.shared.hpc_user_work_access import user_work_refusal
+
+    refused = user_work_refusal(
+        user_id=owner or None,
+        project_id=_verified_header_project(http_request) if owner else None,
+    )
+    if refused is not None:
+        raise_typed(platform_error(refused))
+
+
 # ── Owner identity (ADR-036 (a): approvals are answerable by the loop owner) ─
 
 
@@ -1126,6 +1148,7 @@ async def start_loop(
     # S1a: the venue is checked before the loop record exists, so a refused
     # venue (grammar 400, another site 403) leaves no orphan loop behind.
     venue = _validate_loop_venue(request)
+    _refuse_cluster_loop_identity(venue, http_request, owner)
 
     engine = _get_engine()
     loop = engine.start_loop(

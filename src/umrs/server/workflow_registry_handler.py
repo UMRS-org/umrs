@@ -19,11 +19,29 @@ import json
 import logging
 import os
 import threading
-import uuid
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
+from umrs.server.workflow_catalog_versions import (
+    CATALOG_LAYOUT,
+    PENDING_KEY,
+    file_lock,
+    migrate_catalog,
+    retire_version_files,
+    sweep_pending_removals,
+)
+from umrs.server.workflow_versions import (
+    CODE_UNAVAILABLE,
+    WorkflowVersionError,
+    default_entry,
+    requested_version,
+    sort_versions_desc,
+    split_version_ref,
+    tree_digest_or_none,
+    version_sort_key,
+)
 from umrs.shared.access_scopes import ResourceCaller, access_admits
 from umrs.shared.config import get_resolved_umrs_subdir
 from umrs.shared.workflow_execution_access import VERIFIED_PROJECT_SPEC_KEY
@@ -101,13 +119,41 @@ def _catalog_path() -> str:
     return get_resolved_umrs_subdir("workflow_catalog.json")
 
 
-def _load_catalog() -> dict[str, Any]:
-    """Load workflow catalog from JSON file."""
+def _read_catalog() -> dict[str, Any]:
+    """The catalog file as stored; a missing one is an empty, current-layout
+    catalog (nothing to migrate)."""
     path = _catalog_path()
     if not os.path.exists(path):
-        return {"workflows": []}
+        return {"workflows": [], "layout": CATALOG_LAYOUT}
     with open(path, encoding="utf-8") as f:
         return json.load(f)
+
+
+def _load_catalog() -> dict[str, Any]:
+    """Load the workflow catalog; one written before ADR-113 is migrated to
+    per-version directories first (D-8, :mod:`workflow_catalog_versions`)."""
+    catalog = _read_catalog()
+    if catalog.get("layout") != CATALOG_LAYOUT:
+        catalog = _migrated_catalog()
+    return catalog
+
+
+def ensure_catalog_layout() -> None:
+    """Migrate a pre-ADR-113 catalog now (D-8): an upload writes its
+    version directory inside the name's directory, which must not still be
+    the name's shared tree."""
+    with _CATALOG_LOCK:
+        _load_catalog()
+
+
+def _migrated_catalog() -> dict[str, Any]:
+    """Migrate under a cross-process lock (the fronts share the state dir);
+    the catalog is re-read inside it, so only the first process moves files."""
+    with file_lock(f"{_catalog_path()}.migrate.lock"):
+        catalog = _read_catalog()
+        if migrate_catalog(catalog):
+            _save_catalog(catalog)
+    return catalog
 
 
 def _save_catalog(catalog: dict[str, Any]) -> None:
@@ -125,47 +171,32 @@ def _save_catalog(catalog: dict[str, Any]) -> None:
     os.replace(tmp_path, path)
 
 
-def register_workflow(
+#: Name-level fields a new version inherits from the name's current rows
+#: (ADR-113 D-5 access, D-7 trigger pin, D-8 adoption).
+_NAME_LEVEL_FIELDS = ("access", "trigger_version", "triggers_disabled", "adopted_as")
+
+
+def _catalog_entry(
     workflow_name: str,
     version: str,
     user_id: str,
     source_path: str,
     workflow_json: dict[str, Any],
-    scope: str = "user",
-    description: str | None = None,
+    scope: str,
+    description: str | None,
+    source_sha256: str | None,
 ) -> dict[str, Any]:
-    """Register a workflow in the catalog.
-
-    Called internally by the upload handler (auto-registration) or
-    potentially via a future REGISTER_WORKFLOW command.
-
-    Args:
-        workflow_name: Unique name for the workflow.
-        version: Version string (e.g. "1.0.0", "0.1").
-        user_id: Client/user who owns this workflow.
-        source_path: Absolute path to the extracted workflow directory.
-        workflow_json: Parsed contents of workflow.json.
-        scope: "user" (private) or "system" (shared).
-        description: Optional human-readable description.
-
-    Returns:
-        Dict with "status" ("ok" or "error") and details.
-    """
-    # Extract step metadata from workflow_json
-    steps_meta: list[dict[str, str]] = []
-    for step in workflow_json.get("steps", []):
-        steps_meta.append(
-            {
-                "name": step.get("name", ""),
-                "entrypoint": step.get("entrypoint", ""),
-            }
-        )
-
-    entry = {
+    """A catalog row as :func:`register_workflow` writes it."""
+    steps_meta = [
+        {"name": step.get("name", ""), "entrypoint": step.get("entrypoint", "")}
+        for step in workflow_json.get("steps", [])
+    ]
+    return {
         "name": workflow_name,
         "version": version,
         "user_id": user_id,
         "source_path": source_path,
+        "source_sha256": source_sha256,
         "scope": scope,
         "access": [],
         "description": description or workflow_json.get("description", ""),
@@ -174,51 +205,166 @@ def register_workflow(
         "registered_at": datetime.now().isoformat(),
     }
 
-    with _CATALOG_LOCK:
-        catalog = _load_catalog()
-        # Check for duplicate (name, version, scope, user_id)
-        for existing in catalog["workflows"]:
-            if (
-                existing["name"] == workflow_name
-                and existing.get("version") == version
-                and existing.get("scope") == scope
-                and existing.get("user_id") == user_id
-            ):
-                # Update in place (re-upload overwrites; an ADR-080 access
-                # list set on the entry survives the re-upload)
-                access = existing.get("access")
-                existing.update(entry)
-                if access:
-                    existing["access"] = access
-                _save_catalog(catalog)
-                logger.info(
-                    "Updated workflow registration: %s v%s (user=%s, scope=%s)",
-                    workflow_name,
-                    version,
-                    user_id,
-                    scope,
-                )
-                return {
-                    "status": "ok",
-                    "message": f"Workflow '{workflow_name}' v{version} updated",
-                    "workflow": entry,
-                }
-        catalog["workflows"].append(entry)
-        _save_catalog(catalog)
 
-    logger.info(
-        "Registered workflow: %s v%s (user=%s, scope=%s, %d steps)",
+def _name_rows(
+    entries: list[dict[str, Any]], workflow_name: str, owner: str
+) -> list[dict[str, Any]]:
+    return [
+        e
+        for e in entries
+        if e.get("name") == workflow_name and e.get("user_id") == owner
+    ]
+
+
+def _inherited_fields(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """What a new version takes over from (owner, name)'s current default
+    row: its access list (D-5), trigger pin and adoption marks."""
+    current = default_entry(rows)
+    if current is None:
+        return {}
+    return {k: current[k] for k in _NAME_LEVEL_FIELDS if k in current}
+
+
+def _same_version_row(
+    entries: list[dict[str, Any]], entry: dict[str, Any]
+) -> dict[str, Any] | None:
+    key = ("name", "version", "scope", "user_id")
+    for existing in entries:
+        if all(existing.get(k) == entry[k] for k in key):
+            return existing
+    return None
+
+
+def _version_conflict(
+    existing: dict[str, Any], entry: dict[str, Any]
+) -> dict[str, Any] | None:
+    """Other files under a registered version: refused by name (D-2); a
+    row without code (D-8) may get any files back."""
+    old, new = existing.get("source_sha256"), entry.get("source_sha256")
+    if not (old and new) or old == new or existing.get("code") == CODE_UNAVAILABLE:
+        return None
+    return {
+        "status": "error",
+        "code": "workflows.version_exists",
+        "message": (
+            f"Workflow '{entry['name']}' version {entry['version']} already "
+            "exists with different content; bump `version`"
+        ),
+    }
+
+
+def _reregistered(existing: dict[str, Any], entry: dict[str, Any]) -> dict[str, Any]:
+    """The same (name, version, scope, owner) again. Versions are immutable
+    (ADR-113 D-2): other files are refused by name; the same files are a
+    no-op (``unchanged``); a row without code (D-8) gets its files back."""
+    conflict = _version_conflict(existing, entry)
+    if conflict is not None:
+        return conflict
+    unchanged = (
+        existing.get("code") != CODE_UNAVAILABLE
+        and bool(existing.get("source_sha256"))
+        and existing.get("source_sha256") == entry.get("source_sha256")
+    )
+    kept = {k: existing[k] for k in _NAME_LEVEL_FIELDS if k in existing}
+    if unchanged:
+        kept["registered_at"] = existing.get("registered_at")
+    existing.pop("code", None)
+    existing.update(entry)
+    existing.update(kept)
+    return {"status": "ok", "unchanged": unchanged, "workflow": existing}
+
+
+def register_workflow(
+    workflow_name: str,
+    version: str,
+    user_id: str,
+    source_path: str,
+    workflow_json: dict[str, Any],
+    scope: str = "user",
+    description: str | None = None,
+    *,
+    source_sha256: str | None = None,
+) -> dict[str, Any]:
+    """Register one version of a workflow in the catalog.
+
+    Called by the upload handler (auto-registration) and the adopt route.
+    ``source_path`` is that version's own directory; ``source_sha256`` its
+    digest (computed here when not given). A version is immutable (ADR-113
+    D-2): registering (name, version, scope, owner) again with other files
+    is refused (``code: workflows.version_exists``), with the same files it
+    is a no-op (``unchanged: true``). A new version inherits the name's
+    access list and trigger pin (D-5, D-7).
+
+    Returns a dict with "status" ("ok" or "error") and details.
+    """
+    digest = source_sha256 or tree_digest_or_none(source_path)
+    entry = _catalog_entry(
         workflow_name,
         version,
         user_id,
+        source_path,
+        workflow_json,
         scope,
-        len(steps_meta),
+        description,
+        digest,
     )
-    return {
-        "status": "ok",
-        "message": f"Workflow '{workflow_name}' v{version} registered",
-        "workflow": entry,
-    }
+    with _CATALOG_LOCK:
+        catalog = _load_catalog()
+        rows = catalog.setdefault("workflows", [])
+        existing = _same_version_row(rows, entry)
+        if existing is not None:
+            result = _reregistered(existing, entry)
+        else:
+            entry.update(_inherited_fields(_name_rows(rows, workflow_name, user_id)))
+            rows.append(entry)
+            result = {"status": "ok", "unchanged": False, "workflow": entry}
+        if result["status"] == "ok":
+            sweep_pending_removals(catalog)
+            _save_catalog(catalog)
+    if result["status"] == "ok":
+        _log_registration(result, scope)
+    return result
+
+
+def _log_registration(result: dict[str, Any], scope: str) -> None:
+    entry = result["workflow"]
+    verb = "unchanged" if result["unchanged"] else "registered"
+    result["message"] = f"Workflow '{entry['name']}' v{entry['version']} {verb}"
+    logger.info(
+        "Workflow %s: %s v%s (user=%s, scope=%s, %d steps)",
+        verb,
+        entry["name"],
+        entry["version"],
+        entry["user_id"],
+        scope,
+        len(entry.get("steps") or []),
+    )
+
+
+def _row_matches(
+    entry: dict[str, Any],
+    workflow_name: str,
+    user_id: str,
+    scope: str | None,
+    version: str | None,
+) -> bool:
+    return (
+        entry.get("name") == workflow_name
+        and entry.get("user_id") == user_id
+        and (scope is None or entry.get("scope", "user") == scope)
+        and (version is None or str(entry.get("version")) == version)
+    )
+
+
+def _drop_rows(catalog: dict[str, Any], removed: list[dict[str, Any]]) -> list[str]:
+    """Drop *removed* from *catalog*; their files go now or once no run
+    references them (D-6). Returns the deferred paths."""
+    catalog["workflows"] = [
+        e for e in catalog.get("workflows", []) if not any(e is r for r in removed)
+    ]
+    deferred = retire_version_files(catalog, removed)
+    sweep_pending_removals(catalog)
+    return deferred
 
 
 def unregister_workflow(
@@ -226,46 +372,79 @@ def unregister_workflow(
     *,
     user_id: str,
     scope: str | None = None,
+    version: str | None = None,
 ) -> dict[str, Any]:
-    """Remove a workflow registration from the catalog.
+    """Remove workflow registrations from the catalog.
 
-    Deletes exactly the entries that match ``(name, user_id, scope?)`` —
-    ownership is decided by the caller (REST layer checks admin OR owner;
-    system scope requires admin), this function enforces the match.
+    Deletes exactly the entries that match ``(name, user_id, scope?,
+    version?)``: one version, or every version of the name (ADR-113 D-6).
+    Ownership is decided by the caller (REST layer checks admin OR owner;
+    system scope requires admin); this function enforces the match. The
+    removed versions' files go too, unless a queued or running run still
+    references them: then they are removed once no run does.
 
-    Returns ``{"status": "ok", "removed": n}``; ``removed == 0`` when no
-    matching registration exists (caller maps to 404).
+    Returns ``{"status": "ok", "removed": n, "versions": [...], "deferred":
+    m}``; ``removed == 0`` when no matching registration exists (caller maps
+    to 404).
     """
+    deferred: list[str] = []
     with _CATALOG_LOCK:
         catalog = _load_catalog()
-        keep: list[dict[str, Any]] = []
-        removed = 0
-        for entry in catalog.get("workflows", []):
-            if (
-                entry.get("name") == workflow_name
-                and entry.get("user_id") == user_id
-                and (scope is None or entry.get("scope", "user") == scope)
-            ):
-                removed += 1
-                continue
-            keep.append(entry)
+        removed = [
+            e
+            for e in catalog.get("workflows", [])
+            if _row_matches(e, workflow_name, user_id, scope, version)
+        ]
         if removed:
-            catalog["workflows"] = keep
+            deferred = _drop_rows(catalog, removed)
             _save_catalog(catalog)
+    logger.info(
+        "Unregistered workflow: %s (user=%s, scope=%s, version=%s, removed=%d, "
+        "files deferred=%d)",
+        workflow_name,
+        user_id,
+        scope or "*",
+        version or "*",
+        len(removed),
+        len(deferred),
+    )
+    return {
+        "status": "ok",
+        "removed": len(removed),
+        "versions": sort_versions_desc(e.get("version") for e in removed),
+        "deferred": len(deferred),
+    }
 
-    if removed:
-        logger.info(
-            "Unregistered workflow: %s (user=%s, scope=%s, removed=%d)",
-            workflow_name,
-            user_id,
-            scope or "*",
-            removed,
-        )
-    return {"status": "ok", "removed": removed}
+
+def sweep_removed_versions(ignore_job_ids: frozenset[str] = frozenset()) -> None:
+    """Remove the files of deleted versions no run references any more
+    (ADR-113 D-6); a run that just ended passes its own durable job, which
+    the job store still shows running. Best effort, never raises."""
+    try:
+        with _CATALOG_LOCK:
+            catalog = _load_catalog()
+            if catalog.get(PENDING_KEY) and sweep_pending_removals(
+                catalog, ignore_job_ids=ignore_job_ids
+            ):
+                _save_catalog(catalog)
+    except Exception:  # a later sweep retries
+        logger.warning("sweeping deleted workflow versions failed", exc_info=True)
+
+
+def _list_payload(payload_str: str) -> dict[str, Any]:
+    try:
+        payload = json.loads(payload_str) if payload_str else {}
+    except json.JSONDecodeError:
+        payload = {}
+    return payload if isinstance(payload, dict) else {}
 
 
 def _handle_list_workflows(client_id: str, payload_str: str) -> str:
     """List registered workflows, optionally filtered by scope or user.
+
+    One row per (owner, name, scope) with ``version`` = the default version
+    (ADR-113 D-3) and ``versions`` = every registered version, highest
+    first; ``all_versions: true`` lists one row per version instead.
 
     Payload JSON (all optional):
       - scope: "user" | "system" — filter by scope
@@ -277,19 +456,15 @@ def _handle_list_workflows(client_id: str, payload_str: str) -> str:
         project-scoped access entries)
       - include_system: bool — also append the platform's ``system``-scope
         workflows (every user may run them; an owner filter used to hide them)
+      - all_versions: bool — one row per registered version
     """
-    try:
-        payload = json.loads(payload_str) if payload_str else {}
-    except json.JSONDecodeError:
-        payload = {}
-    if not isinstance(payload, dict):
-        payload = {}
-
+    payload = _list_payload(payload_str)
     with _CATALOG_LOCK:
         catalog = _load_catalog()
     workflows = _filtered_workflows(catalog.get("workflows", []), payload)
     _append_shared_workflows(workflows, catalog.get("workflows", []), payload)
     _append_system_workflows(workflows, catalog.get("workflows", []), payload)
+    workflows = rows_by_name(workflows, all_versions=bool(payload.get("all_versions")))
 
     return json.dumps(
         {
@@ -299,6 +474,30 @@ def _handle_list_workflows(client_id: str, payload_str: str) -> str:
         },
         default=str,
     )
+
+
+def rows_by_name(
+    rows: list[dict[str, Any]], *, all_versions: bool = False
+) -> list[dict[str, Any]]:
+    """Group catalog rows by (owner, name, scope): the default version's row
+    with ``versions`` (ADR-113 D-3), or every version's row (highest first)
+    when *all_versions*; groups keep their first row's order."""
+    groups: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
+    for row in rows:
+        key = (row.get("user_id"), row.get("name"), row.get("scope"))
+        groups.setdefault(key, []).append(row)
+    out: list[dict[str, Any]] = []
+    for group in groups.values():
+        versions = sort_versions_desc(r.get("version") for r in group)
+        chosen = (
+            sorted(
+                group, key=lambda r: version_sort_key(r.get("version")), reverse=True
+            )
+            if all_versions
+            else [default_entry(group) or group[0]]
+        )
+        out.extend({**row, "versions": versions} for row in chosen)
+    return out
 
 
 def _filtered_workflows(
@@ -388,29 +587,28 @@ def _handle_unregister_workflow(client_id: str, payload_str: str) -> str:
     """ZMQ command path mirroring the REST DELETE.
 
     Payload JSON:
-      - name (required): workflow name
+      - name (required): workflow name (``name@X`` names one version)
       - scope (optional): only delete entries with this scope
+      - version (optional): only this version (ADR-113 D-6)
 
     Authorization (admin/owner) is enforced by the authenticated caller
     identity that reaches this handler — same trust as REGISTER/UPLOAD.
     """
     try:
         payload = json.loads(payload_str) if payload_str else {}
-    except json.JSONDecodeError as exc:
-        return json.dumps({"status": "error", "message": f"invalid JSON: {exc}"})
-
-    name = str(payload.get("name", "")).strip()
+        name, version = requested_version(
+            str(payload.get("name", "")).strip(), payload.get("version")
+        )
+    except (json.JSONDecodeError, AttributeError, ValueError) as exc:
+        return json.dumps({"status": "error", "message": f"invalid payload: {exc}"})
     if not name:
         return json.dumps({"status": "error", "message": "name is required"})
     result = unregister_workflow(
-        name,
-        user_id=client_id,
-        scope=payload.get("scope") if isinstance(payload, dict) else None,
+        name, user_id=client_id, scope=payload.get("scope"), version=version
     )
     if result["removed"] == 0:
-        return json.dumps(
-            {"status": "error", "message": f"Workflow '{name}' not found"}
-        )
+        shown = f"'{name}'" + (f" version {version}" if version else "")
+        return json.dumps({"status": "error", "message": f"Workflow {shown} not found"})
     return json.dumps(result)
 
 
@@ -452,17 +650,20 @@ def _workflow_run_context(
     source_path: str | None = None,
     *,
     caller_project: str | None = None,
+    version: str | None = None,
 ) -> tuple[str, dict[str, Any], int]:
     if source_path is None:
         # A durable job without a usable source_path: resolved like a
         # trigger (ADR-074 D-8, ADR-080), never another owner's same-named
-        # workflow. *caller_project* is the job's own project only when the
-        # server recorded it as gateway-verified (:func:`durable_job_verified_project`).
+        # workflow, and the version the job pinned (ADR-113 D-4).
+        # *caller_project* is the job's own project only when the server
+        # recorded it as gateway-verified (:func:`durable_job_verified_project`).
         entry = resolve_workflow_for_caller(
-            workflow_name, client_id, caller_project=caller_project
+            workflow_name, client_id, caller_project=caller_project, version=version
         )
         if entry is None:
             raise ValueError(f"Workflow '{workflow_name}' not found in registry")
+        require_code(entry)
         source_path = entry.get("source_path", "")
 
     if not source_path or not os.path.isdir(source_path):
@@ -479,6 +680,152 @@ def _workflow_run_context(
         raise ValueError(f"Failed to load workflow.json: {exc}") from exc
 
     return source_path, workflow_json, len(workflow_json.get("steps", []))
+
+
+def require_code(entry: dict[str, Any]) -> None:
+    """Refuse by name a version whose files are gone (ADR-113 D-8)."""
+    if entry.get("code") == CODE_UNAVAILABLE:
+        raise WorkflowVersionError(
+            "workflows.code_unavailable",
+            f"Workflow '{entry.get('name')}' version {entry.get('version')} has no "
+            "code on this server: its files were overwritten while every version "
+            "shared one directory (before ADR-113); upload that version again "
+            "or run another",
+        )
+
+
+def check_pinned_source(
+    source_path: str, expected: str | None, workflow_name: str, version: Any
+) -> None:
+    """The files a run reads still have the digest it pinned (ADR-113 D-4);
+    a retry or a re-dispatch of changed files fails by name."""
+    if not expected:
+        return
+    if tree_digest_or_none(source_path) != expected:
+        raise WorkflowVersionError(
+            "workflows.source_mismatch",
+            f"Workflow '{workflow_name}' version {version}: its files no longer "
+            f"match the digest the run pinned ({expected[:12]}); the run does "
+            "not start",
+        )
+
+
+@dataclass(frozen=True)
+class ResolvedWorkflow:
+    """A caller's resolution: the catalog row and every version of its
+    (owner, name) the caller's rung offers, highest first."""
+
+    entry: dict[str, Any]
+    versions: tuple[str, ...]
+
+
+_Rungs = tuple[list[dict[str, Any]], ...]
+
+
+def _rung_index(entry: dict[str, Any], client_id: str, caller: ResourceCaller) -> int:
+    """0 own, 1 system, 2 shared (the ADR-080 access list admits the
+    caller), 3 another owner's (admins only)."""
+    if entry.get("user_id") == client_id:
+        return 0
+    if entry.get("scope") == "system":
+        return 1
+    return 2 if access_admits(entry.get("access"), caller) else 3
+
+
+def _caller_rungs(
+    entries: list[dict[str, Any]],
+    workflow_name: str,
+    client_id: str,
+    caller: ResourceCaller,
+) -> _Rungs:
+    rungs: _Rungs = ([], [], [], [])
+    for entry in entries:
+        if entry.get("name") == workflow_name:
+            rungs[_rung_index(entry, client_id, caller)].append(entry)
+    return rungs
+
+
+def _winning_group(rungs: _Rungs, is_admin: bool) -> list[dict[str, Any]]:
+    """The first non-empty rung (another owner's only for admins), narrowed
+    to the owner of its first row: one owner's versions of the name."""
+    for index, rung in enumerate(rungs):
+        if rung and (index < 3 or is_admin):
+            owner = rung[0].get("user_id")
+            return [e for e in rung if e.get("user_id") == owner]
+    return []
+
+
+def _with_version(rungs: _Rungs, version: str) -> _Rungs:
+    return tuple(
+        [e for e in rung if str(e.get("version")) == version] for rung in rungs
+    )
+
+
+def _group_versions(rungs: _Rungs, entry: dict[str, Any]) -> tuple[str, ...]:
+    for rung in rungs:
+        if any(e is entry for e in rung):
+            owner = entry.get("user_id")
+            mine = (e.get("version") for e in rung if e.get("user_id") == owner)
+            return tuple(sort_versions_desc(mine))
+    return ()
+
+
+def _pinned_entry(
+    workflow_name: str, version: str, rungs: _Rungs, is_admin: bool
+) -> dict[str, Any] | None:
+    """The exact version, the ladder restricted to it; an unknown version of
+    a known name is refused by name with the versions there are."""
+    group = _winning_group(_with_version(rungs, version), is_admin)
+    if group:
+        return group[0]
+    available = sort_versions_desc(
+        e.get("version") for e in _winning_group(rungs, is_admin)
+    )
+    if not available:
+        return None
+    raise WorkflowVersionError(
+        "workflows.version_not_found",
+        f"Workflow '{workflow_name}' has no version {version}; available "
+        f"versions: {', '.join(available)}",
+    )
+
+
+def resolve_workflow_version(
+    workflow_name: str,
+    client_id: str,
+    *,
+    is_admin: bool = False,
+    caller_project: str | None = None,
+    version: str | None = None,
+) -> ResolvedWorkflow | None:
+    """The workflow version a caller may trigger or describe (ADR-074 D-8,
+    ADR-080, ADR-113 D-3); None when the caller may see no such name.
+
+    Rungs, in order: the caller's own rows, ``system`` rows, rows whose
+    ADR-080 access list admits the caller (user/project/circle scopes),
+    another owner's rows only for admins — never a blind cross-owner name
+    fallback, which let a normal user run another owner's code against their
+    own buckets. Within the winning rung: *version* exactly (also given as
+    ``name@X``; an unknown one raises ``workflows.version_not_found``), else
+    the highest SemVer, releases before prereleases. Circle membership
+    resolves lazily; ``project:`` scopes admit only a verified
+    ``caller_project``.
+    """
+    name, version = requested_version(workflow_name, version)
+    with _CATALOG_LOCK:
+        catalog = _load_catalog()
+    caller = ResourceCaller(
+        client_id,
+        caller_project or "",
+        is_admin=is_admin,
+        circles_resolver=lambda: _resolve_circles(client_id),
+    )
+    rungs = _caller_rungs(catalog.get("workflows", []), name, client_id, caller)
+    if version is None:
+        entry = default_entry(_winning_group(rungs, is_admin))
+    else:
+        entry = _pinned_entry(name, version, rungs, is_admin)
+    return ResolvedWorkflow(entry, _group_versions(rungs, entry)) if entry else None
 
 
 def _resolve_workflow_catalog_entry(
@@ -518,68 +865,27 @@ def _resolve_workflow_catalog_entry(
     return owned or system or any_name
 
 
-def _classify_workflow_entries(
-    entries: list[dict[str, Any]],
-    workflow_name: str,
-    client_id: str,
-    caller: ResourceCaller,
-) -> tuple[
-    dict[str, Any] | None,
-    dict[str, Any] | None,
-    dict[str, Any] | None,
-    dict[str, Any] | None,
-]:
-    """Scan same-named entries → (own, system, shared, first-foreign)."""
-    own: dict[str, Any] | None = None
-    system: dict[str, Any] | None = None
-    shared: dict[str, Any] | None = None
-    foreign: dict[str, Any] | None = None
-    for entry in entries:
-        if entry.get("name") != workflow_name:
-            continue
-        if entry.get("user_id") == client_id:
-            own = entry
-            break  # the caller's own entry always wins
-        if entry.get("scope") == "system":
-            system = system or entry
-        elif shared is None and access_admits(entry.get("access"), caller):
-            shared = entry
-        elif foreign is None:
-            foreign = entry
-    return own, system, shared, foreign
-
-
 def resolve_workflow_for_caller(
     workflow_name: str,
     client_id: str,
     *,
     is_admin: bool = False,
     caller_project: str | None = None,
+    version: str | None = None,
 ) -> dict[str, Any] | None:
-    """The workflow a caller may trigger or describe (ADR-074 D-8, ADR-080).
-
-    Order: the caller's own entry, then a ``system`` entry (shared), then an
-    entry whose ADR-080 access list admits the caller (user/project/circle
-    scopes; ``system`` entries there equal a system workflow); another
-    owner's entry otherwise only for admins — never a blind cross-owner name
-    fallback, which let a normal user run another owner's code against their
-    own buckets. Circle membership resolves lazily (only a circle-scoped
-    candidate triggers the lookup); ``project:`` scopes admit only a
-    verified ``caller_project``.
-    """
-    with _CATALOG_LOCK:
-        catalog = _load_catalog()
-
-    caller = ResourceCaller(
-        client_id,
-        caller_project or "",
-        is_admin=is_admin,
-        circles_resolver=lambda: _resolve_circles(client_id),
-    )
-    own, system, shared, foreign = _classify_workflow_entries(
-        catalog.get("workflows", []), workflow_name, client_id, caller
-    )
-    return own or system or shared or (foreign if is_admin else None)
+    """The catalog row :func:`resolve_workflow_version` resolves, or None
+    (an unknown version too)."""
+    try:
+        resolved = resolve_workflow_version(
+            workflow_name,
+            client_id,
+            is_admin=is_admin,
+            caller_project=caller_project,
+            version=version,
+        )
+    except WorkflowVersionError:
+        return None
+    return resolved.entry if resolved else None
 
 
 def workflow_access_entries(workflow_name: str, owner_id: str) -> list[dict[str, Any]]:
@@ -611,24 +917,170 @@ def set_workflow_access(
     return updated
 
 
+def set_trigger_version(
+    workflow_name: str, owner_id: str, version: str | None
+) -> list[dict[str, Any]]:
+    """Pin the version (owner, name)'s ingest triggers run (ADR-113 D-7), or
+    unpin it (None: the default version). Returns the rows ([] when none);
+    an unregistered version is refused by name."""
+    with _CATALOG_LOCK:
+        catalog = _load_catalog()
+        rows = _name_rows(catalog.get("workflows", []), workflow_name, owner_id)
+        known = sort_versions_desc(r.get("version") for r in rows)
+        if rows and version is not None and version not in known:
+            raise WorkflowVersionError(
+                "workflows.version_not_found",
+                f"Workflow '{workflow_name}' has no version {version}; available "
+                f"versions: {', '.join(known)}",
+            )
+        for row in rows:
+            row["trigger_version"] = version
+        if rows:
+            _save_catalog(catalog)
+    return rows
+
+
+def _adopt_source(from_name: str, caller: str, is_admin: bool) -> dict[str, Any]:
+    """The row whose files an adopt copies: the default version of the old
+    name's owner (the caller, or any owner for an admin)."""
+    found = _resolve_workflow_catalog_entry(from_name, caller)
+    if found is None:
+        raise LookupError(f"Workflow '{from_name}' not found")
+    owner = str(found.get("user_id") or "")
+    if owner != caller and not is_admin:
+        raise PermissionError(f"Workflow '{from_name}' is owned by another user")
+    with _CATALOG_LOCK:
+        rows = _name_rows(_load_catalog().get("workflows", []), from_name, owner)
+    source = default_entry(rows)
+    if source is None:
+        raise LookupError(f"Workflow '{from_name}' not found")
+    require_code(source)
+    return source
+
+
+def _disable_adopted_triggers(from_name: str, owner: str, adopted_as: str) -> None:
+    with _CATALOG_LOCK:
+        catalog = _load_catalog()
+        for row in _name_rows(catalog.get("workflows", []), from_name, owner):
+            row["triggers_disabled"] = True
+            row["adopted_as"] = adopted_as
+        _save_catalog(catalog)
+
+
+def adopt_workflow(
+    from_name: str, workflow_name: str, version: str, *, caller: str, is_admin: bool
+) -> dict[str, Any]:
+    """Re-register a name-versioned workflow's files as (*workflow_name*,
+    *version*) of the same owner (ADR-113 D-8): access is carried over when
+    the new name is new (an existing name keeps its own, D-5), triggers come
+    with the files, and the old name's triggers stop firing. Raises
+    LookupError (unknown), PermissionError (not the owner nor an admin) or
+    :class:`WorkflowVersionError` (by name)."""
+    from umrs.server.file_handling import adopt_version_tree, workflow_name_refusal
+    from umrs.server.workflow_versions import invalid_version_message, is_semver
+
+    if not is_semver(version):
+        raise WorkflowVersionError(
+            "workflows.invalid_version", invalid_version_message(version)
+        )
+    refusal = workflow_name_refusal(workflow_name)
+    if refusal:
+        raise WorkflowVersionError("workflows.bad_request", refusal)
+    source = _adopt_source(from_name, caller, is_admin)
+    owner = str(source.get("user_id") or "")
+    stored = adopt_version_tree(
+        owner, str(source["source_path"]), workflow_name, version
+    )
+    if not stored.ok:
+        raise WorkflowVersionError(
+            stored.code or "workflows.failure", str(stored.message)
+        )
+    new_name = not workflow_access_entries(workflow_name, owner)
+    result = _register_adopted(source, workflow_name, version, stored)
+    if new_name and source.get("access"):
+        set_workflow_access(workflow_name, owner, list(source["access"]))
+    if from_name != workflow_name:
+        _disable_adopted_triggers(from_name, owner, f"{workflow_name}@{version}")
+    return {
+        "name": workflow_name,
+        "version": version,
+        "source_sha256": stored.source_sha256,
+        "from_name": from_name,
+        "owner": owner,
+        "unchanged": bool(result.get("unchanged")),
+    }
+
+
+def _register_adopted(
+    source: dict[str, Any], workflow_name: str, version: str, stored: Any
+) -> dict[str, Any]:
+    with open(os.path.join(stored.dest, "workflow.json"), encoding="utf-8") as fh:
+        workflow_json = json.load(fh)
+    result = register_workflow(
+        workflow_name,
+        version,
+        str(source.get("user_id") or ""),
+        stored.dest,
+        workflow_json,
+        scope=str(source.get("scope") or "user"),
+        description=source.get("description"),
+        source_sha256=stored.source_sha256,
+    )
+    if result.get("status") != "ok":
+        raise WorkflowVersionError(
+            str(result.get("code") or "workflows.failure"), str(result.get("message"))
+        )
+    return result
+
+
+@dataclass(frozen=True)
+class _RunTarget:
+    """What a run executes: the resolved row and its loaded definition."""
+
+    entry: dict[str, Any]
+    source_path: str
+    workflow_json: dict[str, Any]
+    step_count: int
+
+    @property
+    def version(self) -> str | None:
+        value = self.entry.get("version")
+        return None if value in (None, "") else str(value)
+
+    @property
+    def digest(self) -> str | None:
+        return self.entry.get("source_sha256") or None
+
+
 def _caller_run_context(
     workflow_name: str,
     client_id: str,
     *,
     is_admin: bool,
     caller_project: str | None = None,
-) -> tuple[str, dict[str, Any], int]:
-    """:func:`_workflow_run_context` for a caller-facing trigger: owner-scoped
-    resolution; the resolved ``source_path`` is what the run (and a durable
-    job's spec) carries from here on."""
-    entry = resolve_workflow_for_caller(
-        workflow_name, client_id, is_admin=is_admin, caller_project=caller_project
+    version: str | None = None,
+) -> _RunTarget:
+    """The run a caller-facing trigger starts: owner-scoped resolution of the
+    version asked for, else the default (ADR-113 D-3); the resolved version
+    directory is what the run (and a durable job's spec) carries from here on."""
+    resolved = resolve_workflow_version(
+        workflow_name,
+        client_id,
+        is_admin=is_admin,
+        caller_project=caller_project,
+        version=version,
     )
-    if entry is None:
-        raise ValueError(f"Workflow '{workflow_name}' not found in registry")
-    return _workflow_run_context(
-        workflow_name, client_id, source_path=str(entry.get("source_path") or "")
+    if resolved is None:
+        name = split_version_ref(workflow_name)[0]
+        raise ValueError(f"Workflow '{name}' not found in registry")
+    entry = resolved.entry
+    require_code(entry)
+    source_path, workflow_json, steps = _workflow_run_context(
+        str(entry.get("name")),
+        client_id,
+        source_path=str(entry.get("source_path") or ""),
     )
+    return _RunTarget(entry, source_path, workflow_json, steps)
 
 
 def _take_over_prior_run(prior: Any, record: Any) -> None:
@@ -647,12 +1099,22 @@ def _take_over_prior_run(prior: Any, record: Any) -> None:
 
     if prior is not None:
         carry_step_jobs(prior, record)
+        _keep_run_spec(prior, record)
     if durable_job_cancelled(record.durable_job_id):
         logger.info(
             "workflow execution %s was cancelled; its dispatch runs nothing",
             record.execution_id,
         )
         record.update(cancel_requested=True)
+
+
+def _keep_run_spec(prior: Any, record: Any) -> None:
+    """Wave C (K19): a grant run's spec may be composed again before its
+    first submit; a re-dispatch keeps the one the record already holds
+    (the durable job spec carries the first)."""
+    same = getattr(prior, "grant_id", None) and prior.grant_id == getattr(record, "grant_id", None)
+    if same and prior.run_spec_b64 and prior.run_spec_id != record.run_spec_id:
+        record.update(run_spec_b64=prior.run_spec_b64, run_spec_id=prior.run_spec_id)
 
 
 #: ``record.results`` key listing what the trigger-time ensure started.
@@ -702,17 +1164,26 @@ def _launch_workflow_from_catalog(
     source_path: str | None = None,
     identity_verified: bool = False,
     caller_project: str | None = None,
+    user_work_project: str | None = None,
+    workflow_version: str | None = None,
+    source_sha256: str | None = None,
+    intent: dict[str, str] | None = None,
 ):
     source_path, workflow_json, step_count = _workflow_run_context(
         workflow_name,
         client_id,
         source_path=source_path,
         caller_project=caller_project,
+        version=workflow_version,
     )
+    # ADR-113 D-4: a dispatch (a retry, a re-dispatch after a restart) runs
+    # only the files the trigger pinned.
+    check_pinned_source(source_path, source_sha256, workflow_name, workflow_version)
 
     logger.info(
-        "Running workflow '%s' for user '%s' with %d steps (params=%s, durable_job_id=%s)",
+        "Running workflow '%s' v%s for user '%s' with %d steps (params=%s, durable_job_id=%s)",
         workflow_name,
+        workflow_version or "?",
         client_id,
         step_count,
         params,
@@ -746,28 +1217,38 @@ def _launch_workflow_from_catalog(
             params,
             identity_verified=identity_verified,
         ),
+        workflow_version=workflow_version,
+        source_sha256=source_sha256,
+        intent=intent,
     )
     _take_over_prior_run(prior, record)
 
     project_id = _workflow_project_id(params)
     router = build_registry_backed_router(project_id=project_id, user_id=client_id)
-    prelaunch = _endpoint_prelaunch(
-        workflow_json,
-        router,
-        client_id,
-        caller_project or _verified_caller_project(params, identity_verified),
+    # The gateway-verified project (never the params claim): endpoint
+    # sharing and the HPC lane's project rule (ADR-080, ADR-112) use it.
+    verified_project = caller_project or _verified_caller_project(
+        params, identity_verified
     )
+    prelaunch = _endpoint_prelaunch(workflow_json, router, client_id, verified_project)
+    # The HPC lane rule alone may also use an ingest event's project.
+    hpc_project = verified_project or user_work_project
 
     def _runner(record_to_run):
-        run_workflow_record(
-            record_to_run,
-            source_path=source_path,
-            workflow_json=workflow_json,
-            router=router,
-            project_id=project_id,
-            user_id=client_id,
-            prelaunch=prelaunch,
-        )
+        try:
+            run_workflow_record(
+                record_to_run,
+                source_path=source_path,
+                workflow_json=workflow_json,
+                router=router,
+                project_id=project_id,
+                user_id=client_id,
+                prelaunch=prelaunch,
+                verified_project=hpc_project,
+            )
+        finally:
+            # ADR-113 D-6: a deleted version this run kept goes now.
+            sweep_removed_versions(frozenset({str(durable_job_id or "")}))
 
     registry.launch(record, _runner)
     return record, source_path, step_count
@@ -810,12 +1291,19 @@ def _submit_durable_workflow_run(
     verified_project: str | None = None,
     origin_session_id: Any = None,
     idempotency_key: str | None = None,
+    workflow_version: str | None = None,
+    source_sha256: str | None = None,
+    intent: dict[str, str] | None = None,
 ) -> str:
     spec: dict[str, Any] = {
         "workflow_name": workflow_name,
         "execution_id": execution_id,
         "params": params,
+        # ADR-113 D-4: the run pins its version, that version's own
+        # directory and the digest of its files.
         "source_path": source_path,
+        "workflow_version": workflow_version,
+        "source_sha256": source_sha256,
         # Auto-ingest (TASK-035): completed workflow outputs flow
         # into the knowledge pipeline. "step" "*" marks run-level
         # provenance (not a single named step).
@@ -825,6 +1313,7 @@ def _submit_durable_workflow_run(
     }
     if verified_project:
         spec[VERIFIED_PROJECT_SPEC_KEY] = verified_project
+    idempotency_key = _stamp_intent(spec, intent, idempotency_key)
     # ADR-105 D-5: the triggering session tags its own durable job.
     from umrs.jobs.job_events import stamp_origin_session
 
@@ -849,6 +1338,8 @@ def _submit_durable_workflow_run(
         "status": "ok",
         "action": "run-workflow",
         "workflow_name": workflow_name,
+        "workflow_version": workflow_version,
+        "source_sha256": source_sha256,
         "source_path": source_path,
         "steps": step_count,
         "params": params,
@@ -860,10 +1351,55 @@ def _submit_durable_workflow_run(
             f"{durable_job_id or '<unknown>'} ({step_count} steps)"
         ),
     }
-    if run_id != execution_id:
+    if _existing_run(data, run_id, execution_id):
         # The idempotency key matched an existing job: no new run started.
         body["existing_run"] = True
-    return json.dumps(body, default=str)
+    return _submit_answer(body, intent)
+
+
+def _existing_run(data: dict[str, Any], run_id: str, execution_id: str) -> bool:
+    """The submit answered an existing job: another run id, or (a run id the
+    trigger fixed, as an intent's ``run_id``) the store's own duplicate."""
+    duplicate = str(data.get("message") or "").startswith("Job already exists")
+    return run_id != execution_id or duplicate
+
+
+def _stamp_intent(
+    spec: dict[str, Any], intent: dict[str, str] | None, key: str | None
+) -> str | None:
+    """ADR-112 B2: a gated run's signed intent rides in its spec, so every
+    dispatch (a retry, a restart) hands the same payload to the gate. Its id
+    keys the durable job, so a second trigger of one intent finds it. The
+    durable job's idempotency key (a plan's id, else the intent's)."""
+    if not intent:
+        return key
+    spec["intent"] = dict(intent)
+    if intent.get("grant_id"):  # wave C: one durable job per grant run
+        return key or f"grant-run:{intent['grant_id']}:{spec.get('execution_id')}"
+    return key or f"intent:{intent['id']}"
+
+
+def _gated_answer(gated: dict[str, str]) -> dict[str, str]:
+    """The answer's ids of a gated run: ``intent_id``, or (wave C) the
+    run's ``grant_id`` and ``run_spec_id``."""
+    if gated.get("grant_id"):
+        return {"grant_id": gated["grant_id"], "run_spec_id": gated.get("run_spec_id", "")}
+    return {"intent_id": gated["id"]}
+
+
+def _submit_answer(body: dict[str, Any], intent: dict[str, str] | None) -> str:
+    """The submit's answer (with the run's ``intent_id``); a second trigger
+    of one intent is ``intent_used``."""
+    if intent:
+        body.update(_gated_answer(intent))
+    if not (intent and body.get("existing_run")):
+        return json.dumps(body, default=str)
+    from umrs.server.run_intent_admission import error_json
+
+    return error_json(
+        "hpcaccess.intent_used",
+        f"run {body.get('execution_id')} of this intent already exists: sign a new one",
+    )
 
 
 def _run_workflow_request(payload_str: str) -> tuple[dict[str, Any], str | None]:
@@ -887,14 +1423,21 @@ def _require_plan_refusal(
     workflow_name: str,
     params: dict[str, Any],
     job_backend: DurableJobCommandBackend | None,
+    signed: bool = False,
 ) -> str | None:
     """Error JSON when the run's project requires plan -> commit (ADR-105
     D-4) or its policy is unreadable (fail closed); None otherwise.
 
     The project is the one the durable job is recorded under
     (``params.project_id``, ``default`` when absent). Without a durable
-    store there is no policy table, so nothing is refused.
+    store there is no policy table, so nothing is refused. A *signed* run
+    (it carries the person's signed intent, ADR-112 B2) is not refused: the
+    signature over the exact run is the explicit approval a plan asks for,
+    and the intent admission accepts it or refuses it by name (plan §5 B2.0
+    §10.3, fixer amendment 2026-11-08).
     """
+    if signed:
+        return None
     from umrs.workflow_plans import (
         PlanPolicyUnavailable,
         plan_required_message,
@@ -919,6 +1462,53 @@ def _require_plan_refusal(
     )
 
 
+def _hpc_admission(
+    target: _RunTarget,
+    client_id: str,
+    projects: tuple[str | None, str | None],
+    payload: dict[str, Any],
+) -> tuple[Any, str | None]:
+    """``(admission, None)`` or ``(None, error JSON)``: the typed
+    ``hpcaccess.*`` refusal when the run would use this site's HPC lane and
+    the site's ``hpc_access`` does not admit the caller's **verified**
+    project (ADR-112 A.3.4), and the signed-intent admission of a run under
+    the person's own account (B2 §10.3). *projects* is ``(verified caller
+    project, ingest event project)``; the HPC lane rule may use the second,
+    an intent binds only the first. The admin bit is the caller's user
+    record, the same source the runner reads."""
+    from umrs.orchestrator.hpc_identity import HpcAccessRefused, refusal_message
+    from umrs.server.hpc_user_work import workflow_user_work_identity
+    from umrs.server.run_intent_admission import admit_run, error_json, execution_exists
+
+    caller_project, user_work_project = projects
+    try:
+        identity = workflow_user_work_identity(
+            target.workflow_json,
+            target.source_path,
+            user_id=client_id,
+            project_id=caller_project or user_work_project,
+        )
+    except HpcAccessRefused as refused:
+        return None, error_json(refused.code, refusal_message(refused))
+    run = {
+        "workflow": str(target.entry.get("name") or ""),
+        "version": target.version or "",
+        "project": caller_project or "",
+        "principal": client_id,
+    }
+    params = payload.get("params", {})
+    return admit_run(identity, payload, params, run, execution_exists, target)
+
+
+def _run_refusal(exc: ValueError) -> str:
+    """A run refusal as JSON; a version refusal keeps its typed code."""
+    body = {"status": "error", "message": str(exc)}
+    code = getattr(exc, "code", None)
+    if code:
+        body["code"] = code
+    return json.dumps(body)
+
+
 def _handle_run_workflow(
     client_id: str,
     payload_str: str,
@@ -927,11 +1517,15 @@ def _handle_run_workflow(
     trusted_identity: bool = False,
     caller_is_admin: bool = False,
     idempotency_key: str | None = None,
+    user_work_project: str | None = None,
 ) -> str:
     """Trigger execution of a registered workflow.
 
     Payload JSON:
-      - workflow_name: str — name of the workflow to run
+      - workflow_name: str — name of the workflow to run (``name@X`` names
+        a version)
+      - version: str — optional, the version to run (ADR-113 D-3); without
+        one, the caller's default version
       - params: dict — additional runtime parameters (e.g. bucket alias)
 
     Resolution is owner-scoped (ADR-074 D-8): the caller's own workflow or a
@@ -941,14 +1535,20 @@ def _handle_run_workflow(
     verified plan commit, ADR-105 D-4): that run skips the project's
     ``require_plan`` refusal, which every other caller (HTTP trigger,
     run-definition trigger, ZMQ ``RUN_WORKFLOW``) gets.
+
+    ``user_work_project`` is set only by :func:`run_ingest_workflow`: the
+    ingest event's project, which the HPC lane rule (ADR-112) uses when no
+    verified caller project exists. It grants nothing else (no ADR-080
+    project share, no verified provenance).
     """
     payload, error = _run_workflow_request(payload_str)
     if error:
         return error
-    workflow_name = payload["workflow_name"]
     params = payload.get("params", {})
     if idempotency_key is None:
-        refusal = _require_plan_refusal(workflow_name, params, job_backend)
+        refusal = _require_plan_refusal(
+            payload["workflow_name"], params, job_backend, signed=bool(payload.get("intent"))
+        )
         if refusal:
             return refusal
 
@@ -956,52 +1556,112 @@ def _handle_run_workflow(
     caller_project = _verified_caller_project(params, identity_verified)
 
     try:
-        source_path, _, step_count = _caller_run_context(
-            workflow_name,
+        target = _caller_run_context(
+            payload["workflow_name"],
             client_id,
             is_admin=caller_is_admin,
             caller_project=caller_project,
+            version=payload.get("version"),
         )
     except ValueError as exc:
-        return json.dumps({"status": "error", "message": str(exc)})
+        return _run_refusal(exc)
+    admission, refused = _hpc_admission(
+        target, client_id, (caller_project, user_work_project), payload
+    )
+    if refused:
+        return refused
 
     if job_backend is not None:
-        execution_id = f"wf-{uuid.uuid4().hex[:12]}"
         return _submit_durable_workflow_run(
             client_id=client_id,
-            workflow_name=workflow_name,
-            params=params,
-            execution_id=execution_id,
-            source_path=source_path,
-            step_count=step_count,
+            workflow_name=str(target.entry.get("name")),
+            params=admission.params,
+            execution_id=admission.new_execution_id(),
+            source_path=target.source_path,
+            step_count=target.step_count,
             job_backend=job_backend,
             verified_project=caller_project,
             origin_session_id=payload.get("_origin_session_id"),
             idempotency_key=idempotency_key,
+            workflow_version=target.version,
+            source_sha256=target.digest,
+            intent=admission.intent_spec(),
         )
+    return _run_in_process(
+        target,
+        client_id,
+        admission,
+        identity_verified=identity_verified,
+        user_work_project=user_work_project,
+    )
 
+
+def _run_in_process(
+    target: _RunTarget,
+    client_id: str,
+    admission: Any,
+    *,
+    identity_verified: bool,
+    user_work_project: str | None,
+) -> str:
+    """Start the run in this process (no durable job store). *admission* is
+    the run's :class:`~umrs.server.run_intent_admission.RunAdmission`."""
+    workflow_name = str(target.entry.get("name"))
+    params = admission.params
     record, source_path, step_count = _launch_workflow_from_catalog(
         workflow_name=workflow_name,
         client_id=client_id,
         params=params,
-        source_path=source_path,
+        execution_id=admission.execution_id,
+        source_path=target.source_path,
         identity_verified=identity_verified,
+        user_work_project=user_work_project,
+        workflow_version=target.version,
+        source_sha256=target.digest,
+        intent=admission.intent_spec(),
     )
-
     return json.dumps(
         {
             "status": "ok",
             "action": "run-workflow",
             "workflow_name": workflow_name,
+            "workflow_version": target.version,
+            "source_sha256": target.digest,
             "source_path": source_path,
             "steps": step_count,
             "params": params,
             "execution_id": record.execution_id,
             "durable_job_id": record.durable_job_id,
+            "intent_id": record.intent_id,
+            "grant_id": getattr(record, "grant_id", None),
+            "run_spec_id": getattr(record, "run_spec_id", None),
             "message": f"Workflow '{workflow_name}' execution accepted ({step_count} steps)",
         },
         default=str,
     )
+
+
+def run_ingest_workflow(
+    client_id: str, payload_str: str, *, event_project: str | None
+) -> str:
+    """RUN_WORKFLOW for a W4 ``on: ingest`` subscription (server-side only).
+
+    *client_id* is the workflow's owner and *event_project* the project the
+    upload route recorded for the ingested object, passed only when the owner
+    belongs to it (:mod:`umrs.server.workflow_triggers`). It counts for the
+    HPC lane rule alone (ADR-112 A.3.4, review 2026-11-08): before, an ingest
+    run had no verified project and every allow-listed upload's staged run
+    was refused. No ZMQ payload reaches this entry, and a payload's
+    ``_identity_verified`` claim is dropped as on every untrusted path.
+    """
+    payload_str = _drop_untrusted_identity_claim(payload_str, False)
+    try:
+        return _handle_run_workflow(
+            client_id, payload_str, user_work_project=event_project
+        )
+    except Exception as exc:  # as _dispatch_workflow_command
+        logger.exception("ingest-triggered workflow run failed")
+        return json.dumps({"status": "error", "message": str(exc)})
 
 
 def commit_workflow_run(

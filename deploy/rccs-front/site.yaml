@@ -54,10 +54,21 @@ scheduler:
   gpus: 0
   cpus: 8
   memory: ""
-  slurm_delegation: per_user_ssh
-  service_pubkey_path: /lvs0/rccs-dmp/masaru.nagaso/ai4s-platform/keys/umrs-service.pub
-  slurm_proxy_path: /lvs0/rccs-dmp/masaru.nagaso/ai4s-platform/bin/umrs-slurm-proxy
-  require_user_slurm_account: false
+  # ADR-112 D-1 (2026-11-08): the declared access mode. per_user_ssh and the
+  # shared delegation key are retired. Every lane connects as extra.ssh_user,
+  # a personal login, so user work (staged steps, hpc_script, cluster loops)
+  # runs only for admins and allowed_projects until the operator consents
+  # (consent_ref). allowed_projects is the maintainer's interim choice
+  # (ADR-112 G-8).
+  hpc_access:
+    operator: "unconfirmed (ask the operator; investigation 2026-11-08)"
+    modes_allowed: [service_account]
+    default_mode: service_account
+    service_account:
+      login: "masaru.nagaso"  # must equal extra.ssh_user
+      personal: true
+      consent_ref: ""
+      allowed_projects: [bdr-opossum, spring-8, brc-mouse, default]  # default: maintainer 2026-11-09, users who work in the default project keep user work
 
 runtime:
   kind: podman-compose
@@ -165,8 +176,20 @@ step_executor:
   # opossum CNN (MDv5a + torch 2.14.1+cu130), built by the project's
   # tools/stage_cnn_image.sh on the platform image 7afb44c12c0e; tag =
   # <base sha12>-<lock sha8>, never :latest.
+  # torch step image (2026-11-08): torch 2.14.1+cu130 only, COPY-only on the
+  # platform image 1a3a58ab2a9e (numpy/opencv from the base, unchanged), for
+  # custom-model steps that bring their model code and read weights from
+  # staged inputs; built off-cluster by a hash-locked stager, smoke-tested
+  # under arm64 emulation, archive + .id staged in image_archive_dir.
   allowed_images:
     - localhost/umrs-step-opossum-cnn:7afb44c12c0e-a51b1fa4
+    - localhost/umrs-step-torch:1a3a58ab2a9e-23889fd6
+  # video-analysis step image (2026-11-08): COPY-only on the torch image above;
+  # an isolated package tree (/opt/mouse-site, numpy 1.x: deeplabcut 3.0.0rc13,
+  # ultralytics 8.4.171, transformers 5.x) used only by step child processes,
+  # the pipeline code at a pinned commit, a static aarch64 ffmpeg; archive +
+  # .id staged in image_archive_dir, smoke-tested under arm64 emulation.
+    - localhost/umrs-step-mouse:1a3a58ab2a9e-9073f644
   helper_path: /lvs0/rccs-dmp/masaru.nagaso/ai4s-platform/umrs/deploy/_common/umrs_step_helper.py
   venue_script: /lvs0/rccs-dmp/masaru.nagaso/ai4s-platform/umrs/src/umrs/mini-rivault-llm/venue.sh
   # 2026-10-01: back to plain podman on the nodes' stock runtime — the

@@ -803,3 +803,29 @@ def test_the_watchdog_stops_counting_past_the_entry_cap(node):
     proc = node["run"](watch_seconds=1, max_out_entries=20)
     assert proc.returncode != 0
     assert " 21 entries); the step was stopped" in proc.stderr  # cap + 1, not all 202
+
+
+# ── step_executor.gpu_flag (RIKYU: --gpus=N only, 2026-11-08) ────────────────
+
+
+def test_gpus_flag_asks_with_gpus_not_gres():
+    script = render_staged_job_script(_job(needs_gpu=True, gres_gpus=1, gpu_flag="gpus", partition="gpu"))
+    assert "#SBATCH --gpus=1" in script
+    assert "--gres" not in script
+
+
+def test_gpus_flag_asks_nothing_for_a_cpu_step():
+    script = render_staged_job_script(_job(needs_gpu=False, gres_gpus=1, gpu_flag="gpus"))
+    assert "--gpus" not in script and "--gres" not in script
+
+
+def test_a_partition_gpu_request_still_wins_over_the_site_flag():
+    gres = render_staged_job_script(_job(needs_gpu=True, gres_gpus=1, gpu_flag="gpus", gpu_request="gres", gres="gpu:X:2"))
+    assert "#SBATCH --gres=gpu:X:2" in gres and "--gpus=" not in gres
+    none = render_staged_job_script(_job(needs_gpu=True, gres_gpus=1, gpu_flag="gpus", gpu_request="none"))
+    assert "--gres" not in none and "--gpus=" not in none
+
+
+def test_an_unknown_gpu_flag_refuses_to_render():
+    with pytest.raises(StepExecutionError, match="gpu_flag"):
+        render_staged_job_script(_job(needs_gpu=True, gres_gpus=1, gpu_flag="gpu"))

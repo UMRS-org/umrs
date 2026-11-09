@@ -46,6 +46,16 @@ from .schema import ensure_schema
 logger = logging.getLogger(__name__)
 
 
+
+def _manifest_identity(spec: dict[str, Any]) -> dict[str, str]:
+    """A job spec's manifest identity: trigger, workflow name and the
+    workflow version the run pinned (ADR-113 D-4; empty when none)."""
+    return {
+        "trigger": str(spec.get("trigger") or "api"),
+        "pipeline_name": str(spec.get("workflow_name") or ""),
+        "pipeline_version": str(spec.get("workflow_version") or ""),
+    }
+
 class JobStoreError(Exception):
     """Base exception for JobStore errors."""
 
@@ -197,6 +207,26 @@ def _budget_exhausted_marker(attempt_id: str, exit_reason: str | None) -> bool:
         f"Attempt {attempt_id} hit budget_exhausted — terminal, no requeue (ADR-048)"
     )
     return True
+
+
+def _policy_refusal_marker(attempt_id: str, exit_reason: str | None) -> bool:
+    """ADR-112: an exit reason that starts with an ``hpcaccess.*`` code is the
+    scheduler's record of a site-policy refusal at submit
+    (``HpcAccessRefused``). The same job would be refused again, so it is
+    terminal like the budget marker: never requeued. Only a refusal starts
+    with the code; a generic submit failure starts with
+    ``backend_submission_failed:``."""
+    if not (exit_reason or "").startswith("hpcaccess."):
+        return False
+    logger.warning(f"Attempt {attempt_id} refused by hpc_access — terminal, no requeue")
+    return True
+
+
+def _terminal_exit_reason(attempt_id: str, exit_reason: str | None) -> bool:
+    """Whether *exit_reason* forbids a requeue (budget or policy marker)."""
+    return _budget_exhausted_marker(attempt_id, exit_reason) or _policy_refusal_marker(
+        attempt_id, exit_reason
+    )
 
 
 # ADR-105 D-5: job-terminal listeners. One process holds several JobStore
@@ -1356,9 +1386,8 @@ class JobStore:
                         )
             manifest = execution_manifest(
                 provenance=build_provenance(job, attempts).to_dict(),
-                trigger=str(spec.get("trigger") or "api"),
-                pipeline_name=str(spec.get("workflow_name") or ""),
                 model_pins=pins,
+                **_manifest_identity(spec),
             )
             with self._get_conn() as conn, conn.cursor() as cur:
                 cur.execute(
@@ -1511,7 +1540,7 @@ class JobStore:
             job_row = cur.fetchone()
             job = self._row_to_job(job_row)
 
-            budget_exhausted = _budget_exhausted_marker(attempt_id, exit_reason)
+            budget_exhausted = _terminal_exit_reason(attempt_id, exit_reason)
 
             # Check if we should retry (the D-3 marker forces the failed branch
             # regardless of remaining retry budget).

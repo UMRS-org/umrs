@@ -19,6 +19,16 @@ enabled (a kill switch must still kill):
 Each server reaps only its own lane's jobs, those whose workdir lies under
 its ``workdir_root``: the execution registry is shared by every umrs-front
 server (2026-09-27).
+
+**Gated jobs (ADR-112 B2; plan §5 B2.0 §10.6).** A job a run under the
+person's own account left carries ``transport: gated:<venue>:<username>``.
+This server reaps those of its own venue through that person's gate
+(``status``, ``cancel``, ``rmwd``: unsigned verbs on the person's own
+records; no identity is resolved and no user work runs). Once a day the
+loop also asks each active site account with a gated step in the last
+7 days to ``sweep`` its idle workdirs. The daily sweep rides this loop, not
+``orchestrator/janitor.py``: the orchestrator may not import the server's
+step lane (``tools/import_boundary_validator.py``).
 """
 
 from __future__ import annotations
@@ -34,6 +44,12 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 SWEEP_INTERVAL_SECONDS = 3600.0
+#: The gated sweep (once a day) and how far back a gated step counts.
+GATED_SWEEP_INTERVAL_SECONDS = 86400.0
+GATED_RECENT_SECONDS = 7 * 86400.0
+#: ``sweep --older-than``: a gated workdir idle this long with no live job
+#: goes (the gate keeps at least 3600 s; queue + run + transfers fit).
+GATED_SWEEP_AGE_SECONDS = 2 * 86400
 
 _lock = threading.Lock()
 _reaper: Any = None
@@ -79,13 +95,31 @@ def _lane_path(env_name: str, site_field: str, site: Any) -> str:
     return value if value.startswith("/") else ""
 
 
+def _allows_gated_runs() -> bool:
+    """Whether this site lets runs use the person's own account (B2)."""
+    from umrs.orchestrator.hpc_identity import USER_ACCOUNT
+    from umrs.shared.hpc_user_work_access import current_site
+
+    hpc = getattr(getattr(current_site(), "scheduler", None), "hpc_access", None)
+    return USER_ACCOUNT in list(getattr(hpc, "modes_allowed", None) or [])
+
+
+def _gated_lane_open(site: Any) -> bool:
+    """A site with no helper lane gets a gated-only reaper once it allows
+    the person's own account and its step lane is switched on (a site not
+    yet onboarded gets none: nothing gated ever ran there)."""
+    return bool(getattr(site, "remote_enabled", False)) and _allows_gated_runs()
+
+
 def _build_reaper() -> Any:
     from umrs.server.remote_slurm_step_executor import RemoteSlurmStepExecutor
 
     site = _site_step_executor()
     helper = _lane_path("UMRS_STEP_HELPER", "helper_path", site)
     root = _lane_path("UMRS_SLURM_WORKDIR_ROOT", "workdir_root", site)
-    if not (helper and root):
+    if not (helper and root) and _gated_lane_open(site):
+        helper, root = "", ""  # a gated-only reaper: gate verbs, no helper
+    elif not (helper and root):
         return None
     try:
         return RemoteSlurmStepExecutor(helper_path=helper, workdir_root=root)
@@ -140,10 +174,30 @@ def lane_root(reaper: Any) -> str | None:
 
 def _in_lane(facts: dict[str, Any], root: str | None) -> bool:
     """Whether a job's facts are the lane's with *root* (None: any lane).
-    ``mkwd`` makes every workdir a direct child of its lane's root."""
+    ``mkwd`` makes every workdir a direct child of its lane's root. A gated
+    job (ADR-112 B2) is this server's when its venue is this server's."""
     if root is None:
         return True
+    gated = _gated_venue(facts)
+    if gated is not None:
+        return gated == _this_venue()
     return bool(root) and os.path.dirname(str(facts.get("workdir") or "")) == root
+
+
+def _gated_venue(facts: dict[str, Any]) -> str | None:
+    from umrs.server.gated_step_lane import parse_transport_tag
+
+    parsed = parse_transport_tag(facts.get("transport"))
+    return None if parsed is None else parsed[0]
+
+
+def _this_venue() -> str:
+    try:
+        from umrs.orchestrator.site_config import get_site_config
+
+        return str(get_site_config().name or "")
+    except Exception:  # noqa: BLE001 - no site: no venue, nothing gated is ours
+        return ""
 
 
 def unreaped_steps(
@@ -453,6 +507,7 @@ def reap_loop(
         reap_record(reaper, record, durable_status)
         close_abandoned_run(record, durable_status)
     stop = stop or threading.Event()
+    gated = _GatedSweep()
     while True:
         try:
             removed = reaper.sweep_workdirs().get("removed") or []
@@ -460,8 +515,65 @@ def reap_loop(
                 logger.warning("step lane: swept idle unused workdirs %s", removed)
         except Exception:
             logger.warning("step lane: workdir sweep failed", exc_info=True)
+        gated.maybe_run(registry)
         if stop.wait(interval):
             return
+
+
+def recent_gated_people(
+    records: Iterable[Any], venue: str, since: float
+) -> set[str]:
+    """Usernames with a gated step record at *venue* submitted since *since*."""
+    from umrs.server.gated_step_lane import parse_transport_tag
+
+    people: set[str] = set()
+    for record in records:
+        if float(getattr(record, "submitted_at", 0) or 0) < since:
+            continue
+        for step in list(getattr(record, "steps", {}).values()):
+            tags = [parse_transport_tag(f.get("transport")) for f in step_jobs(step).values()]
+            people |= {user for v, user in filter(None, tags) if v == venue}
+    return people
+
+
+def sweep_gated_accounts(
+    records: Iterable[Any], *, now: float | None = None, store: Any = None
+) -> dict[str, Any]:
+    """``sweep --older-than`` at the gate of each active site account here
+    with a gated step in the last 7 days; ``{username: answer or error}``."""
+    from umrs.server.gated_step_lane import sweep_person
+    from umrs.shared.hpc_user_work_access import site_account_store
+
+    venue = _this_venue()
+    current = time.time() if now is None else now
+    store = store if store is not None else site_account_store(venue)
+    active = {a["username"] for a in store.list_accounts() if a.get("status") == "active"}
+    swept: dict[str, Any] = {}
+    for user in sorted(active & recent_gated_people(records, venue, current - GATED_RECENT_SECONDS)):
+        try:
+            swept[user] = sweep_person(venue, user, GATED_SWEEP_AGE_SECONDS)
+        except Exception as exc:  # one person's gate never stops the others
+            logger.warning("step lane: gated sweep for %s failed", user, exc_info=True)
+            swept[user] = {"error": str(exc)[:200]}
+    return swept
+
+
+class _GatedSweep:
+    """Once a day, on a site that allows gated runs."""
+
+    def __init__(self) -> None:
+        self.last = 0.0
+
+    def maybe_run(self, registry: Any) -> None:
+        now = time.monotonic()
+        if self.last and now - self.last < GATED_SWEEP_INTERVAL_SECONDS:
+            return
+        self.last = now
+        try:
+            if _allows_gated_runs():
+                sweep_gated_accounts(_list_records(registry))
+        except Exception:
+            logger.warning("step lane: gated sweep failed", exc_info=True)
 
 
 def start_step_lane_reaper(

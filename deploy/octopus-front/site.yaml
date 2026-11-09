@@ -35,10 +35,21 @@ scheduler:
   gpus: 1                      # one MI300X per mini-rivault (192 GiB HBM3)
   cpus: 8
   memory: ""                   # omit --mem; scheduler assigns node defaults
-  slurm_delegation: per_user_ssh
-  service_pubkey_path: /lustre/home/mnagaso/ai4s-platform/keys/umrs-service.pub
-  slurm_proxy_path: /lustre/home/mnagaso/ai4s-platform/bin/umrs-slurm-proxy
-  require_user_slurm_account: false
+  # ADR-112 D-1 (2026-11-08): the declared access mode. per_user_ssh and the
+  # shared delegation key are retired. Every lane connects as extra.ssh_user,
+  # a personal login, so user work (staged steps, hpc_script, cluster loops)
+  # runs only for admins and allowed_projects until the operator consents
+  # (consent_ref). allowed_projects: [] = admins only, the maintainer's
+  # interim choice (ADR-112 G-8).
+  hpc_access:
+    operator: "unconfirmed (ask the operator; investigation 2026-11-08)"
+    modes_allowed: [service_account]
+    default_mode: service_account
+    service_account:
+      login: "mnagaso"  # must equal extra.ssh_user
+      personal: true
+      consent_ref: ""
+      allowed_projects: []
 
 runtime:
   kind: podman-compose

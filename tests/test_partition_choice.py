@@ -96,20 +96,15 @@ class _FakeSSH:
         return [c.split("--partition=", 1)[1].split()[0] for c in self.cmds if "--test-only" in c]
 
 
-def _backend(ssh, user_ssh=None, mode="service_account"):
+def _backend(ssh):
     backend = RemoteSlurmBackend.__new__(RemoteSlurmBackend)
-    backend._delegation_mode = mode
     backend._job_info_dir = lambda: "/jobs"  # type: ignore[method-assign]
     backend._control_dir = lambda: "/jobs/control"  # type: ignore[method-assign]
 
     async def _get_ssh():
         return ssh
 
-    async def _get_ssh_for_user(_user):
-        return user_ssh
-
     backend._get_ssh = _get_ssh  # type: ignore[method-assign]
-    backend._get_ssh_for_user = _get_ssh_for_user  # type: ignore[method-assign]
     return backend
 
 
@@ -445,17 +440,112 @@ def test_ai4s_sizing_routing_is_unchanged():
     assert _partition_of(ssh.cmds[0]) == "1n4gpu"
 
 
-def test_per_user_ssh_carries_the_probes_and_the_submit():
-    service = _FakeSSH(name="service")
-    user = _FakeSSH(probes={"ng-dgx-m0": ("err", QUOTA)}, name="user")
-    _submit(
-        _backend(service, user_ssh=user, mode="per_user_ssh"),
-        _site("ng-dgx-m0,ng-dgx-m1"),
-        requesting_user="alice",
+# ── ADR-112 wave A: one platform login, the user is attribution only ──────
+
+
+def test_a_requesting_user_never_selects_the_ssh_identity():
+    service = _FakeSSH(probes={"ng-dgx-m0": ("err", QUOTA)}, name="service")
+    _submit(_backend(service), _site("ng-dgx-m0,ng-dgx-m1"), requesting_user="alice")
+    assert sorted(service.probed) == ["ng-dgx-m0", "ng-dgx-m1"]
+    assert [_partition_of(c) for c in service.real] == ["ng-dgx-m1"]
+    # Attribution only: the comment and UMRS_USER, never the login.
+    assert "--comment=user=alice" in service.real[0]
+    assert "UMRS_USER=alice" in service.real[0]
+
+
+def test_no_per_user_ssh_path_exists():
+    # The per-user connection and its silent fallback are deleted (I-1).
+    assert not hasattr(RemoteSlurmBackend, "_get_ssh_for_user")
+    backend = RemoteSlurmBackend.__new__(RemoteSlurmBackend)
+    assert not hasattr(backend, "_user_ssh_pool")
+    assert not hasattr(backend, "_delegation_mode")
+
+
+def test_a_failed_connect_raises_and_never_reroutes():
+    from umrs.orchestrator.ssh_control import SSHControlConfig
+
+    # A site file still saying per_user_ssh (deprecated, ignored since ADR-112).
+    legacy = _site("ng-dgx-m0")
+    legacy.scheduler.slurm_delegation = "per_user_ssh"
+    legacy.scheduler.service_pubkey_path = "/keys/umrs-service.pub"
+    with patch("umrs.orchestrator.site_config.load_site_config", return_value=legacy):
+        backend = RemoteSlurmBackend(
+            SimpleNamespace(extra={}, model_path=""),
+            ssh_config=SSHControlConfig(ssh_target="cluster", ssh_user="operator"),
+        )
+    attempts: list[str] = []
+
+    class _Refused:
+        def __init__(self, config):
+            self.config = config
+
+        async def ensure_connected(self):
+            attempts.append(self.config.ssh_user)
+            raise ConnectionError("Permission denied (publickey)")
+
+    with (
+        patch("umrs.orchestrator.remote_slurm_backend.SSHControlManager", _Refused),
+        pytest.raises(ConnectionError, match="publickey"),
+    ):
+        _submit(backend, legacy, requesting_user="alice")
+    # One connect, as the platform login; no second identity was tried.
+    assert attempts == ["operator"]
+
+
+def _declared_site(login="operator"):
+    from umrs.orchestrator.site_config import HpcAccessConfig, ServiceAccountAccess
+
+    site = _site("ng-dgx-m0,ng-dgx-m1")
+    site.name = "cluster-a"
+    site.extra = {"ssh_user": login}
+    site.scheduler.hpc_access = HpcAccessConfig(
+        modes_allowed=["service_account"],
+        default_mode="service_account",
+        service_account=ServiceAccountAccess(login=login, personal=True),
     )
-    assert service.cmds == []
-    assert sorted(user.probed) == ["ng-dgx-m0", "ng-dgx-m1"]
-    assert [_partition_of(c) for c in user.real] == ["ng-dgx-m1"]
+    return site
+
+
+def test_wrapper_submit_records_the_platform_identity():
+    ssh = _FakeSSH()
+    job = _submit(_backend(ssh), _declared_site(), requesting_user="alice", slurm_account="grp-a")
+    assert job.metadata["hpc_identity"] == {
+        "site": "cluster-a",
+        "lane": "platform",
+        "access_mode": "service_account",
+        "site_login": "operator",
+        "slurm_account": "grp-a",
+        "personal": True,
+        "declared": True,
+    }
+
+
+def test_the_recorded_login_is_the_one_the_connection_used():
+    from umrs.orchestrator.ssh_control import SSHControlConfig
+
+    backend = _backend(_FakeSSH())
+    backend._ssh_config = SSHControlConfig(ssh_target="cluster", ssh_user="svc")
+    job = _submit(backend, _declared_site(login="operator"), requesting_user="alice")
+    identity = job.metadata["hpc_identity"]
+    assert (identity["site_login"], identity["lane"]) == ("svc", "platform")
+    # The site's master account when the caller names none.
+    assert identity["slurm_account"] == "cloud-users"
+
+
+def test_direct_submit_records_the_platform_identity():
+    class _StdinSSH:
+        async def run_remote_with_stdin(self, _cmd, _data, **_kw):
+            return SimpleNamespace(ok=True, stdout="4242", stderr="")
+
+    backend = _backend(_StdinSSH())
+    backend.config = SimpleNamespace(model_path="/m")
+    backend._get_wrapper_script = lambda **_kw: None  # type: ignore[method-assign]
+    backend._build_sbatch_script = lambda _model, **_kw: "#!/bin/sh\n"  # type: ignore[method-assign]
+    with patch("umrs.orchestrator.site_config.load_site_config", return_value=_declared_site()):
+        job = asyncio.run(backend.submit_job("/m", requesting_user="alice"))
+    assert job.job_id == "4242"
+    assert job.metadata["hpc_identity"]["lane"] == "platform"
+    assert job.metadata["hpc_identity"]["site_login"] == "operator"
 
 
 def test_probe_and_submit_stay_in_the_proxy_charset():
@@ -678,3 +768,89 @@ def test_a_legacy_site_keeps_its_site_wide_gres():
     site.scheduler.gpus = 1
     _submit(_backend(ssh), site)
     assert _gres_of(ssh.real[0]) == ["--gres=gpu:1"]
+
+
+def test_the_endpoint_adapter_keeps_the_identity_on_the_attempt():
+    # ADR-112 I-10: the scheduler persists attempt.metrics after the submit.
+    from umrs.jobs.adapters import _record_hpc_identity
+
+    attempt = SimpleNamespace(metrics={"other": 1})
+    info = SimpleNamespace(metadata={"hpc_identity": {"lane": "platform", "site_login": "op"}})
+    _record_hpc_identity(attempt, info)
+    assert attempt.metrics == {
+        "other": 1,
+        "hpc_identity": {"lane": "platform", "site_login": "op"},
+    }
+    bare = SimpleNamespace(metrics={})
+    _record_hpc_identity(bare, SimpleNamespace(metadata={}))
+    assert bare.metrics == {}
+
+
+def test_a_provision_submit_records_the_backend_identity_on_the_attempt():
+    """Plan A.6 (review 2026-11-08): ``EndpointProvisionBackend.submit_job``
+    itself copies the backend's ``hpc_identity`` into ``attempt.metrics``,
+    which the scheduler then persists; only the helper was tested before."""
+    import asyncio
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from test_llm_model_limits import _durable_spec
+    from umrs.jobs import JobAttempt, JobType
+    from umrs.jobs.adapters import EndpointProvisionBackend
+    from umrs.jobs.models import Job
+    from umrs.jobs.scheduler import Scheduler
+    from umrs.orchestrator.deployment_spec import DeploymentSpec
+    from umrs.orchestrator.preflight import PreflightResult
+
+    identity = {"lane": "platform", "access_mode": "service_account", "site_login": "op"}
+    orchestrator = AsyncMock()
+    orchestrator.backend_type = "slurm"
+    orchestrator.submit_job = AsyncMock(
+        return_value=MagicMock(
+            job_id="slurm-1",
+            status=MagicMock(value="pending"),
+            endpoint=MagicMock(node="gpu-0"),
+            metadata={"hpc_identity": identity},
+        )
+    )
+    backend = EndpointProvisionBackend(
+        orchestrator=orchestrator,
+        registry=MagicMock(),
+        port_manager=MagicMock(allocate=MagicMock(return_value=11434)),
+    )
+    spec = {"model": "glm-5.3", "model_path": "/models/glm-5.3", "ttl_sec": 0}
+    job = Job(
+        job_id="job-glm",
+        project_id="proj-1",
+        user_id="user-1",
+        job_type=JobType.ENDPOINT_PROVISION,
+        spec=spec,
+        idempotency_key="k-glm",
+    )
+    attempt = JobAttempt(attempt_id="att-glm", job_id="job-glm", attempt_no=1, backend="slurm")
+    persisted: dict = {}
+    store = MagicMock(create_attempt=MagicMock(return_value="att-glm"))
+    store.get_attempt.return_value = attempt
+    store.update_attempt_metrics.side_effect = lambda _id, metrics: persisted.update(metrics)
+    catalog_entry = MagicMock(storage_ref="/models/glm-5.3")
+    catalog_entry.to_dict.return_value = {"name": "glm-5.3"}
+    site = MagicMock()
+    site.scheduler.partition = "test-gpu"
+    site.partition_profiles = {}
+    with (
+        patch.object(backend, "_determine_target_host", return_value="gpu-0"),
+        patch("umrs.jobs.adapters._resolve_model_entry", return_value=catalog_entry),
+        patch(
+            "umrs.jobs.adapters._check_active_certification",
+            return_value={"cert_id": "cert-1", "smoke_test_passed": True},
+        ),
+        patch("umrs.orchestrator.site_config.load_site_config", return_value=site),
+        patch.object(DeploymentSpec, "from_registry", return_value=_durable_spec()),
+        patch(
+            "umrs.orchestrator.preflight.PreflightValidator.run_all",
+            new=AsyncMock(return_value=PreflightResult(passed=True, checks=[])),
+        ),
+    ):
+        asyncio.run(Scheduler(store, lambda _t: backend)._schedule_job("job-glm", job))
+    store.mark_attempt_submitted.assert_called_once()
+    assert attempt.metrics["hpc_identity"] == identity
+    assert persisted["hpc_identity"] == identity

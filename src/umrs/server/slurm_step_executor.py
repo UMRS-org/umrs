@@ -95,13 +95,49 @@ WALL_GRACE_SEC = 300
 UNREACHABLE_BUDGET_SEC = 600
 
 
+def read_slurm_account(job_id: str, run: Any = None) -> str:
+    """The account Slurm reports for an existing job, or ``""`` if unknown.
+
+    Resume/adoption uses this instead of relabelling an older job with a
+    newly configured allocation. An empty answer is never treated as proof.
+    """
+    cmd = [
+        "sacct",
+        "--job",
+        str(job_id),
+        "--format=Account",
+        "--noheader",
+        "--parsable2",
+    ]
+    runner = run or _run_local
+    try:
+        result = runner(cmd, timeout=15)
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return ""
+    if result.returncode != 0:
+        return ""
+    for line in result.stdout.splitlines():
+        account = line.split("|", 1)[0].strip()
+        if account:
+            return account
+    return ""
+
+
+def _with_slurm_account(accounting: dict[str, Any], parts: list[str]) -> dict[str, Any]:
+    """Add Slurm's account only when the installed sacct returns it."""
+    if len(parts) > 2 and parts[2].strip():
+        return {**accounting, "account": parts[2].strip()}
+    return accounting
+
+
 def measure_slurm_accounting(
     job_id: str,
     run: Any = None,
 ) -> dict[str, Any]:
     """D-36 leg B: sacct-measured cost for a FINISHED slurm job.
 
-    One ``sacct -o Elapsed,AllocTRES%gres`` read → seconds × GPUs.
+    One ``sacct -o Elapsed,AllocTRES%gres,Account`` read → seconds × GPUs,
+    plus the account Slurm itself reports when available.
     Empty dict when sacct is unavailable or answers garbage — unmeasured,
     never approximated (ADR-067's never-approximate rule).
     """
@@ -115,7 +151,7 @@ def measure_slurm_accounting(
         "sacct",
         "--job",
         str(job_id),
-        "--format=Elapsed,AllocTRES%gres",
+        "--format=Elapsed,AllocTRES%gres,Account",
         "--noheader",
         "--parsable2",
     ]
@@ -131,12 +167,13 @@ def measure_slurm_accounting(
     gpus = parse_alloc_tres_gpus(parts[1]) if len(parts) > 1 else 0
     if elapsed is None:
         return {}
-    return {
+    accounting = {
         "job_id": str(job_id),
         "elapsed_seconds": elapsed,
         "gpus": gpus,
         "gpu_seconds": measured_gpu_seconds(elapsed, gpus),
     }
+    return _with_slurm_account(accounting, parts)
 
 
 def _run_local(cmd: list[str], *, timeout: int) -> subprocess.CompletedProcess:
@@ -404,6 +441,9 @@ class StagedJob:
     #: (else ``gpu:<gres_gpus>``) for a step that needs a GPU.
     gpu_request: str = ""
     gres: str = ""
+    #: ``step_executor.gpu_flag`` for the site-wide rule (``gpu_request`` ""):
+    #: "gres" ``--gres=gpu:<gres_gpus>`` or "gpus" ``--gpus=<gres_gpus>``.
+    gpu_flag: str = "gres"
     #: The partition allocates whole nodes: the job says ``--exclusive``.
     exclusive: bool = False
     #: The site's platform step image (``UMRS_STEP_IMAGE``): trusted code that
@@ -530,6 +570,9 @@ _STAGED_ENV = (
 #: (``${_step_gpu[@]}``, :func:`_staged_gpu_lines`) — RCCS GB10: podman 4.9.3
 #: there cannot resolve ``nvidia.com/gpu=all`` (R2 2026-10-01; the serving
 #: path maps devices directly for the same reason, x_nvidia-override.yaml).
+#: ``step_executor.gpu_flag`` values: how a GPU step asks Slurm (--gres / --gpus).
+STAGED_GPU_FLAGS: tuple[str, ...] = ("gres", "gpus")
+
 STAGED_GPU_DEVICES: dict[str, tuple[str, ...]] = {
     "cdi": ("--device", "nvidia.com/gpu=all"),
     "rocm": ("--device", "/dev/kfd", "--device", "/dev/dri"),
@@ -724,17 +767,32 @@ def _staged_directives(job: StagedJob) -> list[str]:
 
 
 def _staged_gpu_request_lines(job: StagedJob) -> list[str]:
-    """``--gres`` (a step that needs a GPU, as its partition's profile asks:
-    ADR-109 D-3) and ``--exclusive`` (a whole-node partition)."""
+    """``--gres`` / ``--gpus`` (a step that needs a GPU, as its partition's
+    profile asks: ADR-109 D-3, else the site's ``gpu_flag``) and
+    ``--exclusive`` (a whole-node partition)."""
+    if job.gpu_flag not in STAGED_GPU_FLAGS:
+        raise StepExecutionError(
+            "setup", f"step_executor.gpu_flag {job.gpu_flag!r} is not gres|gpus"
+        )
+    request = _staged_gpu_request(job) if job.needs_gpu else None
+    lines = [f"#SBATCH {request}"] if request else []
+    if job.exclusive:
+        lines.append("#SBATCH --exclusive")
+    return lines
+
+
+def _staged_gpu_request(job: StagedJob) -> str | None:
+    """The GPU option of a step that needs one: the site-wide rule (profile
+    ``gpu_request`` "") with ``gpu_flag`` "gpus" asks ``--gpus=<n>`` (RIKYU
+    refuses ``--gres=gpu:N``); otherwise ``--gres`` as the profile asks."""
+    if job.gpu_flag == "gpus" and not job.gpu_request and job.gres_gpus > 0:
+        return f"--gpus={int(job.gres_gpus)}"
     legacy = f"gpu:{int(job.gres_gpus)}" if job.gres_gpus > 0 else None
     try:
         gres = pc.gres_request(job.gpu_request, job.gres, job.gres_gpus, legacy)
     except ValueError as exc:
         raise StepExecutionError("setup", str(exc)) from exc
-    lines = [f"#SBATCH --gres={gres}"] if job.needs_gpu and gres else []
-    if job.exclusive:
-        lines.append("#SBATCH --exclusive")
-    return lines
+    return f"--gres={gres}" if gres else None
 
 
 def _endpoint_stop_lines(job: StagedJob) -> list[str]:
@@ -1096,6 +1154,10 @@ def render_staged_job_script(job: StagedJob) -> str:
     return "\n".join(lines)
 
 
+class _LocalSubmitRefused(StepExecutionError):
+    """The local sbatch command definitely refused the job."""
+
+
 @dataclass
 class SlurmStepExecutor(StepExecutor):
     """Run workflow steps as Slurm jobs on GPU compute nodes.
@@ -1179,6 +1241,7 @@ class SlurmStepExecutor(StepExecutor):
             entrypoint,
             source_dir or "<none>",
         )
+        ledger_job = self._ledger_job(ctx, config)
 
         try:
             # Serialize the step payload — must match step_worker / PodmanExecutor
@@ -1215,31 +1278,116 @@ class SlurmStepExecutor(StepExecutor):
                 output_path=output_path,
                 ctx=ctx,
                 source_dir=source_dir,
+                job_name=ledger_job.job_name,
             )
 
             # Write the sbatch script
             sbatch_path = os.path.join(workdir, "run_step.sbatch")
             self._write_bytes(sbatch_path, sbatch_script.encode("utf-8"))
 
-            # Submit the Slurm job
-            job_id = self._submit_sbatch(sbatch_path, workdir)
-            logger.info(
-                "SlurmStepExecutor: submitted job %s for step %s",
-                job_id,
-                entrypoint,
+            # Submit, measure and write the same ledger phases as the remote lane.
+            return self._submit_and_settle(
+                ledger_job, ctx, sbatch_path, workdir, output_path, entrypoint
             )
-
-            # Poll for completion
-            result = self._poll_completion(
-                job_id=job_id,
-                output_path=output_path,
-                workdir=workdir,
-            )
-            return result
 
         finally:
-            if not self.keep_workdir:
+            if not self.keep_workdir and not ledger_job.keep:
                 self._remove_workdir(workdir)
+
+    def _ledger_job(self, ctx: StepContext, config: dict[str, Any]) -> Any:
+        import getpass
+        import uuid
+        from types import SimpleNamespace
+
+        from umrs.jobs.hpc_ledger import recovery_tag
+
+        from .step_ledger import LEDGER_METADATA_KEY
+
+        dispatch_id = uuid.uuid4().hex
+        step = str(config.get("step_name") or "step")
+        owner = dict((ctx.metadata or {}).get(LEDGER_METADATA_KEY) or {})
+        tag = recovery_tag(
+            "umrs-step",
+            ctx.run_id,
+            step,
+            dispatch_id,
+            owner.get("person", ""),
+            owner.get("project_id", ""),
+        )
+        return SimpleNamespace(
+            run_id=str(ctx.run_id),
+            step=step,
+            attempt=1,
+            job_name=tag[:200],
+            job_id="",
+            dispatch_id=dispatch_id,
+            site_login=getpass.getuser(),
+            slurm_account=self.account,
+            keep=False,
+        )
+
+    def _pricing_partition(self) -> Any:
+        from umrs.shared.hpc_user_work_access import current_site
+
+        site = current_site()
+        if site is None:
+            return None
+        getter = getattr(site, "get_partition_profile", None)
+        if callable(getter):
+            return getter(self.partition)
+        return (getattr(site, "partition_profiles", {}) or {}).get(self.partition)
+
+    def _ledger_seconds(self) -> int:
+        limit = self._format_time_limit(self.timeout_seconds) or self.time_limit
+        return int(slurm_duration_seconds(limit) or 0)
+
+    def _ledgered_submit(
+        self, job: Any, ctx: StepContext, path: str, workdir: str
+    ) -> str:
+        from .step_ledger import service_after, service_pending
+
+        gpus = int(self.gpus or 0) if self._needs_gpu(ctx) else 0
+        service_pending(
+            job,
+            ctx,
+            int(self.cpus or 1),
+            gpus,
+            self._ledger_seconds(),
+            partition=self._pricing_partition(),
+        )
+        try:
+            job.job_id = self._submit_sbatch(path, workdir)
+        except _LocalSubmitRefused:
+            service_after("not_submitted", job, ctx, "sacct")
+            raise
+        except (OSError, subprocess.SubprocessError, StepExecutionError):
+            job.keep = True
+            logger.warning("local sbatch outcome unknown; workdir %s is kept", workdir)
+            raise
+        service_after("submitted", job, ctx, job.job_id, None)
+        return job.job_id
+
+    def _submit_and_settle(
+        self,
+        job: Any,
+        ctx: StepContext,
+        path: str,
+        workdir: str,
+        output: str,
+        entrypoint: str,
+    ) -> StepResult:
+        from .step_ledger import service_settle
+
+        job_id = self._ledgered_submit(job, ctx, path, workdir)
+        logger.info(
+            "SlurmStepExecutor: submitted job %s for step %s", job_id, entrypoint
+        )
+        result = self._poll_completion(
+            job_id=job_id, output_path=output, workdir=workdir
+        )
+        measured = dict(result.extra.get("slurm") or {})
+        service_settle(job, ctx, measured, int(self.cpus or 1))
+        return result
 
     # ── I/O hooks (local submit host; RemoteSlurmStepExecutor routes them
     #    over SSH to the cluster login node) ────────────────────────────────
@@ -1370,6 +1518,12 @@ class SlurmStepExecutor(StepExecutor):
             )
         return candidate
 
+    def _needs_gpu(self, ctx: StepContext) -> bool:
+        hint = ctx.metadata.get(EXECUTOR_GPU_METADATA_KEY)
+        if hint is None:
+            return os.environ.get("UMRS_STEP_GPU", "0").strip() == "1"
+        return hint is True or str(hint).strip().lower() in ("1", "true", "yes")
+
     def _generate_sbatch_script(
         self,
         *,
@@ -1379,24 +1533,16 @@ class SlurmStepExecutor(StepExecutor):
         output_path: str,
         ctx: StepContext,
         source_dir: str = "",
+        job_name: str = "umrs-step",
     ) -> str:
         """Generate the sbatch script for the Slurm job."""
-        # Determine if GPU is needed (metadata hint → env default).
-        gpu_hint = ctx.metadata.get(EXECUTOR_GPU_METADATA_KEY)
-        if gpu_hint is None:
-            needs_gpu = os.environ.get("UMRS_STEP_GPU", "0").strip() == "1"
-        else:  # a real true, not the string "false" (as the staged lane)
-            needs_gpu = gpu_hint is True or str(gpu_hint).strip().lower() in (
-                "1",
-                "true",
-                "yes",
-            )
+        needs_gpu = self._needs_gpu(ctx)
 
         time_limit = self._format_time_limit(self.timeout_seconds) or self.time_limit
 
         # Build sbatch directives
         lines = ["#!/bin/bash"]
-        lines.append("#SBATCH --job-name=umrs-step")
+        lines.append(f"#SBATCH --job-name={job_name}")
         lines.append(f"#SBATCH --partition={self.partition}")
         lines.append(f"#SBATCH --time={time_limit}")
         lines.append(f"#SBATCH --cpus-per-task={self.cpus}")
@@ -1475,7 +1621,7 @@ class SlurmStepExecutor(StepExecutor):
         result = self._run_cmd(cmd, timeout=60)
 
         if result.returncode != 0:
-            raise StepExecutionError(
+            raise _LocalSubmitRefused(
                 "worker",
                 f"sbatch submission failed (rc={result.returncode}): "
                 f"{result.stderr.strip()}",

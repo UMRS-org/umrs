@@ -137,6 +137,55 @@ def _borrowed(pool: Any, work: Callable[[Any], Any], *, absent: Any) -> Any:
         pool.putconn(conn)
 
 
+_PROJECT_PREFIX = "project:"
+
+
+def _project_ids(access: Any) -> list[str]:
+    """The project ids named by ``project:<id>`` entries of a stored list."""
+    if isinstance(access, str):
+        access = json.loads(access)
+    if not isinstance(access, list):
+        return []
+    found = (str(e)[len(_PROJECT_PREFIX) :] for e in access if str(e).startswith(_PROJECT_PREFIX))
+    return [pid for pid in found if pid]
+
+
+def _member_projects(conn: Any, user_id: str) -> set[str]:
+    """ADR-097 D-1 live memberships of *user_id* (the record's projects minus
+    retired rows, plus active owned projects) — the set the gateway admits an
+    ``X-Project-ID`` from. Unknown or disabled accounts are members of
+    nothing. Raises when the record cannot be read (callers fail closed)."""
+    from umrs.admin.account_cascade import live_project_ids, read_record
+
+    record = read_record(user_id)
+    if record is None or getattr(record, "disabled", False):
+        return set()
+    return live_project_ids(conn, record, user_id)
+
+
+def _project_entries_for(conn: Any, user_id: str) -> list[str]:
+    """``project:<id>`` strings for the caller's live memberships; [] when
+    they cannot be read (a listing then shows no project-shared rows)."""
+    try:
+        return sorted(_PROJECT_PREFIX + pid for pid in _member_projects(conn, user_id))
+    except Exception:  # unreadable membership admits nothing
+        logger.warning("project memberships unreadable for %s", user_id, exc_info=True)
+        conn.rollback()
+        return []
+
+
+def _project_share_admits(conn: Any, name: str, user_id: str) -> bool:
+    """Does a ``project:<id>`` entry of *name*'s row admit *user_id*? The
+    membership read happens only when the row names a project at all."""
+    cur = conn.cursor()
+    cur.execute("SELECT access FROM user_buckets WHERE bucket = %s", (name,))
+    row = cur.fetchone()
+    shared = _project_ids(row[0]) if row else []
+    if not shared:
+        return False
+    return bool(set(shared) & _member_projects(conn, user_id))
+
+
 class UserBucketStore:
     """``user_buckets`` rows plus a short owner cache for the hot paths."""
 
@@ -219,8 +268,10 @@ class UserBucketStore:
 
         Owner, or the row's access list: ``system`` admits everyone,
         ``user:<id>`` the named user, ``circle:<proj>/<id>`` any ACTIVE
-        member (multi-membership allowed). Fail-closed on any lookup error.
-        An ``-output`` name follows its input bucket's row.
+        member (multi-membership allowed), ``project:<id>`` any live member
+        of the project (ADR-097 D-1; until 2026-11-08 these entries were
+        accepted and stored but admitted no one). Fail-closed on any lookup
+        error. An ``-output`` name follows its input bucket's row.
         """
         if not user_id:
             return False
@@ -243,7 +294,9 @@ class UserBucketStore:
                 "  )) LIMIT 1",
                 (name, user_id, f"user:{user_id}", user_id),
             )
-            return cur.fetchone() is not None
+            if cur.fetchone() is not None:
+                return True
+            return _project_share_admits(conn, name, user_id)
 
         return bool(_borrowed(self._pool(), work, absent=False))
 
@@ -253,6 +306,7 @@ class UserBucketStore:
             return []
 
         def work(conn: Any) -> list[UserBucket]:
+            projects = _project_entries_for(conn, user_id)
             cur = conn.cursor()
             cur.execute(
                 "SELECT bucket, owner_id, project, alias, access FROM user_buckets b "
@@ -266,8 +320,12 @@ class UserBucketStore:
                 "    WHERE cm.user_id = %s AND g.status = 'active'"
                 "      AND b.access @> jsonb_build_array("
                 "        'circle:' || cm.project_id || '/' || cm.circle_id)"
+                "  )"
+                "  OR EXISTS ("
+                "    SELECT 1 FROM jsonb_array_elements_text(b.access) e"
+                "    WHERE e = ANY(%s)"
                 "  )) ORDER BY bucket",
-                (user_id, f"user:{user_id}", user_id),
+                (user_id, f"user:{user_id}", user_id, projects),
             )
             return [_row_entry(row) for row in cur.fetchall()]
 

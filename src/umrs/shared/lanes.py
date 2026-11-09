@@ -141,6 +141,11 @@ FAMILY_LANES: dict[str, SurfaceLane] = {
     # revoked on the caller's verified identity through /gw/scopes — v1beta
     # like projects.
     "scopes": SurfaceLane.BETA,
+    # ADR-106 amendment (2026-11-07): the public service-model badge
+    # (GET /umrs/status/service-badge), anonymous by design — the one
+    # unauthenticated family outside the probes. v1-stable, not the internal
+    # ops lane: the public README promises its exact output shape.
+    "status": SurfaceLane.STABLE,
 }
 
 

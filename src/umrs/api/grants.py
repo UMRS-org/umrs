@@ -126,23 +126,36 @@ def _endpoint_writable(asset_id: str, caller: CallerScope) -> bool:
     return False
 
 
-def _workflow_entry(asset_id: str) -> dict | None:
-    """Catalog lookup for the workflow name (module catalog, never a new dialect)."""
+def _workflow_rows(name: str) -> list[dict]:
+    """Every catalog row of *name* (module catalog, never a new dialect)."""
     from ..server import workflow_registry_handler as _wrh
 
     try:
         catalog = _wrh._load_catalog()
     except Exception:
-        return None
-    for entry in (catalog or {}).get("workflows", []):
-        if str(entry.get("name") or "") == asset_id:
-            return entry
-    return None
+        return []
+    return [
+        e
+        for e in (catalog or {}).get("workflows", [])
+        if str(e.get("name") or "") == name
+    ]
+
+
+def _workflow_entry(asset_id: str, caller_id: str = "") -> dict | None:
+    """The catalog row of the workflow a grant names (``name`` or
+    ``name@version``). Every version of a name is its own row (ADR-113) and
+    several owners may use one name: the caller's own row wins, else the
+    first row of that name."""
+    from ..server.workflow_versions import split_version_ref
+
+    rows = _workflow_rows(split_version_ref(asset_id)[0])
+    own = [e for e in rows if caller_id and e.get("user_id") == caller_id]
+    return (own or rows or [None])[0]
 
 
 def _workflow_writable(asset_id: str, caller: CallerScope) -> bool:
     """WP-06 r2: workflows are owner-writable (authority mirrors workflow_delete)."""
-    entry = _workflow_entry(asset_id)
+    entry = _workflow_entry(asset_id, caller.user_id or "")
     if not isinstance(entry, dict):
         return False
     if str(entry.get("scope") or "") == "system":

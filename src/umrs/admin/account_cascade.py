@@ -21,11 +21,20 @@ site, as ONE audited event (``audit_events.event = 'account.cascade'``):
   provider's own keystore sweep ends a disabled account's sessions (D-03,
   every 60 s). A project removal leaves them: the ZMQ project check (S-1)
   reads live memberships per command.
+- **gated jobs** (ADR-112 B2) — when the whole account goes, its live gated
+  jobs at this venue are cancelled through the person's own gate first
+  (best-effort; a job the gate cannot reach still ends by ``--time``);
+- **HPC site accounts** (ADR-112 B1) — a lost account's transport keys at
+  this venue are destroyed, its ``site_accounts`` row is revoked and its
+  project links suspended; a project removal suspends that project's link.
 
 Where it runs: the admin CLI runs the cascade against the database at once;
 ``AccountStandingSweep`` runs inside the server every 30 s (at most 60 s) and
-re-derives everything from live state — the account record and the live
-leases — so nothing depends on signalling between processes.
+re-derives everything from live state — the account record, the live leases
+and this venue's live site accounts and links — so nothing depends on
+signalling between processes, and a person with a site account but no live
+lease is cascaded too (B1 review, 2026-11-08). A site-account leg that
+failed is retried on the next tick: the row stays live until it succeeds.
 """
 
 from __future__ import annotations
@@ -66,6 +75,13 @@ class CascadeResult:
     sessions_ended: int = 0  # sessions whose lease was revoked
     jobs_cancelled: int = 0
     curve_sessions_revoked: int = 0
+    # ADR-112 B1: this venue's transport keys destroyed, project links
+    # to the person's own site allocation suspended.
+    transport_keys_destroyed: int = 0
+    hpc_links_suspended: int = 0
+    # ADR-112 B2: live gated jobs cancelled through the person's own gate
+    # before the keys that reach it were destroyed.
+    gated_jobs_cancelled: int = 0
     audited: bool = False
 
     def details(self) -> dict[str, Any]:
@@ -297,6 +313,7 @@ def run_cascade(
     curve_provider: Any = None,
     audit_pool: Any = None,
     in_process: bool = False,
+    site_accounts: Any = None,
 ) -> CascadeResult:
     """End what ``user`` runs on this site (``project`` set: only there)
     and record it as one ``audit_events`` row. Lease revocation raises on a
@@ -319,9 +336,67 @@ def run_cascade(
     )
     if project is None and curve_provider is not None:
         result.curve_sessions_revoked = int(curve_provider.revoke_user(user) or 0)
+    cancel_gated_jobs(result)  # before the keys that reach the gate go
+    end_site_accounts(
+        site_accounts or site_account_store(audit_pool, result.venue), result
+    )
     result.audited = write_cascade_audit(audit_pool, result, actor)
     logger.info("account cascade: %s", result.details())
     return result
+
+
+def site_account_store(pool: Any, venue: str) -> Any:
+    """This venue's ``site_accounts`` store over ``pool`` (None without one)."""
+    if pool is None or not venue:
+        return None
+    from umrs.hpc_accounts.store import SiteAccountStore
+
+    return SiteAccountStore(pool, venue)
+
+
+def _execution_records() -> list[Any]:
+    from umrs.server.workflow_execution_registry import get_execution_registry
+
+    return list(get_execution_registry().list())
+
+
+def cancel_gated_jobs(result: CascadeResult, records: Any = None) -> None:
+    """ADR-112 B2 leg (plan §5 B2.0 §10.6): when the whole account goes, its
+    live gated jobs at this venue are cancelled through the person's own
+    gate first; the transport keys that reach the gate are destroyed next.
+    Best-effort like the other legs: the count says what happened."""
+    if result.project or not result.venue:
+        return
+    try:
+        from umrs.server.gated_step_lane import cancel_person_jobs
+
+        found = _execution_records() if records is None else records
+        result.gated_jobs_cancelled = cancel_person_jobs(result.venue, result.user, found)
+    except Exception:
+        logger.warning(
+            "cascade: gated jobs of %s not cancelled", result.user, exc_info=True
+        )
+
+
+def end_site_accounts(store: Any, result: CascadeResult) -> None:
+    """ADR-112 B1 leg: a lost account loses its transport keys at this venue
+    (the gate can no longer be reached), its site account is revoked and
+    its project links suspended; a project removal suspends that link only.
+    Best-effort like the jobs leg: the counts say what happened."""
+    if store is None:
+        return
+    from umrs.hpc_accounts.revoke import end_site_access
+
+    try:
+        keys, links = end_site_access(
+            store, result.user, result.project or None, reason=result.reason
+        )
+    except Exception:
+        logger.warning(
+            "cascade: site accounts of %s not ended", result.user, exc_info=True
+        )
+        return
+    result.transport_keys_destroyed, result.hpc_links_suspended = keys, links
 
 
 def cancel_owner_jobs(
@@ -455,6 +530,7 @@ class AccountStandingSweep:
         record_lookup: Callable[[str], Any] = load_record,
         curve_provider: Callable[[], Any] | None = None,
         interval: float | None = None,
+        site_accounts: Any = None,
     ) -> None:
         self._pool = pool
         self._broker = broker
@@ -462,6 +538,7 @@ class AccountStandingSweep:
         self._job_store_factory = job_store_factory
         self._lookup = record_lookup
         self._curve_provider = curve_provider or _shared_curve_provider
+        self._site_accounts = site_accounts
         self.interval = interval if interval is not None else sweep_interval_seconds()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -485,6 +562,14 @@ class AccountStandingSweep:
                 logger.warning("account sweep: job store unavailable", exc_info=True)
         return self._job_store
 
+    @property
+    def site_accounts(self) -> Any:
+        """This venue's ``site_accounts`` store (None without a database)."""
+        if self._site_accounts is None:
+            venue = str(getattr(self.broker, "venue", "") or "")
+            self._site_accounts = site_account_store(self._pool, venue)
+        return self._site_accounts
+
     def run_once(self) -> list[CascadeResult]:
         """One sweep; returns the cascades it ran."""
         results = []
@@ -501,6 +586,7 @@ class AccountStandingSweep:
                     curve_provider=self._curve_provider() if project is None else None,
                     audit_pool=self._pool,
                     in_process=True,
+                    site_accounts=self.site_accounts,
                 )
             )
         return results
@@ -509,12 +595,30 @@ class AccountStandingSweep:
         """``{(user, project or None for the whole account): reason}``."""
         enforce = membership_enforced()
         found: dict[tuple[str, str | None], str] = {}
-        for user, projects in _by_owner(self.broker.active_owner_projects()).items():
+        for user, projects in self.work_list().items():
             try:
                 found.update(self._user_losses(user, projects, enforce))
             except Exception:
                 logger.warning("account sweep: %s skipped", user, exc_info=True)
         return found
+
+    def work_list(self) -> dict[str, set[str]]:
+        """Owners to check and their projects: live lease holders, plus this
+        venue's live site-account holders with their active links' projects."""
+        owners = _by_owner(self.broker.active_owner_projects())
+        for user, projects in self._site_account_holders().items():
+            owners.setdefault(user, set()).update(projects)
+        return owners
+
+    def _site_account_holders(self) -> dict[str, set[str]]:
+        store = self.site_accounts
+        if store is None:
+            return {}
+        try:
+            return site_account_holders(store)
+        except Exception:
+            logger.warning("account sweep: site accounts unreadable", exc_info=True)
+            return {}
 
     def _user_losses(
         self, user: str, projects: Iterable[str], enforce: bool
@@ -570,6 +674,20 @@ class _Memo:
         return self._value
 
 
+def site_account_holders(store: Any) -> dict[str, set[str]]:
+    """``{username: projects of active links}`` for every account at the
+    store's venue that is not revoked (ADR-112 B1)."""
+    holders = {
+        str(a["username"]): set()
+        for a in store.list_accounts()
+        if a["status"] != "revoked"
+    }
+    for link in store.list_links():
+        if link["status"] == "active":
+            holders.setdefault(str(link["username"]), set()).add(str(link["project_id"]))
+    return holders
+
+
 def _by_owner(pairs: Iterable[tuple[str, str]]) -> dict[str, set[str]]:
     grouped: dict[str, set[str]] = {}
     for owner, project in pairs:
@@ -590,6 +708,7 @@ __all__ = [
     "AccountStandingSweep",
     "CascadeResult",
     "account_disabled",
+    "cancel_gated_jobs",
     "cancel_owner_jobs",
     "live_project_ids",
     "load_record",

@@ -21,8 +21,10 @@ Usage::
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -58,6 +60,63 @@ def _expand_env_refs(value: Any) -> Any:
 # ---------------------------------------------------------------------------
 
 
+HPC_ACCESS_MODES = ("service_account", "user_account")
+
+
+@dataclass
+class ServiceAccountAccess:
+    """``scheduler.hpc_access.service_account`` (ADR-112 D-1).
+
+    ``login`` is the site's platform login and must equal ``extra.ssh_user``.
+    ``personal`` says that login belongs to a person. ``consent_ref`` names the
+    operator's written consent ("" = interim). While it is empty, user-work
+    lanes run only for admins and ``allowed_projects`` ([] = admins only).
+    """
+
+    login: str = ""
+    personal: bool = False
+    consent_ref: str = ""
+    allowed_projects: list[str] = field(default_factory=list)
+
+
+@dataclass
+class UserAccountAccess:
+    """``scheduler.hpc_access.user_account`` (ADR-112 D-3; wave B1).
+
+    ``signing_domain`` is the platform's DNS name: every signature namespace
+    ends in ``@<signing_domain>`` (plan §4 B1.5a). It is required when
+    ``modes_allowed`` lists ``user_account``. ``from_address`` is written as
+    the ``from=`` option of the user's ``authorized_keys`` line ("" = none).
+    ``uv_required`` asks the gate for the FIDO user-verification flag (a PIN);
+    ``gate_min_version`` is the oldest gate the server accepts at verify.
+    ``profile`` (wave B2, plan §5 B2.0 §2) overrides keys of the gate site
+    profile the server publishes (``hpc_accounts.site_profile``); it must
+    name ``image_archive_dir`` for gated runs to be proposed.
+    """
+
+    methods: list[str] = field(default_factory=list)
+    signing_domain: str = ""
+    from_address: str = ""
+    uv_required: bool = False
+    gate_min_version: int = 1
+    profile: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class HpcAccessConfig:
+    """``scheduler.hpc_access``: the site's declared access modes (ADR-112 D-1).
+
+    Absent (``SchedulerConfig.hpc_access is None``) means undeclared: user-work
+    lanes refuse non-admins and platform lanes keep their login.
+    """
+
+    operator: str = ""
+    modes_allowed: list[str] = field(default_factory=list)
+    default_mode: str = ""
+    service_account: ServiceAccountAccess | None = None
+    user_account: UserAccountAccess | None = None
+
+
 @dataclass
 class SchedulerConfig:
     """Cluster job scheduler settings."""
@@ -86,15 +145,17 @@ class SchedulerConfig:
     nodes: int = 1  # Number of Slurm nodes (>1 for multi-node PP)
     extra_sbatch: list[str] = field(default_factory=list)  # e.g. ["--constraint=a100"]
 
-    # Per-user SSH delegation for Slurm job submission.
-    # - service_account: UMRS daemon submits all jobs as itself (default)
-    # - per_user_ssh: UMRS SSH's as the requesting user to submit sbatch
+    # Declared HPC access modes (ADR-112 D-1); None = undeclared. Parsed and
+    # validated by _parse_hpc_access (the generic loader drops nested keys).
+    hpc_access: HpcAccessConfig | None = None
+
+    # DEPRECATED by ADR-112 (2026-11-08): parsed so old site files still load,
+    # ignored by the backend. A site that says per_user_ssh and declares no
+    # hpc_access logs one ERROR at load. Removal one release later.
     slurm_delegation: str = "service_account"  # service_account | per_user_ssh
-    # Path to UMRS service ed25519 public key on shared filesystem.
-    # Users enroll by appending this key to their ~/.ssh/authorized_keys.
+    # DEPRECATED (ADR-112): the shared delegation key and its forced-command
+    # proxy were retired with per_user_ssh (keys destroyed 2026-10-24).
     service_pubkey_path: str = ""
-    # Path to the forced-command proxy script on shared filesystem.
-    # Only allows sbatch, squeue, sacct, scancel commands.
     slurm_proxy_path: str = ""
 
     # When True, endpoint provisioning rejects users who have no per-user
@@ -238,7 +299,7 @@ class StepExecutorConfig:
     cpus: int = 8  # CPUs per task
     memory: str = "32G"  # Memory per node
     time_limit: str = "01:00:00"  # Time limit
-    account: str = ""  # Slurm account (optional)
+    account: str = ""  # Default Slurm account (optional)
     image: str = ""  # Default container image for steps
     gpu: bool = True  # Whether to attach GPU by default
     # How the HPC lane hands a step that needs a GPU its devices: "cdi"
@@ -247,6 +308,11 @@ class StepExecutorConfig:
     # driver libraries found on the node; podman builds without CDI support,
     # RCCS GB10). The lane refuses any other value before submitting.
     gpu_form: str = "cdi"
+    # How a step that needs a GPU asks Slurm for it when its partition's
+    # profile sets no gpu_request (ADR-109 D-3): "gres" --gres=gpu:<gpus>
+    # (default), or "gpus" --gpus=<gpus> (RIKYU's submit filter refuses
+    # --gres=gpu:N and accepts only --gpus=N, 2026-11-08).
+    gpu_flag: str = "gres"
     # Parent of the per-step workdirs; must be on a filesystem the compute
     # nodes see (required for slurm-remote: a path on the CLUSTER).
     workdir_root: str = ""
@@ -258,6 +324,11 @@ class StepExecutorConfig:
     uploaded_code: str = "refuse"
     # Cluster dir holding umrs-step-<sha12>-<arch>.tar (+ .sha256, .id).
     image_archive_dir: str = ""
+    # ADR-112 B2 (plan §5 B2.0 §2): a server-local JSON file
+    # {"<ref>": {"<arch>": {"image_id": <64 hex>, "archive_sha256": <64 hex>}}}
+    # the converge's image stage writes; a gated run's intent pins its images
+    # from it. Empty: this site cannot propose gated runs (no_image_digests).
+    image_digests: str = ""
     # Images routing_hints.image may name besides the platform image (D-7).
     allowed_images: list[str] = field(default_factory=list)
     # Cluster paths of umrs_step_helper.py and mini-rivault-llm/venue.sh in
@@ -286,6 +357,9 @@ class StepExecutorConfig:
     endpoint_max_request_bytes: int = 0
     endpoint_max_response_bytes: int = 0
     endpoint_max_total_bytes: int = 0
+    # Verified-project → Slurm account overrides; an unlisted project uses account.
+    # Appended after every existing positional field for constructor compatibility.
+    project_accounts: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -499,6 +573,10 @@ def _step_executor_env(cfg: StepExecutorConfig) -> dict[str, str]:
         env["UMRS_SLURM_TIME"] = cfg.time_limit
         if cfg.account:
             env["UMRS_SLURM_ACCOUNT"] = cfg.account
+        if cfg.project_accounts:
+            env["UMRS_SLURM_PROJECT_ACCOUNTS"] = json.dumps(
+                cfg.project_accounts, sort_keys=True, separators=(",", ":")
+            )
     env.update(_step_lane_env(cfg))
     return env
 
@@ -520,6 +598,7 @@ def _step_lane_env(cfg: StepExecutorConfig) -> dict[str, str]:
         "UMRS_STEP_CGROUPS": cfg.cgroups,
         "UMRS_STEP_NPROC_LIMIT": str(int(cfg.nproc_limit)),
         "UMRS_STEP_GPU_FORM": cfg.gpu_form,
+        "UMRS_STEP_GPU_FLAG": cfg.gpu_flag,
         "UMRS_STEP_ENDPOINT_WAIT_SEC": str(int(cfg.endpoint_wait_sec)),
         "UMRS_STEP_ENDPOINT_MAX_REQUEST_BYTES": str(
             int(cfg.endpoint_max_request_bytes)
@@ -670,6 +749,224 @@ def _load_raw_with_extends(path: str, _seen: tuple[str, ...] = ()) -> dict[str, 
     return _deep_merge(_load_raw_with_extends(base_path, _seen + (real,)), raw)
 
 
+_HPC_ACCESS_KEYS = frozenset(
+    {"operator", "modes_allowed", "default_mode", "service_account", "user_account"}
+)
+_SERVICE_ACCOUNT_KEYS = frozenset(
+    {"login", "personal", "consent_ref", "allowed_projects"}
+)
+_USER_ACCOUNT_KEYS = frozenset(
+    {
+        "methods",
+        "signing_domain",
+        "from_address",
+        "uv_required",
+        "gate_min_version",
+        "profile",
+    }
+)
+#: Top-level keys of the gate site profile a site may override (plan §5
+#: B2.0 §2); the gate validates the whole profile, values included.
+GATE_PROFILE_KEYS = frozenset(
+    {
+        "slurm",
+        "partitions",
+        "gpu",
+        "podman",
+        "venue",
+        "image_archive_dir",
+        "caps",
+        "endpoint",
+        "watch_seconds",
+    }
+)
+# A DNS name with at least one dot: lowercase labels of 1-63 characters.
+_DNS_NAME = re.compile(
+    r"^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
+    r"(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$"
+)
+
+
+def _hpc_mapping(value: Any, where: str, allowed: frozenset[str]) -> dict[str, Any]:
+    """A mapping with only *allowed* keys, or ValueError naming *where*."""
+    if not isinstance(value, dict):
+        raise ValueError(f"site.yaml {where} must be a mapping")  # noqa: TRY004
+    unknown = sorted(str(key) for key in value if key not in allowed)
+    if unknown:
+        raise ValueError(f"site.yaml {where} has unknown key(s): {', '.join(unknown)}")
+    return value
+
+
+def _hpc_str_list(value: Any, where: str) -> list[str]:
+    """A YAML list of strings (a bare scalar is refused, never split)."""
+    if value is None:
+        return []
+    if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+        raise ValueError(f"site.yaml {where} must be a list of strings")
+    return [v.strip() for v in value if v.strip()]
+
+
+def _parse_service_account(value: Any) -> ServiceAccountAccess:
+    where = "scheduler.hpc_access.service_account"
+    data = _hpc_mapping(value, where, _SERVICE_ACCOUNT_KEYS)
+    personal = data.get("personal", False)
+    if not isinstance(personal, bool):
+        raise ValueError(f"site.yaml {where}.personal must be true or false")  # noqa: TRY004
+    return ServiceAccountAccess(
+        login=str(data.get("login") or "").strip(),
+        personal=personal,
+        consent_ref=str(data.get("consent_ref") or "").strip(),
+        allowed_projects=_hpc_str_list(
+            data.get("allowed_projects"), f"{where}.allowed_projects"
+        ),
+    )
+
+
+def _hpc_bool(data: dict[str, Any], key: str, where: str) -> bool:
+    value = data.get(key, False)
+    if not isinstance(value, bool):
+        raise ValueError(f"site.yaml {where}.{key} must be true or false")  # noqa: TRY004
+    return value
+
+
+def _gate_min_version(data: dict[str, Any], where: str) -> int:
+    value = data.get("gate_min_version", 1)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError(f"site.yaml {where}.gate_min_version must be an integer >= 1")
+    return value
+
+
+def _from_address(data: dict[str, Any], where: str) -> str:
+    """The gate's own rule (``hpc_gate.check_from_address``), so a site never
+    publishes a ``from=`` list that r4 or the gate then refuses to write."""
+    value = str(data.get("from_address") or "").strip()
+    if not value:
+        return ""
+    from r4_contracts.hpc_gate import check_from_address
+
+    try:
+        return check_from_address(value)
+    except ValueError as exc:
+        raise ValueError(
+            f"site.yaml {where}.from_address must be sshd from= patterns, "
+            "comma-separated (hosts, addresses, CIDR, wildcards, a leading '!'; "
+            f"no quotes, spaces or empty items): {exc}"
+        ) from None
+
+
+def _parse_user_account(value: Any) -> UserAccountAccess:
+    where = "scheduler.hpc_access.user_account"
+    data = _hpc_mapping(value, where, _USER_ACCOUNT_KEYS)
+    return UserAccountAccess(
+        methods=_hpc_str_list(data.get("methods"), f"{where}.methods"),
+        signing_domain=str(data.get("signing_domain") or "").strip(),
+        from_address=_from_address(data, where),
+        uv_required=_hpc_bool(data, "uv_required", where),
+        gate_min_version=_gate_min_version(data, where),
+        profile=dict(
+            _hpc_mapping(
+                data.get("profile") or {}, f"{where}.profile", GATE_PROFILE_KEYS
+            )
+        ),
+    )
+
+
+def _check_user_account(cfg: HpcAccessConfig) -> None:
+    """A site that allows ``user_account`` names its signing domain (plan
+    §4 B1.5a): the namespaces end in it, so an empty or malformed one would
+    let a signature for another platform verify here."""
+    if "user_account" not in cfg.modes_allowed:
+        return
+    domain = cfg.user_account.signing_domain if cfg.user_account else ""
+    if not _DNS_NAME.fullmatch(domain):
+        raise ValueError(
+            "site.yaml scheduler.hpc_access.user_account.signing_domain is "
+            "required when modes_allowed lists user_account: the platform's "
+            f"lowercase DNS name (got {domain!r})"
+        )
+
+
+def _check_hpc_modes(cfg: HpcAccessConfig) -> None:
+    """Modes are the two names; the default is one of them; its block exists."""
+    bad = [m for m in cfg.modes_allowed if m not in HPC_ACCESS_MODES]
+    if bad:
+        raise ValueError(
+            f"site.yaml scheduler.hpc_access.modes_allowed has unknown mode(s) "
+            f"{bad}; allowed: {list(HPC_ACCESS_MODES)}"
+        )
+    if cfg.default_mode not in cfg.modes_allowed:
+        raise ValueError(
+            f"site.yaml scheduler.hpc_access.default_mode {cfg.default_mode!r} "
+            f"is not in modes_allowed {cfg.modes_allowed}"
+        )
+    if "service_account" in cfg.modes_allowed and cfg.service_account is None:
+        raise ValueError(
+            "site.yaml scheduler.hpc_access.service_account is required when "
+            "modes_allowed lists service_account"
+        )
+
+
+def _check_service_login(cfg: HpcAccessConfig, extra: Any) -> None:
+    """``service_account.login`` must be the login the backend actually uses."""
+    raw_user = extra.get("ssh_user") if isinstance(extra, dict) else None
+    ssh_user = str(raw_user or "").strip()
+    if cfg.service_account is None or not ssh_user:
+        return
+    if cfg.service_account.login != ssh_user:
+        raise ValueError(
+            "site.yaml scheduler.hpc_access.service_account.login must equal "
+            "extra.ssh_user (the platform login every lane connects as)"
+        )
+
+
+def _parse_hpc_access(value: Any, extra: Any) -> HpcAccessConfig:
+    """Parse and validate ``scheduler.hpc_access`` fail-closed (ADR-112 D-1)."""
+    data = _hpc_mapping(value, "scheduler.hpc_access", _HPC_ACCESS_KEYS)
+    sa_raw, ua_raw = data.get("service_account"), data.get("user_account")
+    cfg = HpcAccessConfig(
+        operator=str(data.get("operator") or "").strip(),
+        modes_allowed=_hpc_str_list(
+            data.get("modes_allowed"), "scheduler.hpc_access.modes_allowed"
+        ),
+        default_mode=str(data.get("default_mode") or "").strip(),
+        service_account=None if sa_raw is None else _parse_service_account(sa_raw),
+        user_account=None if ua_raw is None else _parse_user_account(ua_raw),
+    )
+    _check_hpc_modes(cfg)
+    _check_service_login(cfg, extra)
+    _check_user_account(cfg)
+    return cfg
+
+
+def _parse_scheduler(raw_scheduler: Any, extra: Any) -> SchedulerConfig:
+    """SchedulerConfig with ``hpc_access`` parsed explicitly (never dropped)."""
+    data = dict(raw_scheduler or {})
+    hpc_raw = data.pop("hpc_access", None)
+    scheduler = _dict_to_dataclass(SchedulerConfig, data)
+    if hpc_raw is not None:
+        scheduler.hpc_access = _parse_hpc_access(hpc_raw, extra)
+    _log_retired_delegation(scheduler)
+    return scheduler
+
+
+def _log_retired_delegation(scheduler: SchedulerConfig) -> None:
+    """One ERROR at load for a site file that still says ``per_user_ssh``
+    (plan §3 A.1), naming ``hpc_access``, whether or not the file declares it."""
+    if scheduler.slurm_delegation != "per_user_ssh":
+        return
+    then = (
+        "scheduler.hpc_access governs; delete the slurm_delegation line."
+        if scheduler.hpc_access is not None
+        else "declare scheduler.hpc_access instead. Until then user-work lanes "
+        "refuse non-admins (mode_undeclared)."
+    )
+    logger.error(
+        "site.yaml scheduler.slurm_delegation: per_user_ssh is retired "
+        "(ADR-112) and ignored; %s",
+        then,
+    )
+
+
 def _parse_raw(raw: dict[str, Any]) -> SiteConfig:
     """Turn a raw YAML dict into a :class:`SiteConfig`."""
     pp_raw = raw.get("partition_profiles", {})
@@ -682,7 +979,7 @@ def _parse_raw(raw: dict[str, Any]) -> SiteConfig:
     return SiteConfig(
         name=raw.get("name", "default"),
         description=raw.get("description", ""),
-        scheduler=_dict_to_dataclass(SchedulerConfig, raw.get("scheduler", {})),
+        scheduler=_parse_scheduler(raw.get("scheduler"), raw.get("extra")),
         runtime=_dict_to_dataclass(RuntimeConfig, raw.get("runtime", {})),
         storage=_dict_to_dataclass(StorageConfig, raw.get("storage", {})),
         network=_dict_to_dataclass(NetworkConfig, raw.get("network", {})),

@@ -356,19 +356,36 @@ def _init_usage_pool(db_pool):
         logger.warning("LLM usage recording unavailable — usage will not be tracked")
 
 
-def _site_capabilities() -> dict[str, str | int]:
-    """Collect non-secret site capabilities for client discovery."""
-    caps: dict[str, str | int] = {}
+def _hpc_access_caps(scheduler: object) -> dict[str, object]:
+    """The declared HPC access mode for clients (ADR-112 A.3.7): mode names
+    and whether the service login is a person's; empty when undeclared.
+    Never the login, the consent reference or the project list."""
+    hpc = getattr(scheduler, "hpc_access", None)
+    if hpc is None:
+        return {}
+    service = getattr(hpc, "service_account", None)
+    return {
+        "default_mode": str(getattr(hpc, "default_mode", "") or ""),
+        "modes_allowed": list(getattr(hpc, "modes_allowed", None) or []),
+        "personal": bool(getattr(service, "personal", False)),
+    }
+
+
+def _site_capabilities() -> dict[str, object]:
+    """Collect non-secret site capabilities for client discovery.
+
+    ADR-112: ``slurm_delegation``, ``service_pubkey_path`` and
+    ``slurm_proxy_path`` are no longer advertised (no client enrols a shared
+    key any more); ``hpc_access`` says the declared mode instead.
+    """
+    caps: dict[str, object] = {}
     try:
         from umrs.orchestrator.site_config import load_site_config
 
         site = load_site_config()
         caps["scheduler_kind"] = site.scheduler.kind
-        caps["slurm_delegation"] = site.scheduler.slurm_delegation
         caps["site_name"] = site.name
-        if site.scheduler.slurm_delegation == "per_user_ssh":
-            caps["service_pubkey_path"] = site.scheduler.service_pubkey_path
-            caps["slurm_proxy_path"] = site.scheduler.slurm_proxy_path
+        caps["hpc_access"] = _hpc_access_caps(site.scheduler)
     except Exception:  # noqa: BLE001, S110 — boot/teardown must survive per-component failures
         pass
     zmq_port = os.environ.get("UMRS_CONTROL_PORT")
@@ -734,6 +751,20 @@ def _start_account_sweep() -> AccountStandingSweep | None:
         return None
 
 
+def _start_ledger_sweep() -> object:
+    """ADR-112 wave D (plan §6 C/D.0 D2): this venue's usage ledger
+    recovery sweep every 300 s (``UMRS_LEDGER_SWEEP_ENABLED=false`` turns it
+    off). A server without a site has no venue and starts none."""
+    try:
+        from umrs.hpc_accounts.ledger_sweep import start_usage_ledger_sweep
+        from umrs.shared.hpc_user_work_access import current_site
+
+        return start_usage_ledger_sweep(str(getattr(current_site(), "name", "") or ""))
+    except Exception:
+        logger.warning("usage ledger sweep not started", exc_info=True)
+        return None
+
+
 class _SingleConnPool:
     """Minimal psycopg2 pool: fresh conn per lease (cheap, always-returned)."""
 
@@ -960,6 +991,7 @@ def _create_app():
         _start_durable_runtime()
         _rehydrate_loop_drivers()
         account_sweep = _start_account_sweep()
+        _start_ledger_sweep()
         try:
             yield
         finally:
@@ -1106,6 +1138,11 @@ def _create_app():
     from umrs.api.scope_tokens import router as scopes_router
 
     app.include_router(scopes_router)
+    # ADR-106 amendment (2026-11-07): the public service-model badge, its own
+    # anonymous "status" family (nginx /<site>/status/models.json only).
+    from umrs.api.status_badge import router as status_badge_router
+
+    app.include_router(status_badge_router)
 
     # D-39 (2026-09-22): Scientific Catalog registry (gap row D-39, Phase 1).
     from umrs.api.scientific_catalogs import router as scientific_catalogs_router
@@ -1122,6 +1159,17 @@ def _create_app():
     from umrs.api.sites import router as sites_router
 
     app.include_router(sites_router)
+
+    # ADR-112 wave B1 (2026-11-08): the caller's own HPC account at this site
+    # (transport key, gate verify, project links), beside /umrs/sites/me.
+    from umrs.api.hpc_accounts import router as hpc_accounts_router
+
+    app.include_router(hpc_accounts_router)
+
+    # ADR-112 wave D (2026-11-09): the caller's own HPC usage ledger rows here.
+    from umrs.api.hpc_usage import router as hpc_usage_router
+
+    app.include_router(hpc_usage_router)
 
     # ADR-086 (2026-10-05): circles — project-scoped context/audience cells
     # (supersedes the ADR-050 §3 groups authority).

@@ -490,6 +490,28 @@ def _record_final_attempt_failure(
         get_feedback_store().record_failure(decision.endpoint_id)
 
 
+def _is_gated(record: Any) -> bool:
+    """A run under the person's own account: a signed intent (B2) or a
+    standing grant (wave C, plan §6 C/D.0 C4)."""
+    return bool(getattr(record, "intent_id", None) or getattr(record, "grant_id", None))
+
+
+def _max_attempts(policy: StepPolicy, record: ExecutionRecord) -> int:
+    """How many attempts one step may take. A run under the person's own
+    HPC account (ADR-112 B2: it carries a signed intent) takes exactly one:
+    the gate's nonce makes a second submit ``replayed``, a gate refusal is
+    never retried, and recovery within the attempt is the gated lane's own
+    (plan §5 B2.0 §10.5)."""
+    return 1 if _is_gated(record) else policy.max_retries + 1
+
+
+def _retry_left(attempt: int, max_attempts: int, exc: StepExecutionError) -> bool:
+    """Another attempt follows unless this was the last one, or the failure
+    is final (``exc.final``: a usage-ledger refusal before submit, ADR-112
+    wave D K14: the step fails without retry and the run stops)."""
+    return attempt < max_attempts and not getattr(exc, "final", False)
+
+
 def _execute_with_retry(
     *,
     executor: StepExecutor,
@@ -518,7 +540,7 @@ def _execute_with_retry(
     signal, matching pre-W3 single-attempt semantics.
     """
     policy = StepPolicy.from_mapping(spec)
-    max_attempts = policy.max_retries + 1
+    max_attempts = _max_attempts(policy, record)
     retry_delay = policy.retry_delay
     timeout_seconds = policy.timeout_seconds
     last_msg = ""
@@ -554,7 +576,7 @@ def _execute_with_retry(
                 attempt,
                 max_attempts,
             )
-            if attempt < max_attempts:
+            if _retry_left(attempt, max_attempts, exc):
                 logger.warning(
                     "Step %s attempt %d/%d failed: %s. Retrying in %.1fs...",
                     step_name,
@@ -1054,6 +1076,7 @@ def _bind_step_lane(
     spec: dict[str, Any],
     metadata: dict[str, Any],
     record: ExecutionRecord,
+    verified_project: str | None = None,
 ) -> None:
     """The staged HPC lane's per-step context (build spec 2026-09-26 §5, §8):
     the run owner and declared inputs for the stager, the step's soft
@@ -1061,12 +1084,18 @@ def _bind_step_lane(
     (the parents its payload and inputs tag carry), and the run's cancel
     flag and step record for the job lifecycle. Other executors are
     untouched."""
+    _require_gated_lane(executor, record)
     bind = getattr(executor, "bind_run", None)
     if not callable(bind):
         return
     from umrs.server.remote_slurm_step_executor import STEP_TIMEOUT_METADATA_KEY
-    from umrs.server.step_staging import STAGE_REQUEST_METADATA_KEY, stage_request
+    from umrs.server.step_staging import (
+        STAGE_PROJECT_ID_METADATA_KEY,
+        STAGE_REQUEST_METADATA_KEY,
+        stage_request,
+    )
 
+    metadata[STAGE_PROJECT_ID_METADATA_KEY] = verified_project
     try:
         request = stage_request(spec, record.params, record.user_id)
     except StepExecutionError:
@@ -1078,6 +1107,7 @@ def _bind_step_lane(
             "stage_inputs": spec.get("stage_inputs"),
         }
     metadata[STAGE_REQUEST_METADATA_KEY] = request
+    metadata.update(_ledger_metadata(record))
     timeout = StepPolicy.from_mapping(spec).timeout_seconds
     if timeout:
         metadata[STEP_TIMEOUT_METADATA_KEY] = float(timeout)
@@ -1087,7 +1117,53 @@ def _bind_step_lane(
         record.execution_id,
         cancelled=lambda: bool(record.cancel_requested),
         on_job=lambda step_name, job: _record_step_job(record, step_name, job),
+        **_gated_binding(record),
     )
+
+
+def _ledger_metadata(record: ExecutionRecord) -> dict[str, Any]:
+    """ADR-112 wave D: the run's owner and project for the usage ledger's
+    service-lane rows (the gated lane reads its run spec or intent)."""
+    from umrs.server.step_ledger import LEDGER_METADATA_KEY
+
+    project = str((record.params or {}).get("project_id") or "")
+    return {LEDGER_METADATA_KEY: {"person": record.user_id, "project_id": project}}
+
+
+def _require_gated_lane(executor: StepExecutor, record: ExecutionRecord) -> None:
+    """I-1 backstop: a run with a signed intent never reaches a Slurm
+    executor without a gated path (a local ``sbatch`` lane would submit as
+    the server's own login); the step fails by name before anything is
+    sent. Non-HPC executors (a platform-template step's in-process lane)
+    are untouched."""
+    if not _is_gated(record):
+        return
+    from umrs.server.slurm_step_executor import SlurmStepExecutor
+
+    if isinstance(executor, SlurmStepExecutor) and not _accepts_gated(executor):
+        raise StepExecutionError(
+            "setup",
+            "this run carries your signed intent, but this step lane has no gated "
+            "path: nothing was sent (hpcaccess.lane_not_gated)",
+        )
+
+
+def _accepts_gated(executor: StepExecutor) -> bool:
+    import inspect
+
+    bind = getattr(executor, "bind_run", None)
+    return callable(bind) and "gated" in inspect.signature(bind).parameters
+
+
+def _gated_binding(record: ExecutionRecord) -> dict[str, Any]:
+    """ADR-112 B2: a run with a signed intent runs under the person's own
+    account; its steps go through the person's gate (the lane's
+    ``bind_run(gated=...)``). Other runs bind nothing more."""
+    if not _is_gated(record):
+        return {}
+    from umrs.server.gated_step_lane import gated_run_for
+
+    return {"gated": gated_run_for(record)}
 
 
 def _bind_step_endpoint(
@@ -1170,6 +1246,7 @@ def _execute_step(
     state_lock: threading.Lock,
     executor: StepExecutor,
     source_path: str | None = None,
+    verified_project: str | None = None,
 ) -> tuple[str, StepResult | None, str | None]:
     """Execute a single step. Returns ``(step_name, result_or_None, error_or_None)``.
 
@@ -1252,7 +1329,7 @@ def _execute_step(
     metadata = _executor_metadata(
         image_hint, gpu_hint, source_path, routed_keys, _gpu_count_hint(spec)
     )
-    _bind_step_lane(executor, spec, metadata, record)
+    _bind_step_lane(executor, spec, metadata, record, verified_project)
     _bind_step_endpoint(executor, metadata, decision)
     payload_s3_enabled, payload_bucket, payload_s3_prefix = _payload_s3_hint(metadata)
     _annotate_payload_mode(
@@ -1490,16 +1567,22 @@ def _settle_before_run(
     steps_spec: list[dict[str, Any]],
     source_path: str | None,
     executor: StepExecutor | None,
+    verified_project: str | None = None,
 ) -> tuple[bool, str | None]:
     """Outcomes decided before any step runs: nothing to run (succeeded), or
-    uploaded code on a server with no HPC lane (refused). Else the executor
-    name for the run."""
+    uploaded code on a server with no HPC lane, or on a lane the run's
+    verified project may not use (refused, ADR-112). Else the executor name
+    for the run."""
     if not steps_spec:
         record.update(status="succeeded", finished_at=time.time(), progress=1.0)
         _emit_workflow_metric(record, executor, "succeeded")
         return True, None
     worker, refusal = _workflow_executor_name(
-        workflow_json, steps_spec, source_path, injected=executor is not None
+        workflow_json,
+        steps_spec,
+        source_path,
+        injected=executor is not None,
+        run_identity=(record.user_id, verified_project, _is_gated(record)),
     )
     if refusal:
         record.update(status="failed", error=refusal, finished_at=time.time())
@@ -1534,17 +1617,93 @@ def _workflow_executor_name(
     source_path: str | None,
     *,
     injected: bool,
+    run_identity: tuple[Any, ...] = (None, None),
 ) -> tuple[str | None, str]:
     """(executor name, refusal) for this run. Uploaded code (ADR-074
-    Amendment 1) runs on the site's connected-HPC lane, never in-process;
-    an injected executor (tests) stands as given."""
+    Amendment 1) runs on the site's connected-HPC lane, never in-process.
+    Any run on that lane, uploaded code or built-in steps, runs only for a
+    caller the site's ``hpc_access`` admits (ADR-112 D-2: staged steps are
+    user work); an injected executor (tests) stands as given.
+
+    *run_identity* is ``(user_id, verified project[, has intent])``: the
+    project is the gateway-verified one, never the ``params.project_id``
+    claim; a signed intent (ADR-112 B2) decides a ``user_account`` run."""
     worker = _executor_name_from_execution_mode(workflow_json.get("execution_mode"))
-    if injected or not workflow_has_uploaded_code(steps_spec, source_path):
+    if injected:
         return worker, ""
+    if not workflow_has_uploaded_code(steps_spec, source_path):
+        return _builtin_lane(worker, run_identity)
     lane = uploaded_code_lane(worker)
     if lane == LEGACY_IN_PROCESS:
-        return _legacy_uploaded_lane(worker, source_path), ""
-    return (lane, "") if lane else (None, _NO_HPC_LANE)
+        return _builtin_lane(_legacy_uploaded_lane(worker, source_path), run_identity)
+    if not lane:
+        return None, _NO_HPC_LANE
+    refusal = _uploaded_lane_refusal(lane, run_identity)
+    return (None, refusal) if refusal else (lane, "")
+
+
+def _uploaded_lane_refusal(lane: str, run_identity: tuple[Any, ...]) -> str:
+    """The identity refusal on *lane*; and a service run on a site whose
+    only open path is the gated one (no helper lane, ADR-112 B2.0 §10.5)
+    has no HPC lane (only a ``user_account`` run carries an intent)."""
+    from umrs.server.hpc_user_work import lane_has_gated_path
+    from umrs.server.step_trust import hpc_lane_available
+
+    refusal = _hpc_identity_refusal(*run_identity, gated=lane_has_gated_path(lane))
+    if refusal or _has_intent(run_identity) or hpc_lane_available():
+        return refusal
+    return _NO_HPC_LANE
+
+
+def _has_intent(run_identity: tuple[Any, ...]) -> bool:
+    return len(run_identity) > 2 and bool(run_identity[2])
+
+
+def _builtin_lane(
+    worker: str | None, run_identity: tuple[Any, ...]
+) -> tuple[str | None, str]:
+    """(executor name, refusal) for a run of built-in steps only: the lane
+    the workflow asks for, refused when that is the HPC lane and the site's
+    ``hpc_access`` does not admit the run (review 2026-11-08: a built-in
+    ``execution_mode: slurm`` run reached the site's login unchecked)."""
+    from umrs.server.hpc_user_work import lane_has_gated_path, requests_hpc_lane
+
+    if not requests_hpc_lane(worker):
+        return worker, ""
+    refusal = _hpc_identity_refusal(*run_identity, gated=lane_has_gated_path(worker))
+    return (None, refusal) if refusal else (worker, "")
+
+
+def _hpc_identity_refusal(
+    user_id: str | None,
+    verified_project: str | None,
+    has_intent: bool = False,
+    *,
+    gated: bool = True,
+) -> str:
+    """Why this run's user work may not use the HPC lane here, or ``""``.
+
+    Defence in depth behind the trigger-time refusal (ADR-112 A.3.4): a
+    durable re-dispatch or a direct launch still meets the site's rule.
+    ``is_admin`` comes from the user record (unreadable is not admin), the
+    same source every admission check reads. A run that resolves to the
+    person's own account needs its signed intent, and only such a run may
+    carry one (ADR-112 B2, ``signature_required`` / ``intent_invalid``).
+    *gated* says the chosen lane has a gated path; on one without (a local
+    ``sbatch`` lane runs as the server's login) a ``user_account`` run
+    refuses ``lane_not_gated`` (I-1, fixer finding 2026-11-08).
+    """
+    from umrs.orchestrator.hpc_identity import HpcAccessRefused
+    from umrs.server.hpc_user_work import intent_refusal_text, runner_refusal_text
+    from umrs.shared.hpc_user_work_access import resolve_user_work
+
+    try:
+        identity = resolve_user_work(
+            user_id=user_id, project_id=verified_project, gated=gated
+        )
+    except HpcAccessRefused as exc:
+        return runner_refusal_text(exc)
+    return intent_refusal_text(identity, has_intent)
 
 
 class _StepLanes:
@@ -1672,6 +1831,7 @@ def _run_wave(
     state_lock: threading.Lock,
     max_workers_cap: int,
     source_path: str | None = None,
+    verified_project: str | None = None,
 ) -> list[str]:
     """Execute one DAG wave (directly when linear, pooled when parallel).
 
@@ -1704,6 +1864,7 @@ def _run_wave(
             state_lock=state_lock,
             executor=executor,
             source_path=source_path,
+            verified_project=verified_project,
         )
         if err is not None:
             wave_errors.append(f"{name}: {err}")
@@ -1726,6 +1887,7 @@ def _run_wave(
             bucket=bucket,
             state_lock=state_lock,
             source_path=source_path,
+            verified_project=verified_project,
         )
 
     wave_duration_ms = (time.monotonic() - wave_started) * 1000.0
@@ -1759,6 +1921,7 @@ def _run_wave_parallel(
     bucket: str,
     state_lock: threading.Lock,
     source_path: str | None = None,
+    verified_project: str | None = None,
 ) -> None:
     """Fan a parallel wave over the thread pool and collect errors."""
     workers = min(len(level), max_workers_cap)
@@ -1784,6 +1947,7 @@ def _run_wave_parallel(
                 state_lock=state_lock,
                 executor=executor,
                 source_path=source_path,
+                verified_project=verified_project,
             )
             for spec in level
         ]
@@ -1928,6 +2092,38 @@ def run_workflow_record(
     user_id: str | None = None,
     executor: StepExecutor | None = None,
     prelaunch: Callable[[ExecutionRecord], None] | None = None,
+    verified_project: str | None = None,
+) -> None:
+    """Run a record and release its process-local K19 state on every exit."""
+    try:
+        _run_workflow_record(
+            record,
+            source_path=source_path,
+            workflow_json=workflow_json,
+            router=router,
+            project_id=project_id,
+            user_id=user_id,
+            executor=executor,
+            prelaunch=prelaunch,
+            verified_project=verified_project,
+        )
+    finally:
+        from .gated_step_lane import clear_run_respec
+
+        clear_run_respec(record)
+
+
+def _run_workflow_record(
+    record: ExecutionRecord,
+    *,
+    source_path: str | None,
+    workflow_json: dict[str, Any],
+    router: StepRouter | None = None,
+    project_id: str | None = None,
+    user_id: str | None = None,
+    executor: StepExecutor | None = None,
+    prelaunch: Callable[[ExecutionRecord], None] | None = None,
+    verified_project: str | None = None,
 ) -> None:
     """Execute the workflow described by ``workflow_json`` in-process.
 
@@ -1955,6 +2151,11 @@ def run_workflow_record(
     ``prelaunch`` runs once the run is accepted (not refused, workflow
     valid) and before the first wave: the handler starts the endpoints the
     steps need there (ADR-109 D-4). Its failure never fails the run.
+
+    ``verified_project`` is the run's gateway-verified project (None when
+    unverified). Uploaded code bound for the HPC lane is refused unless the
+    site's ``hpc_access`` admits it (ADR-112); ``project_id`` stays the
+    recorded project for routing and storage.
     """
     record.update(status="running", started_at=time.time())
     # ADR-074 D-2: the uploaded tree never joins this process's sys.path (a
@@ -1963,7 +2164,7 @@ def run_workflow_record(
 
     steps_spec: list[dict[str, Any]] = list(workflow_json.get("steps", []))
     settled, worker = _settle_before_run(
-        record, workflow_json, steps_spec, source_path, executor
+        record, workflow_json, steps_spec, source_path, executor, verified_project
     )
     if settled:
         return
@@ -2030,6 +2231,7 @@ def run_workflow_record(
             state_lock=state_lock,
             max_workers_cap=max_workers_cap,
             source_path=source_path,
+            verified_project=verified_project,
         )
         completed += len(level)
         record.update(progress=completed / total)

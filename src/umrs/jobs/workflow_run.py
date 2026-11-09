@@ -16,6 +16,17 @@ from .scheduler import OrchestratorBackend
 logger = logging.getLogger(__name__)
 
 
+def _spec_str(spec: dict[str, Any], key: str) -> str | None:
+    value = spec.get(key)
+    return value if isinstance(value, str) and value else None
+
+
+def _spec_intent(spec: dict[str, Any]) -> dict[str, str] | None:
+    from umrs.hpc_accounts.intents import intent_from_spec
+
+    return intent_from_spec(spec)
+
+
 class WorkflowRunBackend(OrchestratorBackend):
     """Adapter hook for routing workflow_run jobs through JobService."""
 
@@ -57,6 +68,13 @@ class WorkflowRunBackend(OrchestratorBackend):
             # ADR-080: a re-resolution admits a project share only for the
             # job's own project the server recorded as verified.
             caller_project=durable_job_verified_project(job.project_id, job.spec),
+            # ADR-113 D-4: the version and file digest the trigger pinned; a
+            # re-resolution finds that version, and changed files fail.
+            workflow_version=_spec_str(job.spec, "workflow_version"),
+            source_sha256=_spec_str(job.spec, "source_sha256"),
+            # ADR-112 B2: a gated run's signed intent, handed to the gate at
+            # every step's submit (the same payload on every dispatch).
+            intent=_spec_intent(job.spec),
         )
         return f"workflow_run|execution_id={execution_id}"
 

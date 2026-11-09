@@ -47,6 +47,12 @@ class WorkflowDescribeResponse(_OpenModel):
     contract_version: str | None = None
     workflow_name: str | None = None
     version: Any = None
+    versions: list[str] | None = Field(
+        default=None, description="Every registered version, highest first (ADR-113)"
+    )
+    source_sha256: str | None = Field(
+        default=None, description="Digest of this version's files (ADR-113 D-2)"
+    )
     description: Any = None
     scope: str | None = None
     user_id: Any = None
@@ -67,6 +73,12 @@ class WorkflowTriggerResponse(_OpenModel):
     status: str = Field(..., description="'ok'")
     action: str | None = None
     workflow_name: str | None = None
+    workflow_version: str | None = Field(
+        default=None, description="The version the run pinned (ADR-113 D-4)"
+    )
+    source_sha256: str | None = Field(
+        default=None, description="Digest of the files the run pinned"
+    )
     source_path: str | None = None
     steps: Number | None = Field(default=None, description="Declared step count")
     params: dict[str, Any] | None = None
@@ -74,6 +86,16 @@ class WorkflowTriggerResponse(_OpenModel):
     durable_job_id: str | None = None
     durable_job: dict[str, Any] | None = None
     message: str | None = None
+    intent_id: str | None = Field(
+        default=None,
+        description="sha256 of the signed intent of a run under your own HPC account (ADR-112)",
+    )
+    grant_id: str | None = Field(
+        default=None, description="The standing grant the run executes under (ADR-112 wave C)"
+    )
+    run_spec_id: str | None = Field(
+        default=None, description="sha256 of the run spec the server composed under the grant"
+    )
 
 
 class WorkflowExecution(_OpenModel):
@@ -81,6 +103,8 @@ class WorkflowExecution(_OpenModel):
 
     execution_id: str | None = None
     workflow_name: str | None = None
+    workflow_version: str | None = None
+    source_sha256: str | None = None
     user_id: str | None = None
     status: str | None = None
     submitted_at: Number | None = None
@@ -120,6 +144,8 @@ class WorkflowResultsResponse(_OpenModel):
     execution_status: str | None = None
     progress: Number | None = None
     error: Any = None
+    workflow_version: str | None = None
+    source_sha256: str | None = None
     results: WorkflowResultsBody | None = None
     artifacts: list[Any] | None = None
     durable_job_id: str | None = None
@@ -208,6 +234,21 @@ class WorkflowPlanResponse(_OpenModel):
     )
     auto_commit_allowed: bool = Field(
         ..., description="Threshold set and max_gpu_hours <= threshold"
+    )
+    requires_intent: bool = Field(
+        default=False,
+        description=(
+            "The run executes under your own HPC account (ADR-112): it starts "
+            "only from a signed intent (r4 workflow trigger --site), never "
+            "from a commit"
+        ),
+    )
+    grant_id: str | None = Field(
+        default=None,
+        description=(
+            "The one standing grant of yours that covers this run (ADR-112 wave "
+            "C), else null; a grant is not a per-run approval: plan and commit still apply"
+        ),
     )
 
 

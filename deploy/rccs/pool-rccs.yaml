@@ -144,7 +144,7 @@ endpoints:
     access: [system]
     keep_alive:
       project_id: default         # the rccs-cloud profile's project (X-Project-ID)
-      user: mnagaso               # Slurm submitter under per_user_ssh delegation
+      user: mnagaso               # attribution only; the job runs under the platform login (ADR-112)
       renew_before_sec: 7200      # ~45 min Lustre load + queue headroom
       handover_grace_sec: 300
     env_vars:

@@ -33,6 +33,35 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
+#: ``{"b64", "signature", "id"}``: a run's signed intent as the trigger and
+#: the durable job spec carry it (ADR-112 B2).
+RunIntentFields = dict[str, str]
+
+
+#: Wave C (plan §6 C/D.0 C4): a grant run's fields (migration 0137).
+GRANT_FIELDS = ("grant_id", "run_spec_b64", "run_spec_id", "workflow_steps_b64")
+
+
+def intent_fields(intent: RunIntentFields | None) -> dict[str, str | None]:
+    """The record's gated-run fields from a spec's ``intent`` mapping: the
+    three intent fields (B2), or the four grant-run fields (wave C)."""
+    fields_: dict[str, str | None] = {
+        "intent_b64": None, "intent_signature": None, "intent_id": None,
+        **dict.fromkeys(GRANT_FIELDS),
+    }
+    if not isinstance(intent, dict):
+        return fields_
+    if intent.get("grant_id"):
+        fields_.update({k: str(intent.get(k) or "") for k in GRANT_FIELDS})
+    elif intent.get("id"):
+        fields_.update(
+            intent_b64=str(intent.get("b64") or ""),
+            intent_signature=str(intent.get("signature") or ""),
+            intent_id=str(intent["id"]),
+        )
+    return fields_
+
+
 # Terminal statuses (no further updates expected).
 _TERMINAL = {"succeeded", "failed", "cancelled"}
 
@@ -86,6 +115,26 @@ class ExecutionRecord:
     durable_job_id: str | None = None
     cancel_requested: bool = False
     identity_provenance: str = "unverified"
+    #: The registered version the run executes and the digest of its files
+    #: (ADR-113 D-4); None on runs started before ADR-113.
+    workflow_version: str | None = None
+    source_sha256: str | None = None
+    #: ADR-112 B2 (plan §5 B2.0 §10.4): the signed intent of a run under the
+    #: person's own HPC account: the payload (base64 of the exact bytes),
+    #: its armored signature and ``sha256(payload)``; None on other runs.
+    #: The status shows ``intent_id`` only; the executor hands the payload
+    #: and signature to the person's gate at each step's submit.
+    intent_b64: str | None = None
+    intent_signature: str | None = None
+    intent_id: str | None = None
+    #: Wave C (plan §6 C/D.0 C4, migration 0137): a run under a standing
+    #: grant: the grant, the server-composed run spec (base64 of its
+    #: canonical bytes, and their sha256) and the step skeleton the grant
+    #: pins. The status shows ``grant_id`` and ``run_spec_id`` only.
+    grant_id: str | None = None
+    run_spec_b64: str | None = None
+    run_spec_id: str | None = None
+    workflow_steps_b64: str | None = None
     # Manual approval gates (W5). Decisions are serializable audit data;
     # the wait events are transient threading primitives (never serialized).
     gate_decisions: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -117,6 +166,11 @@ class ExecutionRecord:
                 "durable_job_id": self.durable_job_id,
                 "cancel_requested": self.cancel_requested,
                 "identity_provenance": self.identity_provenance,
+                "workflow_version": self.workflow_version,
+                "source_sha256": self.source_sha256,
+                "intent_id": self.intent_id,
+                "grant_id": self.grant_id,
+                "run_spec_id": self.run_spec_id,
                 "gates": {k: dict(v) for k, v in self.gate_decisions.items()},
             }
 
@@ -253,6 +307,9 @@ class WorkflowExecutionRegistry:
         execution_id: str | None = None,
         durable_job_id: str | None = None,
         identity_provenance: str = "unverified",
+        workflow_version: str | None = None,
+        source_sha256: str | None = None,
+        intent: RunIntentFields | None = None,
     ) -> ExecutionRecord:
         record = ExecutionRecord(
             execution_id=execution_id or f"wf-{uuid.uuid4().hex[:12]}",
@@ -261,6 +318,9 @@ class WorkflowExecutionRegistry:
             params=dict(params or {}),
             durable_job_id=durable_job_id,
             identity_provenance=identity_provenance,
+            workflow_version=workflow_version,
+            source_sha256=source_sha256,
+            **intent_fields(intent),
         )
         with self._lock:
             self._put_locked(record)

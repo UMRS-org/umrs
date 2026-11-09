@@ -130,6 +130,22 @@ def test_site_yaml_exports_the_gpu_form_cdi_by_default(tmp_path):
     assert default["UMRS_STEP_GPU_FORM"] == "cdi"
 
 
+def test_site_yaml_exports_the_gpu_flag_gres_by_default(tmp_path):
+    default = load_site_config(str(_site_yaml(tmp_path, {}))).to_env()
+    assert default["UMRS_STEP_GPU_FLAG"] == "gres"
+    rikyu = load_site_config(str(_site_yaml(tmp_path, {**_FULL_LANE, "gpu_flag": "gpus"}))).to_env()
+    assert rikyu["UMRS_STEP_GPU_FLAG"] == "gpus"
+
+
+def test_schema_refuses_an_unknown_gpu_flag():
+    schema = json.loads(SCHEMA.read_text())
+    jsonschema.validate({"name": "s", "step_executor": {**_FULL_LANE, "gpu_flag": "gpus"}}, schema)
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(
+            {"name": "s", "step_executor": {**_FULL_LANE, "gpu_flag": "gpu"}}, schema
+        )
+
+
 def test_default_site_exports_refuse_and_no_lane(tmp_path):
     env = load_site_config(str(_site_yaml(tmp_path, {}))).to_env()
     assert "UMRS_STEP_REMOTE_ENABLED" not in env
@@ -323,14 +339,41 @@ class _CapturingHpc:
         return StepResult(output_keys=["ok"])
 
 
+_ADMITTED = "proj-hpc"
+
+
+def _admit_project(monkeypatch) -> None:
+    """ADR-112: the site lists ``proj-hpc`` for user work on its login."""
+    from types import SimpleNamespace
+
+    from umrs.orchestrator.site_config import HpcAccessConfig, ServiceAccountAccess
+    from umrs.shared import hpc_user_work_access as hpc_user_work
+
+    hpc = HpcAccessConfig(
+        modes_allowed=["service_account"],
+        default_mode="service_account",
+        service_account=ServiceAccountAccess(login="op", allowed_projects=[_ADMITTED]),
+    )
+    site = SimpleNamespace(
+        name="s", extra={"ssh_user": "op"}, scheduler=SimpleNamespace(hpc_access=hpc)
+    )
+    monkeypatch.setattr(hpc_user_work, "current_site", lambda: site)
+    monkeypatch.setattr(hpc_user_work, "user_is_admin", lambda _user: False)
+
+
 def _run_on_hpc(tmp_path, monkeypatch, workflow_json, executor=None):
     monkeypatch.setattr(step_trust, "hpc_lane_available", lambda: True)
+    _admit_project(monkeypatch)
     hpc = executor or _CapturingHpc()
     monkeypatch.setattr(wr, "build_step_executor", lambda **_kw: hpc)
     source = _upload(tmp_path / "wf", tmp_path / "marker")
     record = ExecutionRecord(execution_id="e-hpc", workflow_name="w", user_id="u")
     wr.run_workflow_record(
-        record, source_path=source, workflow_json=workflow_json, router=_PlatformRouter()
+        record,
+        source_path=source,
+        workflow_json=workflow_json,
+        router=_PlatformRouter(),
+        verified_project=_ADMITTED,
     )
     return record, hpc
 
@@ -392,6 +435,7 @@ def test_a_mixed_workflow_keeps_its_template_steps_off_the_networkless_lane(
     tmp_path, no_site, clean_modules
 ):
     no_site.setattr(step_trust, "hpc_lane_available", lambda: True)
+    _admit_project(no_site)
     hpc, inproc = _CapturingHpc(), _CapturingInproc()
     built: list = []
 
@@ -410,6 +454,7 @@ def test_a_mixed_workflow_keeps_its_template_steps_off_the_networkless_lane(
         source_path=_upload(tmp_path / "wf", tmp_path / "marker"),
         workflow_json=workflow,
         router=_PlatformRouter(),
+        verified_project=_ADMITTED,
     )
     assert record.status == "succeeded", record.error
     assert built == ["slurm", "inproc"]

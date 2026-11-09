@@ -10,6 +10,13 @@ Loops over a length-prefixed pickle protocol on stdin/stdout:
 independently; the process stays alive between tasks so that container
 startup and Python import overhead are amortised across many steps.
 
+**JSON mode** (``UMRS_STEP_INPUT_JSON`` set — the gated HPC lane, ADR-112
+wave B2, plan §5 B2.0 item 9): reads the gate-written ``input.json``
+(data only, never unpickled), requires its ``entrypoint`` to equal
+``UMRS_STEP_ENTRYPOINT`` before any import, rebuilds the parent results
+with :func:`umrs.server.step_reply.checked_result` and writes only the JSON
+reply (``UMRS_STEP_OUTPUT_JSON``).
+
 Stdout is binary (pickle / framed protocol); all logging goes to
 stderr.
 """
@@ -17,7 +24,9 @@ stderr.
 from __future__ import annotations
 
 import contextlib
+import json
 import logging
+import math
 import os
 import pickle
 import shutil
@@ -29,7 +38,7 @@ import traceback
 from typing import Any
 
 from umrs.core.zmq_security import ZMQSecurityConfig
-from umrs.pipeline_sdk.staged_s3 import StagedS3Client, is_staged
+from umrs.pipeline_sdk.staged_s3 import StagedS3Client, StagedS3Error, is_staged
 from umrs.pipeline_sdk.step import StepContext
 
 # Logging to stderr keeps stdout clean for the pickle reply.
@@ -92,7 +101,7 @@ def _emit(reply: dict[str, Any]) -> None:
     json_path = os.environ.get("UMRS_STEP_OUTPUT_JSON")
     if json_path:
         _write_json_reply(json_path, reply)
-    if is_staged():
+    if _json_only():
         return
     blob = pickle.dumps(reply)
 
@@ -120,6 +129,11 @@ def _emit(reply: dict[str, Any]) -> None:
         return
     sys.stdout.buffer.write(blob)
     sys.stdout.buffer.flush()
+
+
+def _json_only() -> bool:
+    """The staged lane and JSON mode read only the JSON reply: no pickle."""
+    return is_staged() or INPUT_JSON_ENV in os.environ
 
 
 def _write_json_reply(path: str, reply: dict[str, Any]) -> None:
@@ -220,12 +234,6 @@ def _process_task(payload: dict[str, Any]) -> dict[str, Any]:
 
     Shared by both one-shot ``main()`` and ``pool_main()``.
     """
-    from umrs.server.step_executor import (
-        StepExecutionError,
-        _drive_lifecycle,
-        _load_step_class,
-    )
-
     _prepare_worker_source_dir()
 
     try:
@@ -251,6 +259,19 @@ def _process_task(payload: dict[str, Any]) -> dict[str, Any]:
             "phase": "worker",
             "message": f"malformed payload: {exc}",
         }
+
+    return _run_step(entrypoint, config, ctx)
+
+
+def _run_step(
+    entrypoint: str, config: dict[str, Any], ctx: StepContext
+) -> dict[str, Any]:
+    """Load the step class, drive ``setup → run → teardown``, return the reply."""
+    from umrs.server.step_executor import (
+        StepExecutionError,
+        _drive_lifecycle,
+        _load_step_class,
+    )
 
     try:
         cls = _load_step_class(entrypoint)
@@ -579,7 +600,226 @@ def zmq_dealer_main(connect_address: str) -> int:
     return 0
 
 
+# ------------------------------------------------------------------
+# JSON mode (ADR-112 wave B2; plan §5 B2.0 items 8 and 9)
+# ------------------------------------------------------------------
+
+#: The gate-written ``input.json`` (read only, data only).
+INPUT_JSON_ENV = "UMRS_STEP_INPUT_JSON"
+#: The signed entrypoint the gate's job script exports.
+ENTRYPOINT_ENV = "UMRS_STEP_ENTRYPOINT"
+#: The read cap; the gate writes at most 48 MiB (``INPUT_JSON_MAX_BYTES``).
+INPUT_JSON_READ_MAX_BYTES = 64 * 1024 * 1024
+
+_PICKLE_IO_ENVS = (
+    "UMRS_STEP_INPUT",
+    "UMRS_STEP_INPUT_S3",
+    "UMRS_STEP_OUTPUT",
+    "UMRS_STEP_OUTPUT_S3",
+)
+_POOL_FLAGS = ("--pool", "--zmq-pool", "--zmq-dealer")
+_INPUT_JSON_KEYS = frozenset({"v", "entrypoint", "config", "parent_results", "ctx"})
+_INPUT_JSON_CTX_TYPES: dict[str, type] = {
+    "run_tag": str,
+    "step": str,
+    "attempt": int,
+    "input_bucket": str,
+    "output_bucket": str,
+    "parent_output_bucket": str,
+    "input_keys": list,
+}
+
+
+class InputRefused(Exception):
+    """A JSON-mode input check failed: ``<name>: <detail>`` in the reply."""
+
+    def __init__(self, name: str, detail: str) -> None:
+        super().__init__(f"{name}: {detail}")
+        self.name = name
+
+
+def _check_json_mode_env(argv: list[str]) -> None:
+    """Step 1: JSON mode admits no pickle channel and no pool loop."""
+    mixed = [name for name in _PICKLE_IO_ENVS if name in os.environ]
+    flags = [flag for flag in _POOL_FLAGS if flag in argv]
+    if mixed or flags:
+        raise InputRefused(
+            "mixed_input_modes", f"{INPUT_JSON_ENV} with {', '.join(mixed + flags)}"
+        )
+    if not os.environ.get("UMRS_STEP_OUTPUT_JSON"):
+        raise InputRefused("mixed_input_modes", "UMRS_STEP_OUTPUT_JSON is not set")
+
+
+def _read_input_json(path: str) -> bytes:
+    """Step 2: the file's bytes, at most ``INPUT_JSON_READ_MAX_BYTES``."""
+    try:
+        with open(path, "rb") as fh:
+            data = fh.read(INPUT_JSON_READ_MAX_BYTES + 1)
+    except (OSError, ValueError) as exc:
+        raise InputRefused("input_unreadable", str(exc)) from exc
+    if len(data) > INPUT_JSON_READ_MAX_BYTES:
+        raise InputRefused(
+            "input_unreadable", f"larger than {INPUT_JSON_READ_MAX_BYTES} bytes"
+        )
+    return data
+
+
+def _no_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in out:
+            raise ValueError(f"duplicate key {key!r}")
+        out[key] = value
+    return out
+
+
+def _no_constant(name: str) -> Any:
+    raise ValueError(f"{name} is not JSON")
+
+
+def _finite_float(text: str) -> float:
+    value = float(text)
+    if not math.isfinite(value):
+        raise ValueError(f"{text} is not a finite number")
+    return value
+
+
+def _parse_input_json(data: bytes) -> Any:
+    """Step 3: strict JSON (no duplicate keys, NaN or Infinity; floats and
+    ``null`` allowed). Never ``pickle.loads``."""
+    try:
+        return json.loads(
+            data.decode("utf-8"),
+            object_pairs_hook=_no_duplicate_keys,
+            parse_constant=_no_constant,
+            parse_float=_finite_float,
+        )
+    except (UnicodeDecodeError, ValueError, RecursionError) as exc:
+        raise InputRefused("input_not_json", str(exc)) from exc
+
+
+def _typed(value: Any, kind: type) -> bool:
+    """``type(v) is kind`` (``true`` is not an int); list entries are strings."""
+    if type(value) is not kind:
+        return False
+    return not isinstance(value, list) or all(type(item) is str for item in value)
+
+
+def _check_input_ctx(ctx: Any) -> None:
+    if type(ctx) is not dict or set(ctx) != set(_INPUT_JSON_CTX_TYPES):
+        raise InputRefused(
+            "input_schema", f"ctx keys must be {sorted(_INPUT_JSON_CTX_TYPES)}"
+        )
+    for key, kind in _INPUT_JSON_CTX_TYPES.items():
+        if not _typed(ctx[key], kind):
+            raise InputRefused("input_schema", f"ctx.{key} must be a {kind.__name__}")
+
+
+def _check_input_schema(body: Any) -> None:
+    """Step 4: exactly the v1 keys, each typed."""
+    if type(body) is not dict or set(body) != _INPUT_JSON_KEYS:
+        raise InputRefused("input_schema", f"keys must be {sorted(_INPUT_JSON_KEYS)}")
+    if type(body["v"]) is not int or body["v"] != 1:
+        raise InputRefused("input_schema", "v must be 1")
+    if type(body["entrypoint"]) is not str or not body["entrypoint"]:
+        raise InputRefused("input_schema", "entrypoint must be a non-empty string")
+    if type(body["config"]) is not dict:
+        raise InputRefused("input_schema", "config must be an object")
+    if type(body["parent_results"]) is not dict:
+        raise InputRefused("input_schema", "parent_results must be an object")
+    _check_input_ctx(body["ctx"])
+
+
+def _check_entrypoint(entrypoint: str) -> None:
+    """Step 5: the signed entrypoint, before anything is imported."""
+    expected = os.environ.get(ENTRYPOINT_ENV, "")
+    if not expected or entrypoint != expected:
+        raise InputRefused(
+            "entrypoint_mismatch",
+            f"input.json names {entrypoint!r}, {ENTRYPOINT_ENV} is {expected!r}",
+        )
+
+
+def _parent_results(raw: dict[str, Any]) -> dict[str, Any]:
+    """Step 6: each parent rebuilt with ``step_reply.checked_result``."""
+    from umrs.server.step_executor import StepExecutionError
+    from umrs.server.step_reply import checked_result
+
+    parents: dict[str, Any] = {}
+    for name, fields in raw.items():
+        if type(fields) is not dict:
+            raise InputRefused("parent_result_invalid", f"{name}: not an object")
+        try:
+            parents[name] = checked_result(fields)
+        except StepExecutionError as exc:
+            raise InputRefused(
+                "parent_result_invalid", f"{name}: {exc.message}"
+            ) from exc
+    return parents
+
+
+def _staged_client() -> Any:
+    """The file-backed ``ctx.s3`` over the gate-written ``in/manifest.json``."""
+    try:
+        return StagedS3Client()
+    except StagedS3Error as exc:
+        raise InputRefused("input_unreadable", str(exc)) from exc
+
+
+def _json_step_input(argv: list[str]) -> tuple[str, dict[str, Any], StepContext]:
+    """The entrypoint, config and context from ``input.json``, every check
+    in the contract's order."""
+    _check_json_mode_env(argv)
+    body = _parse_input_json(_read_input_json(os.environ[INPUT_JSON_ENV]))
+    _check_input_schema(body)
+    _check_entrypoint(body["entrypoint"])
+    parents = _parent_results(body["parent_results"])
+    ctx_data = body["ctx"]
+    ctx = StepContext(
+        s3=_staged_client(),
+        input_bucket=ctx_data["input_bucket"],
+        input_keys=list(ctx_data["input_keys"]),
+        output_bucket=ctx_data["output_bucket"],
+        parent_output_bucket=ctx_data["parent_output_bucket"],
+        config=body["config"],
+        metadata={},
+        run_id=ctx_data["run_tag"],
+        parent_results=parents,
+    )
+    return body["entrypoint"], body["config"], ctx
+
+
+def json_main(argv: list[str] | None = None) -> int:
+    """Run one step from the gate-written ``input.json``; reply JSON only.
+
+    A refused input is answered with ``{"status": "error", "phase":
+    "worker", "message": "<name>: <detail>"}`` and exit 0, so the reply is
+    the one record of what happened. Only when there is nowhere to write
+    that reply (``UMRS_STEP_OUTPUT_JSON`` unset) does the worker exit 1.
+    """
+    args = sys.argv[1:] if argv is None else argv
+    try:
+        entrypoint, config, ctx = _json_step_input(args)
+    except InputRefused as exc:
+        _emit({"status": "error", "phase": "worker", "message": str(exc)})
+        if not os.environ.get("UMRS_STEP_OUTPUT_JSON"):
+            logger.error("step worker JSON mode refused: %s", exc)
+            return 1
+        return 0
+    _prepare_worker_source_dir()
+    _emit(_run_step(entrypoint, config, ctx))
+    return 0
+
+
 def main() -> int:
+    """One-shot entry: JSON mode when ``UMRS_STEP_INPUT_JSON`` is set
+    (checked first, never falling back to pickle), else the pickle payload."""
+    if INPUT_JSON_ENV in os.environ:
+        return json_main()
+    return _pickle_main()
+
+
+def _pickle_main() -> int:
     raw = _read_payload()
     if not raw:
         _emit({"status": "error", "phase": "worker", "message": "empty payload"})
@@ -601,19 +841,30 @@ def main() -> int:
     return 0 if reply["status"] == "ok" else (0 if "phase" in reply else 1)
 
 
+def _address_arg(argv: list[str], flag: str) -> str | None:
+    idx = argv.index(flag)
+    return argv[idx + 1] if idx + 1 < len(argv) else None
+
+
+def entry(argv: list[str]) -> int:
+    """``python -m umrs.server.step_worker``: JSON mode first (it refuses
+    the pool flags), then the pickle pool loops, then one-shot pickle."""
+    if INPUT_JSON_ENV in os.environ:
+        return json_main(argv)
+    if "--pool" in argv:
+        return pool_main()
+    for flag, loop in (
+        ("--zmq-pool", zmq_pool_main),
+        ("--zmq-dealer", zmq_dealer_main),
+    ):
+        if flag in argv:
+            address = _address_arg(argv, flag)
+            if address is None:
+                logger.error("%s requires an address", flag)
+                return 1
+            return loop(address)
+    return _pickle_main()
+
+
 if __name__ == "__main__":  # pragma: no cover
-    if "--pool" in sys.argv:
-        sys.exit(pool_main())
-    if "--zmq-pool" in sys.argv:
-        idx = sys.argv.index("--zmq-pool")
-        if idx + 1 >= len(sys.argv):
-            logger.info("--zmq-pool requires a bind address", file=sys.stderr)
-            sys.exit(1)
-        sys.exit(zmq_pool_main(sys.argv[idx + 1]))
-    if "--zmq-dealer" in sys.argv:
-        idx = sys.argv.index("--zmq-dealer")
-        if idx + 1 >= len(sys.argv):
-            logger.info("--zmq-dealer requires a connect address", file=sys.stderr)
-            sys.exit(1)
-        sys.exit(zmq_dealer_main(sys.argv[idx + 1]))
-    sys.exit(main())
+    sys.exit(entry(sys.argv[1:]))

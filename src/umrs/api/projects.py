@@ -1169,4 +1169,46 @@ def put_project_session_policy(
     )
 
 
+# -- HPC usage of the project (ADR-112 wave D, plan §6 C/D.0 D4) ---------------
+
+
+def _usage_role(row: dict[str, Any], identity: CallerIdentity) -> str:
+    """``admin``, ``owner`` or ``member`` (a reader of the project)."""
+    if identity.is_admin:
+        return "admin"
+    return "owner" if (identity.user_id or "") == row["owner_id"] else "member"
+
+
+@router.get("/{project_id}/hpc-usage")
+def get_project_hpc_usage(
+    project_id: str,
+    since: str | None = None,
+    venue: str | None = None,
+    store: ProjectStore = Depends(_store_dep),
+    identity: CallerIdentity = Depends(get_caller_identity),
+) -> dict[str, Any]:
+    """The project's HPC usage: budget (lifetime, across venues), totals,
+    members and rows per role (members see their own rows; an owner who is
+    not an admin sees other members' rows without their HPC identifiers);
+    another or unknown project reads as not found.
+    # auth: verified
+    """
+    from umrs.hpc_accounts.usage_ledger import LedgerUnavailable, get_usage_ledger
+    from umrs.hpc_accounts.usage_reports import parse_since, project_usage
+
+    row = _readable_project(store, project_id, identity)
+    try:
+        when = parse_since(since)
+    except ValueError:
+        raise_typed(PlatformError.projects("bad_request", f"since: not an ISO date: {since!r}"))
+    try:
+        ledger = get_usage_ledger()
+    except LedgerUnavailable as exc:
+        raise_typed(PlatformError.hpcaccess("ledger_unavailable", str(exc)), cause=exc)
+    return project_usage(
+        ledger, project_id, caller=identity.user_id or "", role=_usage_role(row, identity),
+        since=when, venue=venue,
+    )
+
+
 __all__ = ["ProjectNotFound", "ProjectStore", "router"]

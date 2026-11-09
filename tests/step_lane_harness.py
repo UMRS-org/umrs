@@ -85,6 +85,11 @@ def partition_of(script):
     return re.search(r"^#SBATCH --partition=(\S*)", script, re.M).group(1)
 
 
+def account_of(script):
+    match = re.search(r"^#SBATCH --account=(\S+)", script, re.M)
+    return match.group(1) if match else ""
+
+
 def test_only():
     # The script comes on stdin; nothing is queued or run. behaviour
     # "starts": {partition: start | null (a quota refusal)}.
@@ -129,6 +134,7 @@ def sbatch(args):
                                     "cancel_to": beh.get("cancel_to", ["CANCELLED"]),
                                     "comment": comment.group(1) if comment else "",
                                     "partition": partition_of(script),
+                                    "account": account_of(script),
                                     "request": request_lines(script)}
     if beh.get("sbatch_rc", 0):
         sys.stderr.write(beh.get("sbatch_err", "sbatch: error: Socket timed out on send/recv"))
@@ -163,10 +169,14 @@ def squeue(args):
 
 def sacct(args):
     with Locked() as data:
-        if "--job" in args:  # accounting (measure_slurm_accounting)
+        if "--job" in args:  # accounting (measure_slurm_accounting / read_slurm_account)
             if behaviour().get("acct_rc", 0):
                 sys.exit(behaviour()["acct_rc"])
-            print("00:00:07|")
+            if "--format=Account" in args:
+                job = data["jobs"].get(args[args.index("--job") + 1], {})
+                print(job.get("account", "cloud-users"))
+            else:
+                print("00:00:07|")
             return
         if "-j" in args:
             job = data["jobs"].get(args[args.index("-j") + 1])
@@ -262,6 +272,7 @@ class Cluster:
             "name": name, "workdir": workdir, "states": states, "i": 0,
             "cancel_to": extra.get("cancel_to", ["CANCELLED"]),
             "comment": extra.get("comment", ""),
+            "account": extra.get("account", "cloud-users"),
         }  # fmt: skip
         path.write_text(json.dumps(data))
 

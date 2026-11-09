@@ -76,6 +76,8 @@ CLASSIFIED_FIXED: dict[str, SurfaceLane] = {
     "egress": SurfaceLane.INTERNAL,
     "admin": SurfaceLane.INTERNAL,  # RS-0 admin session control (2026-10-22)
     "scopes": SurfaceLane.BETA,  # ADR-108 W2b scope tokens (2026-11-04)
+    # ADR-106 amendment (2026-11-07): public service-model badge, anonymous.
+    "status": SurfaceLane.STABLE,
 }
 
 # S5's placement list — families deliberately awaiting a lane decision.
@@ -132,6 +134,7 @@ def test_no_family_ships_unclassified() -> None:
         ("/umrs/companion/chat", "companion", SurfaceLane.BETA),
         ("/umrs/jobs/job-1", "jobs", SurfaceLane.STABLE),
         ("/umrs/egress/audit", "egress", SurfaceLane.INTERNAL),
+        ("/umrs/status/service-badge", "status", SurfaceLane.STABLE),
         ("/health", None, SurfaceLane.UNCLASSIFIED),
         ("/umrs", None, SurfaceLane.UNCLASSIFIED),
         ("/umrs/not-a-family", "not-a-family", SurfaceLane.UNCLASSIFIED),

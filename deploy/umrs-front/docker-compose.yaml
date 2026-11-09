@@ -219,6 +219,9 @@ services:
       # xet path, where the 2026-10-27 stall sat, has no such timeout.
       HF_HUB_DOWNLOAD_TIMEOUT: "30"
       HF_HUB_DISABLE_XET: "1"
+      # ADR-112 B1: per-person transport keys (private halves) for users' own
+      # HPC accounts; on this front's own volume, never in the database.
+      UMRS_TRANSPORT_KEY_DIR: /var/lib/umrs/transport-keys
       PYTHONUNBUFFERED: "1"
     volumes:
       - ../rccs-front/site.yaml:/etc/umrs/site.yaml:ro,z
@@ -243,6 +246,7 @@ services:
       # servers use the same object store, so credentials must be identical)
       - umrs_config:/root/.config/umrs
       - umrs_hf_cache:/root/.cache/huggingface
+      - umrs_transport_keys_rccs:/var/lib/umrs/transport-keys
       # SSH ControlMaster sockets (tmpfs for ephemeral sockets)
       - type: tmpfs
         target: /run/umrs-ssh
@@ -388,6 +392,9 @@ services:
       # xet path, where the 2026-10-27 stall sat, has no such timeout.
       HF_HUB_DOWNLOAD_TIMEOUT: "30"
       HF_HUB_DISABLE_XET: "1"
+      # ADR-112 B1: per-person transport keys (private halves) for users' own
+      # HPC accounts; on this front's own volume, never in the database.
+      UMRS_TRANSPORT_KEY_DIR: /var/lib/umrs/transport-keys
       PYTHONUNBUFFERED: "1"
     volumes:
       - ../ai4s-front/site.yaml:/etc/umrs/site.yaml:ro,z
@@ -408,6 +415,7 @@ services:
       # Shared config volume (same object store → same credentials)
       - umrs_config:/root/.config/umrs
       - umrs_hf_cache:/root/.cache/huggingface
+      - umrs_transport_keys_ai4s:/var/lib/umrs/transport-keys
       - type: tmpfs
         target: /run/umrs-ssh
         tmpfs:
@@ -530,6 +538,9 @@ services:
       # xet path, where the 2026-10-27 stall sat, has no such timeout.
       HF_HUB_DOWNLOAD_TIMEOUT: "30"
       HF_HUB_DISABLE_XET: "1"
+      # ADR-112 B1: per-person transport keys (private halves) for users' own
+      # HPC accounts; on this front's own volume, never in the database.
+      UMRS_TRANSPORT_KEY_DIR: /var/lib/umrs/transport-keys
       PYTHONUNBUFFERED: "1"
     volumes:
       - ../bdrt-front/site.yaml:/etc/umrs/site.yaml:ro,z
@@ -553,6 +564,7 @@ services:
       # Shared config volume (same object store → same credentials)
       - umrs_config:/root/.config/umrs
       - umrs_hf_cache:/root/.cache/huggingface
+      - umrs_transport_keys_bdrt:/var/lib/umrs/transport-keys
       - type: tmpfs
         target: /run/umrs-ssh
         tmpfs:
@@ -669,6 +681,9 @@ services:
       # xet path, where the 2026-10-27 stall sat, has no such timeout.
       HF_HUB_DOWNLOAD_TIMEOUT: "30"
       HF_HUB_DISABLE_XET: "1"
+      # ADR-112 B1: per-person transport keys (private halves) for users' own
+      # HPC accounts; on this front's own volume, never in the database.
+      UMRS_TRANSPORT_KEY_DIR: /var/lib/umrs/transport-keys
       PYTHONUNBUFFERED: "1"
     volumes:
       - ../octopus-front/site.yaml:/etc/umrs/site.yaml:ro,z
@@ -687,6 +702,7 @@ services:
       - ${UMRS_VENUE_SESSION_ROOT:-/tmp/umrs-venue-sessions}:${UMRS_VENUE_SESSION_ROOT:-/tmp/umrs-venue-sessions}:z
       - umrs_config:/root/.config/umrs
       - umrs_hf_cache:/root/.cache/huggingface
+      - umrs_transport_keys_octopus:/var/lib/umrs/transport-keys
       - type: tmpfs
         target: /run/umrs-ssh
         tmpfs:
@@ -746,3 +762,10 @@ volumes:
   # image does not bundle is downloaded once, not on every recreate. HF's
   # file locks make concurrent use safe; removing it only costs a re-download.
   umrs_hf_cache:
+  # ADR-112 B1: one transport-key volume per front, mounted only into that
+  # front's server (UMRS_TRANSPORT_KEY_DIR). Holds per-person private keys;
+  # stop.sh --clean removes it, and users then re-run 'r4 hpc add'.
+  umrs_transport_keys_rccs:
+  umrs_transport_keys_ai4s:
+  umrs_transport_keys_bdrt:
+  umrs_transport_keys_octopus:

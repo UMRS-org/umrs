@@ -32,15 +32,18 @@ from typing import Any
 
 from ..server.workflow_execution_registry import (
     ExecutionRecord,
+    RunIntentFields,
     StepProgress,
     WorkflowExecutionRegistry,
+    intent_fields,
 )
 
 logger = logging.getLogger(__name__)
 
 _COLUMNS = (
     "execution_id, workflow_name, user_id, status, submitted_at, record_json, "
-    "updated_at"
+    "updated_at, workflow_version, source_sha256, intent_b64, intent_signature, "
+    "intent_id, grant_id, run_spec_b64, run_spec_id, workflow_steps_b64"
 )
 
 
@@ -189,6 +192,11 @@ def _record_from_payload(data: dict[str, Any]) -> DurableExecutionRecord:
         durable_job_id=data.get("durable_job_id"),
         cancel_requested=bool(data.get("cancel_requested", False)),
         identity_provenance=str(data.get("identity_provenance", "unverified")),
+        workflow_version=data.get("workflow_version"),
+        source_sha256=data.get("source_sha256"),
+        intent_id=data.get("intent_id"),
+        grant_id=data.get("grant_id"),
+        run_spec_id=data.get("run_spec_id"),
     )
     record.steps = _steps_from_payload(data.get("steps"))
     results = dict(data.get("results") or {})
@@ -196,6 +204,22 @@ def _record_from_payload(data: dict[str, Any]) -> DurableExecutionRecord:
         results["blobs"] = _decode_blobs(results.get("blobs"))
     record.results = results
     record.artifacts = list(data.get("artifacts") or [])
+    return record
+
+
+def _record_from_row(row: dict[str, Any]) -> DurableExecutionRecord:
+    """A record from a ``workflow_executions`` row: the ``record_json``
+    payload, plus the intent payload and signature from their own columns
+    (migration 0136). ``to_dict()`` leaves both out of the payload, so a
+    record loaded on another front or after a restart gets them here: its
+    gated steps can then still hand the gate the signed envelope."""
+    record = _record_from_payload(row["record_json"])
+    record.intent_b64 = row.get("intent_b64") or record.intent_b64
+    record.intent_signature = row.get("intent_signature") or record.intent_signature
+    record.intent_id = row.get("intent_id") or record.intent_id
+    # Wave C (0137): a grant run's spec and skeleton live in their columns.
+    for key in ("grant_id", "run_spec_b64", "run_spec_id", "workflow_steps_b64"):
+        setattr(record, key, row.get(key) or getattr(record, key))
     return record
 
 
@@ -245,6 +269,9 @@ class PgWorkflowExecutionRegistry(WorkflowExecutionRegistry):
         execution_id: str | None = None,
         durable_job_id: str | None = None,
         identity_provenance: str = "unverified",
+        workflow_version: str | None = None,
+        source_sha256: str | None = None,
+        intent: RunIntentFields | None = None,
     ) -> ExecutionRecord:
         """Create a durable execution record (memory + PG mirror)."""
         import uuid
@@ -256,6 +283,9 @@ class PgWorkflowExecutionRegistry(WorkflowExecutionRegistry):
             params=dict(params or {}),
             durable_job_id=durable_job_id,
             identity_provenance=identity_provenance,
+            workflow_version=workflow_version,
+            source_sha256=source_sha256,
+            **intent_fields(intent),
         )
         self._install_hooks(record)
         with self._lock:
@@ -271,7 +301,7 @@ class PgWorkflowExecutionRegistry(WorkflowExecutionRegistry):
         row = self._fetch(execution_id)
         if row is None:
             return None
-        record = _record_from_payload(row["record_json"])
+        record = _record_from_row(row)
         self._install_hooks(record)
         with self._lock:
             self._records[execution_id] = record
@@ -290,14 +320,31 @@ class PgWorkflowExecutionRegistry(WorkflowExecutionRegistry):
             with self._cursor() as cur:
                 cur.execute(
                     f"INSERT INTO workflow_executions ({_COLUMNS}) "
-                    "VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s) "
+                    "VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, "
+                    "%s, %s, %s, %s) "
                     "ON CONFLICT (execution_id) DO UPDATE SET "
                     "workflow_name = excluded.workflow_name, "
                     "user_id = excluded.user_id, "
                     "status = excluded.status, "
                     "submitted_at = excluded.submitted_at, "
                     "record_json = excluded.record_json, "
-                    "updated_at = excluded.updated_at",
+                    "updated_at = excluded.updated_at, "
+                    "workflow_version = excluded.workflow_version, "
+                    "source_sha256 = excluded.source_sha256, "
+                    # ADR-112 B2: a run's intent is written once, at create.
+                    "intent_b64 = COALESCE(workflow_executions.intent_b64, "
+                    "excluded.intent_b64), "
+                    "intent_signature = COALESCE("
+                    "workflow_executions.intent_signature, excluded.intent_signature), "
+                    "intent_id = COALESCE(workflow_executions.intent_id, excluded.intent_id), "
+                    # Wave C (0137): the grant is fixed at create; the run
+                    # spec may be composed again before the first submit (K19).
+                    "grant_id = COALESCE(workflow_executions.grant_id, excluded.grant_id), "
+                    "run_spec_b64 = COALESCE(excluded.run_spec_b64, "
+                    "workflow_executions.run_spec_b64), "
+                    "run_spec_id = COALESCE(excluded.run_spec_id, workflow_executions.run_spec_id), "
+                    "workflow_steps_b64 = COALESCE(workflow_executions.workflow_steps_b64, "
+                    "excluded.workflow_steps_b64)",
                     (
                         record.execution_id,
                         record.workflow_name,
@@ -306,6 +353,15 @@ class PgWorkflowExecutionRegistry(WorkflowExecutionRegistry):
                         float(record.submitted_at or 0),
                         _record_json(record),
                         time.time(),
+                        record.workflow_version,
+                        record.source_sha256,
+                        record.intent_b64,
+                        record.intent_signature,
+                        record.intent_id,
+                        record.grant_id,
+                        record.run_spec_b64,
+                        record.run_spec_id,
+                        record.workflow_steps_b64,
                     ),
                 )
         except Exception:
@@ -343,7 +399,7 @@ class PgWorkflowExecutionRegistry(WorkflowExecutionRegistry):
                 eid = str(row["execution_id"])
                 if eid in self._records:
                     continue
-                record = _record_from_payload(row["record_json"])
+                record = _record_from_row(row)
                 self._install_hooks(record)
                 self._records[eid] = record
 

@@ -21,6 +21,8 @@ from typing import Any
 from fastapi import APIRouter, Depends, Header, Query
 from pydantic import BaseModel, Field
 
+from umrs.orchestrator.provision_roster import SERVICE_ROLES
+
 from ._verified_headers import CallerIdentity, get_caller
 from .typed_errors import PlatformError, raise_typed
 
@@ -718,17 +720,24 @@ def ops_connect_info(
     return result
 
 
-#: ADR-106 D-1: the roles a service tier can fill, in advertisement order.
-SERVICE_ROLES = ("chat", "fast", "decision", "vision", "ocr", "embed", "rerank", "asr")
+# ADR-106 D-1: SERVICE_ROLES (the roles a service tier can fill) is defined
+# in umrs.orchestrator.provision_roster since 2026-11-07, so the public
+# service badge reads the same list; imported at the top of this module.
 
 
 def _served_models(registry: Any) -> set[str]:
     """Model and served names with a READY/DEGRADED endpoint on this front."""
     from umrs.orchestrator.endpoint_registry import EndpointStatus
 
-    rows = registry.list_all(status_filter=[EndpointStatus.READY, EndpointStatus.DEGRADED])
+    rows = registry.list_all(
+        status_filter=[EndpointStatus.READY, EndpointStatus.DEGRADED]
+    )
     names = {ep.model for ep in rows}
-    names |= {str(ep.metadata.get("served_model_name")) for ep in rows if ep.metadata.get("served_model_name")}
+    names |= {
+        str(ep.metadata.get("served_model_name"))
+        for ep in rows
+        if ep.metadata.get("served_model_name")
+    }
     return names
 
 
@@ -765,7 +774,8 @@ def connect_info_role_models(registry: Any = None) -> dict[str, list[str]]:
 
     served = _served_models(registry or get_registry())
     names = {
-        role: sorted(served.intersection(role_alias_models(f"svc-{role}"))) for role in SERVICE_ROLES
+        role: sorted(served.intersection(role_alias_models(f"svc-{role}")))
+        for role in SERVICE_ROLES
     }
     return {role: models for role, models in names.items() if models}
 

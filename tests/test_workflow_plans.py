@@ -525,17 +525,96 @@ def test_a_plan_commits_only_its_own_workflow(wf):
     assert (r.status_code, r.headers[CODE]) == (403, "workflows.plan_mismatch")
 
 
-def test_a_new_version_makes_the_plan_stale(wf):
+def _register_version(tmp_path: Path, version: str, marker: str = "") -> Path:
+    """Another version of relax in its own directory (ADR-113 D-2)."""
+    from umrs.server.workflow_registry_handler import register_workflow
+
+    workflow_dir = tmp_path / f"relax-{version}"
+    workflow_dir.mkdir()
+    definition = {**_WORKFLOW, "version": version, "description": marker}
+    (workflow_dir / "workflow.json").write_text(json.dumps(definition))
+    (workflow_dir / "notes.txt").write_text(f"{marker}\n")
+    register_workflow(
+        workflow_name="relax",
+        version=version,
+        user_id="alice",
+        source_path=str(workflow_dir),
+        workflow_json=definition,
+    )
+    return workflow_dir
+
+
+def test_the_plan_signs_the_digest_of_the_version_files(wf):
+    """ADR-113 D-4 closes the ADR-105 known limit: the plan signs the
+    digest of the files, not only the catalog version."""
+    from umrs.server.workflow_versions import tree_digest
+
+    client, _store, tmp_path = wf
+    plan = _plan(client)
+    assert plan["signed"]["source_sha256"] == tree_digest(str(tmp_path / "relax"))
+    assert plan["source_sha256"] == plan["signed"]["source_sha256"]
+
+
+def test_a_newer_version_does_not_change_the_planned_run(wf):
+    """A plan names its version: an upload of 2.0.0 between plan and commit
+    commits the planned 1.0 (before: the default moved and the plan went
+    stale, or the oldest entry ran)."""
+    client, store, tmp_path = wf
+    plan = _plan(client)
+    _register_version(tmp_path, "2.0.0")
+    r = _commit(client, plan)
+    assert r.status_code == 200, r.text
+    (job,) = store.jobs.values()
+    assert job.spec["workflow_version"] == "1.0"
+    assert job.spec["source_path"] == str(tmp_path / "relax")
+    assert job.spec["source_sha256"] == plan["signed"]["source_sha256"]
+
+
+def test_other_files_under_the_planned_version_make_the_plan_stale(wf):
+    """The planned version deleted and registered again with other files:
+    same version string, other digest -> stale (before: committed)."""
     from umrs.server.workflow_registry_handler import unregister_workflow
 
     client, store, tmp_path = wf
     plan = _plan(client)
     unregister_workflow("relax", user_id="alice")
-    _register(tmp_path, version="2.0")
+    _register_version(tmp_path, "1.0", marker="other code")
     r = _commit(client, plan)
     assert (r.status_code, r.headers[CODE]) == (409, "workflows.plan_stale")
-    assert "version" in r.json()["detail"]
+    assert "source_sha256" in r.json()["detail"]
     assert store.jobs == {}
+
+
+def test_a_deleted_planned_version_is_refused_by_name(wf):
+    from umrs.server.workflow_registry_handler import unregister_workflow
+
+    client, store, tmp_path = wf
+    plan = _plan(client)
+    unregister_workflow("relax", user_id="alice")
+    _register_version(tmp_path, "2.0.0")
+    r = _commit(client, plan)
+    assert (r.status_code, r.headers[CODE]) == (404, "workflows.version_not_found")
+    assert "2.0.0" in r.json()["detail"]
+    assert store.jobs == {}
+
+
+def test_a_plan_names_a_version(wf):
+    client, _store, tmp_path = wf
+    _register_version(tmp_path, "2.0.0")
+    default = _plan(client)
+    assert default["version"] == "2.0.0"
+    r = client.post(
+        "/umrs/workflows/relax/plan",
+        json={"parameters": {"steps": 3}, "version": "1.0"},
+        headers=_h(),
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["signed"]["version"] == "1.0"
+    shorthand = client.post(
+        "/umrs/workflows/relax@1.0/plan", json={"parameters": {"steps": 3}}, headers=_h()
+    )
+    assert shorthand.json()["signed"]["version"] == "1.0"
+    assert shorthand.json()["workflow_name"] == "relax"
 
 
 def test_the_plan_signs_max_gpu_hours(wf):
@@ -678,8 +757,8 @@ def _loop_port(policy_row: tuple | None, *, broken: bool = False):
 @pytest.fixture
 def owned_source(monkeypatch, tmp_path):
     monkeypatch.setattr(
-        "umrs.knowledge.umrs_workflow_port._owner_source_path",
-        lambda *_a: str(tmp_path),
+        "umrs.knowledge.umrs_workflow_port._owner_entry",
+        lambda *_a: {"source_path": str(tmp_path)},
     )
 
 

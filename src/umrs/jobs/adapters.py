@@ -336,6 +336,18 @@ def log_preflight_result(model_name: str, result: PreflightResult) -> None:
         )
 
 
+def _record_hpc_identity(attempt: Any, job_info: Any) -> None:
+    """Copy the backend's resolved HPC identity into the attempt (ADR-112 I-10).
+
+    The scheduler persists ``attempt.metrics`` after the submit, so the
+    login and account a provision ran under stay on record per attempt.
+    """
+    identity = (getattr(job_info, "metadata", None) or {}).get("hpc_identity")
+    metrics = getattr(attempt, "metrics", None)
+    if identity and isinstance(metrics, dict):
+        metrics["hpc_identity"] = dict(identity)
+
+
 def _short_progress_text(value: str | None, *, limit: int = 96) -> str:
     """Normalize and shorten progress text stored in job/endpoint metadata."""
     cleaned = " ".join((value or "").split())
@@ -692,6 +704,7 @@ class EndpointProvisionBackend(OrchestratorBackend):
             if not job_info or not job_info.job_id:
                 self.port_manager.release(port, target_host)
                 raise RuntimeError("Backend failed to submit job")
+            _record_hpc_identity(attempt, job_info)
 
             actual_host = job_info.endpoint.node if job_info.endpoint else target_host
 

@@ -211,6 +211,7 @@ def test_lane_assignments_match_record(app):
         "egress": "internal",
         "admin": "internal",  # RS-0 admin session control (2026-10-22)
         "scopes": "v1beta",  # ADR-108 W2b scope tokens (2026-11-04)
+        "status": "v1-stable",  # ADR-106 amendment: public service badge (2026-11-07)
     }, "lane drift vs the S2/S3 record — classification moves belong in the wave log"
 
 

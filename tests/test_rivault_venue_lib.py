@@ -527,3 +527,40 @@ def test_venue_library_is_shellcheck_clean():
 def test_library_is_sourceable_under_strict_mode(venue):
     r = venue("echo sourced", strict=True)
     assert r.returncode == 0 and "sourced" in r.stdout
+
+
+# ---------------------------------------------------------------------------
+# RIVAULT_INIT_BINARY: a static init for podman --init where podman ships none
+# ---------------------------------------------------------------------------
+
+
+def test_no_init_path_unless_an_init_binary_is_named(venue):
+    r = _prepared_venue(venue)
+    assert r.returncode == 0, r.stderr + r.stdout
+    assert "init_path = " not in r.stdout
+
+
+def test_init_binary_is_copied_node_local_and_named_as_init_path(venue, tmp_path):
+    src = tmp_path / "lustre" / "catatonit"
+    src.parent.mkdir()
+    src.write_text("#!/bin/sh\nexec \"$@\"\n")
+    r = venue(
+        'rivault_venue_prepare 7 cgroupfs; cat "$CONTAINERS_CONF"',
+        env={"RIVAULT_INIT_BINARY": str(src)},
+        strict=True,
+    )
+    assert r.returncode == 0, r.stderr + r.stdout
+    jobconf = tmp_path / "xdg" / "rivault-7" / "containers"
+    assert f'init_path = "{jobconf}/catatonit"' in r.stdout
+    copied = jobconf / "catatonit"
+    assert copied.read_text() == src.read_text()
+    assert copied.stat().st_mode & 0o777 == 0o755
+
+
+def test_a_missing_init_binary_fails_the_venue_by_name(venue, tmp_path):
+    r = venue(
+        "rivault_venue_prepare 8 cgroupfs",
+        env={"RIVAULT_INIT_BINARY": str(tmp_path / "nope" / "catatonit")},
+    )
+    assert r.returncode != 0
+    assert "RIVAULT_INIT_BINARY" in r.stdout + r.stderr

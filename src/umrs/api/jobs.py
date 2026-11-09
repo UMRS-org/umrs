@@ -743,6 +743,12 @@ async def create_job(
         _enforce_endpoint_host_paths(
             job_type, spec, (user_id, project_id, is_admin), request.fan_out_jobs
         )
+        _enforce_hpc_user_work(
+            job_type,
+            spec,
+            (user_id, _header_str(x_verified_project_id)),
+            request.fan_out_jobs,
+        )
         _enforce_export_release(job_type, spec, request.fan_out_jobs)
         _enforce_spec_save(job_type, spec, request.fan_out_jobs)
         _enforce_own_site_venue(
@@ -904,6 +910,34 @@ def _enforce_client_job_types(
     ]
     if job_type == JobType.WORKFLOW_RUN or JobType.WORKFLOW_RUN.value in children:
         raise_typed(PlatformError.jobs("bad_request", WORKFLOW_RUN_SERVER_ONLY))
+
+
+def _enforce_hpc_user_work(
+    job_type: JobType,
+    spec: dict[str, Any],
+    caller: tuple[str, str | None],
+    fan_out_jobs: list[dict[str, Any]] | None,
+) -> None:
+    """Typed 403 ``hpcaccess.*`` for user work on the site's login (an
+    ``hpc_script``, or a ``research_loop_job`` on a ``cluster:`` venue;
+    parent or fan-out child) the site's ``hpc_access`` does not admit
+    (ADR-112 A.3.2/A.3.3).
+
+    *caller* is ``(user_id, verified project)``: the project is the
+    gateway-verified header, never the body's claim, so an identity-less
+    mvp caller is refused unless an admin. The admin bit is the user record,
+    the same source the durable submit reads (one admin source)."""
+    from ..orchestrator.hpc_identity import platform_error
+    from ..shared.hpc_user_work_access import is_user_work_job, user_work_refusal
+
+    targets = _spec_targets(job_type, spec, fan_out_jobs)
+    if not any(is_user_work_job(kind, body) for kind, body in targets):
+        return
+
+    user_id, project_id = caller
+    refused = user_work_refusal(user_id=user_id, project_id=project_id)
+    if refused is not None:
+        raise_typed(platform_error(refused))
 
 
 # Data releases a knowledge export carries only through POST /knowledge/export,

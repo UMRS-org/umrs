@@ -8,7 +8,9 @@ image only after it verified the staged archive — so the lane opens only when
 ``remote_enabled`` AND an image are present. bdrt and octopus carry their lane sizing and gpu_form, closed and
 without lane paths until onboarded (2026-09-27: bdrt awaits its R2 probe,
 octopus a runtime decision; a declared helper + workdir root starts the
-reaper's hourly SSH); ai4s has none. All four refuse uploaded code by name, and
+reaper's hourly SSH). ai4s (RIKYU) opens like rccs since 2026-11-08 (gpus flag);
+since 2026-11-09 only spring-8 charges rkp00101, all other projects rkp00043.
+All four refuse uploaded code in-process by name, and
 each umrs-front server reads only its own cluster's UMRS_<C>_STEP_* from the
 converge's .env.
 """
@@ -33,13 +35,14 @@ from umrs.server.step_executor import (
     EXECUTOR_GPU_METADATA_KEY,
     StepExecutionError,
 )
+from umrs.server.step_staging import STAGE_PROJECT_ID_METADATA_KEY
 from umrs.server.step_trust import hpc_lane_available, uploaded_code_lane
 
 UMRS_ROOT = Path(__file__).resolve().parents[1]
 DEPLOY = UMRS_ROOT / "deploy"
 FRONTS = ("rccs-front", "ai4s-front", "bdrt-front", "octopus-front")
 #: rccs opened its lane 2026-10-02 (maintainer, after R2); the rest stay closed.
-CLOSED_FRONTS = ("ai4s-front", "bdrt-front", "octopus-front")
+CLOSED_FRONTS = ("bdrt-front", "octopus-front")
 RCCS_CHECKOUT = "/lvs0/rccs-dmp/masaru.nagaso/ai4s-platform"
 HELPER_REL = "umrs/deploy/_common/umrs_step_helper.py"
 VENUE_REL = "umrs/src/umrs/mini-rivault-llm/venue.sh"
@@ -361,13 +364,49 @@ def test_octopus_paths_are_on_the_octopus_home():
     assert not [s for s in _strings(raw) if s.startswith("/home/")]
     cfg = load_site_config(str(DEPLOY / "octopus-front" / "site.yaml"))
     for path in (
-        cfg.scheduler.service_pubkey_path,
-        cfg.scheduler.slurm_proxy_path,
         cfg.storage.sam3_model_path,
         cfg.extra["slurm_job_info_dir"],
         cfg.extra["slurm_wrapper_script"],
     ):
         assert path.startswith(OCTOPUS_HOME + "/"), path
+
+
+#: ADR-112 G-8: the maintainer's interim per-site lists ([] = admins only).
+DEMO_PROJECTS = ["bdr-opossum", "spring-8", "brc-mouse", "default"]  # default: 2026-11-09
+ALLOWED_PROJECTS = {
+    "rccs-front": DEMO_PROJECTS,
+    "ai4s-front": DEMO_PROJECTS,
+    "bdrt-front": [],
+    "octopus-front": [],
+}
+RETIRED_SCHEDULER_KEYS = (
+    "slurm_delegation",
+    "service_pubkey_path",
+    "slurm_proxy_path",
+    "require_user_slurm_account",
+)
+
+
+USER_ACCOUNT_MODES = {"bdrt-front": ["service_account", "user_account"]}
+
+
+@pytest.mark.parametrize("front", FRONTS)
+def test_every_front_declares_its_personal_service_account(front):
+    # ADR-112 D-1: per_user_ssh is retired; each front declares the login every
+    # lane uses, says it is personal, and lists who may run user work on it.
+    raw = yaml.safe_load((DEPLOY / front / "site.yaml").read_text())
+    assert not set(RETIRED_SCHEDULER_KEYS) & set(raw["scheduler"]), front
+    hpc = load_site_config(str(DEPLOY / front / "site.yaml")).scheduler.hpc_access
+    assert hpc is not None and hpc.operator, front
+    # ADR-112 B1 (2026-11-08): bdrt also allows registration of user accounts;
+    # the default (who runs user work) stays the service account everywhere.
+    want = (USER_ACCOUNT_MODES.get(front, ["service_account"]), "service_account")
+    assert (hpc.modes_allowed, hpc.default_mode) == want, front
+    service = hpc.service_account
+    assert service is not None
+    assert service.login == raw["extra"]["ssh_user"]
+    assert (service.personal, service.consent_ref) == (True, "")
+    assert service.allowed_projects == ALLOWED_PROJECTS[front]
 
 
 def test_octopus_lane_is_closed_on_x86_64_with_rocm_and_no_partition_yet():
@@ -480,3 +519,76 @@ def test_rccs_serving_args_of_every_gb10_candidate_are_unchanged(site):
     assert shape(args, "ai-pro6000")[3:6] == [
         "--partition=ai-pro6000", "--gres=gpu:PRO6000-96GB:2", "--exclusive",
     ]  # fmt: skip
+
+
+# ── RIKYU (ai4s-front): the lane opens 2026-11-08 ────────────────────────────
+
+AI4S_CHECKOUT = "/data1/rkp00043/rku00126/ai4s-platform"
+
+
+def test_ai4s_lane_is_declared_open_like_rccs_with_rikyu_limits():
+    step = _step("ai4s-front")
+    assert (step.kind, step.partition, step.account, step.image) == (
+        "inproc",
+        "gpu",
+        "rkp00043",
+        "",
+    )
+    assert (step.remote_enabled, step.uploaded_code, step.gpu, step.gpu_form) == (
+        True,
+        "refuse",
+        True,
+        "nvidia-devices",
+    )
+    # RIKYU per-GPU job limit: 32 cores / 400 GB; refuses --gres=gpu:N, takes --gpus=N.
+    assert (step.gpus, step.gpu_flag, step.cpus, step.memory) == (1, "gpus", 32, "240G")
+    assert step.workdir_root == "/data1/rkp00101/rku00126/umrs_steps"
+    assert step.image_archive_dir == "/data1/rkp00101/rku00126/umrs_models/images"
+    assert step.helper_path == f"{AI4S_CHECKOUT}/{HELPER_REL}"
+    assert step.venue_script == f"{AI4S_CHECKOUT}/{VENUE_REL}"
+    assert step.allowed_images == _step("rccs-front").allowed_images
+
+
+def test_ai4s_account_override_is_scoped_to_spring8():
+    assert _step("ai4s-front").project_accounts == {"spring-8": "rkp00101"}
+
+
+def test_ai4s_serving_account_does_not_change():
+    cfg = load_site_config(str(DEPLOY / "ai4s-front" / "site.yaml"))
+    assert cfg.scheduler.account == "rkp00043"
+
+
+def test_ai4s_exports_the_gpus_flag_and_a_job_private_venue_root():
+    cfg = load_site_config(str(DEPLOY / "ai4s-front" / "site.yaml"))
+    env = cfg.to_env()
+    assert env["UMRS_STEP_GPU_FLAG"] == "gpus"
+    assert env["UMRS_SLURM_ACCOUNT"] == "rkp00043"
+    assert json.loads(env["UMRS_SLURM_PROJECT_ACCOUNTS"]) == {"spring-8": "rkp00101"}
+    assert env["UMRS_STEP_REMOTE_ENABLED"] == "1"
+    remote_env = cfg.extra["ssh_remote_env"]
+    assert remote_env["RIVAULT_VENUE_ROOT"].startswith("/tmp/")  # shared nodes: no common graphroot
+    assert remote_env["RIVAULT_INIT_BINARY"].startswith(
+        "/data1/rkp00101/"
+    )  # RIKYU podman ships no catatonit
+    assert remote_env["SLURM_CONF_SERVER"]
+
+
+def test_ai4s_executor_renders_gpus_not_gres(monkeypatch):
+    executor = _site_executor(monkeypatch, "ai4s-front")
+    assert executor.gpu_flag == "gpus"
+    assert executor.account == "rkp00043"
+    assert executor.project_accounts == {"spring-8": "rkp00101"}
+
+
+def test_ai4s_steps_charge_only_spring8_to_aimon(monkeypatch):
+    executor = _site_executor(monkeypatch, "ai4s-front")
+    cases = {
+        "spring-8": "rkp00101",
+        "bdr-opossum": "rkp00043",
+        "brc-mouse": "rkp00043",
+        "default": "rkp00043",
+        None: "rkp00043",
+    }
+    for project, account in cases.items():
+        script = _rendered(executor, metadata={STAGE_PROJECT_ID_METADATA_KEY: project})
+        assert f"#SBATCH --account={account}\n" in script, project

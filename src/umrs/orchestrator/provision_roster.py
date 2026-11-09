@@ -277,6 +277,60 @@ def roster_entries() -> list[dict[str, Any]]:
 
 ROLE_ALIAS_PREFIX = "svc-"
 
+#: ADR-106 D-1: the roles a service tier can fill, in advertisement order
+#: (``svc-<role>``). Moved here from ``umrs.api.ops`` on 2026-11-07 so the
+#: public service badge (foundation) reads the same list; ops re-exports it.
+SERVICE_ROLES = ("chat", "fast", "decision", "vision", "ocr", "embed", "rerank", "asr")
+
+#: ``roster_state()`` answers: no roster published, one that cannot be read,
+#: or every file reads as a YAML mapping.
+ROSTER_UNSET = "unset"
+ROSTER_UNREADABLE = "unreadable"
+ROSTER_OK = "ok"
+
+
+def _readable_mapping(path: str) -> bool:
+    """The file exists and parses as a YAML mapping (an empty file counts)."""
+    try:
+        import yaml  # type: ignore
+    except ImportError:
+        return False
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = yaml.safe_load(fh)
+    except (OSError, ValueError, yaml.YAMLError):  # type: ignore[attr-defined]
+        return False
+    return isinstance(data or {}, dict)
+
+
+def roster_state() -> str:
+    """Whether this site publishes a roster, and whether it reads.
+
+    ``role_alias_models`` answers ``()`` both for "no roster" and for a
+    roster that fails to parse; the public service badge must tell them
+    apart (an unreadable roster is "unknown", never "none configured").
+    """
+    paths = _roster_paths()
+    if not paths:
+        return ROSTER_UNSET
+    return ROSTER_OK if all(_readable_mapping(p) for p in paths) else ROSTER_UNREADABLE
+
+
+def role_alias_entries(alias: str) -> list[tuple[str, dict[str, Any]]]:
+    """``(model, entry)`` for every model serving the role alias ``alias``.
+
+    The entry is the roster entry whose job serves the model: its own entry,
+    or (ADR-109 D-2) the primary entry of a co-serving. Roster order; empty
+    for a non-role name or an unknown alias.
+    """
+    if not is_role_alias(alias):
+        return []
+    return [
+        (model, entry)
+        for entry in roster_entries()
+        for model in _alias_models(entry, alias)
+    ]
+
 
 def is_role_alias(name: str | None) -> bool:
     """ADR-106 D-1: role aliases are the fixed ``svc-*`` names clients call."""

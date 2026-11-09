@@ -19,6 +19,7 @@ them LOST and requeues the job; the next attempt resumes the campaign.
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 from umrs.jobs.models import Job, JobAttempt, JobType
 
@@ -156,8 +157,11 @@ class ResearchLoopStatusChecker(BackendStatusChecker):
     host's LOST-attempt reconciler.
     """
 
-    def __init__(self, instance_id: str | None = None) -> None:
+    def __init__(
+        self, instance_id: str | None = None, *, cluster_ssh_factory: Any = None
+    ) -> None:
         self._instance_id = instance_id
+        self._cluster_ssh_factory = cluster_ssh_factory
 
     @property
     def job_type(self) -> JobType:
@@ -182,7 +186,16 @@ class ResearchLoopStatusChecker(BackendStatusChecker):
             return AttemptCheckResult.failed(f"research loop record missing: {loop_id}")
         remote = _parse_ref(backend_ref).get("driver") == "slurm"
         foreign = not remote and self._foreign(attempt)
-        return _result_for(snap, remote_driver=remote, attempt=attempt, foreign=foreign)
+        result = _result_for(
+            snap, remote_driver=remote, attempt=attempt, foreign=foreign
+        )
+        if remote and result.status in ("succeeded", "failed"):
+            from .cluster_venue import settle_cluster_loop
+
+            await settle_cluster_loop(
+                attempt, job, backend_ref, self._cluster_ssh_factory
+            )
+        return result
 
     def _foreign(self, attempt: JobAttempt) -> bool:
         """Another server claimed this attempt (its in-process driver lives there)."""
@@ -200,7 +213,9 @@ def _plan_run_result(spec: dict) -> AttemptCheckResult:
     (reconciler); a resume supersedes it. Slice 8: a venue-hosted run's
     worker does the same over its rail."""
     venue = spec.get("hosting") == "venue"
-    return AttemptCheckResult.running(VENUE_HOSTED_DETAIL if venue else CLIENT_HOSTED_DETAIL)
+    return AttemptCheckResult.running(
+        VENUE_HOSTED_DETAIL if venue else CLIENT_HOSTED_DETAIL
+    )
 
 
 # Grace for cluster (slurm) drivers: queue wait + image pull + pod start on
