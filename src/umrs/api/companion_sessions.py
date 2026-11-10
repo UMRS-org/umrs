@@ -255,6 +255,13 @@ def upsert_snapshot_row(
             (uid, session_id),
         )
         stored = cur.fetchone()
+        if stored is not None and subagent_payload_kind(stored[0]) == "subagent":
+            conn.rollback()
+            raise_typed(
+                PlatformError.companionvenue(
+                    "conflict", "ordinary snapshots cannot replace a bound subagent"
+                )
+            )
         if stored is not None:
             payload = _with_server_queue(payload, stored[0])
         cur.execute(

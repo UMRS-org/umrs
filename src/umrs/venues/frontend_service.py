@@ -512,10 +512,19 @@ class FrontendVenueService:
         }
 
     def _require_startable(self, owner: str, session_id: str) -> None:
-        if not self.session_exists(owner, session_id):
+        from umrs.api._companion_subagents import subagent_payload_kind
+        from umrs.api.companion_sessions import snapshot_detail_row
+
+        with self._conn() as conn:
+            detail = snapshot_detail_row(conn, owner, session_id)
+        if detail is None:
             raise VenueError(
                 "not_found",
                 "session snapshot not mirrored for this owner (save it first)",
+            )
+        if subagent_payload_kind(detail["payload"]) == "subagent":
+            raise VenueError(
+                "conflict", "subagent sessions are read-only and cannot start a venue worker"
             )
         self._require_not_running(owner, session_id)
 

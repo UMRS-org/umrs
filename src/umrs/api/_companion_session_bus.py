@@ -154,6 +154,12 @@ def _project_label(metadata: dict[str, Any]) -> str:
 
 def _bindable(row: dict[str, Any], bus_session_id: str, session_id: str) -> None:
     blob = _json_dict(row["payload"])
+    _, metadata, _ = _parts(row["payload"])
+    if metadata.get("session_kind") == "subagent":
+        _refuse(
+            "receiver_refused",
+            "subagent sessions are read-only and do not join the session bus",
+        )
     identities_match = (
         bus_session_id == session_id and str(blob.get("id") or "") == session_id
     )
@@ -343,6 +349,11 @@ def _validate_send(
     if row["state"] in _REFUSAL_STATES:
         _refuse("receiver_refused", "recipient session is not accepting messages")
     blob, metadata, _entries = _parts(row["payload"])
+    if metadata.get("session_kind") == "subagent":
+        _refuse(
+            "receiver_refused",
+            "subagent sessions are read-only and cannot receive session messages",
+        )
     if str(blob.get("id") or "") != body.recipient_id:
         _refuse(
             "identity_mismatch", "recipient identity does not match the durable session"

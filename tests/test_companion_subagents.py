@@ -97,8 +97,10 @@ class _Cursor:
             self._detail(tuple(params))
         elif normalized.startswith("select venue, state, lease_id from companion_venue_sessions"):
             self._venue(tuple(params))
+        elif normalized.startswith("select s.name, s.payload, s.venue, s.state"):
+            self._bus_lock(tuple(params))
         elif normalized.startswith("select payload from companion_session_snapshots"):
-            self._payload(tuple(params))
+            self._payload(normalized, tuple(params))
         elif normalized.startswith("insert into companion_session_snapshots"):
             self._insert(tuple(params))
         elif normalized.startswith("update companion_session_snapshots"):
@@ -128,16 +130,24 @@ class _Cursor:
         if row is not None and row["user_id"] == uid:
             self.row = (row["venue"], row["state"], row["lease_id"])
 
-    def _payload(self, params: tuple[Any, ...]) -> None:
+    def _bus_lock(self, params: tuple[Any, ...]) -> None:
         uid, sid = params
+        row = self.pool.table.get((uid, sid))
+        if row is not None:
+            self.row = (row["name"], row["payload"], row["venue"], row["state"], None)
+
+    def _payload(self, sql: str, params: tuple[Any, ...]) -> None:
+        uid, sid = (params[1], params[0]) if "session_id = %s and user_id = %s" in sql else params
         row = self.pool.table.get((uid, sid))
         if row is not None:
             self.row = (row["payload"],)
 
     def _insert(self, params: tuple[Any, ...]) -> None:
         uid, sid, name, payload, marker, venue, state = params
-        if (uid, sid) in self.pool.table:
-            raise AssertionError("duplicate insert")
+        existing = self.pool.table.get((uid, sid))
+        if existing is not None and existing["update_marker"] > marker:
+            self.rowcount = 0
+            return
         self.pool.table[(uid, sid)] = {
             "name": name,
             "payload": payload,

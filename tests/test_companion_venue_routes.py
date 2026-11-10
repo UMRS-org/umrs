@@ -426,6 +426,36 @@ class TestOwnerRoutes:
         assert r.status_code == 404
         assert r.headers["x-platform-error-code"] == "companionvenue.not_found"
 
+    def test_start_refuses_a_child_without_job_lease_or_runtime(self, harness):
+        sid = "child-session"
+        payload = {
+            "id": sid,
+            "messages": [{"role": "user", "content": "task"}],
+            "metadata": {
+                "session_kind": "subagent",
+                "parent_session_id": "sess-parent",
+                "parent_agent_id": "agent-parent",
+                "agent_id": "agent-child",
+                "subagent_status": "running",
+            },
+        }
+        harness.pool.table[("alice", sid)] = {
+            "name": "child",
+            "payload": json.dumps(payload),
+            "marker": "2026-11-10T00:00:00+00:00",
+            "venue": "frontend",
+            "state": "ongoing",
+        }
+
+        response = _start(harness, sid)
+
+        assert response.status_code == 409
+        assert "subagent" in response.json()["detail"]
+        assert harness.jobs.created == []
+        assert harness.jobs.enqueued == []
+        assert harness.service.store.get(sid) is None
+        assert harness.podman.calls == []
+
     def test_start_409_source_not_pushed(self, harness):
         harness.pool.seed("alice", "sess-1")
         r = _start(harness, source_refs=["openai-main", "missing-one"])
