@@ -21,6 +21,11 @@ from typing import Any
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 
+from ._companion_session_bus import (
+    SessionBusBindBody,
+    SessionBusInboxBody,
+    SessionBusSendBody,
+)
 from .typed_errors import PlatformError, raise_typed
 
 logger = logging.getLogger(__name__)
@@ -488,13 +493,12 @@ def _set_metadata(blob: dict[str, Any], metadata: dict[str, Any]) -> None:
 
 
 def _with_server_queue(payload: str, stored_payload: Any) -> str:
-    """*payload* with the journal's own ``chat_queue`` in place of the incoming one.
+    """Preserve the journal's queue and proven session-bus binding on a mirror.
 
-    The queue is server-owned: the TUI appends and pops through ``/queue``
-    (remote-first for every session) and the venue worker pops through the
-    rail, so a snapshot's copy is at best stale. Taking it verbatim erased
-    turns queued while a save was in flight and could resurrect popped ones.
-    A payload that is not a JSON object passes through untouched.
+    The queue and the S2.1 presence binding are server-owned: a snapshot's
+    copies are at best stale. Taking either verbatim could erase turns/messages
+    queued while a save was in flight, resurrect popped entries, or transfer a
+    different runtime's presence. A non-object payload passes through untouched.
     """
     blob = _json_dict(payload)
     if blob is None:
@@ -503,10 +507,17 @@ def _with_server_queue(payload: str, stored_payload: Any) -> str:
     metadata = _json_dict(raw) if raw is not None else {}
     if metadata is None:
         return payload
-    _, _, server_entries = _queue_entries(stored_payload)
-    if (metadata.get("chat_queue") or []) == server_entries:
+    _, server_metadata, server_entries = _queue_entries(stored_payload)
+    queue_same = (metadata.get("chat_queue") or []) == server_entries
+    server_binding = server_metadata.get("session_bus")
+    binding_same = metadata.get("session_bus") == server_binding
+    if queue_same and binding_same:
         return payload
     metadata["chat_queue"] = server_entries
+    if server_binding is None:
+        metadata.pop("session_bus", None)
+    else:
+        metadata["session_bus"] = server_binding
     _set_metadata(blob, metadata)
     return json.dumps(blob)
 
@@ -609,6 +620,81 @@ def queue_mutate_row(
         else:
             conn.rollback()
     return {"applied": applied, "queue": entries, "front": front}
+
+
+@router.put("/{session_id}/session-bus", response_model=dict[str, Any])
+async def bind_session_bus(
+    session_id: str, body: SessionBusBindBody, request: Request
+) -> dict[str, Any]:
+    """Bind a local bus id only after proving the durable session identity."""
+    from ._companion_session_bus import bind_presence_row
+
+    uid = _uid(request)
+    conn = _pool(request).getconn()
+    try:
+        return bind_presence_row(conn, uid, session_id, body)
+    finally:
+        _pool(request).putconn(conn)
+
+
+@router.delete("/{session_id}/session-bus", response_model=dict[str, Any])
+async def withdraw_session_bus(session_id: str, request: Request) -> dict[str, Any]:
+    """Withdraw presence without turning an offline recipient into a new store."""
+    from ._companion_session_bus import withdraw_presence_row
+
+    uid = _uid(request)
+    pool = _pool(request)
+    conn = pool.getconn()
+    try:
+        return withdraw_presence_row(conn, uid, session_id)
+    finally:
+        pool.putconn(conn)
+
+
+@router.get("/session-bus/presence", response_model=dict[str, Any])
+async def session_bus_presence(request: Request) -> dict[str, Any]:
+    """Only this owner's live remote bus bindings; queue outage is a 503."""
+    from ._companion_session_bus import presence_rows
+
+    uid = _uid(request)
+    pool = _pool(request)
+    conn = pool.getconn()
+    try:
+        return presence_rows(conn, uid)
+    finally:
+        pool.putconn(conn)
+
+
+@router.post("/{session_id}/session-bus/send", response_model=dict[str, Any])
+async def send_session_bus_message(
+    session_id: str, body: SessionBusSendBody, request: Request
+) -> dict[str, Any]:
+    """Idempotently enqueue one message in ADR-046's server-owned turn queue."""
+    from ._companion_session_bus import send_message_row
+
+    uid = _uid(request)
+    pool = _pool(request)
+    conn = pool.getconn()
+    try:
+        return send_message_row(conn, uid, session_id, body)
+    finally:
+        pool.putconn(conn)
+
+
+@router.post("/{session_id}/session-bus/inbox", response_model=dict[str, Any])
+async def read_session_bus_inbox(
+    session_id: str, body: SessionBusInboxBody, request: Request
+) -> dict[str, Any]:
+    """Owner-read or atomic read-mark of messages in the same turn queue."""
+    from ._companion_session_bus import inbox_row
+
+    uid = _uid(request)
+    pool = _pool(request)
+    conn = pool.getconn()
+    try:
+        return inbox_row(conn, uid, session_id, body)
+    finally:
+        pool.putconn(conn)
 
 
 @router.get("/{session_id}/turns/{turn_id}", response_model=dict[str, Any])

@@ -46,6 +46,7 @@ class _Cursor:
         self._table = table
         self._recorded = recorded
         self._row = None
+        self._result = []
         self.rowcount = 0
         self._conn_projects = projects
 
@@ -57,6 +58,8 @@ class _Cursor:
 
     _HANDLERS = (
         ("select 1 from companion_session_snapshots", "_exists"),
+        ("select s.name, s.payload, s.venue, s.state", "_bus_lock"),
+        ("select s.session_id, s.name, s.payload, s.venue, s.state", "_bus_list"),
         ("select s.session_id, s.name, s.payload", "_detail"),
         ("select payload from companion_session_snapshots", "_payload"),
         ("update companion_session_snapshots set venue", "_set_venue"),
@@ -64,6 +67,22 @@ class _Cursor:
         ("insert into companion_session_snapshots", "_insert"),
         ("select data_class from projects", "_data_class"),
     )
+
+    def _bus_lock(self, params):
+        uid, sid = params
+        row = self._table.get((uid, sid))
+        if row is None:
+            self._row = None
+            return
+        self._row = (row["name"], row["payload"], row["venue"], row["state"], None)
+
+    def _bus_list(self, params):
+        (uid,) = params
+        self._result = [
+            (sid, row["name"], row["payload"], row["venue"], row["state"], None)
+            for (row_uid, sid), row in self._table.items()
+            if row_uid == uid
+        ]
 
     def _data_class(self, params):
         # projects dict lives on the pool (set per-test; absent row → None)
@@ -136,6 +155,9 @@ class _Cursor:
 
     def fetchone(self):
         return self._row
+
+    def fetchall(self):
+        return self._result
 
 
 class _Conn:
@@ -1115,3 +1137,139 @@ class TestDataClassGate:
         )
         assert r.status_code == 403
         assert "odd-main" in r.json()["detail"]
+
+
+def _venue_queue(rail):
+    row = rail.pool.table[("alice", "sess-1")]
+    payload = json.loads(row["payload"])
+    metadata = payload["metadata"]
+    return json.loads(metadata) if isinstance(metadata, str) else metadata
+
+
+def _append_venue_queue(rail, additions: list[dict]) -> None:
+    row = rail.pool.table[("alice", "sess-1")]
+    payload = json.loads(row["payload"])
+    raw = payload["metadata"]
+    metadata = json.loads(raw) if isinstance(raw, str) else raw
+    metadata["chat_queue"].extend(additions)
+    payload["metadata"] = metadata
+    row["payload"] = json.dumps(payload)
+
+
+def _message_entry(message_id: str, body: str, *, notified_at: str = "") -> dict:
+    return {
+        "id": message_id,
+        "kind": "session_message",
+        "content": body,
+        "client_id": "sess-sender01",
+        "added_at": "2026-11-10T00:00:00+00:00",
+        "expires_at": "2099-01-01T00:00:00+00:00",
+        "recipient_id": "sess-1",
+        "sender_id": "sess-sender01",
+        "sender_name": "sender",
+        "sender_kind": "session",
+        "reply_to": "",
+        "notified_at": notified_at,
+        "read_at": "",
+    }
+
+
+def _bind_rail_bus(rail) -> dict:
+    bound = rail.client.put(
+        "/umrs/companion/sessions/sess-1/rail/session-bus",
+        headers=rail.rail_headers,
+        json={"bus_session_id": "sess-1", "name": "remote", "host": "sandbox"},
+    )
+    assert bound.status_code == 200, bound.text
+    return bound.json()
+
+
+def _pop_rail(rail):
+    response = rail.client.post(
+        "/umrs/companion/sessions/sess-1/rail/queue/pop", headers=rail.rail_headers
+    )
+    assert response.status_code == 200, response.text
+    return response.json()["front"]
+
+
+def _session_messages(rail) -> list[dict]:
+    return [
+        entry
+        for entry in _venue_queue(rail)["chat_queue"]
+        if entry.get("kind") == "session_message"
+    ]
+
+
+def _assert_notification(entry: dict, message_id: str) -> None:
+    assert entry["id"] == message_id
+    assert entry["notified_at"]
+
+
+def _assert_unread(entries: list[dict], message_ids: list[str]) -> None:
+    assert [entry["id"] for entry in entries] == message_ids
+    for entry in entries:
+        assert not entry["read_at"]
+
+
+def _assert_read_messages(response, bodies: list[str]) -> None:
+    assert response.status_code == 200, response.text
+    assert [message["body"] for message in response.json()["messages"]] == bodies
+
+
+def _assert_all_read(entries: list[dict]) -> None:
+    assert entries
+    for entry in entries:
+        assert entry["read_at"]
+
+
+class TestRailSessionBus:
+    def test_lease_binding_and_worker_fifo_keep_messages_durable_until_read(self, rail):
+        bound = _bind_rail_bus(rail)
+        assert bound["session_id"] == "sess-1"
+        _append_venue_queue(
+            rail,
+            [
+                _message_entry("msg-aaaaaaaaaaaa", "SENDER-BODY-1"),
+                _message_entry("msg-bbbbbbbbbbbb", "SENDER-BODY-2"),
+                {"id": "q-2", "content": "second turn", "client_id": "tui", "added_at": "t2"},
+            ],
+        )
+        first = _pop_rail(rail)
+        assert first["content"] == "hello remote"
+        assert "kind" not in first
+        second = _pop_rail(rail)
+        _assert_notification(second, "msg-aaaaaaaaaaaa")
+        unread = _session_messages(rail)
+        _assert_unread(unread, ["msg-aaaaaaaaaaaa", "msg-bbbbbbbbbbbb"])
+        third = _pop_rail(rail)
+        assert third["id"] == "msg-bbbbbbbbbbbb"
+        fourth = _pop_rail(rail)
+        assert fourth["content"] == "second turn"
+        assert _pop_rail(rail) is None
+
+        taken = rail.client.post(
+            "/umrs/companion/sessions/sess-1/rail/session-bus/inbox",
+            headers=rail.rail_headers,
+            json={"action": "take"},
+        )
+        _assert_read_messages(taken, ["SENDER-BODY-1", "SENDER-BODY-2"])
+        markers = _session_messages(rail)
+        _assert_all_read(markers)
+
+    def test_cancellation_leaves_the_unread_message_and_no_plaintext_notice(self, rail):
+        _bind_rail_bus(rail)
+        _append_venue_queue(
+            rail, [_message_entry("msg-aaaaaaaaaaaa", "DO NOT MAKE THIS A USER TURN")]
+        )
+        ordinary = _pop_rail(rail)
+        assert ordinary["content"] == "hello remote"
+        pop = _pop_rail(rail)
+        assert pop["kind"] == "session_message"
+        stopped = rail.client.post("/umrs/companion/sessions/sess-1/venue/stop", headers=H)
+        assert stopped.status_code == 200
+        (message,) = _session_messages(rail)
+        assert message["content"] == "DO NOT MAKE THIS A USER TURN"
+        assert message["notified_at"]
+        assert not message["read_at"]
+        status = rail.client.get("/umrs/companion/sessions/sess-1/venue", headers=H).json()
+        assert "DO NOT MAKE THIS A USER TURN" not in json.dumps(status.get("runtime") or {})

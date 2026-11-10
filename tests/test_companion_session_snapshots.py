@@ -128,6 +128,43 @@ class _FakeCursor:
                 "ts" if archived else None,
             )
 
+    def _exec_bus_lock(self, params):
+        uid, sid = params
+        row = self._table.get((uid, sid))
+        if row is None:
+            self._row = None
+            return
+        archived = "ts" if sid in self._archives else None
+        self._row = (
+            row["name"],
+            row["payload"],
+            row.get("venue", "local"),
+            row.get("state", ""),
+            archived,
+        )
+
+    def _exec_bus_list(self, params):
+        (uid,) = params
+        self._result = [
+            (
+                sid,
+                row["name"],
+                row["payload"],
+                row.get("venue", "local"),
+                row.get("state", ""),
+                "ts" if sid in self._archives else None,
+            )
+            for (row_uid, sid), row in self._table.items()
+            if row_uid == uid
+        ]
+
+    def _exec_update_payload(self, params):
+        payload, uid, sid = params
+        row = self._table.get((uid, sid))
+        if row:
+            row["payload"] = payload
+        self.rowcount = 1 if row else 0
+
     # -- listing select -----------------------------------------------------
     def _exec_list(self, sql_l: str, params):
         uid = params[0]
@@ -187,8 +224,11 @@ class _FakeCursor:
     def _handler(self, sql_l: str):
         table = (
             ("insert", self._exec_insert),
+            ("select s.name, s.payload, s.venue, s.state", self._exec_bus_lock),
+            ("select s.session_id, s.name, s.payload, s.venue, s.state", self._exec_bus_list),
             ("select s.session_id", self._exec_get),
             ("select payload from companion_session_snapshots", self._exec_get_payload_for(sql_l)),
+            ("update companion_session_snapshots set payload", self._exec_update_payload),
             ("select session_id, name, update_marker, venue", lambda p: self._exec_list(sql_l, p)),
             ("delete from companion_session_archives", self._exec_delete_archive),
             ("delete from chat_turn_approvals", self._exec_noop),
@@ -203,7 +243,7 @@ class _FakeCursor:
         raise AssertionError(f"unexpected SQL: {sql_l[:80]}")
 
     def execute(self, sql, params):
-        sql_l = sql.lower().strip()
+        sql_l = " ".join(sql.lower().split())
         self._recorded.append((sql, params))
         self._handler(sql_l)(params)
 

@@ -45,6 +45,11 @@ from pydantic import BaseModel, Field
 from umrs.session_policy import PolicyError
 from umrs.venues.frontend_service import FrontendVenueService, VenueError
 
+from ._companion_session_bus import (
+    SessionBusBindBody,
+    SessionBusInboxBody,
+    SessionBusSendBody,
+)
 from ._rail_identity import (
     RAIL_ATTESTATION_HEADER,
     RailAuthError,
@@ -58,7 +63,6 @@ from .companion_sessions import (
     SessionSnapshotBody,
     _pool,
     _uid,
-    queue_mutate_row,
     snapshot_detail_row,
     upsert_snapshot_row,
 )
@@ -452,12 +456,100 @@ async def rail_queue_pop(
     """Pop the next queued turn (F9 owner-scope queue) for the worker.
     # auth: lease-token
     """
+    from ._companion_session_bus import worker_pop_row
+
     pool = _pool(request)
     conn = pool.getconn()
     try:
-        return queue_mutate_row(
-            conn, principal.owner, session_id, action="pop", client_id="venue-worker"
-        )
+        return worker_pop_row(conn, principal.owner, session_id)
+    finally:
+        pool.putconn(conn)
+
+
+@router.put("/{session_id}/rail/session-bus", response_model=dict[str, Any])
+async def rail_bind_session_bus(
+    session_id: str,
+    body: SessionBusBindBody,
+    request: Request,
+    principal: RailPrincipal = Depends(rail_principal),
+) -> dict[str, Any]:
+    """Lease-bound remote presence; no JWT reaches this route."""
+    from ._companion_session_bus import bind_presence_row
+
+    pool = _pool(request)
+    conn = pool.getconn()
+    try:
+        return bind_presence_row(conn, principal.owner, session_id, body)
+    finally:
+        pool.putconn(conn)
+
+
+@router.delete("/{session_id}/rail/session-bus", response_model=dict[str, Any])
+async def rail_withdraw_session_bus(
+    session_id: str,
+    request: Request,
+    principal: RailPrincipal = Depends(rail_principal),
+) -> dict[str, Any]:
+    """Best-effort presence withdrawal through the existing lease rail."""
+    from ._companion_session_bus import withdraw_presence_row
+
+    pool = _pool(request)
+    conn = pool.getconn()
+    try:
+        return withdraw_presence_row(conn, principal.owner, session_id)
+    finally:
+        pool.putconn(conn)
+
+
+@router.get("/{session_id}/rail/session-bus/presence", response_model=dict[str, Any])
+async def rail_session_bus_presence(
+    session_id: str,
+    request: Request,
+    principal: RailPrincipal = Depends(rail_principal),
+) -> dict[str, Any]:
+    """The lease owner's live sessions, never another user's addresses."""
+    from ._companion_session_bus import presence_rows
+
+    pool = _pool(request)
+    conn = pool.getconn()
+    try:
+        return presence_rows(conn, principal.owner)
+    finally:
+        pool.putconn(conn)
+
+
+@router.post("/{session_id}/rail/session-bus/send", response_model=dict[str, Any])
+async def rail_send_session_bus_message(
+    session_id: str,
+    body: SessionBusSendBody,
+    request: Request,
+    principal: RailPrincipal = Depends(rail_principal),
+) -> dict[str, Any]:
+    """Send as this lease's exact durable session, not a claimed/parent id."""
+    from ._companion_session_bus import send_message_row
+
+    pool = _pool(request)
+    conn = pool.getconn()
+    try:
+        return send_message_row(conn, principal.owner, session_id, body)
+    finally:
+        pool.putconn(conn)
+
+
+@router.post("/{session_id}/rail/session-bus/inbox", response_model=dict[str, Any])
+async def rail_read_session_bus_inbox(
+    session_id: str,
+    body: SessionBusInboxBody,
+    request: Request,
+    principal: RailPrincipal = Depends(rail_principal),
+) -> dict[str, Any]:
+    """Read/mark only this lease session's own durable queue entries."""
+    from ._companion_session_bus import inbox_row
+
+    pool = _pool(request)
+    conn = pool.getconn()
+    try:
+        return inbox_row(conn, principal.owner, session_id, body)
     finally:
         pool.putconn(conn)
 
