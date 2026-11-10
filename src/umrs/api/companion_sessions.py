@@ -18,13 +18,19 @@ import re
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Query, Request
 from pydantic import BaseModel, Field
 
 from ._companion_session_bus import (
     SessionBusBindBody,
     SessionBusInboxBody,
     SessionBusSendBody,
+)
+from ._companion_subagents import (
+    read_subagent,
+    subagent_payload_kind,
+    subagent_summary,
+    without_subagent_event_log,
 )
 from .typed_errors import PlatformError, raise_typed
 
@@ -228,7 +234,13 @@ def upsert_snapshot_row(
     venue: str,
     state: str,
 ) -> bool:
-    """LWW upsert of one mirrored snapshot (validated venue/state)."""
+    """LWW upsert of one ordinary mirrored snapshot (never a forged child)."""
+    if subagent_payload_kind(payload) == "subagent":
+        raise_typed(
+            PlatformError.companionvenue(
+                "conflict", "subagent snapshots require the bound venue rail"
+            )
+        )
     venue = _validate_venue(venue) if venue else ""
     state = _validate_stored_state(state)
     with conn.cursor() as cur:
@@ -549,6 +561,17 @@ def _queue_apply(
     return [], len(entries)
 
 
+def _refuse_child_queue_write(conn: Any, metadata: dict[str, Any]) -> None:
+    if metadata.get("session_kind") != "subagent":
+        return
+    conn.rollback()
+    raise_typed(
+        PlatformError.companionvenue(
+            "conflict", "subagent snapshots are read-only outside the bound venue rail"
+        )
+    )
+
+
 def queue_mutate_row(
     conn: Any,
     uid: str,
@@ -586,6 +609,7 @@ def queue_mutate_row(
                 PlatformError.companionsessions("not_found", "snapshot not found")
             )
         blob, metadata, entries = _queue_entries(row[0])
+        _refuse_child_queue_write(conn, metadata)
         if action != "append" and not entries:
             # Nothing to pop or clear: write nothing (the worker pops after
             # every turn and every idle tick) and release the row lock.
@@ -723,6 +747,25 @@ async def get_turn(session_id: str, turn_id: str, request: Request) -> dict[str,
         pool.putconn(conn)
 
 
+@router.get("/{session_id}/subagent", response_model=dict[str, Any])
+async def get_subagent_snapshot(
+    session_id: str,
+    request: Request,
+    after_id: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=200),
+) -> dict[str, Any]:
+    """Owner-read a bound child snapshot and one bounded event page.
+    # auth: verified
+    """
+    uid = _uid(request)
+    pool = _pool(request)
+    conn = pool.getconn()
+    try:
+        return read_subagent(conn, uid, session_id, after_id=after_id, limit=limit)
+    finally:
+        pool.putconn(conn)
+
+
 @router.get("/{session_id}", response_model=dict[str, Any])
 async def get_session_snapshot(session_id: str, request: Request) -> dict[str, Any]:
     """Answer a mirrored snapshot for the owner (404 for others/absent).
@@ -751,6 +794,7 @@ async def get_session_snapshot(session_id: str, request: Request) -> dict[str, A
     if row is None:
         raise_typed(PlatformError.companionsessions("not_found", "snapshot not found"))
     sid, name, payload, updated, venue, state, archived_at = row
+    payload = without_subagent_event_log(payload)
     return {
         "session_id": sid,
         "name": name,
@@ -835,9 +879,13 @@ def _list_where(
     venues: list[str],
     states: list[str],
     include_archived: bool,
+    session_kind: str | None,
+    parent_session_id: str | None,
+    agent_id: str | None,
 ) -> tuple[str, list[Any]]:
-    """Build the WHERE tail + params for the listing route."""
-    clauses = ["user_id = %s"]
+    """Build the owner/kind/lineage WHERE tail + params for the listing route."""
+    kind_clause = "session_kind = 'subagent'" if session_kind == "subagent" else "session_kind <> 'subagent'"
+    clauses = ["user_id = %s", kind_clause]
     params: list[Any] = [uid]
     if venues:
         clauses.append("venue = ANY(%s)")
@@ -845,9 +893,60 @@ def _list_where(
     if states:
         clauses.append("computed_state = ANY(%s)")
         params.append(states)
+    if parent_session_id:
+        clauses.append(
+            "COALESCE(payload::jsonb -> 'metadata' ->> 'parent_session_id', '') = %s"
+        )
+        params.append(parent_session_id)
+    if agent_id:
+        clauses.append("COALESCE(payload::jsonb -> 'metadata' ->> 'agent_id', '') = %s")
+        params.append(agent_id)
     if not include_archived:
         clauses.append("archived_at IS NULL")
     return " AND ".join(clauses), params
+
+
+def _validate_listing_filters(
+    states: list[str],
+    session_kind: str | None,
+    parent_session_id: str | None,
+    agent_id: str | None,
+) -> None:
+    invalid = [state for state in states if state not in _STATE_COMPUTED]
+    if invalid:
+        raise_typed(
+            PlatformError.companionsessions(
+                "bad_request", f"invalid state filter: {invalid}"
+            )
+        )
+    if session_kind not in (None, "subagent"):
+        raise_typed(
+            PlatformError.companionsessions(
+                "bad_request", "session_kind must be 'subagent' when supplied"
+            )
+        )
+    if session_kind != "subagent" and (parent_session_id or agent_id):
+        raise_typed(
+            PlatformError.companionsessions(
+                "bad_request", "child lineage filters require session_kind='subagent'"
+            )
+        )
+
+
+def _child_summaries(
+    conn: Any, uid: str, rows: list[tuple[Any, ...]], *, enabled: bool
+) -> dict[str, dict[str, Any]]:
+    if not enabled:
+        return {}
+    return {str(row[0]): subagent_summary(conn, uid, str(row[0])) for row in rows}
+
+
+def _with_child_summaries(
+    snapshots: list[dict[str, Any]], summaries: dict[str, dict[str, Any]]
+) -> list[dict[str, Any]]:
+    for snapshot in snapshots:
+        snapshot.update(summaries.get(str(snapshot["session_id"]), {}))
+    return snapshots
 
 
 @router.get("", response_model=dict[str, Any])
@@ -858,6 +957,9 @@ async def list_session_snapshots(
     state: str | None = None,
     include_archived: bool = False,
     project: str | None = None,
+    session_kind: str | None = None,
+    parent_session_id: str | None = None,
+    agent_id: str | None = None,
 ) -> dict[str, Any]:
     """List my snapshots (summary rows only, no payloads).
     # auth: verified
@@ -871,14 +973,16 @@ async def list_session_snapshots(
     limit = min(max(limit, 1), 200)
     venues = [_validate_venue(v) for v in _csv_filter(venue)]
     states = _csv_filter(state)
-    invalid = [s for s in states if s not in _STATE_COMPUTED]
-    if invalid:
-        raise_typed(
-            PlatformError.companionsessions(
-                "bad_request", f"invalid state filter: {invalid}"
-            )
-        )
-    where, params = _list_where(uid, venues, states, include_archived)
+    _validate_listing_filters(states, session_kind, parent_session_id, agent_id)
+    where, params = _list_where(
+        uid,
+        venues,
+        states,
+        include_archived,
+        session_kind,
+        parent_session_id,
+        agent_id,
+    )
     project_clause = ""
     if project:
         project_clause = (
@@ -888,6 +992,7 @@ async def list_session_snapshots(
         )
         params.append(project)
     conn = pool.getconn()
+    child_summaries: dict[str, dict[str, Any]] = {}
     try:
         with conn.cursor() as cur:
             cur.execute(
@@ -899,6 +1004,15 @@ async def list_session_snapshots(
                            s.payload, a.archived_at,
                            CASE WHEN a.session_id IS NOT NULL THEN 'archived'
                                 ELSE s.state END AS computed_state,
+                           CASE
+                               WHEN s.payload LIKE '{{%'
+                                    AND jsonb_typeof(s.payload::jsonb -> 'metadata') = 'object'
+                               THEN COALESCE(
+                                   s.payload::jsonb -> 'metadata' ->> 'session_kind',
+                                   'conversation'
+                               )
+                               ELSE 'conversation'
+                           END AS session_kind,
                            s.user_id
                     FROM companion_session_snapshots s
                     LEFT JOIN companion_session_archives a
@@ -911,6 +1025,9 @@ async def list_session_snapshots(
                 (*params, limit),
             )
             rows = cur.fetchall()
+        child_summaries = _child_summaries(
+            conn, uid, rows, enabled=session_kind == "subagent"
+        )
     finally:
         pool.putconn(conn)
     snapshots = [
@@ -924,6 +1041,7 @@ async def list_session_snapshots(
         }
         for sid, name, upd, venue_value, computed_state, archived_at in rows
     ]
+    snapshots = _with_child_summaries(snapshots, child_summaries)
     return {"snapshots": snapshots, "count": len(snapshots)}
 
 

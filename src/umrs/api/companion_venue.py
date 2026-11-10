@@ -50,6 +50,12 @@ from ._companion_session_bus import (
     SessionBusInboxBody,
     SessionBusSendBody,
 )
+from ._companion_subagents import (
+    SubagentEventBody,
+    SubagentSnapshotBody,
+    append_subagent_event,
+    put_subagent_snapshot,
+)
 from ._rail_identity import (
     RAIL_ATTESTATION_HEADER,
     RailAuthError,
@@ -445,6 +451,60 @@ async def rail_put_snapshot(
     finally:
         pool.putconn(conn)
     return {"status": "ok", "applied": applied}
+
+
+@router.put(
+    "/{session_id}/rail/subagents/{child_session_id}/snapshot",
+    response_model=dict[str, Any],
+)
+async def rail_put_subagent_snapshot(
+    session_id: str,
+    child_session_id: str,
+    body: SubagentSnapshotBody,
+    response: Response,
+    request: Request,
+    principal: RailPrincipal = Depends(rail_principal),
+) -> dict[str, Any]:
+    """Create/advance a child only under this lease's bound immediate lineage.
+    # auth: lease-token
+    """
+    conn = _pool(request).getconn()
+    try:
+        result = put_subagent_snapshot(conn, principal, child_session_id, body)
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        _pool(request).putconn(conn)
+    response.status_code = 201 if result.get("created") else 200
+    return result
+
+
+@router.post(
+    "/{session_id}/rail/subagents/{child_session_id}/events",
+    response_model=dict[str, Any],
+)
+async def rail_append_subagent_event(
+    session_id: str,
+    child_session_id: str,
+    body: SubagentEventBody,
+    response: Response,
+    request: Request,
+    principal: RailPrincipal = Depends(rail_principal),
+) -> dict[str, Any]:
+    """Append an actual child event, replay-safe and never on the parent snapshot.
+    # auth: lease-token
+    """
+    conn = _pool(request).getconn()
+    try:
+        result = append_subagent_event(conn, principal, child_session_id, body)
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        _pool(request).putconn(conn)
+    response.status_code = 200 if result.get("replay") else 201
+    return result
 
 
 @router.post("/{session_id}/rail/queue/pop", response_model=dict[str, Any])
