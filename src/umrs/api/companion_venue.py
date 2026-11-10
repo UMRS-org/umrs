@@ -533,7 +533,9 @@ async def rail_bind_session_bus(
     request: Request,
     principal: RailPrincipal = Depends(rail_principal),
 ) -> dict[str, Any]:
-    """Lease-bound remote presence; no JWT reaches this route."""
+    """Lease-bound remote presence; no JWT reaches this route.
+    # auth: lease-token
+    """
     from ._companion_session_bus import bind_presence_row
 
     pool = _pool(request)
@@ -550,7 +552,9 @@ async def rail_withdraw_session_bus(
     request: Request,
     principal: RailPrincipal = Depends(rail_principal),
 ) -> dict[str, Any]:
-    """Best-effort presence withdrawal through the existing lease rail."""
+    """Best-effort presence withdrawal through the existing lease rail.
+    # auth: lease-token
+    """
     from ._companion_session_bus import withdraw_presence_row
 
     pool = _pool(request)
@@ -567,7 +571,9 @@ async def rail_session_bus_presence(
     request: Request,
     principal: RailPrincipal = Depends(rail_principal),
 ) -> dict[str, Any]:
-    """The lease owner's live sessions, never another user's addresses."""
+    """The lease owner's live sessions, never another user's addresses.
+    # auth: lease-token
+    """
     from ._companion_session_bus import presence_rows
 
     pool = _pool(request)
@@ -585,7 +591,9 @@ async def rail_send_session_bus_message(
     request: Request,
     principal: RailPrincipal = Depends(rail_principal),
 ) -> dict[str, Any]:
-    """Send as this lease's exact durable session, not a claimed/parent id."""
+    """Send as this lease's exact durable session, not a claimed/parent id.
+    # auth: lease-token
+    """
     from ._companion_session_bus import send_message_row
 
     pool = _pool(request)
@@ -603,7 +611,9 @@ async def rail_read_session_bus_inbox(
     request: Request,
     principal: RailPrincipal = Depends(rail_principal),
 ) -> dict[str, Any]:
-    """Read/mark only this lease session's own durable queue entries."""
+    """Read/mark only this lease session's own durable queue entries.
+    # auth: lease-token
+    """
     from ._companion_session_bus import inbox_row
 
     pool = _pool(request)

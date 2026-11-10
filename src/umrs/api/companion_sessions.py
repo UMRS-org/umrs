@@ -657,7 +657,9 @@ def queue_mutate_row(
 async def bind_session_bus(
     session_id: str, body: SessionBusBindBody, request: Request
 ) -> dict[str, Any]:
-    """Bind a local bus id only after proving the durable session identity."""
+    """Bind a local bus id only after proving the durable session identity.
+    # auth: verified
+    """
     from ._companion_session_bus import bind_presence_row
 
     uid = _uid(request)
@@ -670,7 +672,9 @@ async def bind_session_bus(
 
 @router.delete("/{session_id}/session-bus", response_model=dict[str, Any])
 async def withdraw_session_bus(session_id: str, request: Request) -> dict[str, Any]:
-    """Withdraw presence without turning an offline recipient into a new store."""
+    """Withdraw presence without turning an offline recipient into a new store.
+    # auth: verified
+    """
     from ._companion_session_bus import withdraw_presence_row
 
     uid = _uid(request)
@@ -684,7 +688,9 @@ async def withdraw_session_bus(session_id: str, request: Request) -> dict[str, A
 
 @router.get("/session-bus/presence", response_model=dict[str, Any])
 async def session_bus_presence(request: Request) -> dict[str, Any]:
-    """Only this owner's live remote bus bindings; queue outage is a 503."""
+    """Only this owner's live remote bus bindings; queue outage is a 503.
+    # auth: verified
+    """
     from ._companion_session_bus import presence_rows
 
     uid = _uid(request)
@@ -700,7 +706,9 @@ async def session_bus_presence(request: Request) -> dict[str, Any]:
 async def send_session_bus_message(
     session_id: str, body: SessionBusSendBody, request: Request
 ) -> dict[str, Any]:
-    """Idempotently enqueue one message in ADR-046's server-owned turn queue."""
+    """Idempotently enqueue one message in ADR-046's server-owned turn queue.
+    # auth: verified
+    """
     from ._companion_session_bus import send_message_row
 
     uid = _uid(request)
@@ -716,7 +724,9 @@ async def send_session_bus_message(
 async def read_session_bus_inbox(
     session_id: str, body: SessionBusInboxBody, request: Request
 ) -> dict[str, Any]:
-    """Owner-read or atomic read-mark of messages in the same turn queue."""
+    """Owner-read or atomic read-mark of messages in the same turn queue.
+    # auth: verified
+    """
     from ._companion_session_bus import inbox_row
 
     uid = _uid(request)
