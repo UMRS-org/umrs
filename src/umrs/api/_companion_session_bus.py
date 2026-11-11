@@ -118,13 +118,16 @@ def _write_metadata(blob: dict[str, Any], metadata: dict[str, Any]) -> None:
 
 
 def _lock_snapshot(cur: Any, uid: str, session_id: str) -> dict[str, Any] | None:
+    # Lock only the snapshot row: Postgres refuses a bare FOR UPDATE that
+    # reaches the nullable side of the LEFT JOIN (issue r4#849); the archive
+    # tombstone is read, never written, here.
     cur.execute(
         """
         SELECT s.name, s.payload, s.venue, s.state, a.archived_at
         FROM companion_session_snapshots s
         LEFT JOIN companion_session_archives a ON a.session_id = s.session_id
         WHERE s.user_id = %s AND s.session_id = %s
-        FOR UPDATE
+        FOR UPDATE OF s
         """,
         (uid, session_id),
     )
