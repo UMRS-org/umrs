@@ -7,6 +7,7 @@
 #   - umrs-server-rccs (RCCS Cloud UMRS server)
 #   - umrs-server-ai4s (AI4S UMRS server)
 #   - umrs-server-bdrt (bdrt / DGX-Spark UMRS server)#   - umrs-server-octopus (octopus / MI300X+H200 UMRS server)#
+#   - umrs-docmodels (Docling + GLiNER for the four servers' knowledge ingest)
 # Usage:
 #   podman compose up -d              # Start all services
 #   podman compose down               # Stop all (data preserved in volumes)
@@ -203,15 +204,31 @@ services:
       # the durable ingest → understand → embed chain (offline rule: never
       # an HF id, only this host path).
       UMRS_KNOWLEDGE_EMBED_MODEL: ${UMRS_RCCS_KNOWLEDGE_EMBED_MODEL:-/models/e5-base-v2}
-      # Knowledge ingest v2 (ADR-116 D-1..D-3, D-9); every default is off:
-      # pypdf text, Docling artifacts at /models/docling (used only when
-      # DOC_PARSER=docling), no GLiNER pre-tagging (empty = off), the
-      # extraction model picked from the registry (empty), automatic ingest
-      # of workflow outputs in lite mode. Weights are staged on the host with
-      # `python -m umrs.knowledge.ingest_models stage docling|gliner`.
-      UMRS_KNOWLEDGE_DOC_PARSER: ${UMRS_RCCS_KNOWLEDGE_DOC_PARSER:-pypdf}
-      UMRS_KNOWLEDGE_DOCLING_ARTIFACTS: ${UMRS_RCCS_KNOWLEDGE_DOCLING_ARTIFACTS:-/models/docling}
+      # Knowledge ingest v2 (ADR-116 D-1..D-3, D-9; defaults on since the
+      # 2026-11-13 amendment): Docling parses, GLiNER pre-tags, both from the
+      # weights the image bundles (empty = /opt/umrs/models/...). The
+      # umrs-docmodels service below holds them warm; this server calls it
+      # first (DOCMODELS_URL; "off" skips it, start.sh sets "off" when the
+      # service is disabled) with the shared token start.sh generates. When
+      # the service cannot answer, LOCAL_FALLBACK says what runs here:
+      # sandbox (default: the ingest sandbox only, never this process), off,
+      # or inprocess; else pypdf and no hints, with a note. A document the
+      # service refused is never parsed here. MAX_PAGES / MAX_BYTES are the
+      # same .env values the service reads. DOC_PARSER=pypdf or
+      # GLINER_MODEL=off switches a stage off; a front-specific model dir
+      # (/models/<dir>, staged with `python -m umrs.knowledge.ingest_models
+      # stage docling|gliner`) is not the shared one, so the service answers
+      # model_mismatch and the stage falls back as above. The extraction model
+      # is picked from the registry (empty); automatic ingest of workflow
+      # outputs runs in lite mode.
+      UMRS_KNOWLEDGE_DOC_PARSER: ${UMRS_RCCS_KNOWLEDGE_DOC_PARSER:-docling}
+      UMRS_KNOWLEDGE_DOCLING_ARTIFACTS: ${UMRS_RCCS_KNOWLEDGE_DOCLING_ARTIFACTS:-}
       UMRS_KNOWLEDGE_GLINER_MODEL: ${UMRS_RCCS_KNOWLEDGE_GLINER_MODEL:-}
+      UMRS_KNOWLEDGE_DOCMODELS_URL: ${UMRS_RCCS_KNOWLEDGE_DOCMODELS_URL:-http://127.0.0.1:8091}
+      UMRS_KNOWLEDGE_DOCMODELS_TOKEN: ${UMRS_DOCMODELS_TOKEN:-}
+      UMRS_KNOWLEDGE_DOCMODELS_LOCAL_FALLBACK: ${UMRS_RCCS_KNOWLEDGE_DOCMODELS_LOCAL_FALLBACK:-sandbox}
+      UMRS_KNOWLEDGE_DOCLING_MAX_PAGES: ${UMRS_KNOWLEDGE_DOCLING_MAX_PAGES:-80}
+      UMRS_KNOWLEDGE_DOCLING_MAX_BYTES: ${UMRS_KNOWLEDGE_DOCLING_MAX_BYTES:-67108864}
       UMRS_KNOWLEDGE_EXTRACT_MODEL: ${UMRS_RCCS_KNOWLEDGE_EXTRACT_MODEL:-}
       UMRS_KNOWLEDGE_EXTRACT_AUTO_MODE: ${UMRS_RCCS_KNOWLEDGE_EXTRACT_AUTO_MODE:-lite}
       # Uploaded-workflow step lane (ADR-074; rccs step-lane spec §10): the
@@ -392,15 +409,31 @@ services:
       # KNOWLEDGE_EMBED lane (audit B3 activation): pre-staged local
       # SentenceTransformer dir — degraded no-op when unset (umrs/a75d909).
       UMRS_KNOWLEDGE_EMBED_MODEL: ${UMRS_AI4S_KNOWLEDGE_EMBED_MODEL:-/models/e5-base-v2}
-      # Knowledge ingest v2 (ADR-116 D-1..D-3, D-9); every default is off:
-      # pypdf text, Docling artifacts at /models/docling (used only when
-      # DOC_PARSER=docling), no GLiNER pre-tagging (empty = off), the
-      # extraction model picked from the registry (empty), automatic ingest
-      # of workflow outputs in lite mode. Weights are staged on the host with
-      # `python -m umrs.knowledge.ingest_models stage docling|gliner`.
-      UMRS_KNOWLEDGE_DOC_PARSER: ${UMRS_AI4S_KNOWLEDGE_DOC_PARSER:-pypdf}
-      UMRS_KNOWLEDGE_DOCLING_ARTIFACTS: ${UMRS_AI4S_KNOWLEDGE_DOCLING_ARTIFACTS:-/models/docling}
+      # Knowledge ingest v2 (ADR-116 D-1..D-3, D-9; defaults on since the
+      # 2026-11-13 amendment): Docling parses, GLiNER pre-tags, both from the
+      # weights the image bundles (empty = /opt/umrs/models/...). The
+      # umrs-docmodels service below holds them warm; this server calls it
+      # first (DOCMODELS_URL; "off" skips it, start.sh sets "off" when the
+      # service is disabled) with the shared token start.sh generates. When
+      # the service cannot answer, LOCAL_FALLBACK says what runs here:
+      # sandbox (default: the ingest sandbox only, never this process), off,
+      # or inprocess; else pypdf and no hints, with a note. A document the
+      # service refused is never parsed here. MAX_PAGES / MAX_BYTES are the
+      # same .env values the service reads. DOC_PARSER=pypdf or
+      # GLINER_MODEL=off switches a stage off; a front-specific model dir
+      # (/models/<dir>, staged with `python -m umrs.knowledge.ingest_models
+      # stage docling|gliner`) is not the shared one, so the service answers
+      # model_mismatch and the stage falls back as above. The extraction model
+      # is picked from the registry (empty); automatic ingest of workflow
+      # outputs runs in lite mode.
+      UMRS_KNOWLEDGE_DOC_PARSER: ${UMRS_AI4S_KNOWLEDGE_DOC_PARSER:-docling}
+      UMRS_KNOWLEDGE_DOCLING_ARTIFACTS: ${UMRS_AI4S_KNOWLEDGE_DOCLING_ARTIFACTS:-}
       UMRS_KNOWLEDGE_GLINER_MODEL: ${UMRS_AI4S_KNOWLEDGE_GLINER_MODEL:-}
+      UMRS_KNOWLEDGE_DOCMODELS_URL: ${UMRS_AI4S_KNOWLEDGE_DOCMODELS_URL:-http://127.0.0.1:8091}
+      UMRS_KNOWLEDGE_DOCMODELS_TOKEN: ${UMRS_DOCMODELS_TOKEN:-}
+      UMRS_KNOWLEDGE_DOCMODELS_LOCAL_FALLBACK: ${UMRS_AI4S_KNOWLEDGE_DOCMODELS_LOCAL_FALLBACK:-sandbox}
+      UMRS_KNOWLEDGE_DOCLING_MAX_PAGES: ${UMRS_KNOWLEDGE_DOCLING_MAX_PAGES:-80}
+      UMRS_KNOWLEDGE_DOCLING_MAX_BYTES: ${UMRS_KNOWLEDGE_DOCLING_MAX_BYTES:-67108864}
       UMRS_KNOWLEDGE_EXTRACT_MODEL: ${UMRS_AI4S_KNOWLEDGE_EXTRACT_MODEL:-}
       UMRS_KNOWLEDGE_EXTRACT_AUTO_MODE: ${UMRS_AI4S_KNOWLEDGE_EXTRACT_AUTO_MODE:-lite}
       # Uploaded-workflow step lane (ADR-074; rccs step-lane spec §10): this
@@ -554,15 +587,31 @@ services:
       # KNOWLEDGE_EMBED lane (audit B3 activation): pre-staged local
       # SentenceTransformer dir — degraded no-op when unset (umrs/a75d909).
       UMRS_KNOWLEDGE_EMBED_MODEL: ${UMRS_BDRT_KNOWLEDGE_EMBED_MODEL:-/models/e5-base-v2}
-      # Knowledge ingest v2 (ADR-116 D-1..D-3, D-9); every default is off:
-      # pypdf text, Docling artifacts at /models/docling (used only when
-      # DOC_PARSER=docling), no GLiNER pre-tagging (empty = off), the
-      # extraction model picked from the registry (empty), automatic ingest
-      # of workflow outputs in lite mode. Weights are staged on the host with
-      # `python -m umrs.knowledge.ingest_models stage docling|gliner`.
-      UMRS_KNOWLEDGE_DOC_PARSER: ${UMRS_BDRT_KNOWLEDGE_DOC_PARSER:-pypdf}
-      UMRS_KNOWLEDGE_DOCLING_ARTIFACTS: ${UMRS_BDRT_KNOWLEDGE_DOCLING_ARTIFACTS:-/models/docling}
+      # Knowledge ingest v2 (ADR-116 D-1..D-3, D-9; defaults on since the
+      # 2026-11-13 amendment): Docling parses, GLiNER pre-tags, both from the
+      # weights the image bundles (empty = /opt/umrs/models/...). The
+      # umrs-docmodels service below holds them warm; this server calls it
+      # first (DOCMODELS_URL; "off" skips it, start.sh sets "off" when the
+      # service is disabled) with the shared token start.sh generates. When
+      # the service cannot answer, LOCAL_FALLBACK says what runs here:
+      # sandbox (default: the ingest sandbox only, never this process), off,
+      # or inprocess; else pypdf and no hints, with a note. A document the
+      # service refused is never parsed here. MAX_PAGES / MAX_BYTES are the
+      # same .env values the service reads. DOC_PARSER=pypdf or
+      # GLINER_MODEL=off switches a stage off; a front-specific model dir
+      # (/models/<dir>, staged with `python -m umrs.knowledge.ingest_models
+      # stage docling|gliner`) is not the shared one, so the service answers
+      # model_mismatch and the stage falls back as above. The extraction model
+      # is picked from the registry (empty); automatic ingest of workflow
+      # outputs runs in lite mode.
+      UMRS_KNOWLEDGE_DOC_PARSER: ${UMRS_BDRT_KNOWLEDGE_DOC_PARSER:-docling}
+      UMRS_KNOWLEDGE_DOCLING_ARTIFACTS: ${UMRS_BDRT_KNOWLEDGE_DOCLING_ARTIFACTS:-}
       UMRS_KNOWLEDGE_GLINER_MODEL: ${UMRS_BDRT_KNOWLEDGE_GLINER_MODEL:-}
+      UMRS_KNOWLEDGE_DOCMODELS_URL: ${UMRS_BDRT_KNOWLEDGE_DOCMODELS_URL:-http://127.0.0.1:8091}
+      UMRS_KNOWLEDGE_DOCMODELS_TOKEN: ${UMRS_DOCMODELS_TOKEN:-}
+      UMRS_KNOWLEDGE_DOCMODELS_LOCAL_FALLBACK: ${UMRS_BDRT_KNOWLEDGE_DOCMODELS_LOCAL_FALLBACK:-sandbox}
+      UMRS_KNOWLEDGE_DOCLING_MAX_PAGES: ${UMRS_KNOWLEDGE_DOCLING_MAX_PAGES:-80}
+      UMRS_KNOWLEDGE_DOCLING_MAX_BYTES: ${UMRS_KNOWLEDGE_DOCLING_MAX_BYTES:-67108864}
       UMRS_KNOWLEDGE_EXTRACT_MODEL: ${UMRS_BDRT_KNOWLEDGE_EXTRACT_MODEL:-}
       UMRS_KNOWLEDGE_EXTRACT_AUTO_MODE: ${UMRS_BDRT_KNOWLEDGE_EXTRACT_AUTO_MODE:-lite}
       # Uploaded-workflow step lane (ADR-074; rccs step-lane spec §10): this
@@ -713,15 +762,31 @@ services:
       # KNOWLEDGE_EMBED lane (audit B3 activation): pre-staged local
       # SentenceTransformer dir — degraded no-op when unset (umrs/a75d909).
       UMRS_KNOWLEDGE_EMBED_MODEL: ${UMRS_OCTOPUS_KNOWLEDGE_EMBED_MODEL:-/models/e5-base-v2}
-      # Knowledge ingest v2 (ADR-116 D-1..D-3, D-9); every default is off:
-      # pypdf text, Docling artifacts at /models/docling (used only when
-      # DOC_PARSER=docling), no GLiNER pre-tagging (empty = off), the
-      # extraction model picked from the registry (empty), automatic ingest
-      # of workflow outputs in lite mode. Weights are staged on the host with
-      # `python -m umrs.knowledge.ingest_models stage docling|gliner`.
-      UMRS_KNOWLEDGE_DOC_PARSER: ${UMRS_OCTOPUS_KNOWLEDGE_DOC_PARSER:-pypdf}
-      UMRS_KNOWLEDGE_DOCLING_ARTIFACTS: ${UMRS_OCTOPUS_KNOWLEDGE_DOCLING_ARTIFACTS:-/models/docling}
+      # Knowledge ingest v2 (ADR-116 D-1..D-3, D-9; defaults on since the
+      # 2026-11-13 amendment): Docling parses, GLiNER pre-tags, both from the
+      # weights the image bundles (empty = /opt/umrs/models/...). The
+      # umrs-docmodels service below holds them warm; this server calls it
+      # first (DOCMODELS_URL; "off" skips it, start.sh sets "off" when the
+      # service is disabled) with the shared token start.sh generates. When
+      # the service cannot answer, LOCAL_FALLBACK says what runs here:
+      # sandbox (default: the ingest sandbox only, never this process), off,
+      # or inprocess; else pypdf and no hints, with a note. A document the
+      # service refused is never parsed here. MAX_PAGES / MAX_BYTES are the
+      # same .env values the service reads. DOC_PARSER=pypdf or
+      # GLINER_MODEL=off switches a stage off; a front-specific model dir
+      # (/models/<dir>, staged with `python -m umrs.knowledge.ingest_models
+      # stage docling|gliner`) is not the shared one, so the service answers
+      # model_mismatch and the stage falls back as above. The extraction model
+      # is picked from the registry (empty); automatic ingest of workflow
+      # outputs runs in lite mode.
+      UMRS_KNOWLEDGE_DOC_PARSER: ${UMRS_OCTOPUS_KNOWLEDGE_DOC_PARSER:-docling}
+      UMRS_KNOWLEDGE_DOCLING_ARTIFACTS: ${UMRS_OCTOPUS_KNOWLEDGE_DOCLING_ARTIFACTS:-}
       UMRS_KNOWLEDGE_GLINER_MODEL: ${UMRS_OCTOPUS_KNOWLEDGE_GLINER_MODEL:-}
+      UMRS_KNOWLEDGE_DOCMODELS_URL: ${UMRS_OCTOPUS_KNOWLEDGE_DOCMODELS_URL:-http://127.0.0.1:8091}
+      UMRS_KNOWLEDGE_DOCMODELS_TOKEN: ${UMRS_DOCMODELS_TOKEN:-}
+      UMRS_KNOWLEDGE_DOCMODELS_LOCAL_FALLBACK: ${UMRS_OCTOPUS_KNOWLEDGE_DOCMODELS_LOCAL_FALLBACK:-sandbox}
+      UMRS_KNOWLEDGE_DOCLING_MAX_PAGES: ${UMRS_KNOWLEDGE_DOCLING_MAX_PAGES:-80}
+      UMRS_KNOWLEDGE_DOCLING_MAX_BYTES: ${UMRS_KNOWLEDGE_DOCLING_MAX_BYTES:-67108864}
       UMRS_KNOWLEDGE_EXTRACT_MODEL: ${UMRS_OCTOPUS_KNOWLEDGE_EXTRACT_MODEL:-}
       UMRS_KNOWLEDGE_EXTRACT_AUTO_MODE: ${UMRS_OCTOPUS_KNOWLEDGE_EXTRACT_AUTO_MODE:-lite}
       # Uploaded-workflow step lane (ADR-074; rccs step-lane spec §10): this
@@ -787,6 +852,86 @@ services:
       umrs-server-rccs:
         condition: service_healthy
 
+  # ─── Knowledge ingest models (Docling + GLiNER), one for all servers ─────
+  # ADR-116 amendment (2026-11-13): the models stay loaded in one long-running
+  # process per host instead of a cold load per document. Same image as the
+  # servers, which bundles the weights at build time; the servers call it
+  # first (UMRS_KNOWLEDGE_DOCMODELS_URL) and do NOT depend on it: while it is
+  # starting, busy or down they fall back as their LOCAL_FALLBACK allows (the
+  # ingest sandbox by default, never their own process), else pypdf and no
+  # hints, with a note on the job.
+  #
+  # Network: the servers run with network_mode: host and cannot join a
+  # compose network, so this service publishes one port on LOOPBACK only
+  # (127.0.0.1:8091, the servers' default URL). Its only network is internal
+  # (no route off the host): checked 2026-11-13 under rootless podman 5.8
+  # (netavark + pasta), a loopback-published port still reaches a container on
+  # an internal network while its own outbound connections fail.
+  # Hardening: no .env (its one secret is its own token), no podman socket,
+  # no SSH keys, uid 65534 (not root), read-only root filesystem with a small
+  # /tmp, every capability dropped, no-new-privileges, offline hub flags. It
+  # parses bytes and tags text. /parse, /tag and /info need the shared token
+  # (UMRS_DOCMODELS_TOKEN, generated by start.sh), and a client checks the
+  # listener holds it before sending anything (GET /proof). A request that
+  # overruns its deadline makes the process exit; `restart` brings it back.
+  # The healthcheck is /livez (the process serves): a service whose models
+  # never load answers 503 at /readyz but blocks nothing.
+  # Memory: data0 has 15 GB for the four servers, Postgres, SeaweedFS and the
+  # CI runner, so this is ONE service for the four fronts. The converge
+  # writes UMRS_DOCMODELS_MEM_LIMIT / UMRS_DOCMODELS_CPUS into .env ("0" =
+  # no limit) only as far as the rootless podman has the memory / cpu cgroup
+  # controllers; a limit without its controller fails the container create.
+  umrs-docmodels:
+    image: localhost/umrs-server:latest
+    container_name: umrs-docmodels
+    restart: unless-stopped
+    user: "65534:65534"
+    command: ["python", "-m", "umrs.knowledge.docmodels_server"]
+    networks: [docmodels-internal]
+    ports:
+      - "127.0.0.1:${UMRS_DOCMODELS_HOST_PORT:-8091}:8091"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=512m,mode=1777
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 512
+    mem_limit: ${UMRS_DOCMODELS_MEM_LIMIT:-6g}
+    cpus: ${UMRS_DOCMODELS_CPUS:-4}
+    environment:
+      UMRS_DOCMODELS_PORT: "8091"
+      UMRS_DOCMODELS_TOKEN: ${UMRS_DOCMODELS_TOKEN:-}
+      # The shared models. Empty = the bundled weights; /models/<dir> = a host
+      # copy (below, readable by uid 65534). A server set to another directory
+      # is answered model_mismatch, never served this one.
+      UMRS_KNOWLEDGE_DOC_PARSER: ${UMRS_DOCMODELS_DOC_PARSER:-docling}
+      UMRS_KNOWLEDGE_DOCLING_ARTIFACTS: ${UMRS_DOCMODELS_DOCLING_ARTIFACTS:-}
+      UMRS_KNOWLEDGE_GLINER_MODEL: ${UMRS_DOCMODELS_GLINER_MODEL:-}
+      # The same .env values the four servers read: one cap on both sides.
+      UMRS_KNOWLEDGE_DOCLING_MAX_PAGES: ${UMRS_KNOWLEDGE_DOCLING_MAX_PAGES:-80}
+      UMRS_KNOWLEDGE_DOCLING_MAX_BYTES: ${UMRS_KNOWLEDGE_DOCLING_MAX_BYTES:-67108864}
+      UMRS_DOCMODELS_CONCURRENCY: ${UMRS_DOCMODELS_CONCURRENCY:-1}
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+      HF_HOME: /tmp/hf
+      HOME: /tmp
+      XDG_CACHE_HOME: /tmp/.cache
+      # Threads = the CPU quota; torch sees every host core otherwise.
+      OMP_NUM_THREADS: "4"
+      MKL_NUM_THREADS: "4"
+      PYTHONUNBUFFERED: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+    volumes:
+      # Host-staged overrides only (read-only); the defaults need nothing.
+      - ./models:/models:ro,z
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:8091/livez"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+
   # ─── MCP Apps — Interactive UI server ────────────────────────────────────
   mcp-apps:
     build:
@@ -814,6 +959,11 @@ services:
       - umrs-server-rccs
       - umrs-server-ai4s
       - umrs-server-bdrt
+
+networks:
+  # umrs-docmodels only: no route off the host (podman/docker `internal`).
+  docmodels-internal:
+    internal: true
 
 volumes:
   umrs_pg_data:

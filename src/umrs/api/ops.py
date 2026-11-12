@@ -653,6 +653,10 @@ class ConnectInfoResponse(BaseModel):
     # so a client can tell the user which model did the work. Absent when no
     # role is live.
     role_models: dict[str, list[str]] | None = None
+    # ADR-116 amendment (2026-11-13): Docling and GLiNER settings and whether
+    # the umrs-docmodels service answers. Address-free (no URL, no path):
+    # connect-info is readable without signing in.
+    knowledge_models: dict[str, Any] | None = None
 
 
 @router.get(
@@ -716,8 +720,20 @@ def ops_connect_info(
     if default_models:
         result["default_models"] = default_models
         result["role_models"] = connect_info_role_models()
+    _add_knowledge_models(result)
 
     return result
+
+
+def _add_knowledge_models(result: dict[str, Any]) -> None:
+    """ADR-116 amendment 2026-11-13: the ``knowledge_models`` block. A status
+    display must never break discovery, so a failure only leaves it out."""
+    from .connect_info_knowledge import connect_info_knowledge_models
+
+    try:
+        result["knowledge_models"] = connect_info_knowledge_models()
+    except Exception:  # display only; logged with the traceback
+        logger.debug("connect-info knowledge_models skipped", exc_info=True)
 
 
 # ADR-106 D-1: SERVICE_ROLES (the roles a service tier can fill) is defined

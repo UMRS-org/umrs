@@ -1,462 +1,208 @@
-"""Stage the knowledge ingest models (Docling, GLiNER) for offline use (ADR-116 D-9).
+"""Knowledge ingest model settings (ADR-116 D-9) and the staging CLI.
 
-UMRS never downloads a model at runtime (offline rule). A maintainer stages
-the weights once, with network, into the front's ``/models``::
+UMRS never downloads a model at runtime (offline rule). The server image
+build stages Docling and GLiNER into ``/opt/umrs/models`` (the bundled
+defaults); a maintainer may stage other copies once, with network, into the
+front's ``/models`` and point the settings below at them::
 
     python -m umrs.knowledge.ingest_models stage docling --dest /models/docling
     python -m umrs.knowledge.ingest_models stage gliner --dest /models/gliner_medium-v2.1
+    python -m umrs.knowledge.ingest_models show
 
-The understand stage then loads them offline:
+The staging code, the pins and the staged-directory checks live in
+``ingest_models_stage`` (standard library only, the one file the image's
+model stage copies) and are re-exported here.
 
-- Docling: ``PdfPipelineOptions(artifacts_path=<dir>, do_ocr=False)``. Only the
-  layout model and TableFormer are staged; OCR, picture classification, code
-  and formula models are not.
-- GLiNER: ``GLiNER.from_pretrained(<dir>, local_files_only=True)`` under
-  ``HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1``. The backbone's tokenizer and
-  config are staged inside the directory (``backbone/``), the tokenizer is
-  also saved at the top level, and the backbone config is written into
-  ``gliner_config.json``, so nothing names a hub repository at load time and
-  the directory still loads after it is moved or mounted elsewhere.
+Settings (read by the understand stage and the docmodels service). This
+module is their one source of defaults; ``doc_parse``, ``pretag`` and the
+service read them through the ``configured_*`` functions below. Since
+2026-11-13 both models are on by default, with their weights baked into the
+server image:
 
-Settings (read by the understand stage):
+- ``UMRS_KNOWLEDGE_DOC_PARSER``: ``docling`` (default) or ``pypdf``;
+  ``off``, ``none``, ``false`` and ``0`` also mean ``pypdf``.
+- ``UMRS_KNOWLEDGE_DOCLING_ARTIFACTS``: Docling's staged directory; empty
+  means the bundled ``/opt/umrs/models/docling``.
+- ``UMRS_KNOWLEDGE_GLINER_MODEL``: GLiNER's staged directory; empty means
+  the bundled ``/opt/umrs/models/gliner_medium-v2.1``; ``off``, ``none``,
+  ``false`` and ``0`` switch pre-tagging off.
+- ``UMRS_KNOWLEDGE_DOCMODELS_URL``: the shared ``umrs-docmodels`` service,
+  asked before the local path; empty or ``off`` means local only.
+- ``UMRS_KNOWLEDGE_DOCMODELS_TOKEN``: the service's shared token (umrs-front
+  generates one per host); empty means none is sent.
+- ``UMRS_KNOWLEDGE_DOCMODELS_LOCAL_FALLBACK`` (default ``sandbox``): what
+  may run locally when a service URL is set and the service could not
+  answer (busy, loading, down): ``sandbox`` only the one-shot ingest sandbox
+  (``UMRS_EMBEDDING_SANDBOX=podman``, which frees its memory), ``inprocess``
+  also this server process (the models then stay loaded in it), ``off``
+  nothing. A refusal about the document itself (``SERVICE_FINAL_REASONS``)
+  never runs locally. Without a service URL the local path always runs.
+- ``UMRS_KNOWLEDGE_DOCMODELS_TIMEOUT_S`` (default 120): seconds one parse,
+  and separately one tagging, may take per document, outside the LLM
+  extraction budget (``docmodels_budget``).
+- ``UMRS_KNOWLEDGE_DOCLING_MAX_PAGES`` (default 80) and
+  ``UMRS_KNOWLEDGE_DOCLING_MAX_BYTES`` (default 64 MiB): a longer PDF, or a
+  larger document, is not given to Docling (``doc_parser_fallback:
+  too_many_pages`` / ``too_large``). The service reads the same two
+  settings, so one value caps both sides.
 
-- ``UMRS_KNOWLEDGE_DOC_PARSER``: ``pypdf`` (default) or ``docling``.
-- ``UMRS_KNOWLEDGE_DOCLING_ARTIFACTS``: Docling's staged directory, default
-  ``/models/docling``.
-- ``UMRS_KNOWLEDGE_GLINER_MODEL``: GLiNER's staged directory; unset or empty
-  means no pre-tagging.
-
-Only weights under a permissive licence are staged (apache-2.0, mit) unless
-``--allow-licence`` is passed. This module imports only the standard library
-at load time; docling, huggingface_hub and transformers are imported inside
-the functions that need them.
+This module imports only the standard library at load time.
 """
 
 from __future__ import annotations
 
 import argparse
-import inspect
-import json
 import os
 import sys
-from collections.abc import Callable, Iterable
-from dataclasses import dataclass
-from pathlib import Path
-from typing import Any, Protocol
+import time
+
+from . import ingest_models_stage as _stage_module
+from .ingest_models_stage import (
+    BUNDLED_DOCLING_DIR,
+    BUNDLED_GLINER_DIR,
+    BUNDLED_MODELS_ROOT,
+    DEFAULT_GLINER_REPO,
+    DOCLING_REVISIONS,
+    DOCLING_SUBDIRS,
+    GLINER_BACKBONE_REVISION,
+    GLINER_REPO,
+    GLINER_REVISION,
+    GLINER_WEIGHTS,
+    MARKER,
+    LicenceError,
+    StagingError,
+    gliner_revision,
+    is_docling_staged,
+    is_gliner_staged,
+    stage_docling,
+    stage_gliner,
+)
 
 DOC_PARSER_ENV = "UMRS_KNOWLEDGE_DOC_PARSER"
 DOCLING_ARTIFACTS_ENV = "UMRS_KNOWLEDGE_DOCLING_ARTIFACTS"
 GLINER_MODEL_ENV = "UMRS_KNOWLEDGE_GLINER_MODEL"
+DOCMODELS_URL_ENV = "UMRS_KNOWLEDGE_DOCMODELS_URL"
+DOCMODELS_TOKEN_ENV = "UMRS_KNOWLEDGE_DOCMODELS_TOKEN"
+DOCMODELS_LOCAL_FALLBACK_ENV = "UMRS_KNOWLEDGE_DOCMODELS_LOCAL_FALLBACK"
+DOCMODELS_TIMEOUT_ENV = "UMRS_KNOWLEDGE_DOCMODELS_TIMEOUT_S"
+DOCLING_MAX_PAGES_ENV = "UMRS_KNOWLEDGE_DOCLING_MAX_PAGES"
+DOCLING_MAX_BYTES_ENV = "UMRS_KNOWLEDGE_DOCLING_MAX_BYTES"
 DOC_PARSERS = ("pypdf", "docling")
-DEFAULT_DOC_PARSER = "pypdf"
-DEFAULT_DOCLING_ARTIFACTS = "/models/docling"
-DEFAULT_GLINER_REPO = "urchade/gliner_medium-v2.1"
-
-PERMISSIVE_LICENCES = frozenset({"apache-2.0", "mit"})
-MARKER = ".umrs-staged.json"
-
-# Docling download flags turned on; every other ``with_*`` flag of the
-# installed docling's download_models() is passed as False.
-DOCLING_WANTED = frozenset({"with_layout", "with_tableformer"})
-# Sub-directories docling 2.150 writes for the layout model (heron) and
-# TableFormer; used when a directory carries no marker file.
-DOCLING_SUBDIRS = (
-    "docling-project--docling-layout-heron",
-    "docling-project--docling-models",
+DEFAULT_DOC_PARSER = "docling"
+# Values that switch a default-on model off.
+OFF_VALUES = frozenset({"off", "none", "false", "0"})
+DEFAULT_DOCMODELS_TIMEOUT_S = 120.0
+DEFAULT_DOCLING_MAX_PAGES = 80
+DEFAULT_DOCLING_MAX_BYTES = 64 * 1024 * 1024
+LOCAL_FALLBACKS = ("off", "sandbox", "inprocess")
+DEFAULT_LOCAL_FALLBACK = "sandbox"
+# Service answers about the document itself (or a transfer that died after
+# the document was sent): the same bytes are never parsed or tagged again
+# locally, whatever the local-fallback setting.
+SERVICE_FINAL_REASONS = frozenset(
+    {
+        "too_large",
+        "too_many_pages",
+        "parse_failed",
+        "tag_failed",
+        "bad_request",
+        "transport_error",
+        "timeout",
+    }
 )
-
-GLINER_CONFIG = "gliner_config.json"
-GLINER_WEIGHTS = ("model.safetensors", "pytorch_model.bin")
-BACKBONE_DIR = "backbone"
-# Config and tokenizer files of a backbone; never its weights (GLiNER's own
-# weights include the encoder).
-BACKBONE_FILES = [
-    "config.json",
-    "tokenizer_config.json",
-    "tokenizer.json",
-    "special_tokens_map.json",
-    "added_tokens.json",
-    "spm.model",
-    "sentencepiece.bpe.model",
-    "vocab.txt",
-    "vocab.json",
-    "merges.txt",
-]
-
-
-class StagingError(RuntimeError):
-    """Staging failed or produced a directory that would not load offline."""
-
-
-class LicenceError(StagingError):
-    """The repository's licence is not one this module stages by default."""
 
 
 # ── settings ────────────────────────────────────────────────────────────────
 
 
+def _setting(name: str) -> str:
+    return os.environ.get(name, "").strip()
+
+
 def configured_doc_parser() -> str:
-    """``docling`` or ``pypdf``; an unknown value falls back to ``pypdf``."""
-    value = os.environ.get(DOC_PARSER_ENV, "").strip().lower()
-    return value if value in DOC_PARSERS else DEFAULT_DOC_PARSER
+    """``docling`` (default; any other value too) or ``pypdf`` (``pypdf`` or an off value)."""
+    value = _setting(DOC_PARSER_ENV).lower()
+    return "pypdf" if value == "pypdf" or value in OFF_VALUES else DEFAULT_DOC_PARSER
 
 
 def configured_docling_artifacts() -> str:
-    return (
-        os.environ.get(DOCLING_ARTIFACTS_ENV, "").strip() or DEFAULT_DOCLING_ARTIFACTS
-    )
+    """Docling's staged directory; empty means the bundled one."""
+    return _setting(DOCLING_ARTIFACTS_ENV) or BUNDLED_DOCLING_DIR
 
 
-def configured_gliner_model() -> str:
-    """The staged GLiNER directory, or ``""`` (pre-tagging off)."""
-    return os.environ.get(GLINER_MODEL_ENV, "").strip()
-
-
-# ── staged-directory checks ─────────────────────────────────────────────────
-
-
-def _read_marker(path: Path) -> dict[str, Any]:
-    try:
-        data = json.loads((path / MARKER).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
-    return data if isinstance(data, dict) else {}
-
-
-def _write_marker(path: Path, data: dict[str, Any]) -> None:
-    (path / MARKER).write_text(
-        json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
-
-
-def _has_file(path: Path) -> bool:
-    return path.is_dir() and any(p.is_file() for p in path.rglob("*"))
-
-
-def is_docling_staged(model_dir: str | os.PathLike[str]) -> bool:
-    """A directory Docling can use as ``artifacts_path`` with OCR off."""
-    path = Path(model_dir)
-    if not path.is_dir():
-        return False
-    subdirs = _read_marker(path).get("subdirs") or list(DOCLING_SUBDIRS)
-    return all(_has_file(path / str(name)) for name in subdirs)
-
-
-def is_gliner_staged(model_dir: str | os.PathLike[str]) -> bool:
-    """A directory GLiNER loads from with ``local_files_only=True``, offline."""
-    path = Path(model_dir)
-    if not (path / GLINER_CONFIG).is_file():
-        return False
-    if not any((path / name).is_file() for name in GLINER_WEIGHTS):
-        return False
-    return (path / "tokenizer_config.json").is_file() and (
-        path / BACKBONE_DIR / "config.json"
-    ).is_file()
-
-
-# ── Docling ─────────────────────────────────────────────────────────────────
-
-
-def _docling_downloader() -> Callable[..., Any]:
-    from docling.utils.model_downloader import download_models
-
-    return download_models
-
-
-def docling_download_flags(download: Callable[..., Any]) -> dict[str, bool]:
-    """Layout and TableFormer on, every other ``with_*`` flag off."""
-    params = inspect.signature(download).parameters
-    missing = DOCLING_WANTED - set(params)
-    if missing:
-        raise StagingError(f"docling download_models() lacks {sorted(missing)}")
-    return {name: name in DOCLING_WANTED for name in params if name.startswith("with_")}
-
-
-def _dist_version(name: str) -> str:
-    from importlib.metadata import PackageNotFoundError, version
-
-    try:
-        return version(name)
-    except PackageNotFoundError:
+def configured_gliner_dir() -> str:
+    """GLiNER's staged directory (empty = the bundled one), or ``""`` when off."""
+    value = _setting(GLINER_MODEL_ENV)
+    if value.lower() in OFF_VALUES:
         return ""
+    return value or BUNDLED_GLINER_DIR
 
 
-def stage_docling(
-    dest: str | os.PathLike[str], *, download: Callable[..., Any] | None = None
-) -> Path:
-    """Download Docling's layout and TableFormer weights into ``dest`` (needs network)."""
-    path = Path(dest)
-    path.mkdir(parents=True, exist_ok=True)
-    fetch = download or _docling_downloader()
-    fetch(output_dir=path, progress=False, **docling_download_flags(fetch))
-    subdirs = sorted(p.name for p in path.iterdir() if _has_file(p))
-    _write_marker(
-        path,
-        {"kind": "docling", "docling": _dist_version("docling"), "subdirs": subdirs},
-    )
-    if not is_docling_staged(path):
-        raise StagingError(
-            f"docling staged into {path} without {list(DOCLING_SUBDIRS)}"
-        )
-    return path
+def configured_docmodels_url() -> str:
+    """The docmodels service base URL, or ``""`` (unset or ``off``: local only)."""
+    value = _setting(DOCMODELS_URL_ENV)
+    return "" if value.lower() in OFF_VALUES else value.rstrip("/")
 
 
-# ── GLiNER ──────────────────────────────────────────────────────────────────
+def configured_docmodels_token() -> str:
+    """The token the client proves the service with and sends ("" = none)."""
+    return _setting(DOCMODELS_TOKEN_ENV)
 
 
-@dataclass(frozen=True)
-class RepoInfo:
-    sha: str
-    licences: tuple[str, ...]
-    files: tuple[str, ...]
+def configured_local_fallback() -> str:
+    """``sandbox`` (default), ``inprocess`` or ``off`` (also an off value)."""
+    value = _setting(DOCMODELS_LOCAL_FALLBACK_ENV).lower()
+    if value in OFF_VALUES:
+        return "off"
+    return value if value in LOCAL_FALLBACKS else DEFAULT_LOCAL_FALLBACK
 
 
-class Hub(Protocol):
-    def info(self, repo: str, revision: str | None) -> RepoInfo: ...
-
-    def download(
-        self, repo: str, dest: Path, revision: str | None, patterns: list[str]
-    ) -> None: ...
-
-
-def _licences_from(card_licence: Any, tags: Iterable[str]) -> tuple[str, ...]:
-    if isinstance(card_licence, str):
-        values = [card_licence]
-    elif isinstance(card_licence, (list, tuple)):
-        values = [str(v) for v in card_licence]
-    else:
-        values = [t.split(":", 1)[1] for t in tags if t.startswith("license:")]
-    return tuple(v.strip().lower() for v in values if v and v.strip())
-
-
-class HuggingFaceHub:
-    """The real hub (huggingface_hub, imported on use)."""
-
-    def info(self, repo: str, revision: str | None) -> RepoInfo:
-        from huggingface_hub import HfApi
-
-        info = HfApi().model_info(repo, revision=revision)
-        card = getattr(info, "card_data", None)
-        licence = card.get("license") if card is not None else None
-        files = tuple(s.rfilename for s in info.siblings or ())
-        return RepoInfo(
-            sha=info.sha or "",
-            licences=_licences_from(licence, info.tags or ()),
-            files=files,
-        )
-
-    def download(
-        self, repo: str, dest: Path, revision: str | None, patterns: list[str]
-    ) -> None:
-        from huggingface_hub import snapshot_download
-
-        snapshot_download(
-            repo, local_dir=str(dest), revision=revision, allow_patterns=patterns
-        )
-
-
-def _save_tokenizer(source: Path, dest: Path) -> None:
-    """Load the backbone tokenizer offline and save it at ``dest``'s top level.
-
-    A DeBERTa-v3 backbone ships only ``spm.model``; converting it needs
-    ``sentencepiece`` and ``protobuf``. Any failure is a StagingError, so the
-    CLI names it instead of printing a traceback.
-    """
+def _positive(name: str, default: float) -> float:
     try:
-        from transformers import AutoTokenizer
-
-        tokenizer = AutoTokenizer.from_pretrained(str(source), local_files_only=True)
-        tokenizer.save_pretrained(str(dest))
-    except (ImportError, OSError, ValueError) as exc:
-        raise StagingError(
-            f"the backbone tokenizer in {source} could not be converted "
-            f"({type(exc).__name__}: {str(exc)[:300]}); the server image needs "
-            "transformers, sentencepiece and protobuf (umrs[kg-ingest])"
-        ) from exc
+        value = float(_setting(name) or default)
+    except ValueError:
+        return default
+    return value if value > 0 else default
 
 
-def check_licence(repo: str, info: RepoInfo, *, allow: bool) -> str:
-    """The licence string to record; raises LicenceError unless permissive or allowed."""
-    licence = ",".join(info.licences) or "unknown"
-    permissive = bool(info.licences) and set(info.licences) <= PERMISSIVE_LICENCES
-    if not permissive and not allow:
-        raise LicenceError(
-            f"{repo} licence is {licence!r}, not one of {sorted(PERMISSIVE_LICENCES)}; "
-            "pass --allow-licence only after checking the terms"
-        )
-    return licence
+def configured_docmodels_timeout() -> float:
+    """Seconds one parse (or one tagging) may take per document (default 120)."""
+    return _positive(DOCMODELS_TIMEOUT_ENV, DEFAULT_DOCMODELS_TIMEOUT_S)
 
 
-def gliner_weight_pattern(files: Iterable[str]) -> str:
-    """``model.safetensors`` when the repo has it, else ``pytorch_model.bin``."""
-    names = set(files)
-    for name in GLINER_WEIGHTS:
-        if name in names:
-            return name
-    raise StagingError(
-        f"no GLiNER weights ({' or '.join(GLINER_WEIGHTS)}) in the repository"
-    )
+def configured_docling_max_pages() -> int:
+    """The longest PDF, in pages, given to Docling (default 80)."""
+    return int(_positive(DOCLING_MAX_PAGES_ENV, DEFAULT_DOCLING_MAX_PAGES))
 
 
-def _read_json(path: Path) -> dict[str, Any]:
-    data = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(data, dict):
-        raise StagingError(f"{path} is not a JSON object")
-    return data
+def configured_docling_max_bytes() -> int:
+    """The largest document, in bytes, given to Docling (default 64 MiB)."""
+    return int(_positive(DOCLING_MAX_BYTES_ENV, DEFAULT_DOCLING_MAX_BYTES))
 
 
-def backbone_repo(config: dict[str, Any], marker: dict[str, Any]) -> str:
-    """The hub id of the encoder GLiNER was trained on (``model_name``)."""
-    name = str(marker.get("backbone") or config.get("model_name") or "").strip()
-    if not name or name.startswith(("/", ".")):
-        raise StagingError(
-            f"{GLINER_CONFIG} names no backbone hub id (model_name={name!r})"
-        )
-    return name
+def docmodels_budget(deadline: float | None, now: float | None = None) -> float:
+    """Seconds one docmodels call (one parse, or one tagging) may take now.
 
-
-def offline_gliner_config(
-    config: dict[str, Any], backbone_config: dict[str, Any], model_name: str
-) -> dict[str, Any]:
-    """``config`` with the backbone config inlined and ``model_name`` pointed at the staged copy.
-
-    An ``encoder_config`` the repository already carries is kept as it is.
+    The rule: with ``T = configured_docmodels_timeout()``, a call gets ``T``
+    without a job deadline and ``min(T, deadline + T - now)`` with one. So
+    each call is capped at ``T`` and is not taken from the LLM window budget,
+    and no call runs past ``deadline + T``: the document models push a job
+    past its deadline by ``T`` at most, whatever the number of documents.
+    ``<= 0`` means the call is skipped (``budget_exhausted``).
     """
-    out = dict(config)
-    out["model_name"] = model_name
-    if isinstance(config.get("encoder_config"), dict):
-        return out
-    encoder = dict(backbone_config)
-    encoder.setdefault("model_type", "deberta-v2")
-    vocab = config.get("vocab_size", -1)
-    if isinstance(vocab, int) and vocab > 0:
-        encoder["vocab_size"] = vocab
-    out["encoder_config"] = encoder
-    return out
-
-
-def _fetch_gliner(
-    hub: Hub, repo: str, revision: str | None, path: Path, allow: bool
-) -> dict[str, Any]:
-    info = hub.info(repo, revision)
-    licence = check_licence(repo, info, allow=allow)
-    weights = gliner_weight_pattern(info.files)
-    hub.download(
-        repo, path, info.sha or revision, [GLINER_CONFIG, weights, "README.md"]
-    )
-    return {
-        "repo": repo,
-        "revision": info.sha or revision or "",
-        "licence": licence,
-        "weights": weights,
-    }
-
-
-def _fetch_backbone(hub: Hub, backbone: str, path: Path, allow: bool) -> dict[str, Any]:
-    info = hub.info(backbone, None)
-    licence = check_licence(backbone, info, allow=allow)
-    hub.download(backbone, path / BACKBONE_DIR, info.sha or None, BACKBONE_FILES)
-    if not (path / BACKBONE_DIR / "config.json").is_file():
-        raise StagingError(f"backbone {backbone} staged without config.json")
-    return {
-        "backbone": backbone,
-        "backbone_revision": info.sha,
-        "backbone_licence": licence,
-    }
-
-
-def stage_gliner(
-    dest: str | os.PathLike[str],
-    *,
-    repo: str = DEFAULT_GLINER_REPO,
-    revision: str | None = None,
-    allow_licence: bool = False,
-    mount_path: str | None = None,
-    hub: Hub | None = None,
-    save_tokenizer: Callable[[Path, Path], None] | None = None,
-) -> Path:
-    """Download a GLiNER model and its backbone tokenizer/config into ``dest`` (needs network).
-
-    ``mount_path`` is where the directory will be seen at load time (for
-    example ``/models/gliner_medium-v2.1`` inside the server container); it
-    defaults to ``dest``. The loader does not need it, because the backbone
-    config is inlined and the tokenizer sits at the top level.
-    """
-    path = Path(dest).resolve()
-    path.mkdir(parents=True, exist_ok=True)
-    client = hub or HuggingFaceHub()
-    marker = _fetch_gliner(client, repo, revision, path, allow_licence)
-    config = _read_json(path / GLINER_CONFIG)
-    marker.update(
-        _fetch_backbone(
-            client, backbone_repo(config, _read_marker(path)), path, allow_licence
-        )
-    )
-    (save_tokenizer or _save_tokenizer)(path / BACKBONE_DIR, path)
-    model_name = str(Path(mount_path or path) / BACKBONE_DIR)
-    backbone_config = _read_json(path / BACKBONE_DIR / "config.json")
-    rewritten = offline_gliner_config(config, backbone_config, model_name)
-    (path / GLINER_CONFIG).write_text(
-        json.dumps(rewritten, indent=2) + "\n", encoding="utf-8"
-    )
-    _write_marker(path, {"kind": "gliner", **marker})
-    if not is_gliner_staged(path):
-        raise StagingError(f"{repo} staged into {path} but the directory is incomplete")
-    return path
+    cap = configured_docmodels_timeout()
+    if deadline is None:
+        return cap
+    now = time.monotonic() if now is None else now
+    return min(cap, deadline + cap - now)
 
 
 # ── CLI ─────────────────────────────────────────────────────────────────────
 
 
-def _dir_size(path: Path) -> int:
-    return sum(p.stat().st_size for p in path.rglob("*") if p.is_file())
-
-
-def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="python -m umrs.knowledge.ingest_models")
-    sub = parser.add_subparsers(dest="command", required=True)
-    stage = sub.add_parser(
-        "stage", help="download a model for offline use (needs network)"
-    )
-    which = stage.add_subparsers(dest="model", required=True)
-    p_doc = which.add_parser("docling", help="Docling layout + TableFormer weights")
-    p_doc.add_argument("--dest", required=True)
-    p_gl = which.add_parser(
-        "gliner", help="a GLiNER model with its backbone tokenizer/config"
-    )
-    p_gl.add_argument("--dest", required=True)
-    p_gl.add_argument("--repo", default=DEFAULT_GLINER_REPO)
-    p_gl.add_argument("--revision", default=None)
-    p_gl.add_argument(
-        "--mount-path", default=None, help="the directory's path at load time"
-    )
-    p_gl.add_argument(
-        "--allow-licence",
-        action="store_true",
-        help="stage a non apache-2.0/mit repository",
-    )
-    sub.add_parser(
-        "show",
-        help="print the configured parser and models and whether they are staged",
-    )
-    return parser
-
-
-def _stage(args: argparse.Namespace) -> Path:
-    if args.model == "docling":
-        return stage_docling(args.dest)
-    return stage_gliner(
-        args.dest,
-        repo=args.repo,
-        revision=args.revision,
-        allow_licence=args.allow_licence,
-        mount_path=args.mount_path,
-    )
-
-
 def _show() -> int:
     docling_dir = configured_docling_artifacts()
-    gliner_dir = configured_gliner_model()
+    gliner_dir = configured_gliner_dir()
     parser = configured_doc_parser()
     docling_ok = is_docling_staged(docling_dir)
     gliner_ok = not gliner_dir or is_gliner_staged(gliner_dir)
@@ -468,22 +214,59 @@ def _show() -> int:
     print(
         f"{GLINER_MODEL_ENV}={gliner_dir} ({gliner_state})"
         if gliner_dir
-        else f"{GLINER_MODEL_ENV} unset (off)"
+        else f"{GLINER_MODEL_ENV}=off"
     )
+    print(f"{DOCMODELS_URL_ENV}={configured_docmodels_url() or '(local only)'}")
+    print(f"{DOCMODELS_LOCAL_FALLBACK_ENV}={configured_local_fallback()}")
     return 0 if gliner_ok and (docling_ok or parser == "pypdf") else 1
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = _parser().parse_args(argv)
+    parser = argparse.ArgumentParser(prog="python -m umrs.knowledge.ingest_models")
+    sub = parser.add_subparsers(dest="command", required=True)
+    _stage_module.add_stage_commands(sub)
+    sub.add_parser(
+        "show",
+        help="print the configured parser and models and whether they are staged",
+    )
+    args = parser.parse_args(argv)
     if args.command == "show":
         return _show()
-    try:
-        path = _stage(args)
-    except StagingError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 2
-    print(f"staged {args.model} -> {path} ({_dir_size(path) / 1e6:.0f} MB)")
-    return 0
+    return _stage_module.run_command(args)
+
+
+__all__ = [
+    "BUNDLED_DOCLING_DIR",
+    "BUNDLED_GLINER_DIR",
+    "BUNDLED_MODELS_ROOT",
+    "DEFAULT_GLINER_REPO",
+    "DOCLING_REVISIONS",
+    "DOCLING_SUBDIRS",
+    "GLINER_BACKBONE_REVISION",
+    "GLINER_REPO",
+    "GLINER_REVISION",
+    "GLINER_WEIGHTS",
+    "MARKER",
+    "SERVICE_FINAL_REASONS",
+    "LicenceError",
+    "StagingError",
+    "configured_doc_parser",
+    "configured_docling_artifacts",
+    "configured_docling_max_bytes",
+    "configured_docling_max_pages",
+    "configured_docmodels_timeout",
+    "configured_docmodels_token",
+    "configured_docmodels_url",
+    "configured_gliner_dir",
+    "configured_local_fallback",
+    "docmodels_budget",
+    "gliner_revision",
+    "is_docling_staged",
+    "is_gliner_staged",
+    "main",
+    "stage_docling",
+    "stage_gliner",
+]
 
 
 if __name__ == "__main__":

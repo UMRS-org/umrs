@@ -1,0 +1,76 @@
+Bundled knowledge ingest models (ADR-116 amendment, 2026-11-13)
+================================================================
+
+This directory holds model weights that Dockerfile.server staged at build
+time with `python ingest_models_stage.py stage docling|gliner`, each at a
+pinned commit; `ingest_models_stage.py verify` failed the build had any
+staged marker recorded another. They are
+redistributed unmodified, except that GLiNER's gliner_config.json is
+rewritten to load its backbone from the local backbone/ directory. Each
+staged directory carries the upstream model card (README.md) and a
+.umrs-staged.json marker that records what was staged.
+
+1. GLiNER medium v2.1 (entity pre-tagging)
+   Directory: gliner_medium-v2.1/
+   Source:    https://huggingface.co/urchade/gliner_medium-v2.1
+   Revision:  40ec419335d09393f298636f471328b722c6da9e (pinned)
+   Licence:   Apache-2.0 (model card "license: apache-2.0")
+              https://www.apache.org/licenses/LICENSE-2.0
+
+2. DeBERTa-v3-base tokenizer and config (GLiNER's backbone)
+   Directory: gliner_medium-v2.1/backbone/ (config and tokenizer files only;
+              the encoder weights are part of GLiNER's own weights)
+   Source:    https://huggingface.co/microsoft/deberta-v3-base
+   Revision:  8ccc9b6f36199bec6961081d44eb72fb3f7353f3 (pinned)
+   Licence:   MIT (model card "license: mit")
+
+   MIT License
+
+   Copyright (c) Microsoft Corporation.
+
+   Permission is hereby granted, free of charge, to any person obtaining a
+   copy of this software and associated documentation files (the
+   "Software"), to deal in the Software without restriction, including
+   without limitation the rights to use, copy, modify, merge, publish,
+   distribute, sublicense, and/or sell copies of the Software, and to permit
+   persons to whom the Software is furnished to do so, subject to the
+   following conditions:
+
+   The above copyright notice and this permission notice shall be included
+   in all copies or substantial portions of the Software.
+
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+   OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+   MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN
+   NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+   DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+   OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
+   USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+3. Docling layout model "heron" and its ONNX export
+   Directories: docling/docling-project--docling-layout-heron/
+                docling/docling-project--docling-layout-heron-onnx/
+   Source:    https://huggingface.co/docling-project/docling-layout-heron
+              https://huggingface.co/docling-project/docling-layout-heron-onnx
+   Revision:  8f39ad3c0b4c58e9c2d2c84a38465abf757272d8 (heron) and
+              40bde044036bb181c130ddf6c51792187268748f (heron-onnx) (pinned;
+              docling 2.150.0 itself would fetch "main", which these were on
+              2026-11-13)
+   Licence:   Apache-2.0 (model cards "license: apache-2.0")
+              https://www.apache.org/licenses/LICENSE-2.0
+
+4. Docling TableFormer (docling-models)
+   Directory: docling/docling-project--docling-models/
+   Source:    https://huggingface.co/docling-project/docling-models
+   Revision:  fc0f2d45e2218ea24bce5045f58a389aed16dc23 (pinned; docling
+              2.150.0's tag v2.3.0)
+   Licence:   CDLA-Permissive-2.0 (model card at v2.3.0
+              "license: cdla-permissive-2.0")
+              https://cdla.dev/permissive-2-0/
+
+The libraries that load these models are installed from the image lock:
+docling (MIT) and gliner (Apache-2.0). The full Apache License 2.0 text,
+which covers items 1 and 3, ships in the image at
+/usr/local/lib/python3.11/site-packages/gliner-*.dist-info/licenses/LICENSE.
+(docling's own dist-info carries no licence file; its licence is MIT per
+its package metadata.)

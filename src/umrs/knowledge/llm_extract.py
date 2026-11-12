@@ -679,11 +679,34 @@ def _within_job_budget(request: ExtractRequest, notes: list[str]) -> ExtractRequ
     return replace(request, mode="lite", deadline=None)
 
 
+def _after_hints(
+    request: ExtractRequest,
+    windows: list[Window],
+    run: list[Window],
+    hints: list[list[dict[str, Any]]],
+    notes: list[str],
+) -> tuple[ExtractRequest, list[Window], list[list[dict[str, Any]]]]:
+    """Tagging may run past the job deadline (``docmodels_budget`` lets it
+    reach deadline + T): re-check the job budget after it, so a document
+    that has run out still reads its first window (lite, outside the
+    deadline) instead of getting a negative window budget and no graph."""
+    if request.deadline is None or not request.job_spent():
+        return request, run, hints
+    lite = _within_job_budget(request, notes)
+    first = _selected(windows, lite.mode, lite.settings)
+    return lite, first, hints[: len(first)]
+
+
 def _run_windows(
-    request: ExtractRequest, windows: list[Window], run: list[Window], vocab: Any
+    request: ExtractRequest,
+    windows: list[Window],
+    run: list[Window],
+    hints: list[list[dict[str, Any]]],
+    vocab: Any,
 ) -> tuple[list[WindowResult], int]:
+    # The per-document window budget starts after the hints: tagging has its
+    # own budget (ingest_models.docmodels_budget), outside the LLM one.
     started = time.monotonic()
-    hints = _hints(request.tagger, run)
     caller = _Caller(request.chat)
     system = system_prompt(vocab)
     jobs = [
@@ -708,7 +731,9 @@ def extract_document(
         return None
     request = _within_job_budget(request, notes)
     run = _selected(windows, request.mode, request.settings)
-    done, late = _run_windows(request, windows, run, vocab)
+    hints = _hints(request.tagger, run)
+    request, run, hints = _after_hints(request, windows, run, hints, notes)
+    done, late = _run_windows(request, windows, run, hints, vocab)
     good = [r for r in done if r.data is not None]
     if not good:
         reason = done[0].error if done else "extraction budget exhausted"

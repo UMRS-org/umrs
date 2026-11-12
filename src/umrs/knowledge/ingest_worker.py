@@ -8,8 +8,12 @@ object-store or network access; the server keeps every read and write.
 Requests::
 
     {"op": "parse", "filename": "paper.pdf", "data_b64": "<base64>",
-     "artifacts_path": "/models-ingest/docling"}
+     "artifacts_path": "/models-ingest/docling", "max_pages": 80}
     -> {"text": "<markdown>", "version": "<docling version>"}
+
+``artifacts_path`` / ``model_dir`` is a read-only mount, or for a model
+bundled in the image its path there (``/opt/umrs/models/...``, no mount).
+``max_pages`` (optional) is Docling's page limit.
 
     {"op": "tag", "model_dir": "/models-ingest/gliner", "texts": ["..."],
      "labels": ["..."], "threshold": 0.5}
@@ -31,10 +35,12 @@ def _parse(request: dict[str, Any]) -> dict[str, Any]:
     from .doc_parse import docling_convert
 
     data = base64.b64decode(str(request.get("data_b64") or ""))
+    max_pages = request.get("max_pages")
     text, version = docling_convert(
         data,
         str(request.get("filename") or "document.pdf"),
         str(request["artifacts_path"]),
+        int(max_pages) if isinstance(max_pages, int) and max_pages > 0 else None,
     )
     return {"text": text, "version": version}
 

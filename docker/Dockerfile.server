@@ -8,7 +8,8 @@
 #   - Includes openssh-client for RemoteSlurmBackend (slurm-remote)
 #   - No test data, mock configs, or s3cfg baked in
 #   - All config mounted at runtime via volumes
-#   - Two-stage build for smaller final image
+#   - Multi-stage build for a smaller final image (builder, bundled ingest
+#     models, runtime)
 # =============================================================================
 
 # ─── Stage 1: Build dependencies ─────────────────────────────────────────────
@@ -51,7 +52,41 @@ RUN if [ -n "${TORCH_INDEX_URL}" ]; then \
     fi \
     && pip check
 
-# ─── Stage 2: Runtime image ──────────────────────────────────────────────────
+# ─── Stage 2: Bundled knowledge ingest models (ADR-116 amendment) ────────────
+# Docling's layout + TableFormer weights and the GLiNER entity tagger, staged
+# at BUILD time like e5 below (maintainer request 2026-11-13: on by default),
+# so neither the servers nor the umrs-docmodels service ever download one.
+# A stage of its own, FROM the stage that has docling and gliner installed:
+# only ingest_models_stage.py (the pins and the staging code, standard library
+# at import, no runtime setting) and the notice are copied in, so an edit to
+# a runtime default or any other source never re-downloads ~1.4 GB, and the
+# hub cache (/tmp/hf) never reaches the runtime image. Every repository is
+# staged at a pinned commit (DOCLING_REVISIONS, GLINER_REVISION,
+# GLINER_BACKBONE_REVISION in ingest_models_stage.py) and `verify` fails the
+# build when a staged marker records anything else. The tree is made
+# world-readable here (not with a RUN in the runtime stage, which would copy
+# the 1.4 GB layer again) because umrs-docmodels runs as uid 65534.
+# --build-arg UMRS_BUNDLE_INGEST_MODELS=0 stages nothing (the CI smoke
+# image): the runtime then falls back to pypdf and no pre-tagging, with notes.
+FROM builder AS ingest-models
+ARG UMRS_BUNDLE_INGEST_MODELS=1
+COPY ./umrs/src/umrs/knowledge/ingest_models_stage.py /tmp/ingest/ingest_models_stage.py
+COPY ./umrs/docker/server-image/NOTICE-ingest-models.txt /tmp/ingest/NOTICE-ingest-models.txt
+WORKDIR /tmp/ingest
+RUN mkdir -p /opt/umrs/models \
+    && if [ "${UMRS_BUNDLE_INGEST_MODELS}" = "1" ]; then \
+        export HF_HOME=/tmp/hf HF_HUB_DISABLE_TELEMETRY=1 HF_HUB_DISABLE_XET=1 HF_HUB_DOWNLOAD_TIMEOUT=60 \
+        && python ingest_models_stage.py stage docling --dest /opt/umrs/models/docling \
+        && python ingest_models_stage.py stage gliner \
+            --dest /opt/umrs/models/gliner_medium-v2.1 \
+        && python ingest_models_stage.py verify \
+            --docling /opt/umrs/models/docling --gliner /opt/umrs/models/gliner_medium-v2.1 \
+        && cp /tmp/ingest/NOTICE-ingest-models.txt /opt/umrs/models/ \
+        && rm -rf /tmp/hf; \
+    fi \
+    && chmod -R a+rX /opt/umrs/models
+
+# ─── Stage 3: Runtime image ──────────────────────────────────────────────────
 FROM python:3.11-slim
 
 WORKDIR /app
@@ -83,6 +118,12 @@ RUN if [ "${UMRS_BUNDLE_TEXT_EMBEDDER}" = "1" ]; then \
         HF_HOME=/tmp/hf python /tmp/text_embedder.py stage && rm -rf /tmp/hf; \
     fi \
     && rm -f /tmp/text_embedder.py
+
+# Bundled knowledge ingest models (stage 2): /opt/umrs/models/docling,
+# /opt/umrs/models/gliner_medium-v2.1 and NOTICE-ingest-models.txt, or
+# nothing when UMRS_BUNDLE_INGEST_MODELS=0 (the stage then leaves the
+# directory empty). Before the source copy, like e5.
+COPY --from=ingest-models /opt/umrs/models/ /opt/umrs/models/
 
 # Copy source code
 COPY ./r4-contracts /app/r4-contracts

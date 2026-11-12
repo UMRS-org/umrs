@@ -59,8 +59,36 @@ def _clean_env(monkeypatch):
         "UMRS_EMBEDDING_SANDBOX",
         "UMRS_KNOWLEDGE_EXTRACT_WINDOW_CHARS",
         "UMRS_KNOWLEDGE_EXTRACT_WINDOWS_MAX",
+        "UMRS_KNOWLEDGE_DOCMODELS_URL",
+        "UMRS_KNOWLEDGE_DOCMODELS_TIMEOUT_S",
+        "UMRS_KNOWLEDGE_DOCLING_MAX_PAGES",
     ):
         monkeypatch.delenv(var, raising=False)
+    # Both models are on by default (2026-11-13) but not staged on a test
+    # host; this file tests the rest of the lane with them switched off, and
+    # each parser or tagger test switches them on itself. The defaults are
+    # tested in test_knowledge_docmodels.py.
+    monkeypatch.setenv("UMRS_KNOWLEDGE_DOC_PARSER", "pypdf")
+    monkeypatch.setenv("UMRS_KNOWLEDGE_GLINER_MODEL", "off")
+
+
+def _staged_docling(path):
+    """A directory ``is_docling_staged`` accepts (no real weights)."""
+    from umrs.knowledge.ingest_models import DOCLING_SUBDIRS
+
+    for name in DOCLING_SUBDIRS:
+        (path / name).mkdir(parents=True, exist_ok=True)
+        (path / name / "model.bin").write_bytes(b"w")
+    return path
+
+
+def _staged_gliner(path):
+    """A directory ``is_gliner_staged`` accepts (no real weights)."""
+    (path / "backbone").mkdir(parents=True, exist_ok=True)
+    for name in ("gliner_config.json", "model.safetensors", "tokenizer_config.json"):
+        (path / name).write_text("{}")
+    (path / "backbone" / "config.json").write_text("{}")
+    return path
 
 
 def _chat_recorder(monkeypatch, replies: dict[str, dict[str, Any]]) -> list[str]:
@@ -421,7 +449,7 @@ def test_docling_missing_falls_back_to_the_existing_text(monkeypatch, tmp_path):
     from umrs.knowledge import doc_parse
 
     monkeypatch.setenv("UMRS_KNOWLEDGE_DOC_PARSER", "docling")
-    monkeypatch.setenv("UMRS_KNOWLEDGE_DOCLING_ARTIFACTS", str(tmp_path))
+    monkeypatch.setenv("UMRS_KNOWLEDGE_DOCLING_ARTIFACTS", str(_staged_docling(tmp_path)))
     monkeypatch.setitem(sys.modules, "docling", None)  # import fails
     monkeypatch.setitem(sys.modules, "docling.datamodel", None)
     monkeypatch.setitem(sys.modules, "docling.datamodel.base_models", None)
@@ -453,7 +481,7 @@ def test_docling_runs_in_the_sandbox_worker_when_the_site_opted_in(monkeypatch, 
     from umrs.knowledge import doc_parse, embed_sandbox
 
     monkeypatch.setenv("UMRS_KNOWLEDGE_DOC_PARSER", "docling")
-    monkeypatch.setenv("UMRS_KNOWLEDGE_DOCLING_ARTIFACTS", str(tmp_path))
+    monkeypatch.setenv("UMRS_KNOWLEDGE_DOCLING_ARTIFACTS", str(_staged_docling(tmp_path)))
     monkeypatch.setenv("UMRS_EMBEDDING_SANDBOX", "podman")
     monkeypatch.setenv("UMRS_EMBEDDING_SANDBOX_IMAGE", "umrs-server:test")
     argvs: list[list[str]] = []
@@ -548,7 +576,7 @@ def test_the_understand_job_hands_the_original_bytes_to_the_parser(monkeypatch):
 # ── D-3 pre-tagging ─────────────────────────────────────────────────────────
 
 
-def test_pretag_unset_is_silent():
+def test_pretag_off_is_silent():
     from umrs.knowledge import pretag
 
     notes: list[str] = []
@@ -569,7 +597,7 @@ def test_pretag_with_a_missing_dir_is_skipped_by_name(monkeypatch, tmp_path):
 def test_pretag_without_the_library_is_skipped_by_name(monkeypatch, tmp_path):
     from umrs.knowledge import pretag
 
-    monkeypatch.setenv("UMRS_KNOWLEDGE_GLINER_MODEL", str(tmp_path))
+    monkeypatch.setenv("UMRS_KNOWLEDGE_GLINER_MODEL", str(_staged_gliner(tmp_path)))
     monkeypatch.setitem(sys.modules, "gliner", None)
     monkeypatch.setattr(pretag, "_MODELS", {})
     notes: list[str] = []
@@ -590,7 +618,7 @@ def test_pretag_tags_each_window_with_the_vocabulary_labels(monkeypatch, tmp_pat
                 {"text": "zirconia", "label": "material", "score": 0.9},
             ]
 
-    monkeypatch.setenv("UMRS_KNOWLEDGE_GLINER_MODEL", str(tmp_path))
+    monkeypatch.setenv("UMRS_KNOWLEDGE_GLINER_MODEL", str(_staged_gliner(tmp_path)))
     monkeypatch.setattr(pretag, "_MODELS", {str(tmp_path): _Model()})
     notes: list[str] = []
     tagged = pretag.window_tagger(FakeVocab(), notes)(["w1", "w2"])
@@ -894,7 +922,7 @@ def test_a_docling_parse_past_its_time_falls_back_by_name(monkeypatch, tmp_path)
     from umrs.knowledge import doc_parse
 
     monkeypatch.setenv("UMRS_KNOWLEDGE_DOC_PARSER", "docling")
-    monkeypatch.setenv("UMRS_KNOWLEDGE_DOCLING_ARTIFACTS", str(tmp_path))
+    monkeypatch.setenv("UMRS_KNOWLEDGE_DOCLING_ARTIFACTS", str(_staged_docling(tmp_path)))
     monkeypatch.setattr(doc_parse, "docling_convert", lambda *_a: time.sleep(2))
     started = time.monotonic()
     parsed = doc_parse.parse_for_extraction(

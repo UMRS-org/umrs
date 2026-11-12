@@ -17,6 +17,7 @@ from __future__ import annotations
 import importlib
 import sys
 import time
+from pathlib import Path
 
 # Import names of the libraries the server process and its modality loaders
 # import. A missing or ABI-broken wheel fails here, not at the first request.
@@ -54,7 +55,8 @@ LIBRARIES = (
     "rich",
     # ADR-116 D-9 (umrs[kg-ingest]): Docling's converter and PDF pipeline
     # options, and GLiNER. Both run on CPU torch, so the CPU variant imports
-    # them too; their weights are staged on the host, never in the image.
+    # them too. Their weights are bundled at build time (2026-11-13; see
+    # check_bundled_ingest_models) unless UMRS_BUNDLE_INGEST_MODELS=0.
     "docling",
     "docling.document_converter",
     "docling.datamodel.pipeline_options",
@@ -73,6 +75,11 @@ UMRS_MODULES = (
 )
 
 SPACY_MODEL = "en_core_web_sm"
+
+# Dockerfile.server's ingest-models stage writes the notice only when it
+# bundled the models (UMRS_BUNDLE_INGEST_MODELS=1).
+BUNDLED_MODELS = "/opt/umrs/models"
+INGEST_NOTICE = "NOTICE-ingest-models.txt"
 
 
 def _timed(label: str, func) -> None:
@@ -99,10 +106,29 @@ def check_spacy_model() -> None:
     assert len(sentences) == 2, f"expected 2 sentences, got {len(sentences)}"
 
 
+def check_bundled_ingest_models(root: str = BUNDLED_MODELS) -> str:
+    """With the ingest bundle built in, both directories pass the staged check.
+
+    The understand stage treats a directory that fails the check as absent
+    and falls back (pypdf, no pre-tagging); a bundle that would always fall
+    back must fail the build instead.
+    """
+    from umrs.knowledge import ingest_models
+
+    base = Path(root)
+    if not (base / INGEST_NOTICE).is_file():
+        return "not bundled (UMRS_BUNDLE_INGEST_MODELS=0)"
+    docling, gliner = base / "docling", base / "gliner_medium-v2.1"
+    assert ingest_models.is_docling_staged(docling), f"{docling} is not staged"
+    assert ingest_models.is_gliner_staged(gliner), f"{gliner} is not staged"
+    return "bundled"
+
+
 def main() -> int:
     check_imports(LIBRARIES)
     check_imports(UMRS_MODULES)
     _timed(f"spacy.load({SPACY_MODEL!r}) + sentencizer", check_spacy_model)
+    print(f"ok  ingest models: {check_bundled_ingest_models()}", flush=True)
     print("server image smoke: PASS", flush=True)
     return 0
 

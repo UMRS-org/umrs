@@ -111,7 +111,9 @@ def test_connection_failure_is_reported(monkeypatch):
     monkeypatch.setattr("umrs.knowledge.agent_executor._default_litellm_chat", _boom)
     notes: list[str] = []
     assert ka._llm_extract_document("prose", project_id="p", notes=notes) is None
-    assert "ConnectionRefusedError" in notes[0]
+    # GLiNER is on by default (2026-11-13); unstaged here, it adds its own
+    # note before the extraction failure.
+    assert any("ConnectionRefusedError" in note for note in notes)
 
 
 def test_disabled_is_not_a_failure(monkeypatch):

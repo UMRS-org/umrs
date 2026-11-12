@@ -3285,7 +3285,7 @@ def _windowed_extract(
         vocab=vocab,
         mode=mode,
         parser_id=str(kw.get("parser_id") or "raw"),
-        tagger=pretag.window_tagger(vocab, notes),
+        tagger=pretag.window_tagger(vocab, notes, deadline=kw.get("deadline")),
         settings=settings,
         deadline=kw.get("deadline"),
     )
@@ -3477,17 +3477,22 @@ class _ExtractInputs:
     deadline: float | None = None
 
     def bound(self) -> dict[str, Any]:
-        """``{"timeout_s": seconds left}`` when a deadline is set, else ``{}``."""
+        """``{"timeout_s": the parse budget}`` when a deadline is set, else
+        ``{}`` (the parser's own default cap): ``docmodels_budget``, so the
+        parse has its own per-document cap outside the LLM budget and never
+        runs past the deadline plus that cap."""
         if self.deadline is None:
             return {}
-        return {"timeout_s": self.deadline - time.monotonic()}
+        from umrs.knowledge.ingest_models import docmodels_budget
+
+        return {"timeout_s": docmodels_budget(self.deadline)}
 
 
 def _parsed_text(
     text: str, kind: str, notes: list[str], inputs: _ExtractInputs
 ) -> tuple[str, str]:
     """``(extraction text, parser id)`` through the D-1 parser seam; the
-    Docling parse runs inside what is left of the job's budget."""
+    Docling parse runs inside its docmodels budget (``_ExtractInputs.bound``)."""
     from umrs.knowledge.doc_parse import parse_for_extraction
 
     raw = inputs.raw if inputs.raw is not None else text.encode("utf-8")
