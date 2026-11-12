@@ -42,6 +42,7 @@ echo "podman $*" >> "$STUB_DIR/calls.log"
 case "$1 $2" in
   "image exists") [ "${STUB_IMAGE_PRESENT:-1}" = 1 ] || [ -f "$STUB_DIR/loaded" ]; exit $? ;;
   "load -i") touch "$STUB_DIR/loaded"; echo "Loaded image: $IMAGE_REF"; exit 0 ;;
+  "container exists") [ "${STUB_CTR_EXISTS:-1}" = 1 ]; exit $? ;;
 esac
 case "$1" in
   pull) exit 125 ;;
@@ -329,3 +330,93 @@ def test_auto_fabric_uses_each_nodes_probed_link(env: dict[str, str]) -> None:
         "TF_TP_MASTER=10.10.0.1" in runs.get("rivault-tf-r0", ""),
     )
     assert facts == (0, True, True, True), res.stderr
+
+
+def test_master_iface_carries_rendezvous_while_rdma_stays_on_fabric(
+    env: dict[str, str], tmp_path: Path
+) -> None:
+    """rccs QSFP drops TCP (firewalld zone public) but passes RoCE: rank 1's
+    connect, NCCL's socket bootstrap and LiteLLM go over the mgmt NIC, the
+    RDMA ring and NCCL_IB stay on the QSFP HCA/GID (2026-11-12)."""
+    env["TF_MASTER_IFACE"] = "enP7s7"
+    env["PROBE_A"] = "192.168.1.12 roceP2p1s0f1 5 104 unlimited enP2p1s0f1np1 10.129.2.12"
+    env["PROBE_B"] = "192.168.1.13 roceP2p1s0f1 5 104 unlimited enP2p1s0f1np1 10.129.2.13"
+    env["TF_MIN_AVAIL_GIB"] = "100"
+    cfg = tmp_path / "litellm.yaml"
+    cfg.write_text("api_base: http://vllm:8000/v1\n")
+    res = _run(env, f"start_tensorfold && tf_repoint_litellm {cfg}")
+    runs = {c.split()[4]: c for c in _calls(env) if c.startswith("podman run -d --name")}
+    r0, r1 = runs.get("rivault-tf-r0", ""), runs.get("rivault-tf-r1", "")
+    facts = {
+        "rc": res.returncode,
+        "master": "TF_TP_MASTER=10.129.2.12" in r0,
+        "r1_connects_to_mgmt": " 1 2 10.129.2.12 29620 " in r1,
+        "nccl_socket": ("NCCL_SOCKET_IFNAME=enP7s7" in r0, "NCCL_SOCKET_IFNAME=enP7s7" in r1),
+        "ib_on_fabric": ("NCCL_IB_HCA=roceP2p1s0f1" in r0, "NCCL_IB_GID_INDEX=5" in r1),
+        "litellm": cfg.read_text(),
+    }
+    assert facts == {
+        "rc": 0,
+        "master": True,
+        "r1_connects_to_mgmt": True,
+        "nccl_socket": (True, True),
+        "ib_on_fabric": (True, True),
+        "litellm": "api_base: http://10.129.2.12:8888/v1\n",
+    }, res.stderr
+
+
+def test_master_iface_without_ipv4_is_refused(env: dict[str, str]) -> None:
+    env["TF_MASTER_IFACE"] = "enP7s7"
+    env["PROBE_A"] = "192.168.1.12 roceP2p1s0f1 5 117 unlimited enP2p1s0f1np1 10.129.2.12"
+    env["PROBE_B"] = "192.168.1.13 roceP2p1s0f1 5 117 unlimited enP2p1s0f1np1 -"
+    res = _run(env, "start_tensorfold")
+    runs = [c for c in _calls(env) if c.startswith("podman run")]
+    assert (res.returncode, runs) == (1, []), res.stderr
+    assert "no IPv4 on TF_MASTER_IFACE enP7s7 on node-b" in res.stderr
+
+
+def test_step_mode_runs_rank1_and_memguards_as_steps(env: dict[str, str], tmp_path: Path) -> None:
+    """rccs (runc, no user systemd): a container detached from an srun step dies
+    with the step, so rank 1 runs in the foreground of one backgrounded step and
+    the memguards are background steps, not systemd-run units."""
+    env.update(
+        RIVAULT_PARTITION_OCI_RUNTIME="runc",
+        STUB_CTR_EXISTS="0",
+        TF_MEMGUARD_WAIT_S="0",
+        XDG_RUNTIME_DIR=str(tmp_path / "xdg"),
+    )
+    res = _run(env, "start_tensorfold && wait")
+    calls = _calls(env)
+    facts = {
+        "rc": res.returncode,
+        "detached_r1": [c for c in calls if c.startswith("podman run -d --name rivault-tf-r1")],
+        "foreground_r1": sum(c.startswith("podman run --rm --replace --name rivault-tf-r1") for c in calls),
+        "detached_r0": sum(c.startswith("podman run -d --name rivault-tf-r0") for c in calls),
+        "systemd_run": [c for c in calls if c.startswith("systemd-run")],
+        "memguard_checks": sum(c.startswith("podman container exists rivault-tf-r") for c in calls) >= 2,
+        "r1_log": (tmp_path / "wrapper" / "jobs" / "tf-r1.4242.log").exists(),
+    }
+    assert facts == {
+        "rc": 0,
+        "detached_r1": [],
+        "foreground_r1": 1,
+        "detached_r0": 1,
+        "systemd_run": [],
+        "memguard_checks": True,
+        "r1_log": True,
+    }, res.stderr
+
+
+def test_prestart_reclaim_runs_on_both_nodes_before_the_memory_gate(env: dict[str, str]) -> None:
+    env["TF_PRESTART_RECLAIM_GIB"] = "100"
+    res = _run(env, "start_tensorfold")
+    calls = _calls(env)
+    reclaims = [i for i, c in enumerate(calls) if c.startswith("podman run --rm") and "gb10_reclaim.py" in c]
+    first_rank = next(i for i, c in enumerate(calls) if c.startswith("podman run -d --name rivault-tf-r1"))
+    facts = (
+        res.returncode,
+        len(reclaims),
+        all(i < first_rank for i in reclaims),
+        all("RIVAULT_MN_PRESTART_RECLAIM_GIB=100" in calls[i] for i in reclaims),
+    )
+    assert facts == (0, 2, True, True), res.stderr

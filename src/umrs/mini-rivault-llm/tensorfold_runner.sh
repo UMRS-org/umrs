@@ -55,6 +55,22 @@
 #   TF_FABRIC_IFACE       default VLLM_FABRIC_IFACE, then enp1s0f1np1; "auto" =
 #                         the first up link with a RoCE device and an IPv4 (rccs
 #                         QSFP pairs; the chosen name is logged per node)
+#   TF_MASTER_IFACE       empty (default) = rendezvous on the fabric IPv4. Set it
+#                         (rccs: enP7s7) where the fabric link drops TCP: rank
+#                         1's connect to TF_TP_MASTER, NCCL's socket bootstrap
+#                         and LiteLLM then use this NIC's IPv4, while RDMA and
+#                         NCCL_IB stay on the fabric HCA/GID (rccs QSFP is in
+#                         firewalld zone `public`: RoCE passes, TCP is REJECTed)
+#   TF_WORKER_MODE        step|detached; default RIVAULT_MN_WORKER_MODE, else
+#                         step when RIVAULT_PARTITION_OCI_RUNTIME=runc (rccs: a
+#                         container detached from an srun step dies with it, no
+#                         user systemd), else detached. step = rank 1 runs in
+#                         the foreground of one long-lived backgrounded step,
+#                         and both memguards are background steps
+#   TF_PRESTART_RECLAIM_GIB  GB10 only: before the memory gate, allocate and
+#                         free this many GiB of CUDA memory on both nodes
+#                         (gb10_reclaim.py in TF_IMAGE): CUDA counts reclaimable
+#                         Lustre cache as used on rccs nodes
 #   RIVAULT_IMAGE_ARCHIVE_DIR  site image archives (missing images load from here)
 #   TF_IB_HCA / TF_GID_INDEX   override the sysfs discovery (both nodes)
 #   TF_EXTRA_SERVE_ARGS / TF_EXTRA_FOLLOW_ARGS   extra rank 0 / rank 1 flags
@@ -78,7 +94,9 @@ tf_defaults() {
     : "${TF_MIN_AVAIL_GIB:=112}" "${TF_MIN_AVAIL_WAIT_S:=120}"
     : "${TF_MEMGUARD_GIB:=2.5}" "${TF_MEMGUARD_HARD_GIB:=1}" "${TF_MEMGUARD_HOLD_S:=4}"
     : "${TF_FABRIC_IFACE:=${VLLM_FABRIC_IFACE:-enp1s0f1np1}}"
-    : "${TF_EXTRA_SERVE_ARGS:=}" "${TF_EXTRA_FOLLOW_ARGS:=}"
+    : "${TF_EXTRA_SERVE_ARGS:=}" "${TF_EXTRA_FOLLOW_ARGS:=}" "${TF_MEMGUARD_WAIT_S:=1800}"
+    : "${TF_RECLAIM_PY:=$(dirname "${TF_VENUE_SH}")/gb10_reclaim.py}"
+    declare -g -a TF_BG_PIDS=( "${TF_BG_PIDS[@]+"${TF_BG_PIDS[@]}"}" )
 }
 
 # The settings that must be present; prints the first missing one's name.
@@ -141,19 +159,24 @@ if [ -n "$ip" ] && [ -n "$hca" ]; then
   done
 fi
 mem=$(awk "/^MemAvailable:/ {print int(\$2/1048576)}" /proc/meminfo)
-echo "${ip:--} ${hca:--} ${gid} ${mem:-0} $(ulimit -Hl) ${dev:--}"
+mip=""
+[ -z "$2" ] || mip=$(ip -4 -o addr show dev "$2" 2>/dev/null | awk "{sub(/\\/.*/, \"\", \$4); print \$4; exit}")
+echo "${ip:--} ${hca:--} ${gid} ${mem:-0} $(ulimit -Hl) ${dev:--} ${mip:--}"
 '
 
 tf_probe_node() {
     srun --nodes=1 --ntasks=1 --nodelist="$1" --overlap \
-        bash -c "${TF_PROBE_SCRIPT}" _ "${TF_FABRIC_IFACE}"
+        bash -c "${TF_PROBE_SCRIPT}" _ "${TF_FABRIC_IFACE}" "${TF_MASTER_IFACE:-}"
 }
 
-# Parse one probe line into TF_NODE_{IP,HCA,GID,MEM,MEMLOCK}[rank].
+# Parse one probe line into TF_NODE_{IP,MIP,HCA,GID,MEM,MEMLOCK}[rank]. MIP is
+# the rendezvous address: TF_MASTER_IFACE's IPv4, else the fabric IPv4.
 tf_record_probe() {
-    local rank="$1" line="$2" ip hca gid mem memlock dev
-    read -r ip hca gid mem memlock dev <<< "${line}"
+    local rank="$1" line="$2" ip hca gid mem memlock dev mip
+    read -r ip hca gid mem memlock dev mip <<< "${line}"
     TF_NODE_IP[rank]="${ip}"
+    TF_NODE_MIP[rank]="${ip}"
+    if [[ -n "${TF_MASTER_IFACE:-}" ]]; then TF_NODE_MIP[rank]="${mip:--}"; fi
     TF_NODE_IFACE[rank]="${dev:-${TF_FABRIC_IFACE}}"
     TF_NODE_HCA[rank]="${TF_IB_HCA:-${hca}}"
     TF_NODE_GID[rank]="${TF_GID_INDEX:-${gid}}"
@@ -166,6 +189,10 @@ tf_check_probe() {
     local rank="$1" node="$2"
     if [[ "${TF_NODE_IP[rank]}" == "-" || -z "${TF_NODE_IP[rank]}" ]]; then
         echo "[rivault] FATAL: no IPv4 on ${TF_FABRIC_IFACE} on ${node}" >&2
+        return 1
+    fi
+    if [[ "${TF_NODE_MIP[rank]}" == "-" || -z "${TF_NODE_MIP[rank]}" ]]; then
+        echo "[rivault] FATAL: no IPv4 on TF_MASTER_IFACE ${TF_MASTER_IFACE:-} on ${node}" >&2
         return 1
     fi
     if [[ "${TF_RDMA}" == 1 && ( "${TF_NODE_HCA[rank]}" == "-" || "${TF_NODE_GID[rank]}" == "-" ) ]]; then
@@ -242,7 +269,7 @@ tf_engine_env() {
 # NCCL over the fabric link for rank $1 (upstream rank_nccl_env).
 tf_nccl_env() {
     local rank="$1"
-    TF_NCCL_ENV=( "NCCL_SOCKET_IFNAME=${TF_NODE_IFACE[rank]:-${TF_FABRIC_IFACE}}" "NCCL_CUMEM_ENABLE=0" )
+    TF_NCCL_ENV=( "NCCL_SOCKET_IFNAME=${TF_MASTER_IFACE:-${TF_NODE_IFACE[rank]:-${TF_FABRIC_IFACE}}}" "NCCL_CUMEM_ENABLE=0" )
     if [[ "${TF_RDMA}" == 1 ]]; then
         TF_NCCL_ENV+=( "NCCL_IB_HCA=${TF_NODE_HCA[rank]}" "NCCL_IB_GID_INDEX=${TF_NODE_GID[rank]}"
                        "TF_RDMA_GID_INDEX=${TF_NODE_GID[rank]}" )
@@ -274,7 +301,7 @@ tf_serve_cmd() {
 # other every round.
 tf_follow_cmd() {
     TF_FOLLOW=( tf-dsv41-lanes "/hf/${TF_MODEL_SUB}" /rank-cache 1 2
-        "${TF_NODE_IP[0]}" "${TF_MASTER_PORT}" "/hf/${TF_KIT_SUB}/kit"
+        "${TF_NODE_MIP[0]:-${TF_NODE_IP[0]}}" "${TF_MASTER_PORT}" "/hf/${TF_KIT_SUB}/kit"
         --engram /engram --token-map "/hf/${TF_DATA_SUB}/dsv41_token_map.json"
         --pool "${TF_CONTEXT}" --streams "${TF_PARALLEL}" --drafts "${TF_DRAFTS}"
         --graphs "${TF_GRAPHS}" --side "${TF_SIDE}" --prefetch "${TF_PREFETCH}"
@@ -291,8 +318,10 @@ tf_follow_cmd() {
 # Full `podman run` argv for rank 1 (on the worker) into TF_R1_ARGV.
 tf_rank1_argv() {
     local x
+    local -a run=( podman run -d )
+    if [[ "$(tf_worker_mode)" == step ]]; then run=( podman run --rm --replace ); fi
     tf_common_run_args; tf_engine_env; tf_nccl_env 1; tf_follow_cmd
-    TF_R1_ARGV=( podman run -d --name "${TF_R1_NAME}" "${TF_RUN_ARGS[@]}"
+    TF_R1_ARGV=( "${run[@]}" --name "${TF_R1_NAME}" "${TF_RUN_ARGS[@]}"
         -v "$(tf_engram_host_dir):/engram:ro" -v "${TF_WORKER_CACHE_DIR}:/rank-cache:ro" )
     for x in "${TF_ENGINE_ENV[@]}" "${TF_NCCL_ENV[@]}"; do TF_R1_ARGV+=( -e "${x}" ); done
     TF_R1_ARGV+=( "${TF_IMAGE}" "${TF_FOLLOW[@]}" )
@@ -308,7 +337,7 @@ tf_rank0_argv() {
         TF_R0_ARGV+=( -v "${TF_ENGRAM_DIR}:/engram:ro" )
         engram="/engram"
     fi
-    for x in TF_TP_WORLD=2 "TF_TP_MASTER=${TF_NODE_IP[0]}" "TF_TP_PORT=${TF_MASTER_PORT}" \
+    for x in TF_TP_WORLD=2 "TF_TP_MASTER=${TF_NODE_MIP[0]:-${TF_NODE_IP[0]}}" "TF_TP_PORT=${TF_MASTER_PORT}" \
         "TF_DS_RANK_CACHE=/hf/${TF_DATA_SUB}/rank-cache" "TF_DS_KIT=/hf/${TF_KIT_SUB}/kit" \
         "TENSORFOLD_CUDA_KERNELS=/hf/${TF_KIT_SUB}/kit/aot" "TF_DS_ENGRAM=${engram}" \
         "TF_DS_TOKEN_MAP=/hf/${TF_DATA_SUB}/dsv41_token_map.json" \
@@ -336,7 +365,11 @@ tf_write_key_file() {
 # shellcheck disable=SC2016  # expands on the node
 TF_MEMGUARD_SCRIPT='
 ctr="$1"; soft_kb=$(awk -v g="$2" "BEGIN{print int(g*1048576)}"); hard_kb=$(awk -v g="$3" "BEGIN{print int(g*1048576)}")
-hold=$(( $4 * 4 )); low=0; hard=0
+hold=$(( $4 * 4 )); low=0; hard=0; waited=0
+until podman container exists "$ctr" 2>/dev/null; do
+  [ "$waited" -lt "${5:-0}" ] || exit 0
+  sleep 2; waited=$((waited + 2))
+done
 sleep 30
 while podman container exists "$ctr" 2>/dev/null; do
   kb=$(awk "/^MemAvailable:/ {print \$2}" /proc/meminfo)
@@ -354,20 +387,90 @@ tf_memguard_unit() { echo "rivault-tf-memguard-${SLURM_JOB_ID:-0}-$1"; }
 
 tf_start_memguard() {
     local rank="$1" node="$2" ctr="$3"
+    local -a args=( "${ctr}" "${TF_MEMGUARD_GIB}" "${TF_MEMGUARD_HARD_GIB}" "${TF_MEMGUARD_HOLD_S}" "${TF_MEMGUARD_WAIT_S}" )
+    if [[ "$(tf_worker_mode)" == step ]]; then
+        tf_node_sh "${node}" "${TF_MEMGUARD_SCRIPT}" "${args[@]}" >> "$(tf_log_file "memguard-${rank}")" 2>&1 &
+        TF_BG_PIDS+=( "$!" )
+        return 0
+    fi
     srun --nodes=1 --ntasks=1 --nodelist="${node}" --overlap \
         systemd-run --user --unit="$(tf_memguard_unit "${rank}")" --collect \
-        bash -c "${TF_MEMGUARD_SCRIPT}" _ "${ctr}" "${TF_MEMGUARD_GIB}" \
-        "${TF_MEMGUARD_HARD_GIB}" "${TF_MEMGUARD_HOLD_S}" >/dev/null 2>&1 || \
+        bash -c "${TF_MEMGUARD_SCRIPT}" _ "${args[@]}" >/dev/null 2>&1 || \
         echo "[rivault] WARNING: memguard not started on ${node} (rank ${rank})"
 }
 
-# Launch rank 1 on the worker, then rank 0 here, each with its memguard.
-tf_launch_ranks() {
-    srun --nodes=1 --ntasks=1 --nodelist="${RAY_NODES[1]}" --overlap \
-        podman rm -f "${TF_R1_NAME}" >/dev/null 2>&1 || true
+# step|detached (TF_WORKER_MODE, see the header).
+tf_worker_mode() {
+    local mode="${TF_WORKER_MODE:-${RIVAULT_MN_WORKER_MODE:-}}"
+    if [[ -z "${mode}" ]]; then
+        mode=detached
+        if [[ "${RIVAULT_PARTITION_OCI_RUNTIME:-}" == "runc" ]]; then mode=step; fi
+    fi
+    echo "${mode}"
+}
+
+# A per-job log file beside the key file.
+tf_log_file() {
+    echo "${RIVAULT_WRAPPER_DIR:-.}/jobs/tf-$1.${SLURM_JOB_ID:-0}.log"
+}
+
+# tf_node_sh NODE SCRIPT [ARGS...]: SCRIPT on NODE (positional ARGS as $1...),
+# after the job-private podman config exists there: srun hands every step the
+# head's CONTAINERS_*_CONF paths, which exist only where rivault_venue_prepare
+# ran (bdrt job 4521).
+tf_node_sh() {
+    local node="$1" script="$2"
+    shift 2
+    srun --nodes=1 --ntasks=1 --nodelist="${node}" --overlap bash -c \
+        "source \"\$1\" && rivault_venue_prepare \"\$2\" \"\$3\" >/dev/null 2>&1; shift 3; ${script}" \
+        _ "${TF_VENUE_SH}" "${SLURM_JOB_ID:-0}" "${RIVAULT_CGROUP_MANAGER:-cgroupfs}" "$@"
+}
+
+# Remove both ranks (a lone rank exits within ~15 s of losing its peer).
+# shellcheck disable=SC2016  # expands on the node
+tf_remove_ranks() {
+    tf_node_sh "${RAY_NODES[1]}" 'podman rm -f "$1" >/dev/null 2>&1' "${TF_R1_NAME}" >/dev/null 2>&1 || true
     podman rm -f "${TF_R0_NAME}" >/dev/null 2>&1 || true
+}
+
+# GB10 pre-start reclaim on one node (TF_PRESTART_RECLAIM_GIB; never fails).
+# shellcheck disable=SC2016  # expands on the node
+tf_reclaim_node() {
+    tf_common_run_args
+    tf_node_sh "$1" 'exec "$@"' podman run --rm "${TF_RUN_ARGS[@]}" \
+        -v "${TF_RECLAIM_PY}:/opt/rivault/gb10_reclaim.py:ro" \
+        -e "RIVAULT_MN_PRESTART_RECLAIM_GIB=${TF_PRESTART_RECLAIM_GIB}" \
+        --entrypoint python3 "${TF_IMAGE}" /opt/rivault/gb10_reclaim.py 2>&1 | \
+        sed "s/^/[rivault][$1] /" || true
+}
+
+tf_reclaim() {
+    local node
+    [[ -n "${TF_PRESTART_RECLAIM_GIB:-}" ]] || return 0
+    for node in "${RAY_NODES[@]}"; do tf_reclaim_node "${node}"; done
+}
+
+# Rank 1 on the worker: detached, or (step mode) in the foreground of one
+# backgrounded step that lives as long as the rank.
+# shellcheck disable=SC2016  # expands on the node
+tf_start_rank1() {
     tf_rank1_argv
-    if ! srun --nodes=1 --ntasks=1 --nodelist="${RAY_NODES[1]}" --overlap "${TF_R1_ARGV[@]}" >/dev/null; then
+    if [[ "$(tf_worker_mode)" == step ]]; then
+        tf_node_sh "${RAY_NODES[1]}" 'podman system migrate >/dev/null 2>&1; exec "$@"' "${TF_R1_ARGV[@]}" \
+            >> "$(tf_log_file r1)" 2>&1 &
+        TF_BG_PIDS+=( "$!" )
+        return 0
+    fi
+    srun --nodes=1 --ntasks=1 --nodelist="${RAY_NODES[1]}" --overlap "${TF_R1_ARGV[@]}" >/dev/null
+}
+
+# (Re)launch the pair: remove both ranks, reclaim, gate on memory, then rank 1
+# on the worker, rank 0 here, each with its memguard. The monitor's respawn.
+tf_launch_ranks() {
+    tf_remove_ranks
+    tf_reclaim
+    tf_await_memory || return 1
+    if ! tf_start_rank1; then
         echo "[rivault] FATAL: rank 1 did not start on ${RAY_NODES[1]}" >&2
         return 1
     fi
@@ -378,7 +481,7 @@ tf_launch_ranks() {
     fi
     tf_start_memguard 1 "${RAY_NODES[1]}" "${TF_R1_NAME}"
     tf_start_memguard 0 "${RAY_NODES[0]}" "${TF_R0_NAME}"
-    echo "[rivault] TensorFold ranks started: r0=${RAY_NODES[0]} r1=${RAY_NODES[1]} (weights load in background)"
+    echo "[rivault] TensorFold ranks started ($(tf_worker_mode) worker): r0=${RAY_NODES[0]} r1=${RAY_NODES[1]} (weights load in background)"
 }
 
 # rc 1 unless the image is present on every node of the job.
@@ -401,9 +504,7 @@ tf_check_image() {
 # localhost/* image reaches a node only as <dir>/<name>-<tag>-<arch>.tar).
 # shellcheck disable=SC2016  # expands on the node
 tf_ensure_image_on() {
-    srun --nodes=1 --ntasks=1 --nodelist="$1" --overlap bash -c \
-        'source "$1" && rivault_ensure_image "$2" "$3"' _ \
-        "${TF_VENUE_SH}" "${TF_IMAGE}" "${RIVAULT_IMAGE_ARCHIVE_DIR:-}"
+    tf_node_sh "$1" 'rivault_ensure_image "$1" "$2"' "${TF_IMAGE}" "${RIVAULT_IMAGE_ARCHIVE_DIR:-}"
 }
 
 # rc 1 unless every prepared path exists (checked on the worker: NFS is shared,
@@ -457,12 +558,11 @@ tf_repoint_litellm() {
 }
 
 start_tensorfold() {
-    declare -g -a TF_NODE_IP=() TF_NODE_IFACE=() TF_NODE_HCA=() TF_NODE_GID=() TF_NODE_MEM=() TF_NODE_MEMLOCK=()
-    declare -g -a RAY_NODES=()
+    declare -g -a TF_NODE_IP=() TF_NODE_MIP=() TF_NODE_IFACE=() TF_NODE_HCA=() TF_NODE_GID=() TF_NODE_MEM=() TF_NODE_MEMLOCK=()
+    declare -g -a RAY_NODES=() TF_BG_PIDS=()
     tf_defaults
     tf_preflight || return 1
-    tf_await_memory || return 1
-    HEAD_IP="${TF_NODE_IP[0]}"
+    HEAD_IP="${TF_NODE_MIP[0]}"
     echo "[rivault] TensorFold fabric: ${RAY_NODES[0]}=${TF_NODE_IP[0]} via ${TF_NODE_IFACE[0]}, ${RAY_NODES[1]} via ${TF_NODE_IFACE[1]} (${TF_NODE_HCA[0]} gid ${TF_NODE_GID[0]}), ${RAY_NODES[1]}=${TF_NODE_IP[1]} (${TF_NODE_HCA[1]} gid ${TF_NODE_GID[1]})"
     tf_write_key_file
     tf_launch_ranks
@@ -473,9 +573,10 @@ tensorfold_stop() {
     for rank in 0 1; do
         node="${RAY_NODES[rank]:-}"
         [[ -n "${node}" ]] || continue
-        srun --nodes=1 --ntasks=1 --nodelist="${node}" --overlap bash -c \
+        tf_node_sh "${node}" \
             "systemctl --user stop '$(tf_memguard_unit "${rank}").service' >/dev/null 2>&1; podman stop -t 30 '${TF_R0_NAME}' '${TF_R1_NAME}' >/dev/null 2>&1; podman rm -f '${TF_R0_NAME}' '${TF_R1_NAME}' >/dev/null 2>&1" \
             >/dev/null 2>&1 || true
     done
+    if (( ${#TF_BG_PIDS[@]} )); then kill "${TF_BG_PIDS[@]}" >/dev/null 2>&1 || true; fi
     rm -f "${TF_KEY_FILE:-}" >/dev/null 2>&1 || true
 }
