@@ -1481,8 +1481,11 @@ def _boto3_client_from_s3cfg(s3cfg_path: str, bucket: str) -> Any:
     return client
 
 
-def _project_bound_s3(project_id: str | None) -> Any:
+def _project_bound_s3(project_id: str | None, bucket: str | None = None) -> Any:
     """The run project's bound object-store client (ADR-077), or None.
+
+    Resolved by ``resolve_bucket_store`` (ADR-115 D-3), the same rule the
+    files routes use, so a run and a download agree on the store.
 
     Raises ``ProjectStorageUnavailable`` when the binding registry cannot
     be read for a never-resolved project — the run must not fall back to
@@ -1490,9 +1493,9 @@ def _project_bound_s3(project_id: str | None) -> Any:
     """
     if not project_id:
         return None
-    from umrs.shared.storage.project_storage import project_s3_config
+    from umrs.shared.storage.project_storage import resolve_bucket_store
 
-    bound = project_s3_config(project_id)
+    bound = resolve_bucket_store(bucket, project_id, default=None)
     if bound is None:
         return None
     logger.info(
@@ -1523,7 +1526,7 @@ def _resolve_s3_client(
     bucket = record.params.get("bucket", "wf-runner")
     if bucket == "wf-runner":
         return _InMemoryS3Client(record, state_lock=state_lock), bucket
-    bound_client = _project_bound_s3(project_id)
+    bound_client = _project_bound_s3(project_id, bucket)
     if bound_client is not None:
         return bound_client, bucket
     try:

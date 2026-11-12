@@ -1,8 +1,9 @@
 """Self-service personal buckets (ADR-079).
 
 ``POST /umrs/buckets`` creates ``<caller>.<project>.<alias>`` and its
-``-output`` pair on the server's own object store and records the caller as
-owner; ``GET /umrs/buckets`` lists the caller's buckets (personal and the
+``-output`` pair on the caller project's object store (the server's own, or
+the ADR-077 bound store of a bound project: ADR-115 D-3) and records the
+caller as owner; ``GET /umrs/buckets`` lists the caller's buckets (personal and the
 provisioned ones of their user config). The caller then moves data with the
 files API (``bucket=``) and names the bucket in a workflow's ``bucket``
 param; the HPC lane stages it because the ownership record matches the run
@@ -29,6 +30,7 @@ from umrs.shared.storage.user_buckets import (
 
 from ._access import checked_access, resource_caller
 from ._verified_headers import CallerIdentity, get_verified_caller
+from .files import bucket_store
 from .typed_errors import PlatformError, raise_typed
 
 logger = logging.getLogger(__name__)
@@ -113,7 +115,9 @@ async def create_bucket(
     provisioned = _provisioned_owner(name)
     if provisioned is not None and provisioned != caller.user_id:
         raise_typed(PlatformError.files("bucket_taken", f"Bucket {name!r} belongs to another user"))
-    s3 = get_s3_config().get_client()
+    # ADR-115 D-3 / ADR-079 amendment: in a bound project the pair is made
+    # on the bound store, where the runner and the files routes look for it.
+    s3 = bucket_store(name, caller.project_id, get_s3_config()).get_client()
     try:
         await asyncio.to_thread(_ensure_bucket, s3, name)
         await asyncio.to_thread(_ensure_bucket, s3, entry.output_bucket)
