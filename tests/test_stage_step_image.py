@@ -508,6 +508,37 @@ class TestIfMissingAndPruning:
         assert not {old[2], old[3], f"{old[3]}.sha256", f"{old[3]}.id"} & names
         assert sorted(result(proc)["pruned"]) == sorted(old[2:])
 
+    @staticmethod
+    def _old_archive(directory: Path, tag: str, digest: str, age: int) -> None:
+        """An earlier pin's archive, its sidecars and its gated-run name."""
+        path = directory / f"umrs-step-{tag}-x86_64.tar"
+        path.write_text(tag)
+        Path(f"{path}.sha256").write_text(f"{digest}  {path.name}\n")
+        Path(f"{path}.id").write_text("x")
+        name = directory / f"{digest}.tar"
+        if not name.exists():
+            os.link(path, name)
+        for p in (path, Path(f"{path}.sha256"), Path(f"{path}.id")):
+            os.utime(p, (1_000_000 - age * 100, 1_000_000 - age * 100))
+
+    def test_pruning_drops_a_pruned_archives_gated_name_unless_a_kept_one_shares_it(self, lane):
+        # ADR-112 B2 (2026-11-12): a gated job reads <archive_sha256>.tar; the
+        # name of a pruned archive goes with it, never one a kept sidecar names.
+        lane.archive_dir.mkdir()
+        sums = {"aaaaaaaaaaa1": "1" * 64, "aaaaaaaaaaa2": "2" * 64, "aaaaaaaaaaa3": "3" * 64}
+        sums["aaaaaaaaaaa4"] = sums["aaaaaaaaaaa1"]  # pruned, same bytes as a kept one
+        for age, (tag, digest) in enumerate(sums.items(), start=1):
+            self._old_archive(lane.archive_dir, tag, digest, age)
+        unrelated = lane.archive_dir / f"{'e' * 64}.tar"  # not a pruned archive's name
+        unrelated.write_text("other image")
+        proc = lane.run()
+        assert proc.returncode == 0, proc.stderr
+        names = {p.name for p in lane.archive_dir.iterdir()}
+        assert f"{'1' * 64}.tar" in names  # kept aaaaaaaaaaa1 (and pruned ...4) name it
+        assert f"{'2' * 64}.tar" in names  # kept
+        assert f"{'3' * 64}.tar" not in names  # pruned, named by nothing left
+        assert unrelated.name in names
+
 
 class TestRecipeFiles:
     @staticmethod

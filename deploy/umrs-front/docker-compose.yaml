@@ -258,6 +258,11 @@ services:
       - umrs_config:/root/.config/umrs
       - umrs_hf_cache:/root/.cache/huggingface
       - umrs_transport_keys_rccs:/var/lib/umrs/transport-keys
+      # ADR-112 B2 (2026-11-12): this server's gated-run image digests
+      # (step_executor.image_digests), written by the converge into
+      # umrs_front_step_image_digests_dir/rccs; read-only, this cluster's only. No :z
+      # (the server runs label=disable; no relabel of the /share dir).
+      - ${UMRS_STEP_DIGESTS_DIR:-/share/umrs/step-digests}/rccs:/etc/umrs/step-digests:ro
       # SSH ControlMaster sockets (tmpfs for ephemeral sockets)
       - type: tmpfs
         target: /run/umrs-ssh
@@ -438,6 +443,11 @@ services:
       - umrs_config:/root/.config/umrs
       - umrs_hf_cache:/root/.cache/huggingface
       - umrs_transport_keys_ai4s:/var/lib/umrs/transport-keys
+      # ADR-112 B2 (2026-11-12): this server's gated-run image digests
+      # (step_executor.image_digests), written by the converge into
+      # umrs_front_step_image_digests_dir/ai4s; read-only, this cluster's only. No :z
+      # (the server runs label=disable; no relabel of the /share dir).
+      - ${UMRS_STEP_DIGESTS_DIR:-/share/umrs/step-digests}/ai4s:/etc/umrs/step-digests:ro
       - type: tmpfs
         target: /run/umrs-ssh
         tmpfs:
@@ -598,6 +608,11 @@ services:
       - umrs_config:/root/.config/umrs
       - umrs_hf_cache:/root/.cache/huggingface
       - umrs_transport_keys_bdrt:/var/lib/umrs/transport-keys
+      # ADR-112 B2 (2026-11-12): this server's gated-run image digests
+      # (step_executor.image_digests), written by the converge into
+      # umrs_front_step_image_digests_dir/bdrt; read-only, this cluster's only. No :z
+      # (the server runs label=disable; no relabel of the /share dir).
+      - ${UMRS_STEP_DIGESTS_DIR:-/share/umrs/step-digests}/bdrt:/etc/umrs/step-digests:ro
       - type: tmpfs
         target: /run/umrs-ssh
         tmpfs:
@@ -747,6 +762,11 @@ services:
       - umrs_config:/root/.config/umrs
       - umrs_hf_cache:/root/.cache/huggingface
       - umrs_transport_keys_octopus:/var/lib/umrs/transport-keys
+      # ADR-112 B2 (2026-11-12): this server's gated-run image digests
+      # (step_executor.image_digests), written by the converge into
+      # umrs_front_step_image_digests_dir/octopus; read-only, this cluster's only. No :z
+      # (the server runs label=disable; no relabel of the /share dir).
+      - ${UMRS_STEP_DIGESTS_DIR:-/share/umrs/step-digests}/octopus:/etc/umrs/step-digests:ro
       - type: tmpfs
         target: /run/umrs-ssh
         tmpfs:

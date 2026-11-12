@@ -35,7 +35,8 @@
 # credentials[.*] or .git-credentials (the base layers are digest-pinned and carry
 # the CA bundle's *.pem); `podman save` to a temp name in the archive dir, then
 # rename it into place next to its .sha256 and .id; keep the newest 3
-# archives per arch.
+# archives per arch (a pruned one's <sha256>.tar gated-run name goes with it
+# unless a kept sidecar names the same hash; 2026-11-12).
 #
 # stdout: exactly one JSON line (status built|present|failed); logs: stderr.
 # Exit: 0 ok, 2 usage, 3 dirty or unusable checkout, 4 layer scan refused,
@@ -303,15 +304,42 @@ save_archive() {
 }
 
 prune_archives() {
-    local old
+    local old sha
+    local -a shas=()
     PRUNED=()
     while IFS= read -r old; do
         [[ -n "${old}" && "${old}" != "${ARCHIVE}" ]] || continue
+        sha="$(cut -d' ' -f1 "${old}.sha256" 2>/dev/null || true)"
         rm -f "${old}" "${old}.sha256" "${old}.id"
         PRUNED+=("$(basename "${old}")")
+        if [[ "${sha}" =~ ^[0-9a-f]{64}$ ]]; then shas+=("${sha}"); fi
     done < <(find "${ARCHIVE_DIR}" -maxdepth 1 -type f \
                   -name "umrs-step-????????????-${ARCH}.tar" -printf '%T@ %p\n' \
              | sort -rn | tail -n +$((KEEP + 1)) | cut -d' ' -f2-)
+    drop_gated_names "${shas[@]}"
+}
+
+# ADR-112 B2 (2026-11-12): a gated job reads an archive as
+# <archive_sha256>.tar (a hard link the converge places next to it). A pruned
+# archive's name goes too, unless a .sha256 sidecar still in the dir names
+# the same hash (step-image-archives.sh prune keeps the same rule).
+drop_gated_names() {
+    local sha
+    for sha in "$@"; do
+        if ! sidecar_names "${sha}"; then
+            rm -f "${ARCHIVE_DIR%/}/${sha}.tar"
+        fi
+    done
+}
+
+sidecar_names() {
+    local sidecar
+    for sidecar in "${ARCHIVE_DIR%/}"/*.tar.sha256; do
+        if [[ -f "${sidecar}" && "$(cut -d' ' -f1 "${sidecar}")" == "$1" ]]; then
+            return 0
+        fi
+    done
+    return 1
 }
 
 emit_result() {
