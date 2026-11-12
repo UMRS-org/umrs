@@ -12,7 +12,7 @@ echo "== $(hostname)"; nvidia-smi --query-gpu=index,name,driver_version,memory.t
 nvidia-smi topo -m 2>&1 | head -12
 ip -4 -o addr | awk "{print \$2, \$4}"
 for d in /sys/class/infiniband/*; do [ -e "$d" ] && echo "$(basename $d) $(cat $d/ports/1/state) $(cat $d/ports/1/rate) $(cat $d/ports/1/link_layer)"; done
-ls /etc/cdi /var/run/cdi 2>&1; podman --version; df -h / /var/tmp | tail -2; free -g | head -2; ulimit -Hl
+ls /etc/cdi /var/run/cdi 2>&1; podman --version 2>&1; singularity --version 2>&1; df -h / /var/tmp | tail -2; free -g | head -2; ulimit -Hl
 ' 2>&1 | tee "$D/bench/hw/pro6000-probe.$SLURM_JOB_ID.txt"
 if [ -x "$D/pro6000_stage2.sh" ]; then exec "$D/pro6000_stage2.sh"; fi
 echo "$(date -Is) no stage 2; releasing the nodes"

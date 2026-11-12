@@ -287,7 +287,7 @@ def test_rdma_forced_without_hca_refused(env: dict[str, str]) -> None:
     env.update(SG_RDMA="1", PROBE_B=f"10.30.0.2 - - 2 1 unlimited enp2s0np0 - {LIBS}")
     res = _run(env, "start_sglang_mn")
     assert res.returncode == 1
-    assert "no RoCE v2 HCA/GID" in res.stderr and "node-b" in res.stderr
+    assert "no InfiniBand HCA or RoCE v2 HCA/GID" in res.stderr and "node-b" in res.stderr
     assert not _runs(env)
 
 
@@ -457,3 +457,77 @@ def test_wrapper_dispatches_and_supervises_sglang() -> None:
     assert "podman container exists rivault-sg-r0" in text
     assert '[ "$name" = "rivault-sg-r0" ]' in text
     assert "sglang_stop" in text[text.index("cleanup_stack() {") :]
+
+
+def test_infiniband_hca_needs_no_gid_index(env: dict[str, str]) -> None:
+    """ai-pro6000 (probe 2026-11-12): mlx5_0 is InfiniBand NDR 400 with IPoIB on
+    ibP1p1s0; there is no RoCE v2 GID, and NCCL needs only the HCA name."""
+    env["PROBE_A"] = f"10.129.76.0 mlx5_0 ib 2 0 unlimited ibP1p1s0 - {LIBS}"
+    env["PROBE_B"] = f"10.129.76.1 mlx5_0 ib 2 0 unlimited ibP1p1s0 - {LIBS}"
+    argv = _argv(env, 0)
+    facts = (
+        "NCCL_IB_HCA=mlx5_0" in argv,
+        any(a.startswith("NCCL_IB_GID_INDEX") for a in argv),
+        "NCCL_IB_DISABLE=1" in argv,
+        "/dev/infiniband" in argv,
+    )
+    assert facts == (True, False, False, True)
+
+
+_SINGULARITY = r"""#!/bin/bash
+echo "singularity $*" >> "$STUB_DIR/calls.log"
+exit 0
+"""
+
+
+def _sif(env: dict[str, str], tmp_path: Path) -> Path:
+    sif = tmp_path / "sglang-test-arm64.sif"
+    sif.write_text("x")
+    (tmp_path / "sglang-test-arm64.sif.sha256").write_text("abc  sif\n")
+    _write_exec(Path(env["STUB_DIR"]) / "singularity", _SINGULARITY)
+    env.update(
+        SG_RUNTIME="singularity",
+        SG_IMAGE=str(sif),
+        SG_WORKER_ATTEMPTS="1",
+        SG_WORKER_RELAUNCH_SLEEP="0",
+    )
+    return sif
+
+
+def test_singularity_runtime_runs_every_rank_without_podman(
+    env: dict[str, str], tmp_path: Path
+) -> None:
+    """ai-pro6000 nodes have no podman (job 468124, 2026-11-12), only singularity-ce."""
+    sif = _sif(env, tmp_path)
+    res = _run(env, "start_sglang_mn && wait")
+    calls = _calls(env)
+    execs = [c for c in calls if c.startswith("singularity exec")]
+    r0 = next((c for c in execs if "--node-rank 0" in c), "")
+    r1 = next((c for c in execs if "--node-rank 1" in c), "")
+    facts = {
+        "rc": res.returncode,
+        "podman_runs": [c for c in calls if c.startswith("podman")],
+        "ranks": len(execs),
+        "nv_and_sif": all("--nv" in c and str(sif) in c for c in execs),
+        "key_only_on_rank0": ("--config" in r0, "--config" in r1),
+        "leaks": [c for c in calls if SECRET in c],
+    }
+    assert facts == {
+        "rc": 0,
+        "podman_runs": [],
+        "ranks": 2,
+        "nv_and_sif": True,
+        "key_only_on_rank0": (True, False),
+        "leaks": [],
+    }, res.stderr
+
+
+@pytest.mark.parametrize("sidecar", [True, False])
+def test_singularity_image_needs_a_sha256_sidecar(
+    env: dict[str, str], tmp_path: Path, sidecar: bool
+) -> None:
+    sif = _sif(env, tmp_path)
+    if not sidecar:
+        (tmp_path / "sglang-test-arm64.sif.sha256").unlink()
+    res = _run(env, f'sg_image_is_pinned "{sif}" && echo pinned')
+    assert (res.stdout.strip() == "pinned") is sidecar

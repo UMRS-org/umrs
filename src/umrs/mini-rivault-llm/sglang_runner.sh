@@ -45,6 +45,15 @@
 #                     (or in RIVAULT_IMAGE_ARCHIVE_DIR), anything else must
 #                     carry an @sha256 digest
 #   SG_MODEL_DIR      host path of the checkpoint (mounted read-only at /model)
+#   SG_RUNTIME        podman (default) | singularity. ai-pro6000 nodes have no
+#                     podman (job 468124, 2026-11-12) but singularity-ce: with
+#                     singularity SG_IMAGE is a .sif path (a sha256 sidecar
+#                     <sif>.sha256 pins it), every rank runs `singularity exec
+#                     --nv` in the foreground of a backgrounded process (rank 0
+#                     on the head, the others in long-lived srun steps), and
+#                     sg_rank0_alive replaces the container check. The UMRS
+#                     wrapper's compose stack still needs podman on the head,
+#                     so this mode serves the direct driver only
 #   SG_MODEL_ROOT     empty (default), or a host directory holding SG_MODEL_DIR
 #                     (a Hugging Face repo dir: models--<org>--<name>). It is
 #                     mounted at its own path and --model-path is SG_MODEL_DIR
@@ -144,7 +153,13 @@ sg_missing_setting() {
 
 # A localhost/* image is staged per node; any other reference must be pinned
 # by digest (nightly tags move; the tensorfold_runner.sh rule).
+sg_runtime() { echo "${SG_RUNTIME:-podman}"; }
+
 sg_image_is_pinned() {
+    if [[ "$(sg_runtime)" == singularity ]]; then
+        [[ "$1" == /*.sif && -s "$1.sha256" ]]
+        return
+    fi
     case "$1" in
         localhost/*) return 0 ;;
         *@sha256:*) return 0 ;;
@@ -210,10 +225,13 @@ if [ -n "$ip" ] && [ -n "$hca" ]; then
   want=$(printf "0000:0000:0000:0000:0000:ffff:%02x%02x:%02x%02x" $(echo "$ip" | tr . " "))
   gid=$(v2gid "$hca" "$want") || gid="-"
 fi
+isib() { [ "$(cat /sys/class/infiniband/"$1"/ports/1/link_layer 2>/dev/null)" = InfiniBand ]; }
+if [ -n "$hca" ] && [ "$gid" = "-" ] && isib "$hca"; then gid=ib; fi
 if [ -z "$hca" ]; then
   for h in /sys/class/infiniband/*; do
     h=${h##*/}
     grep -q ACTIVE /sys/class/infiniband/"$h"/ports/1/state 2>/dev/null || continue
+    if isib "$h"; then hca=$h; gid=ib; break; fi
     g=$(v2gid "$h" any) || continue
     hca=$h; gid=$g; break
   done
@@ -284,7 +302,7 @@ sg_resolve_gpu_form() {
 sg_rdma_blocker() {
     local rank="$1"
     if [[ "${SG_NODE_HCA[rank]}" == "-" || "${SG_NODE_GID[rank]}" == "-" ]]; then
-        echo "no RoCE v2 HCA/GID (set SG_IB_HCA/SG_GID_INDEX)"
+        echo "no InfiniBand HCA or RoCE v2 HCA/GID (set SG_IB_HCA/SG_GID_INDEX)"
     elif [[ "${SG_NODE_MEMLOCK[rank]}" != "unlimited" ]]; then
         echo "memlock hard limit is ${SG_NODE_MEMLOCK[rank]}, RDMA needs unlimited"
     fi
@@ -353,7 +371,9 @@ sg_env() {
     SG_ENV=( HF_HUB_OFFLINE=1 "NCCL_SOCKET_IFNAME=${iface}" "GLOO_SOCKET_IFNAME=${iface}"
         "SGLANG_HOST_IP=${SG_NODE_IP[rank]}" )
     if [[ "${SG_RDMA_ON}" == 1 ]]; then
-        SG_ENV+=( "NCCL_IB_HCA=${SG_NODE_HCA[rank]}" "NCCL_IB_GID_INDEX=${SG_NODE_GID[rank]}" )
+        SG_ENV+=( "NCCL_IB_HCA=${SG_NODE_HCA[rank]}" )
+        # InfiniBand (ai-pro6000: mlx5_0, NDR 400) needs no GID index; RoCE v2 does
+        if [[ "${SG_NODE_GID[rank]}" != ib ]]; then SG_ENV+=( "NCCL_IB_GID_INDEX=${SG_NODE_GID[rank]}" ); fi
     else
         SG_ENV+=( NCCL_IB_DISABLE=1 )
     fi
@@ -414,6 +434,62 @@ sg_rank_argv() {
     if (( rank == 0 )); then SG_ARGV+=( -v "${SG_KEY_FILE}:${SG_KEY_IN_CONTAINER}:ro" ); fi
     for x in "${SG_ENV[@]}"; do SG_ARGV+=( -e "${x}" ); done
     SG_ARGV+=( "${SG_IMAGE}" "${SG_CMD[@]}" )
+}
+
+# `singularity exec` argv for rank $1 into SG_ARGV (always foreground).
+sg_rank_argv_sif() {
+    local rank="$1" x
+    sg_env "${rank}"; sg_server_cmd "${rank}"
+    SG_ARGV=( singularity exec --nv --bind "${SG_MODEL_MOUNT}" )
+    if (( rank == 0 )); then SG_ARGV+=( --bind "${SG_KEY_FILE}:${SG_KEY_IN_CONTAINER}:ro" ); fi
+    for x in "${SG_ENV[@]}"; do SG_ARGV+=( --env "${x}" ); done
+    SG_ARGV+=( "${SG_IMAGE}" python3 "${SG_CMD[@]}" )
+}
+
+# A per-job log file for rank $1 beside the key file.
+sg_log_file() { echo "${RIVAULT_WRAPPER_DIR:-.}/jobs/sg-r$1.${SLURM_JOB_ID:-0}.log"; }
+
+# Singularity: workers as long-lived steps (relaunched like step mode), then
+# rank 0 in the background of this shell.
+sg_launch_ranks_sif() {
+    local rank cmd
+    sg_stop_ranks_sif
+    for (( rank = 1; rank < SG_NNODES; rank++ )); do
+        sg_rank_argv_sif "${rank}"
+        cmd="exec $(printf '%q ' "${SG_ARGV[@]}")"
+        sg_sif_worker_loop "${rank}" "${RAY_NODES[rank]}" "${cmd}" &
+        SG_WORKER_PIDS+=( "$!" )
+        WORKER_PIDS+=( "$!" )
+    done
+    sg_rank_argv_sif 0
+    "${SG_ARGV[@]}" >> "$(sg_log_file 0)" 2>&1 &
+    SG_R0_PID=$!
+    echo "[rivault] SGLang ranks started (singularity): ${SG_NNODES} node(s), TP=${SG_TP}, RDMA ${SG_RDMA_ON}, r0 pid ${SG_R0_PID} (weights load in background)"
+}
+
+sg_sif_worker_loop() {
+    local rank="$1" node="$2" cmd="$3" attempt
+    for (( attempt = 1; attempt <= SG_WORKER_ATTEMPTS; attempt++ )); do
+        srun --nodes=1 --ntasks=1 --nodelist="${node}" --overlap bash -c "${cmd}" >> "$(sg_log_file "${rank}")" 2>&1 || true
+        echo "[rivault] SGLang rank ${rank} on ${node} exited (attempt ${attempt}/${SG_WORKER_ATTEMPTS})" >&2
+        sleep "${SG_WORKER_RELAUNCH_SLEEP}"
+    done
+}
+
+sg_stop_ranks_sif() {
+    local pid
+    for pid in "${SG_WORKER_PIDS[@]}"; do pkill -TERM -P "${pid}" 2>/dev/null; kill "${pid}" 2>/dev/null || true; done
+    SG_WORKER_PIDS=()
+    if [[ -n "${SG_R0_PID:-}" ]]; then kill "${SG_R0_PID}" 2>/dev/null || true; SG_R0_PID=""; fi
+}
+
+# rc 0 while rank 0 runs (either runtime).
+sg_rank0_alive() {
+    if [[ "$(sg_runtime)" == singularity ]]; then
+        [[ -n "${SG_R0_PID:-}" ]] && kill -0 "${SG_R0_PID}" 2>/dev/null
+        return
+    fi
+    [[ "$(podman inspect "${SG_R0_NAME}" --format '{{.State.Status}}' 2>/dev/null)" == running ]]
 }
 
 # The worker launch mode (serve-model.slurm's rule).
@@ -497,6 +573,7 @@ sg_stop_workers() {
 # Relaunch every rank: workers first, then rank 0 here (the head).
 sg_launch_ranks() {
     local rank mode
+    if [[ "$(sg_runtime)" == singularity ]]; then sg_launch_ranks_sif; return; fi
     mode="$(sg_worker_mode)"
     sg_stop_workers
     podman rm -f "${SG_R0_NAME}" >/dev/null 2>&1 || true
@@ -515,6 +592,10 @@ sg_launch_ranks() {
 # (venue.sh rivault_ensure_image).
 # shellcheck disable=SC2016  # expands on the node
 sg_ensure_image_on() {
+    if [[ "$(sg_runtime)" == singularity ]]; then
+        srun --nodes=1 --ntasks=1 --nodelist="$1" --overlap test -s "${SG_IMAGE}"
+        return
+    fi
     srun --nodes=1 --ntasks=1 --nodelist="$1" --overlap bash -c \
         'source "$1" && rivault_ensure_image "$2" "$3"' _ \
         "${SG_VENUE_SH}" "${SG_IMAGE}" "${RIVAULT_IMAGE_ARCHIVE_DIR:-}"
@@ -610,6 +691,11 @@ start_sglang_mn() {
 }
 
 sglang_stop() {
+    if [[ "$(sg_runtime)" == singularity ]]; then
+        sg_stop_ranks_sif
+        rm -f "${SG_KEY_FILE:-}" >/dev/null 2>&1 || true
+        return 0
+    fi
     sg_stop_workers
     podman stop -t 30 "${SG_R0_NAME}" >/dev/null 2>&1 || true
     podman rm -f "${SG_R0_NAME}" >/dev/null 2>&1 || true
