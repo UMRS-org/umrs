@@ -43,6 +43,10 @@
 #   TF_ENGRAM_DIR         node-local Engram copy on BOTH nodes (recommended;
 #                         over NFS prefill drops ~2-3x)
 #   TF_WORKER_CACHE_DIR   host dir holding rank 1's rank cache
+#   TF_HEAD_CACHE_DIR     empty (default) = rank 0's weight file under
+#                         TF_HF_CACHE/TF_DATA_SUB/rank-cache; else a host dir
+#                         (node-local, e.g. on rccs where the Lustre project
+#                         quota is full) mounted at /rank-cache on rank 0
 #   TF_SERVED_NAME        served model name (default VLLM_SERVED_MODEL_NAME)
 #   TF_PORT 8888  TF_MASTER_PORT 29620  TF_CONTEXT 262144 (ours; upstream 1M)
 #   TF_PARALLEL 4  TF_MAX_TOKENS 32768  TF_TEMPERATURE 1.0  TF_TOP_P 0.95
@@ -329,16 +333,20 @@ tf_rank1_argv() {
 
 # Full `podman run` argv for rank 0 (on the head) into TF_R0_ARGV.
 tf_rank0_argv() {
-    local x engram="/hf/${TF_ENGRAM_SUB:-}"
+    local x engram="/hf/${TF_ENGRAM_SUB:-}" cache="/hf/${TF_DATA_SUB}/rank-cache"
     tf_common_run_args; tf_engine_env; tf_nccl_env 0; tf_serve_cmd
     TF_R0_ARGV=( podman run -d --name "${TF_R0_NAME}" "${TF_RUN_ARGS[@]}"
         -v "${TF_KEY_FILE}:${TF_KEY_IN_CONTAINER}:ro" )
+    if [[ -n "${TF_HEAD_CACHE_DIR:-}" ]]; then
+        TF_R0_ARGV+=( -v "${TF_HEAD_CACHE_DIR}:/rank-cache:ro" )
+        cache="/rank-cache"
+    fi
     if [[ -n "${TF_ENGRAM_DIR:-}" ]]; then
         TF_R0_ARGV+=( -v "${TF_ENGRAM_DIR}:/engram:ro" )
         engram="/engram"
     fi
     for x in TF_TP_WORLD=2 "TF_TP_MASTER=${TF_NODE_MIP[0]:-${TF_NODE_IP[0]}}" "TF_TP_PORT=${TF_MASTER_PORT}" \
-        "TF_DS_RANK_CACHE=/hf/${TF_DATA_SUB}/rank-cache" "TF_DS_KIT=/hf/${TF_KIT_SUB}/kit" \
+        "TF_DS_RANK_CACHE=${cache}" "TF_DS_KIT=/hf/${TF_KIT_SUB}/kit" \
         "TENSORFOLD_CUDA_KERNELS=/hf/${TF_KIT_SUB}/kit/aot" "TF_DS_ENGRAM=${engram}" \
         "TF_DS_TOKEN_MAP=/hf/${TF_DATA_SUB}/dsv41_token_map.json" \
         "TF_DS_GRAPHS=${TF_GRAPHS}" "TF_DS_GRAPH_CAP=${TF_GRAPH_CAP}" "TF_DS_HC_SIDE=${TF_SIDE}" \
@@ -511,7 +519,7 @@ tf_ensure_image_on() {
 # the local Engram copy and rank 1's cache are per node).
 tf_check_paths() {
     local -a paths=( "${TF_HF_CACHE}/${TF_MODEL_SUB}" "${TF_HF_CACHE}/${TF_DATA_SUB}/model"
-        "${TF_HF_CACHE}/${TF_DATA_SUB}/rank-cache" "${TF_HF_CACHE}/${TF_KIT_SUB}/kit"
+        "${TF_HEAD_CACHE_DIR:-${TF_HF_CACHE}/${TF_DATA_SUB}/rank-cache}" "${TF_HF_CACHE}/${TF_KIT_SUB}/kit"
         "${TF_HF_CACHE}/${TF_DATA_SUB}/dsv41_token_map.json" "$(tf_engram_host_dir)"
         "${TF_WORKER_CACHE_DIR}" )
     local node p

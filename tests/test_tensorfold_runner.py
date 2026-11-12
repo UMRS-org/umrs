@@ -435,3 +435,19 @@ def test_prestart_reclaim_runs_on_both_nodes_before_the_memory_gate(env: dict[st
         all("RIVAULT_MN_PRESTART_RECLAIM_GIB=100" in calls[i] for i in reclaims),
     )
     assert facts == (0, 2, True, True), res.stderr
+
+
+def test_head_cache_dir_mounts_rank0_weight_file_from_a_local_dir(
+    env: dict[str, str], tmp_path: Path
+) -> None:
+    """rccs (2026-11-12): the Lustre project quota is full, so both ranks' weight
+    files live on node-local NVMe; rank 0 reads its own from TF_HEAD_CACHE_DIR."""
+    local = tmp_path / "local-rank-cache"
+    local.mkdir()
+    env["TF_HEAD_CACHE_DIR"] = str(local)
+    argv = _argv(env, "tf_rank0_argv", "TF_R0_ARGV")
+    facts = (f"{local}:/rank-cache:ro" in argv, "TF_DS_RANK_CACHE=/rank-cache" in argv)
+    assert facts == (True, True)
+    env["TF_HEAD_CACHE_DIR"] = str(tmp_path / "absent")
+    res = _run(env, "start_tensorfold")
+    assert (res.returncode, "absent missing on node-a" in res.stderr) == (1, True), res.stderr

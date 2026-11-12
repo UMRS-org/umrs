@@ -279,15 +279,21 @@ endpoints:
   #  rendezvous, NCCL bootstrap and LiteLLM on enP7s7, because firewalld
   #  REJECTs TCP on the QSFP (2026-11-06, rccs-qsfp-roce). One rail only: the
   #  twin port rocep1s0f1 has no IPv4 (upstream uses both, ~2x the link).
-  #  Engram from Lustre (no node-local copy, so any pair serves; upstream
-  #  measured NFS prefill 2-3x slower than local disk).
+  #  Storage (2026-11-12): the Lustre project quota (5 TB, rccs-dmp/
+  #  masaru.nagaso) is full, so Engram's tables (~203 GB) and BOTH ranks'
+  #  weight files (~106 GB each, either node can be the head) sit on each
+  #  m2 node's local NVMe under /var/tmp/umrs-tf (upstream's layout, and
+  #  faster than a network file system: NFS prefill measured 2-3x slower).
+  #  Only the EXL3 checkpoint, the kit and the token map stay on Lustre.
+  #  Hence one partition: m2 is the staged pair; staging m0/m1 the same way
+  #  lets a roll's successor overlap (dsv41_stage_local.sbatch, ledger).
   #  m3 stays the ADR-074 step lane. Every setting is spelled out: the site
   #  env loader never runs on rccs (HARD-20261105-SITEENV).
   - name: deepseek-v4.1-flash-1017
     model: DeepSeek-V4.1-Flash-1017
     service: {project_id: default, user: mnagaso, replicas: 1, max_surge: 1}
     aliases: [svc-chat, deepseek-v4.1-flash]
-    partition: ng-dgx-m2,ng-dgx-m0,ng-dgx-m1
+    partition: ng-dgx-m2
     node_count: 2
     max_model_len: 131072
     access: [system]
@@ -300,7 +306,9 @@ endpoints:
       TF_DATA_SUB: "tensorfold-dsv41/45ee5d0f"
       TF_KIT_SUB: "tensorfold-dsv41/kit-abe07c7d"
       TF_ENGRAM_SUB: "hub/models--deepseek-ai--DeepSeek-V4.1-Flash-1017/snapshots/1bae0e1088993b9b82de08f59de5be5a34e42170"
-      TF_WORKER_CACHE_DIR: "/lvs0/rccs-dmp/masaru.nagaso/umrs_models/tensorfold-dsv41/45ee5d0f/rank-cache-1"
+      TF_ENGRAM_DIR: "/var/tmp/umrs-tf/engram-1bae0e10"
+      TF_HEAD_CACHE_DIR: "/var/tmp/umrs-tf/rank-cache-45ee5d0f"
+      TF_WORKER_CACHE_DIR: "/var/tmp/umrs-tf/rank-cache-45ee5d0f"
       TF_CONTEXT: "131072"
       TF_PARALLEL: "4"
       TF_DRAFTS: "0"
@@ -339,9 +347,10 @@ endpoints:
     env_vars:
       RIVAULT_NATIVE_LLM_RUNNER: "sglang-mn"
       SG_IMAGE: "docker.io/lmsysorg/sglang@sha256:bc4aab534886dfc9e2c1d7425eca14e1f9d03a518a29074928c4f385649d9844"
-      SG_MODEL_DIR: "/lvs0/rccs-dmp/masaru.nagaso/umrs_models/hub/models--nvidia--DeepSeek-V4.1-Flash-1017-NVFP4/snapshots/3ae9c0d3fbbea5370bd06e679d22044db15883f1"
-      # HF cache snapshot: its files link into ../../blobs, so the repo dir is mounted.
-      SG_MODEL_ROOT: "/lvs0/rccs-dmp/masaru.nagaso/umrs_models/hub/models--nvidia--DeepSeek-V4.1-Flash-1017-NVFP4"
+      SG_MODEL_DIR: "/home/users/masaru.nagaso/umrs_models_hs/hub/models--nvidia--DeepSeek-V4.1-Flash-1017-NVFP4/snapshots/3ae9c0d3fbbea5370bd06e679d22044db15883f1"
+      # HF cache snapshot (home /hs/work0: the /lvs0 project quota is full); its
+      # files link into ../../blobs, so the repo dir is mounted.
+      SG_MODEL_ROOT: "/home/users/masaru.nagaso/umrs_models_hs/hub/models--nvidia--DeepSeek-V4.1-Flash-1017-NVFP4"
       SG_GPUS_PER_NODE: "2"
       SG_TP: "4"
       SG_CONTEXT: "131072"

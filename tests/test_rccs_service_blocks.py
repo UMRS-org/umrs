@@ -91,7 +91,7 @@ def test_deepseek_v41_chat_services_on_m_pairs_and_ai_pro6000():
     assert facts == {
         "service": (True, True),
         "nodes": (2, 2),
-        "tf_partitions": ["ng-dgx-m2", "ng-dgx-m0", "ng-dgx-m1"],
+        "tf_partitions": ["ng-dgx-m2"],
         "sg_partition": "ai-pro6000",
         "runners": ("tensorfold-dsv41", "sglang-mn"),
         "tf_fit": ("0", "131072", "100"),
