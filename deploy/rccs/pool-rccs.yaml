@@ -313,6 +313,9 @@ endpoints:
       TF_PARALLEL: "4"
       TF_DRAFTS: "0"
       TF_MIN_AVAIL_GIB: "100"
+      # the load check counts the drafter even with drafts off (98.8 GiB vs
+      # 110.6 - 12.2); 11.5 admits the ~95 GiB actually loaded, ~15 GiB left
+      TF_MEMORY_RESERVE_GIB: "11.5"
       TF_MIN_AVAIL_WAIT_S: "300"
       TF_PRESTART_RECLAIM_GIB: "100"
       TF_FABRIC_IFACE: "enP2p1s0f1np1"

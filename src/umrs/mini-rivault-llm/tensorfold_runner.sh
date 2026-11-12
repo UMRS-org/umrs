@@ -71,6 +71,13 @@
 #                         user systemd), else detached. step = rank 1 runs in
 #                         the foreground of one long-lived backgrounded step,
 #                         and both memguards are background steps
+#   TF_MEMORY_RESERVE_GIB  empty = the engine's own 12.2 GiB reserve. The load
+#                         refuses weights > CUDA free - reserve, and it counts
+#                         the DSpark drafter's ~3.5 GiB even with --drafts 0
+#                         (rccs m2 2026-11-12: 98.8 GiB vs 110.6 - 12.2). With
+#                         drafts off the real allocation is ~95 GiB, so 11.5
+#                         admits it and still leaves ~15 GiB; never go near
+#                         upstream's 10 GiB (an OOM froze a Spark there)
 #   TF_PRESTART_RECLAIM_GIB  GB10 only: before the memory gate, allocate and
 #                         free this many GiB of CUDA memory on both nodes
 #                         (gb10_reclaim.py in TF_IMAGE): CUDA counts reclaimable
@@ -267,6 +274,9 @@ tf_engine_env() {
     )
     if (( TF_PREFILL_INTERLEAVE_MS != 0 )); then
         TF_ENGINE_ENV+=( "TF_DS_PREFILL_INTERLEAVE_MS=${TF_PREFILL_INTERLEAVE_MS}" )
+    fi
+    if [[ -n "${TF_MEMORY_RESERVE_GIB:-}" ]]; then
+        TF_ENGINE_ENV+=( "TENSORFOLD_MEMORY_RESERVE_GIB=${TF_MEMORY_RESERVE_GIB}" )
     fi
 }
 

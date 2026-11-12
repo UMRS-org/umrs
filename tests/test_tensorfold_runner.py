@@ -451,3 +451,19 @@ def test_head_cache_dir_mounts_rank0_weight_file_from_a_local_dir(
     env["TF_HEAD_CACHE_DIR"] = str(tmp_path / "absent")
     res = _run(env, "start_tensorfold")
     assert (res.returncode, "absent missing on node-a" in res.stderr) == (1, True), res.stderr
+
+
+def test_memory_reserve_reaches_both_ranks_only_when_set(env: dict[str, str]) -> None:
+    """rccs m2 2026-11-12: the load check counts the drafter even with
+    --drafts 0 (98.8 GiB vs 110.6 - 12.2 GiB); TF_MEMORY_RESERVE_GIB eases it."""
+    default = _argv(env, "tf_rank0_argv", "TF_R0_ARGV")
+    env["TF_MEMORY_RESERVE_GIB"] = "11.5"
+    r0 = _argv(env, "tf_rank0_argv", "TF_R0_ARGV")
+    r1 = _argv(env, "tf_rank1_argv", "TF_R1_ARGV")
+    want = "TENSORFOLD_MEMORY_RESERVE_GIB=11.5"
+    facts = (
+        any(a.startswith("TENSORFOLD_MEMORY_RESERVE_GIB") for a in default),
+        want in r0,
+        want in r1,
+    )
+    assert facts == (False, True, True)
