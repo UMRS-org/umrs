@@ -260,7 +260,9 @@ def test_unstaged_image_refused_before_launch(env: dict[str, str]) -> None:
     assert not any("podman run" in c for c in _calls(env))
 
 
-def test_start_launches_rank1_then_rank0_with_memguards(env: dict[str, str], tmp_path: Path) -> None:
+def test_start_launches_rank1_then_rank0_with_memguards(
+    env: dict[str, str], tmp_path: Path
+) -> None:
     cfg = tmp_path / "litellm.yaml"
     cfg.write_text("api_base: http://vllm:8000/v1\n")
     res = _run(env, f"start_tensorfold && tf_repoint_litellm {cfg}")
@@ -269,7 +271,9 @@ def test_start_launches_rank1_then_rank0_with_memguards(env: dict[str, str], tmp
     facts = {
         "rc": res.returncode,
         "run_order": [c.split()[4] for c in calls if c.startswith("podman run -d --name")],
-        "memguards": sum(c.startswith("systemd-run --user --unit=rivault-tf-memguard-4242-") for c in calls),
+        "memguards": sum(
+            c.startswith("systemd-run --user --unit=rivault-tf-memguard-4242-") for c in calls
+        ),
         "key": key.read_text().strip() if key.exists() else None,
         "key_mode": oct(stat.S_IMODE(key.stat().st_mode)) if key.exists() else None,
         "litellm": cfg.read_text(),
@@ -311,7 +315,11 @@ def test_missing_image_loads_from_the_site_archive(env: dict[str, str], tmp_path
     archive_dir.mkdir()
     arch = {"aarch64": "arm64", "x86_64": "amd64"}.get(os.uname().machine, os.uname().machine)
     (archive_dir / f"tensorfold-dsv41-exl3-tp2-7c9bf5d36350-{arch}.tar").write_text("x")
-    env.update(STUB_IMAGE_PRESENT="0", RIVAULT_IMAGE_ARCHIVE_DIR=str(archive_dir), IMAGE_REF=env["TF_IMAGE"])
+    env.update(
+        STUB_IMAGE_PRESENT="0",
+        RIVAULT_IMAGE_ARCHIVE_DIR=str(archive_dir),
+        IMAGE_REF=env["TF_IMAGE"],
+    )
     res = _run(env, "start_tensorfold")
     loads = [c for c in _calls(env) if c.startswith("podman load -i")]
     assert (res.returncode, len(loads) >= 1) == (0, True), res.stderr
@@ -390,10 +398,13 @@ def test_step_mode_runs_rank1_and_memguards_as_steps(env: dict[str, str], tmp_pa
     facts = {
         "rc": res.returncode,
         "detached_r1": [c for c in calls if c.startswith("podman run -d --name rivault-tf-r1")],
-        "foreground_r1": sum(c.startswith("podman run --rm --replace --name rivault-tf-r1") for c in calls),
+        "foreground_r1": sum(
+            c.startswith("podman run --rm --replace --name rivault-tf-r1") for c in calls
+        ),
         "detached_r0": sum(c.startswith("podman run -d --name rivault-tf-r0") for c in calls),
         "systemd_run": [c for c in calls if c.startswith("systemd-run")],
-        "memguard_checks": sum(c.startswith("podman container exists rivault-tf-r") for c in calls) >= 2,
+        "memguard_checks": sum(c.startswith("podman container exists rivault-tf-r") for c in calls)
+        >= 2,
         "r1_log": (tmp_path / "wrapper" / "jobs" / "tf-r1.4242.log").exists(),
     }
     assert facts == {
@@ -411,8 +422,12 @@ def test_prestart_reclaim_runs_on_both_nodes_before_the_memory_gate(env: dict[st
     env["TF_PRESTART_RECLAIM_GIB"] = "100"
     res = _run(env, "start_tensorfold")
     calls = _calls(env)
-    reclaims = [i for i, c in enumerate(calls) if c.startswith("podman run --rm") and "gb10_reclaim.py" in c]
-    first_rank = next(i for i, c in enumerate(calls) if c.startswith("podman run -d --name rivault-tf-r1"))
+    reclaims = [
+        i for i, c in enumerate(calls) if c.startswith("podman run --rm") and "gb10_reclaim.py" in c
+    ]
+    first_rank = next(
+        i for i, c in enumerate(calls) if c.startswith("podman run -d --name rivault-tf-r1")
+    )
     facts = (
         res.returncode,
         len(reclaims),

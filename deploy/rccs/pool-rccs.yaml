@@ -340,6 +340,8 @@ endpoints:
       RIVAULT_NATIVE_LLM_RUNNER: "sglang-mn"
       SG_IMAGE: "docker.io/lmsysorg/sglang@sha256:bc4aab534886dfc9e2c1d7425eca14e1f9d03a518a29074928c4f385649d9844"
       SG_MODEL_DIR: "/lvs0/rccs-dmp/masaru.nagaso/umrs_models/hub/models--nvidia--DeepSeek-V4.1-Flash-1017-NVFP4/snapshots/3ae9c0d3fbbea5370bd06e679d22044db15883f1"
+      # HF cache snapshot: its files link into ../../blobs, so the repo dir is mounted.
+      SG_MODEL_ROOT: "/lvs0/rccs-dmp/masaru.nagaso/umrs_models/hub/models--nvidia--DeepSeek-V4.1-Flash-1017-NVFP4"
       SG_GPUS_PER_NODE: "2"
       SG_TP: "4"
       SG_CONTEXT: "131072"
