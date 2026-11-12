@@ -178,7 +178,7 @@ endpoints:
   # Model paths come from the model registry (`r4 model register`) except
   # for the TensorFold entry, whose prepared files are named below.
 
-  # ── DeepSeek-V4-Flash → svc-chat (2 nodes, QSFP m pairs, vLLM TP=2) ──
+  # ── DeepSeek-V4-Flash, on demand (2 nodes, QSFP m pairs, vLLM TP=2); svc-chat moved to V4.1 on 2026-11-12 ──
   #  Maintainer, 2026-11-01: DeepSeek-V4.1-Flash-1017 (TensorFold) cannot run
   #  here. The engine refuses below 112 GiB free per node, and an idle,
   #  exclusive ng-dgx-m node (one GB10, 121.6 GiB; a pair = 256 GB) reports
@@ -203,7 +203,7 @@ endpoints:
   #  the model root below (local-dir layout).
   - name: deepseek-v4-flash
     model: DeepSeek-V4-Flash
-    aliases: [svc-chat, deepseek-v4-flash]
+    aliases: [deepseek-v4-flash]
     partition: ng-dgx-m0,ng-dgx-m2,ng-dgx-m1
     node_count: 2
     max_model_len: 131072
@@ -260,6 +260,99 @@ endpoints:
         --max-cudagraph-capture-size 8
         --compilation-config {"cudagraph_mode":"FULL_AND_PIECEWISE","custom_ops":["all"]}
       RCCS_SKIP_CDI: "1"
+      RIVAULT_PROFILES: "harness vllm litellm-db"
+
+  # ── DeepSeek-V4.1-Flash-1017 → svc-chat on a QSFP `m` pair (TensorFold) ─
+  #  Maintainer ask 2026-11-12: "add service chat model ... deploy
+  #  MiaAI-Lab/DeepSeek-v4.1-Flash-1017-2x-DGX-Sparks on ng-dgx-m* ... keep
+  #  running always". Recipe pinned at c7f2b851 (TensorFold fbbc9713 + 54
+  #  patches, inputs 59402086, kit abe07c7d; EXL3 EAQ v1 2.9 bpw @45ee5d0f,
+  #  Engram shards 47/48 @1bae0e10), served by tensorfold_runner.sh.
+  #  Memory (the reason this was refused on 2026-11-01/02): upstream wants
+  #  112 GiB free per node and rank 0 holds ~104 GiB with the DSpark drafter
+  #  and vision; an rccs m node gives ~105 GiB before swap (Lustre slab floor
+  #  ~15 GiB). So: drafter off (--no-drafts / --drafts 0 skips its ~3.5 GiB,
+  #  model.zig `drafts`), vision off (not passed), 131072 context, gate at
+  #  100 GiB after a 100 GiB GB10 reclaim; memguards kill a rank before the
+  #  node runs dry (an OOM freezes a GB10).
+  #  Fabric: RDMA ring + NCCL_IB on the QSFP HCA (roceP2p1s0f1, GID probed);
+  #  rendezvous, NCCL bootstrap and LiteLLM on enP7s7, because firewalld
+  #  REJECTs TCP on the QSFP (2026-11-06, rccs-qsfp-roce). One rail only: the
+  #  twin port rocep1s0f1 has no IPv4 (upstream uses both, ~2x the link).
+  #  Engram from Lustre (no node-local copy, so any pair serves; upstream
+  #  measured NFS prefill 2-3x slower than local disk).
+  #  m3 stays the ADR-074 step lane. Every setting is spelled out: the site
+  #  env loader never runs on rccs (HARD-20261105-SITEENV).
+  - name: deepseek-v4.1-flash-1017
+    model: DeepSeek-V4.1-Flash-1017
+    service: {project_id: default, user: mnagaso, replicas: 1, max_surge: 1}
+    aliases: [svc-chat, deepseek-v4.1-flash]
+    partition: ng-dgx-m2,ng-dgx-m0,ng-dgx-m1
+    node_count: 2
+    max_model_len: 131072
+    access: [system]
+    env_vars:
+      RIVAULT_NATIVE_LLM_RUNNER: "tensorfold-dsv41"
+      TF_IMAGE: "localhost/tensorfold-dsv41:exl3-tp2-8a98ae503d85"
+      RIVAULT_IMAGE_ARCHIVE_DIR: "/lvs0/rccs-dmp/masaru.nagaso/umrs_models/images"
+      TF_HF_CACHE: "/lvs0/rccs-dmp/masaru.nagaso/umrs_models"
+      TF_MODEL_SUB: "hub/models--Mia-AiLab--DeepSeek-V4.1-Flash-1017-EXL3-EAQ-v1-2.9-bpw/snapshots/45ee5d0fd106c94a3d77f721e09cbb2f50e5a16b"
+      TF_DATA_SUB: "tensorfold-dsv41/45ee5d0f"
+      TF_KIT_SUB: "tensorfold-dsv41/kit-abe07c7d"
+      TF_ENGRAM_SUB: "hub/models--deepseek-ai--DeepSeek-V4.1-Flash-1017/snapshots/1bae0e1088993b9b82de08f59de5be5a34e42170"
+      TF_WORKER_CACHE_DIR: "/lvs0/rccs-dmp/masaru.nagaso/umrs_models/tensorfold-dsv41/45ee5d0f/rank-cache-1"
+      TF_CONTEXT: "131072"
+      TF_PARALLEL: "4"
+      TF_DRAFTS: "0"
+      TF_MIN_AVAIL_GIB: "100"
+      TF_MIN_AVAIL_WAIT_S: "300"
+      TF_PRESTART_RECLAIM_GIB: "100"
+      TF_FABRIC_IFACE: "enP2p1s0f1np1"
+      TF_MASTER_IFACE: "enP7s7"
+      TF_WORKER_MODE: "step"
+      RIVAULT_MN_WORKER_MODE: "step"
+      RIVAULT_USERNS_MODE: "host"
+      RCCS_SKIP_CDI: "1"
+      RIVAULT_PROFILES: "harness vllm litellm-db"
+
+  # ── DeepSeek-V4.1-Flash-1017 (NVIDIA NVFP4) → svc-chat on ai-pro6000 ──
+  #  Same ask, second platform: 2 nodes x 2 RTX PRO 6000 Blackwell 96 GB
+  #  (sm_120, discrete). The MiaAI recipe cannot run here: its kernel kit is
+  #  203 sm_121 cubins captured on GB10 (they do not load on sm_120) and a
+  #  TP=2 rank (~99 GiB) is larger than one 96 GB GPU; the four-rank engine
+  #  (bertholomus deepseek-v41-zig-tp4) is a four-GB10 2D split with its own
+  #  sm_121 kit. So the same model is served by SGLang (DeepSeek-V4.1 native
+  #  since sglang#47935, 2026-11-04; SM120 kernels flash_mla_sm120) from
+  #  nvidia/DeepSeek-V4.1-Flash-1017-NVFP4 @3ae9c0d3 (399.5 GiB; Engram
+  #  tables MXFP4 in host RAM, ~97 GiB a node), TP=4 across both nodes.
+  #  Two nodes is the whole partition, so a roll's successor queues until the
+  #  old job ends (gap = load time); max_surge 1 keeps it first in line.
+  - name: deepseek-v4.1-flash-1017-nvfp4
+    model: DeepSeek-V4.1-Flash-1017-NVFP4
+    service: {project_id: default, user: mnagaso, replicas: 1, max_surge: 1}
+    aliases: [svc-chat, deepseek-v4.1-flash-nvfp4]
+    partition: ai-pro6000
+    node_count: 2
+    gpu_count: 2
+    max_model_len: 131072
+    access: [system]
+    env_vars:
+      RIVAULT_NATIVE_LLM_RUNNER: "sglang-mn"
+      SG_IMAGE: "docker.io/lmsysorg/sglang@sha256:bc4aab534886dfc9e2c1d7425eca14e1f9d03a518a29074928c4f385649d9844"
+      SG_MODEL_DIR: "/lvs0/rccs-dmp/masaru.nagaso/umrs_models/hub/models--nvidia--DeepSeek-V4.1-Flash-1017-NVFP4/snapshots/3ae9c0d3fbbea5370bd06e679d22044db15883f1"
+      SG_GPUS_PER_NODE: "2"
+      SG_TP: "4"
+      SG_CONTEXT: "131072"
+      SG_KV_DTYPE: "fp8_e4m3"
+      SG_MEM_FRACTION: "0.88"
+      SG_ENGRAM_CONFIG: '{"placement":"cpu","replication":"none","lookup":"auto"}'
+      SG_SPEC: "DSPARK"
+      SG_SPEC_BLOCK: "5"
+      SG_FABRIC_IFACE: "auto"
+      SG_RDMA: "auto"
+      SG_GPU_FORM: "auto"
+      RIVAULT_MN_WORKER_MODE: "step"
+      RIVAULT_USERNS_MODE: "host"
       RIVAULT_PROFILES: "harness vllm litellm-db"
 
   # ── Qwen3.6-35B-A3B-NVFP4 → svc-vision (1 node) ──────────────────────
