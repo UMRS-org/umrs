@@ -17,6 +17,8 @@ export SG_MEM_FRACTION=${SG_MEM_FRACTION:-0.88} SG_SPEC=${SG_SPEC-DSPARK} SG_SPE
 export SG_ENGRAM_CONFIG='{"placement":"cpu","replication":"none","lookup":"auto"}'
 export SG_SERVED_NAME=DeepSeek-V4.1-Flash-1017 SG_RDMA=${SG_RDMA:-auto} SG_GPU_FORM=devices
 export SG_WORKER_ATTEMPTS=3 RIVAULT_MN_WORKER_MODE=step
+# the batch shell holds only one of a node's two GPUs (job 468620): every rank and microbench step asks for both
+export SG_STEP_GRES=gpu:2
 # rendezvous on the default-route NIC (a fast link may drop TCP, as rccs's QSFP does); the probe falls back to the
 # first ACTIVE HCA for NCCL (ai-pro6000: mlx5_0, InfiniBand NDR 400)
 SG_FABRIC_IFACE=${SG_FABRIC_IFACE:-$(ip route show default | awk '{for (i=1;i<NF;i++) if ($i=="dev") {print $(i+1); exit}}')}
@@ -76,7 +78,7 @@ if [ "${BENCH:-1}" = 1 ]; then
     local port=$((29900 + RANDOM % 90)) rank=0 n g
     for n in "${nodes[@]}"; do
       for g in 0 1; do
-        srun -N1 -n1 -w "$n" --overlap singularity exec --nv --bind "$B:/bench" \
+        srun -N1 -n1 -w "$n" --overlap --gres=gpu:2 singularity exec --nv --bind "$B:/bench" \
           --env RANK=$rank --env WORLD_SIZE="$world" --env LOCAL_RANK=$g --env MASTER_ADDR="$M0" --env MASTER_PORT=$port \
           --env NCCL_DEBUG=INFO --env NCCL_DEBUG_SUBSYS=INIT,NET --env NCCL_SOCKET_IFNAME="$SG_FABRIC_IFACE" "$@" \
           "$SG_IMAGE" python3 /bench/hw_bench.py --label "$label" --out "/bench/hw/$label.$SLURM_JOB_ID.json" \

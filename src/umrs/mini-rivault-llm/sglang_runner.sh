@@ -54,6 +54,12 @@
 #                     sg_rank0_alive replaces the container check. The UMRS
 #                     wrapper's compose stack still needs podman on the head,
 #                     so this mode serves the direct driver only
+#   SG_STEP_GRES      empty (default) or a --gres value (ai-pro6000: gpu:2) that
+#                     every singularity rank's srun step requests. On
+#                     ai-pro6000 the batch shell's device cgroup holds ONE of
+#                     the node's two GPUs (job 468620, 2026-11-12: TP rank 1
+#                     on node 0 failed "invalid device ordinal"), so rank 0
+#                     runs in its own step too. GB10 partitions reject --gres
 #   SG_MODEL_ROOT     empty (default), or a host directory holding SG_MODEL_DIR
 #                     (a Hugging Face repo dir: models--<org>--<name>). It is
 #                     mounted at its own path and --model-path is SG_MODEL_DIR
@@ -449,8 +455,14 @@ sg_rank_argv_sif() {
 # A per-job log file for rank $1 beside the key file.
 sg_log_file() { echo "${RIVAULT_WRAPPER_DIR:-.}/jobs/sg-r$1.${SLURM_JOB_ID:-0}.log"; }
 
+# The srun options of a singularity rank's step on node $1.
+sg_sif_step_opts() {
+    SG_STEP_OPTS=( --nodes=1 --ntasks=1 --nodelist="$1" --overlap )
+    if [[ -n "${SG_STEP_GRES:-}" ]]; then SG_STEP_OPTS+=( "--gres=${SG_STEP_GRES}" ); fi
+}
+
 # Singularity: workers as long-lived steps (relaunched like step mode), then
-# rank 0 in the background of this shell.
+# rank 0 in a step of its own on the head (see SG_STEP_GRES).
 sg_launch_ranks_sif() {
     local rank cmd
     sg_stop_ranks_sif
@@ -462,15 +474,17 @@ sg_launch_ranks_sif() {
         WORKER_PIDS+=( "$!" )
     done
     sg_rank_argv_sif 0
-    "${SG_ARGV[@]}" >> "$(sg_log_file 0)" 2>&1 &
+    sg_sif_step_opts "${RAY_NODES[0]}"
+    srun "${SG_STEP_OPTS[@]}" "${SG_ARGV[@]}" >> "$(sg_log_file 0)" 2>&1 &
     SG_R0_PID=$!
     echo "[rivault] SGLang ranks started (singularity): ${SG_NNODES} node(s), TP=${SG_TP}, RDMA ${SG_RDMA_ON}, r0 pid ${SG_R0_PID} (weights load in background)"
 }
 
 sg_sif_worker_loop() {
     local rank="$1" node="$2" cmd="$3" attempt
+    sg_sif_step_opts "${node}"
     for (( attempt = 1; attempt <= SG_WORKER_ATTEMPTS; attempt++ )); do
-        srun --nodes=1 --ntasks=1 --nodelist="${node}" --overlap bash -c "${cmd}" >> "$(sg_log_file "${rank}")" 2>&1 || true
+        srun "${SG_STEP_OPTS[@]}" bash -c "${cmd}" >> "$(sg_log_file "${rank}")" 2>&1 || true
         echo "[rivault] SGLang rank ${rank} on ${node} exited (attempt ${attempt}/${SG_WORKER_ATTEMPTS})" >&2
         sleep "${SG_WORKER_RELAUNCH_SLEEP}"
     done

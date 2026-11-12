@@ -531,3 +531,29 @@ def test_singularity_image_needs_a_sha256_sidecar(
         (tmp_path / "sglang-test-arm64.sif.sha256").unlink()
     res = _run(env, f'sg_image_is_pinned "{sif}" && echo pinned')
     assert (res.stdout.strip() == "pinned") is sidecar
+
+
+def test_singularity_ranks_run_in_steps_that_request_the_gpus(
+    env: dict[str, str], tmp_path: Path
+) -> None:
+    """ai-pro6000 job 468620 (2026-11-12): the batch shell's device cgroup held one
+    of the node's two GPUs, so TP rank 1 on node 0 failed "invalid device ordinal".
+    Rank 0 now runs in its own srun step, and every rank's step asks for the GPUs."""
+    _sif(env, tmp_path)
+    env["SG_STEP_GRES"] = "gpu:2"
+    res = _run(env, "start_sglang_mn && wait")
+    steps = [c for c in _calls(env) if c.startswith("srun ") and "singularity exec" in c]
+    facts = {
+        "rc": res.returncode,
+        "steps": len(steps),
+        "all_request_gpus": all("--gres=gpu:2" in c for c in steps),
+        "head_step": any("--nodelist=node-a" in c and "--node-rank 0" in c for c in steps),
+        "worker_step": any("--nodelist=node-b" in c and "--node-rank 1" in c for c in steps),
+    }
+    assert facts == {
+        "rc": 0,
+        "steps": 2,
+        "all_request_gpus": True,
+        "head_step": True,
+        "worker_step": True,
+    }, res.stderr

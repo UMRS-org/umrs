@@ -351,12 +351,15 @@ endpoints:
     access: [system]
     env_vars:
       RIVAULT_NATIVE_LLM_RUNNER: "sglang-mn"
-      SG_IMAGE: "docker.io/lmsysorg/sglang@sha256:bc4aab534886dfc9e2c1d7425eca14e1f9d03a518a29074928c4f385649d9844"
       SG_MODEL_DIR: "/home/users/masaru.nagaso/umrs_models_hs/hub/models--nvidia--DeepSeek-V4.1-Flash-1017-NVFP4/snapshots/3ae9c0d3fbbea5370bd06e679d22044db15883f1"
       # HF cache snapshot (home /hs/work0: the /lvs0 project quota is full); its
       # files link into ../../blobs, so the repo dir is mounted.
       SG_MODEL_ROOT: "/home/users/masaru.nagaso/umrs_models_hs/hub/models--nvidia--DeepSeek-V4.1-Flash-1017-NVFP4"
       SG_GPUS_PER_NODE: "2"
+      # each rank's srun step requests the node's GPUs (job 468620: the batch shell held one)
+      SG_STEP_GRES: "gpu:2"
+      SG_RUNTIME: "singularity"
+      SG_IMAGE: "/home/users/masaru.nagaso/umrs_models_hs/images/sglang-314bce7c-arm64.sif"
       SG_TP: "4"
       SG_CONTEXT: "131072"
       SG_KV_DTYPE: "fp8_e4m3"
@@ -364,7 +367,8 @@ endpoints:
       SG_ENGRAM_CONFIG: '{"placement":"cpu","replication":"none","lookup":"auto"}'
       SG_SPEC: "DSPARK"
       SG_SPEC_BLOCK: "5"
-      SG_FABRIC_IFACE: "auto"
+      # rendezvous on Ethernet; NCCL takes the InfiniBand HCA (mlx5_0) from the probe
+      SG_FABRIC_IFACE: "enP6p1s0f0np0"
       SG_RDMA: "auto"
       SG_GPU_FORM: "auto"
       RIVAULT_MN_WORKER_MODE: "step"
