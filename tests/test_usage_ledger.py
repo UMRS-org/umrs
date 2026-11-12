@@ -131,6 +131,30 @@ def test_every_write_is_idempotent_and_moves_forward_only(make):
     assert ledger.current(venue)[0]["elapsed_s"] == 50
 
 
+_ENDED = {
+    "settled": lambda ledger, unit: ledger.settled(unit, {**USAGE, "state": "FAILED"}, "sacct"),
+    "not_submitted": lambda ledger, unit: ledger.not_submitted(unit, "sacct"),
+    "unsettled": lambda ledger, unit: ledger.mark_unsettled(unit),
+}
+
+
+@pytest.mark.parametrize("ended", sorted(_ENDED))
+def test_a_pending_write_over_an_ended_attempt_refuses_and_writes_nothing(make, ended):
+    """Review closure 2026-11-12 (server-ledger-1): a pending write on an
+    attempt whose row is already final was dropped silently, before the
+    budget check, so a submit that reused an ended attempt id ran with no
+    row and no budget check. It now refuses, and nothing is submitted."""
+    ledger, venue, _b, project = make(1.0)
+    unit = _unit(venue, project=project)
+    ledger.pending(unit, Resources(1, 1, 3600))
+    ledger.submitted(unit, "100", None)
+    _ENDED[ended](ledger, unit)
+    rows = _all_rows(ledger, venue, unit)
+    with pytest.raises(LedgerUnavailable, match="already ended"):
+        ledger.pending(unit, Resources(1, 1, 3600))
+    assert _all_rows(ledger, venue, unit) == rows
+
+
 def test_post_submit_writes_use_the_job_holder_not_the_new_dispatch(make, monkeypatch):
     """Resuming someone else's dispatch cannot split one scheduler job into
     two usage units; a later duplicate does not change the first owner."""
