@@ -82,11 +82,15 @@ def _resolve_document_id(
         pool.putconn(conn)
 
 
+# Entity-resolution label vectors (model ``<embedder>#label``, ADR-116 D-7)
+# are not catalogue vectors and are not counted ("%%" is a literal "%" in a
+# parameterised psycopg statement).
 _PROJECT_VECTOR_COUNT_SQL = """
 SELECT COUNT(*)
   FROM knowledge_node_embeddings e
   JOIN knowledge_nodes n USING (node_id)
  WHERE n.project_id = %s
+   AND e.model_name NOT LIKE '%%#label'
 """
 
 

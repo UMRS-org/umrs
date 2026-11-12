@@ -105,8 +105,46 @@ def sandbox_config_from_env(model_dir: str) -> SandboxConfig | None:
     )
 
 
-def build_argv(config: SandboxConfig) -> list[str]:
-    """The ``podman run`` argv of one embedding-job sandbox."""
+EMBED_WORKER_MODULE = "umrs.knowledge.embed_worker"
+
+
+def worker_sandbox_config() -> SandboxConfig | None:
+    """The sandbox config for a worker that mounts its own model directories
+    (the ingest worker, ADR-116 D-1/D-3): same opt-in, image and limits as
+    the embedder, no ``/model`` mount. None when the site did not opt in."""
+    if os.environ.get(SANDBOX_ENV, "").strip().lower() != "podman":
+        return None
+    image = os.environ.get(IMAGE_ENV, "").strip() or os.environ.get(
+        "UMRS_STEP_IMAGE", ""
+    )
+    if not image:
+        raise EmbeddingSandboxError(
+            f"{SANDBOX_ENV}=podman but no image: set {IMAGE_ENV} (or UMRS_STEP_IMAGE)"
+        )
+    return SandboxConfig(
+        image=image,
+        model_host_dir="",
+        timeout=float(os.environ.get(TIMEOUT_ENV, "600")),
+        memory=os.environ.get(MEMORY_ENV, "8g"),
+        cpus=os.environ.get(CPUS_ENV, "4"),
+    )
+
+
+def _mount_args(mounts: Sequence[tuple[str, str]]) -> list[str]:
+    args: list[str] = []
+    for host_dir, container_dir in mounts:
+        args += ["-v", f"{host_dir}:{container_dir}:ro"]
+    return args
+
+
+def build_argv(
+    config: SandboxConfig,
+    *,
+    module: str = EMBED_WORKER_MODULE,
+    mounts: Sequence[tuple[str, str]] = (),
+) -> list[str]:
+    """The ``podman run`` argv of one sandbox: the embedding job by default;
+    ``module`` and read-only ``mounts`` (host, container) for another worker."""
     return [
         config.podman_bin,
         "run",
@@ -124,6 +162,7 @@ def build_argv(config: SandboxConfig) -> list[str]:
             if config.model_host_dir
             else []
         ),
+        *_mount_args(mounts),
         "-e",
         "HF_HUB_OFFLINE=1",
         "-e",
@@ -133,8 +172,52 @@ def build_argv(config: SandboxConfig) -> list[str]:
         config.image,
         "python",
         "-m",
-        "umrs.knowledge.embed_worker",
+        module,
     ]
+
+
+def run_worker(
+    config: SandboxConfig,
+    request: dict[str, Any],
+    *,
+    module: str,
+    mounts: Sequence[tuple[str, str]] = (),
+    runner: Runner | None = None,
+) -> dict[str, Any]:
+    """One JSON request through a sandboxed worker, its JSON reply back.
+    A timeout, an unreadable reply or an ``error`` reply raises
+    :class:`EmbeddingSandboxError` by name."""
+    try:
+        done = (runner or _default_runner)(
+            build_argv(config, module=module, mounts=mounts),
+            input_text=json.dumps(request),
+            timeout=config.timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise EmbeddingSandboxError(
+            f"{module} sandbox timed out after {config.timeout:.0f}s"
+        ) from exc
+    return _reply_object(done, module)
+
+
+def _reply_object(done: Any, module: str) -> dict[str, Any]:
+    try:
+        reply = json.loads(done.stdout or "")
+    except ValueError as exc:
+        raise EmbeddingSandboxError(
+            f"{module} sandbox exit={done.returncode}: unreadable reply; "
+            f"stderr={str(done.stderr or '')[-300:]}"
+        ) from exc
+    if done.returncode != 0 or not isinstance(reply, dict) or "error" in reply:
+        detail = (
+            reply.get("error", "no error text")
+            if isinstance(reply, dict)
+            else "not an object"
+        )
+        raise EmbeddingSandboxError(
+            f"{module} sandbox exit={done.returncode}: {detail}"
+        )
+    return reply
 
 
 class SandboxChunkEmbedder:
@@ -249,10 +332,13 @@ class InProcessChunkEmbedder:
 
 
 __all__ = [
+    "EMBED_WORKER_MODULE",
     "EmbeddingSandboxError",
     "InProcessChunkEmbedder",
     "SandboxChunkEmbedder",
     "SandboxConfig",
     "build_argv",
+    "run_worker",
     "sandbox_config_from_env",
+    "worker_sandbox_config",
 ]

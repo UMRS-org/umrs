@@ -204,6 +204,9 @@ class _AsyncConn:
     async def execute(self, _sql, *params):
         self.updates.append(params[0])
 
+    def transaction(self):  # asyncpg's Connection.transaction(): an async context
+        return self
+
     async def __aenter__(self):
         return self
 

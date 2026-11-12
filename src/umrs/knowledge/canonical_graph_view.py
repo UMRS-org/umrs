@@ -692,13 +692,17 @@ class CanonicalGraphView:
         def _projected(nodes):
             if self._ontology.ontology_id == DEFAULT_ONTOLOGY.ontology_id:
                 return nodes
-            return [n for n in nodes if n.node_type in self._ontology.entity_types]
+            # KG-02 (ADR-116 D-6): ontology classes live in
+            # content.semantic_type; node_type is only the 7-value bucket.
+            return [n for n in nodes if _node_typed_as(n, self._ontology.entity_types)]
 
         if node_type is not None:
             # G-P1-6 subtype expansion: querying a parent includes its
             # declared descendants transitively.
             types = self._subtype_descendants(node_type)
-            return _projected([n for n in self._nodes.values() if n.node_type in types])
+            return _projected(
+                [n for n in self._nodes.values() if _node_typed_as(n, types)]
+            )
         if relation_type is not None:
             matching: set[str] = set()
             for edge in self._edges.values():
@@ -709,6 +713,14 @@ class CanonicalGraphView:
                 [self._nodes[nid] for nid in matching if nid in self._nodes]
             )
         return _projected(list(self._nodes.values()))
+
+
+def _node_typed_as(node: KnowledgeNode, types: Any) -> bool:
+    """True when the node's bucket or its ``content.semantic_type`` is in ``types``."""
+    if node.node_type in types:
+        return True
+    semantic_type = (node.metadata or {}).get("semantic_type")
+    return isinstance(semantic_type, str) and semantic_type in types
 
 
 # ── row → view adapters ──────────────────────────────────────────────────

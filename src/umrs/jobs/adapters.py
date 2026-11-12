@@ -1765,6 +1765,14 @@ def register_auto_ingest_callbacks(
     )
 
 
+def _extract_mode_kwargs(spec: dict[str, Any]) -> dict[str, Any]:
+    """ADR-116 D-2: a run may ask for ``extract_mode`` full|lite|off for the
+    automatic ingest of its outputs; unset (nothing passed) = the auto mode
+    (``UMRS_KNOWLEDGE_EXTRACT_AUTO_MODE``, default lite)."""
+    mode = spec.get("extract_mode")
+    return {"extract_mode": str(mode)} if mode else {}
+
+
 def enqueue_auto_ingest(job: Any, attempt: Any) -> None:
     """Post-success handler: enqueue KNOWLEDGE_INGEST / UNDERSTAND on success.
 
@@ -1807,6 +1815,7 @@ def enqueue_auto_ingest(job: Any, attempt: Any) -> None:
             attempt=attempt,
             workflow=workflow,
             step=step,
+            **_extract_mode_kwargs(spec),
         )
         logger.info(
             "Auto-ingest enqueued for job %s (workflow=%s step=%s)",

@@ -85,6 +85,20 @@ server = [
     "sysv_ipc",
     "pypdf>=4.0",
     "python-pptx>=1.0",
+    # ADR-116 D-9: Docling and GLiNER for the knowledge understand stage.
+    "umrs[kg-ingest]",
+]
+# Knowledge ingest v2 (ADR-116 D-1/D-3): layout-aware PDF parsing (Docling)
+# and zero-shot entity tagging (GLiNER). Imports are lazy; the weights are
+# staged by `python -m umrs.knowledge.ingest_models stage docling|gliner`,
+# never downloaded at runtime and never bundled into the image.
+kg-ingest = [
+    "docling>=2.150",
+    "gliner>=0.2.30",
+    # GLiNER's DeBERTa-v3 backbone ships only spm.model: transformers converts
+    # it to a fast tokenizer through SentencePieceExtractor, which needs
+    # protobuf (without it, staging fails with "Error parsing line" in spm.model).
+    "protobuf>=4.25",
 ]
 all = [
     "umrs[server]",

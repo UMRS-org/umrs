@@ -257,7 +257,21 @@ class TestOntologyTransitiveDeclaration:
         back = ontology_from_dict(onto.to_dict())
         assert back.transitive_relations == frozenset({"depends_on"})
 
-    def test_serialized_absence_maps_to_default(self) -> None:
+    def test_serialized_absence_maps_to_default_when_declared(self) -> None:
+        back = ontology_from_dict(
+            {
+                "ontology_id": "x",
+                "version": "1",
+                "entity_types": ["concept"],
+                "relation_types": ["cites", "depends_on"],
+            }
+        )
+        assert back.transitive_relations == frozenset({"depends_on"})
+
+    def test_serialized_absence_never_adds_an_undeclared_relation(self) -> None:
+        """ADR-116: the absent-field default named depends_on even when the
+        ontology did not declare it, so closure walks could traverse a
+        relation outside the vocabulary."""
         back = ontology_from_dict(
             {
                 "ontology_id": "x",
@@ -266,7 +280,7 @@ class TestOntologyTransitiveDeclaration:
                 "relation_types": ["cites"],
             }
         )
-        assert back.transitive_relations == frozenset({"depends_on"})
+        assert back.transitive_relations == frozenset()
 
     def test_explicit_transitive_set(self) -> None:
         back = ontology_from_dict(

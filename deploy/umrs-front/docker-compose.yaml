@@ -203,6 +203,17 @@ services:
       # the durable ingest → understand → embed chain (offline rule: never
       # an HF id, only this host path).
       UMRS_KNOWLEDGE_EMBED_MODEL: ${UMRS_RCCS_KNOWLEDGE_EMBED_MODEL:-/models/e5-base-v2}
+      # Knowledge ingest v2 (ADR-116 D-1..D-3, D-9); every default is off:
+      # pypdf text, Docling artifacts at /models/docling (used only when
+      # DOC_PARSER=docling), no GLiNER pre-tagging (empty = off), the
+      # extraction model picked from the registry (empty), automatic ingest
+      # of workflow outputs in lite mode. Weights are staged on the host with
+      # `python -m umrs.knowledge.ingest_models stage docling|gliner`.
+      UMRS_KNOWLEDGE_DOC_PARSER: ${UMRS_RCCS_KNOWLEDGE_DOC_PARSER:-pypdf}
+      UMRS_KNOWLEDGE_DOCLING_ARTIFACTS: ${UMRS_RCCS_KNOWLEDGE_DOCLING_ARTIFACTS:-/models/docling}
+      UMRS_KNOWLEDGE_GLINER_MODEL: ${UMRS_RCCS_KNOWLEDGE_GLINER_MODEL:-}
+      UMRS_KNOWLEDGE_EXTRACT_MODEL: ${UMRS_RCCS_KNOWLEDGE_EXTRACT_MODEL:-}
+      UMRS_KNOWLEDGE_EXTRACT_AUTO_MODE: ${UMRS_RCCS_KNOWLEDGE_EXTRACT_AUTO_MODE:-lite}
       # Uploaded-workflow step lane (ADR-074; rccs step-lane spec §10): the
       # converge writes UMRS_RCCS_STEP_* into .env only after it verified the
       # staged step image on the cluster. Empty (the default) means no
@@ -376,6 +387,17 @@ services:
       # KNOWLEDGE_EMBED lane (audit B3 activation): pre-staged local
       # SentenceTransformer dir — degraded no-op when unset (umrs/a75d909).
       UMRS_KNOWLEDGE_EMBED_MODEL: ${UMRS_AI4S_KNOWLEDGE_EMBED_MODEL:-/models/e5-base-v2}
+      # Knowledge ingest v2 (ADR-116 D-1..D-3, D-9); every default is off:
+      # pypdf text, Docling artifacts at /models/docling (used only when
+      # DOC_PARSER=docling), no GLiNER pre-tagging (empty = off), the
+      # extraction model picked from the registry (empty), automatic ingest
+      # of workflow outputs in lite mode. Weights are staged on the host with
+      # `python -m umrs.knowledge.ingest_models stage docling|gliner`.
+      UMRS_KNOWLEDGE_DOC_PARSER: ${UMRS_AI4S_KNOWLEDGE_DOC_PARSER:-pypdf}
+      UMRS_KNOWLEDGE_DOCLING_ARTIFACTS: ${UMRS_AI4S_KNOWLEDGE_DOCLING_ARTIFACTS:-/models/docling}
+      UMRS_KNOWLEDGE_GLINER_MODEL: ${UMRS_AI4S_KNOWLEDGE_GLINER_MODEL:-}
+      UMRS_KNOWLEDGE_EXTRACT_MODEL: ${UMRS_AI4S_KNOWLEDGE_EXTRACT_MODEL:-}
+      UMRS_KNOWLEDGE_EXTRACT_AUTO_MODE: ${UMRS_AI4S_KNOWLEDGE_EXTRACT_AUTO_MODE:-lite}
       # Uploaded-workflow step lane (ADR-074; rccs step-lane spec §10): this
       # site's own UMRS_AI4S_STEP_* only, never another cluster's (an image
       # staged for one cluster's arch must not reach another). Empty until the
@@ -522,6 +544,17 @@ services:
       # KNOWLEDGE_EMBED lane (audit B3 activation): pre-staged local
       # SentenceTransformer dir — degraded no-op when unset (umrs/a75d909).
       UMRS_KNOWLEDGE_EMBED_MODEL: ${UMRS_BDRT_KNOWLEDGE_EMBED_MODEL:-/models/e5-base-v2}
+      # Knowledge ingest v2 (ADR-116 D-1..D-3, D-9); every default is off:
+      # pypdf text, Docling artifacts at /models/docling (used only when
+      # DOC_PARSER=docling), no GLiNER pre-tagging (empty = off), the
+      # extraction model picked from the registry (empty), automatic ingest
+      # of workflow outputs in lite mode. Weights are staged on the host with
+      # `python -m umrs.knowledge.ingest_models stage docling|gliner`.
+      UMRS_KNOWLEDGE_DOC_PARSER: ${UMRS_BDRT_KNOWLEDGE_DOC_PARSER:-pypdf}
+      UMRS_KNOWLEDGE_DOCLING_ARTIFACTS: ${UMRS_BDRT_KNOWLEDGE_DOCLING_ARTIFACTS:-/models/docling}
+      UMRS_KNOWLEDGE_GLINER_MODEL: ${UMRS_BDRT_KNOWLEDGE_GLINER_MODEL:-}
+      UMRS_KNOWLEDGE_EXTRACT_MODEL: ${UMRS_BDRT_KNOWLEDGE_EXTRACT_MODEL:-}
+      UMRS_KNOWLEDGE_EXTRACT_AUTO_MODE: ${UMRS_BDRT_KNOWLEDGE_EXTRACT_AUTO_MODE:-lite}
       # Uploaded-workflow step lane (ADR-074; rccs step-lane spec §10): this
       # site's own UMRS_BDRT_STEP_* only, never another cluster's (an image
       # staged for one cluster's arch must not reach another). Empty until the
@@ -665,6 +698,17 @@ services:
       # KNOWLEDGE_EMBED lane (audit B3 activation): pre-staged local
       # SentenceTransformer dir — degraded no-op when unset (umrs/a75d909).
       UMRS_KNOWLEDGE_EMBED_MODEL: ${UMRS_OCTOPUS_KNOWLEDGE_EMBED_MODEL:-/models/e5-base-v2}
+      # Knowledge ingest v2 (ADR-116 D-1..D-3, D-9); every default is off:
+      # pypdf text, Docling artifacts at /models/docling (used only when
+      # DOC_PARSER=docling), no GLiNER pre-tagging (empty = off), the
+      # extraction model picked from the registry (empty), automatic ingest
+      # of workflow outputs in lite mode. Weights are staged on the host with
+      # `python -m umrs.knowledge.ingest_models stage docling|gliner`.
+      UMRS_KNOWLEDGE_DOC_PARSER: ${UMRS_OCTOPUS_KNOWLEDGE_DOC_PARSER:-pypdf}
+      UMRS_KNOWLEDGE_DOCLING_ARTIFACTS: ${UMRS_OCTOPUS_KNOWLEDGE_DOCLING_ARTIFACTS:-/models/docling}
+      UMRS_KNOWLEDGE_GLINER_MODEL: ${UMRS_OCTOPUS_KNOWLEDGE_GLINER_MODEL:-}
+      UMRS_KNOWLEDGE_EXTRACT_MODEL: ${UMRS_OCTOPUS_KNOWLEDGE_EXTRACT_MODEL:-}
+      UMRS_KNOWLEDGE_EXTRACT_AUTO_MODE: ${UMRS_OCTOPUS_KNOWLEDGE_EXTRACT_AUTO_MODE:-lite}
       # Uploaded-workflow step lane (ADR-074; rccs step-lane spec §10): this
       # site's own UMRS_OCTOPUS_STEP_* only, never another cluster's (an image
       # staged for one cluster's arch must not reach another). Empty until the

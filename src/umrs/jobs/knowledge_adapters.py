@@ -19,6 +19,7 @@ import os
 import re
 import tempfile
 import threading
+import time
 import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -40,7 +41,9 @@ from .scheduler import OrchestratorBackend
 
 logger = logging.getLogger(__name__)
 
-_KNOWLEDGE_EXTRACTOR_VERSION = "1.1.0"
+# 2.0.0 (ADR-116 D-2): whole-document windowed extraction. The
+# already-understood probe compares this version, so a bump re-extracts.
+_KNOWLEDGE_EXTRACTOR_VERSION = "2.0.0"
 
 
 # ── Events ───────────────────────────────────────────────────────────────────
@@ -122,6 +125,11 @@ class KnowledgeUnderstandResult:
     # Texts past READ_CAP understood from their first MiB, each named
     # ({artifact_id, reason}): per artifact, never a degraded run (memfix #5).
     partial_reads: list[dict[str, Any]] = field(default_factory=list)
+    # ADR-116: notes that name what the run used without degrading it (the
+    # vocabulary fallback, the entity-resolution leg).
+    extract_notes: list[str] = field(default_factory=list)
+    # ADR-116 D-7: proposed same_as edges written at the end of the run.
+    same_as_proposed: int = 0
 
 
 @dataclass
@@ -1052,6 +1060,7 @@ class KnowledgeUnderstandBackend(OrchestratorBackend):
             f"knowledge_understand|project={project_id}|"
             f"ir_ids={len(result.ir_ids)}|already={result.already_ir}|fail={len(result.failed_items)}"
             f"|no_object={result.no_object}|partial={len(result.partial_reads)}"
+            f"|same_as={result.same_as_proposed}"
         )
 
 
@@ -1922,6 +1931,45 @@ async def _artifacts_to_process(
         return []
 
 
+@dataclass
+class _UnderstandContext:
+    """What one understand job resolves once and every artifact shares
+    (ADR-116): the extraction vocabulary, the extract mode, the
+    ``node-sem-*`` ids the job wrote (entity resolution reads them), and the
+    ``time.monotonic()`` deadline of the job's extraction budget.
+
+    The budget (``UMRS_KNOWLEDGE_EXTRACT_JOB_BUDGET_S``, default 300 s) is
+    per job, not per document: the scheduler awaits ``submit_job`` inline,
+    so an understand job over N documents would otherwise hold it for N
+    per-document budgets. Documents that start after it is spent read one
+    window each (lite; ``llm_extract._within_job_budget``).
+    """
+
+    vocab: Any = None
+    mode: str = "full"
+    sem_node_ids: list[str] = field(default_factory=list)
+    deadline: float | None = None
+
+
+async def _understand_context(
+    job: Job, project_id: str, graph_id: str, result: KnowledgeUnderstandResult
+) -> _UnderstandContext:
+    """The job's extract mode (``spec.extract_mode``, default ``full``) and
+    its graph's vocabulary, resolved once, off the event loop (D-6)."""
+    from umrs.knowledge.llm_extract import normalize_mode, resolve_vocabulary
+
+    spec = getattr(job, "spec", None) or {}
+    mode = normalize_mode(spec.get("extract_mode"))
+    if mode == "off":
+        return _UnderstandContext(mode=mode)
+    from umrs.knowledge.llm_extract import ExtractSettings
+
+    deadline = time.monotonic() + ExtractSettings.from_env().job_budget_s
+    vocab, notes = await asyncio.to_thread(resolve_vocabulary, project_id, graph_id)
+    result.extract_notes.extend(notes)
+    return _UnderstandContext(vocab=vocab, mode=mode, deadline=deadline)
+
+
 async def _run_understand(
     job: Job,
     attempt: JobAttempt,
@@ -1948,6 +1996,7 @@ async def _run_understand(
     from umrs.knowledge.actors import normalize_actor
 
     origin_actor = normalize_actor(job.spec.get("origin_actor"))
+    ctx = await _understand_context(job, project_id, target_graph_id, result)
 
     for src in artifacts_to_process:
         artifact_id = src.get("artifact_id", "")
@@ -1977,11 +2026,79 @@ async def _run_understand(
             bucket,
             result,
             origin_actor=origin_actor,
+            ctx=ctx,
         )
 
     if not result.degraded:
         await _propose_skills(store, project_id, result)
+    await _propose_same_as(store, job, project_id, target_graph_id, ctx, result)
     return result
+
+
+def _first_vector(reply: dict[str, Any]) -> list[float]:
+    vectors = reply.get("vectors") or []
+    return [float(v) for v in vectors[0]] if vectors else []
+
+
+def _label_embedder() -> tuple[Any, str]:
+    """``(embed_labels, embedder name)`` from the site's chunk embedder (the
+    sandbox lane when the site opted in), or ``(None, "")`` when it has none.
+    A short label is one chunk, so its first vector is the label's vector."""
+    try:
+        lane, _reason = _chunk_embedder_for_site()
+    except Exception as exc:  # noqa: BLE001 — label vectors are optional
+        logger.warning("entity resolution without label vectors: %s", exc)
+        return None, ""
+    if lane is None:
+        return None, ""
+
+    def embed_labels(labels: list[str]) -> list[list[float]]:
+        return [_first_vector(reply) for reply in lane.chunk_and_embed(list(labels))]
+
+    return embed_labels, configured_text_embedder()
+
+
+def _resolution_notes(outcome: Any) -> list[str]:
+    proposed = int(getattr(outcome, "proposed", 0) or 0)
+    candidates = int(getattr(outcome, "candidates", 0) or 0)
+    extra = [str(note) for note in getattr(outcome, "notes", None) or []]
+    return [f"same_as:proposed={proposed},candidates={candidates}", *extra]
+
+
+async def _propose_same_as(
+    store: Any,
+    job: Job,
+    project_id: str,
+    graph_id: str,
+    ctx: _UnderstandContext,
+    result: KnowledgeUnderstandResult,
+) -> None:
+    """ADR-116 D-7 leg: ``same_as`` proposals for the semantic nodes this
+    job wrote. Best-effort, never fails the job; nodes are never merged."""
+    node_ids = list(dict.fromkeys(ctx.sem_node_ids))
+    if not node_ids:
+        return
+    try:
+        from umrs.knowledge.entity_resolution import propose_same_as
+    except ImportError:
+        result.extract_notes.append("entity_resolution_unavailable:module_missing")
+        return
+    embed_labels, embedder_name = await asyncio.to_thread(_label_embedder)
+    try:
+        outcome = await propose_same_as(
+            store,
+            project_id=project_id,
+            graph_id=graph_id,
+            node_ids=node_ids,
+            job_id=str(job.job_id),
+            embed_labels=embed_labels,
+            embedder_name=embedder_name,
+        )
+    except Exception as exc:  # noqa: BLE001 — the contract says never raises; guard anyway
+        result.extract_notes.append(f"entity_resolution_failed:{type(exc).__name__}")
+        return
+    result.same_as_proposed = int(getattr(outcome, "proposed", 0) or 0)
+    result.extract_notes.extend(_resolution_notes(outcome))
 
 
 async def _propose_skills(
@@ -2123,31 +2240,84 @@ def _proposal_review_state(skill: Any) -> dict[str, Any]:
     }
 
 
+_CURRENT_IR_SQL = (
+    "SELECT ir_id FROM knowledge_ir WHERE artifact_id = $1 AND status = 'current' "
+    "AND content->>'extractor_version' = $2 LIMIT 1"
+)
+_NEXT_IR_VERSION_SQL = (
+    "SELECT COALESCE(MAX(version), 0) + 1 FROM knowledge_ir WHERE artifact_id = $1"
+)
+_RETIRE_OLDER_IRS_SQL = (
+    "UPDATE knowledge_ir SET status = 'superseded' "
+    "WHERE artifact_id = $1 AND ir_id <> $2 AND status = 'current'"
+)
+
+
 async def _existing_current_ir(store: Any, artifact_id: str) -> str | None:
-    """Current-version IR id for the artifact, or None (probe is fail-open)."""
+    """Current IR id written by THIS extractor version, or None (fail-open).
+
+    An IR from an older extractor does not count, so a version bump
+    re-extracts the artifact (ADR-116 D-2; it matched any current IR before).
+    """
     try:
         return await store._pool.fetchval(  # type: ignore[union-attr]
-            "SELECT ir_id FROM knowledge_ir WHERE artifact_id = $1 "
-            "AND status = 'current' LIMIT 1",
-            artifact_id,
+            _CURRENT_IR_SQL, artifact_id, _KNOWLEDGE_EXTRACTOR_VERSION
         )
     except Exception:  # noqa: BLE001 — best-effort adapter path, reported not raised
         return None
 
 
-async def _graph_written(store: Any, job: Job, artifact_id: str) -> bool:
-    """Whether the artifact's file node exists. An IR without it means an
-    earlier attempt died between the IR insert and the node writes (Postgres
-    restarted mid-understand, 2026-10-09): skipping on "already has IR" then
-    left the artifact out of the graph for good and failed every embed on the
-    missing file node. Probe errors answer True — never a rebuild loop."""
+async def _next_ir_version(store: Any, artifact_id: str) -> int:
+    """The artifact's next IR row version (``UNIQUE (artifact_id, version)``):
+    a new extractor's IR is a new row beside the older one. 1 when the probe
+    fails (the insert then behaves as before)."""
+    try:
+        value = await store._pool.fetchval(  # type: ignore[union-attr]
+            _NEXT_IR_VERSION_SQL, artifact_id
+        )
+    except Exception:  # noqa: BLE001 — fail-open, like the IR probe
+        return 1
+    return int(value) if isinstance(value, int) and value > 0 else 1
+
+
+async def _retire_older_irs(store: Any, artifact_id: str, ir_id: str) -> None:
+    """Mark the artifact's other current IRs superseded, so one IR (this
+    extractor's) is current. Best-effort, logged."""
+    try:
+        await store._pool.execute(  # type: ignore[union-attr]
+            _RETIRE_OLDER_IRS_SQL, artifact_id, ir_id
+        )
+    except Exception as exc:  # noqa: BLE001 — a stale 'current' row is harmless
+        logger.warning("older IRs of %s not retired: %s", artifact_id, exc)
+
+
+_FILE_NODE_SQL = "SELECT 1 FROM knowledge_nodes WHERE node_id = $1"
+_FILE_NODE_OF_IR_SQL = (
+    "SELECT 1 FROM knowledge_nodes WHERE node_id = $1 AND source_ir = $2"
+)
+
+
+async def _graph_written(
+    store: Any, job: Job, artifact_id: str, ir_id: str = ""
+) -> bool:
+    """Whether the artifact's file node exists (written from ``ir_id`` when
+    given). An IR without it means an earlier attempt died between the IR
+    insert and the node writes (Postgres restarted mid-understand,
+    2026-10-09): skipping on "already has IR" then left the artifact out of
+    the graph for good and failed every embed on the missing file node.
+
+    The IR check matters for a re-extraction (ADR-116 extractor bump): the
+    file node is already there from the older IR, so an attempt that died
+    after the new IR's insert would otherwise be skipped for good. Probe
+    errors answer True — never a rebuild loop."""
     project_id = job_project(job)
     scope = _node_id_scope(project_id, str(job.spec.get("graph_id") or ""))
+    node_id = f"node-file-{scope}{artifact_id}"
+    args = (
+        (_FILE_NODE_OF_IR_SQL, node_id, ir_id) if ir_id else (_FILE_NODE_SQL, node_id)
+    )
     try:
-        found = await store._pool.fetchval(  # type: ignore[union-attr]
-            "SELECT 1 FROM knowledge_nodes WHERE node_id = $1",
-            f"node-file-{scope}{artifact_id}",
-        )
+        found = await store._pool.fetchval(*args)  # type: ignore[union-attr]
     except Exception:  # noqa: BLE001 — fail-open, like the IR probe
         return True
     return bool(found)
@@ -2178,9 +2348,11 @@ async def _artifact_row_absent(store: Any, job: Job, artifact_id: str) -> str:
     )
 
 
-async def _already_understood(store: Any, job: Job, artifact_id: str, inserted: bool) -> bool:
+async def _already_understood(
+    store: Any, job: Job, artifact_id: str, inserted: bool, ir_id: str = ""
+) -> bool:
     """The IR was there already and so is its graph (else rebuild the nodes)."""
-    return not inserted and await _graph_written(store, job, artifact_id)
+    return not inserted and await _graph_written(store, job, artifact_id, ir_id)
 
 
 def _understand_bytes(
@@ -2240,11 +2412,14 @@ async def _understand_input(
     bucket: str,
     src: dict[str, Any],
     result: KnowledgeUnderstandResult,
+    raw_sink: dict[str, bytes] | None = None,
 ) -> tuple[str, str, Any, Any] | None:
     """Artifact preamble for one understand extract, or None (reason recorded).
 
     Returns ``(artifact_id, kind, content, parsed)``; every early exit
-    records its reason on *result* — never a silent skip.
+    records its reason on *result* — never a silent skip. ``raw_sink``
+    receives the artifact's bytes before text extraction (``"raw"``), for
+    the ADR-116 document parser.
     """
     artifact_id = src["artifact_id"]
     kind = src.get("kind", "document")
@@ -2260,7 +2435,7 @@ async def _understand_input(
     # Check for existing current-version IR (write-once idempotent); an IR
     # whose graph was never written is rebuilt, not skipped.
     existing = await _existing_current_ir(store, artifact_id)
-    if existing and await _graph_written(store, job, artifact_id):
+    if existing and await _graph_written(store, job, artifact_id, existing):
         result.already_ir += 1
         KnowledgeEvent(
             event_type="verify",
@@ -2274,6 +2449,7 @@ async def _understand_input(
     content = _understand_bytes(s3_client, bucket, src, result)
     if content is None:
         return None
+    _keep_raw(raw_sink, content)
 
     content, other = _text_content(src, content)
     if content is None:
@@ -2300,6 +2476,130 @@ async def _understand_input(
     return artifact_id, kind, content, parsed
 
 
+async def _store_ir(
+    store: Any, ir: Any, artifact_id: str, kind: str, result: KnowledgeUnderstandResult
+) -> bool | None:
+    """Insert the IR write-once under the artifact's next row version and
+    retire the older ones. True = inserted, False = there already, None =
+    failed (recorded on *result*)."""
+    version = await _next_ir_version(store, artifact_id)
+    try:
+        inserted = await store.insert_ir(
+            ir_id=ir.ir_id,
+            artifact_id=artifact_id,
+            ir_type=kind,
+            content=ir.to_dict(),
+            content_hash=ir.content_hash,
+            version=version,
+        )
+    except Exception as exc:  # noqa: BLE001 — best-effort adapter path, reported not raised
+        logger.error("IR insert failed: %s: %s", artifact_id, exc)
+        result.failed_items.append({"artifact_id": artifact_id, "error": str(exc)})
+        return None
+    if inserted:
+        await _retire_older_irs(store, artifact_id, ir.ir_id)
+    return bool(inserted)
+
+
+_DEGRADING_NOTE = "semantic extraction unavailable"
+
+
+def _note_degraded(result: KnowledgeUnderstandResult, notes: list[str]) -> None:
+    """An ingest that produced only structural nodes is not a clean run (it
+    gates only the best-effort skill-proposal leg). Notes from a run that
+    still extracted (parser fallback, pre-tagging off, windows capped or
+    failed) go to ``extract_notes`` and do not degrade it."""
+    degrading = [n for n in notes if n.startswith(_DEGRADING_NOTE)]
+    for note in notes:
+        if note not in degrading and note not in result.extract_notes:
+            result.extract_notes.append(note)
+    if degrading:
+        result.degraded = True
+        result.degraded_reason = "; ".join(
+            filter(None, [result.degraded_reason, *dict.fromkeys(degrading)])
+        )
+
+
+async def _write_rows(
+    store: Any, nodes: list, edges: list, artifact_id: str, result: KnowledgeUnderstandResult
+) -> bool:
+    try:
+        for node in nodes:
+            await store.upsert_node(node)
+        for edge in edges:
+            await store.upsert_edge(edge)
+    except Exception as exc:  # noqa: BLE001 — best-effort adapter path, reported not raised
+        logger.error("Node/edge upsert failed: %s: %s", artifact_id, exc)
+        result.failed_items.append(
+            {"artifact_id": artifact_id, "error": f"graph: {exc}"}
+        )
+        return False
+    result.nodes_created += len(nodes)
+    result.edges_created += len(edges)
+    return True
+
+
+# A re-extraction (ADR-116 extractor bump) writes new semantic rows beside
+# the ones the superseded IR wrote; upserts only overwrite ids that recur.
+# These statements drop the older extraction's rows that nobody reviewed:
+# proposed, no ``review`` key, no established or reviewed edge attached.
+_SUPERSEDED_SQL = (
+    "SELECT ir_id FROM knowledge_ir WHERE artifact_id = $3 AND status = 'superseded'"
+)
+_DROP_STALE_SEM_NODES_SQL = f"""DELETE FROM knowledge_nodes n
+ WHERE n.project_id = $1 AND n.graph_id = $2 AND n.content->>'artifact_id' = $3
+   AND n.node_id LIKE 'node-sem-%' AND n.status = 'proposed'
+   AND NOT (coalesce(n.content, '{{}}'::jsonb) ? 'review')
+   AND n.source_ir IS DISTINCT FROM $4 AND n.source_ir IN ({_SUPERSEDED_SQL})
+   AND NOT EXISTS (
+       SELECT 1 FROM knowledge_edges e
+        WHERE (e.source_id = n.node_id OR e.target_id = n.node_id)
+          AND (e.status = 'established'
+               OR coalesce(e.content, '{{}}'::jsonb) ? 'review'))"""
+_DROP_STALE_SEM_EDGES_SQL = f"""DELETE FROM knowledge_edges e
+ WHERE e.project_id = $1 AND e.graph_id = $2 AND e.content->>'artifact_id' = $3
+   AND (e.edge_id LIKE 'edge-sem-%' OR e.edge_id LIKE 'edge-merge-%')
+   AND e.status = 'proposed'
+   AND NOT (coalesce(e.content, '{{}}'::jsonb) ? 'review')
+   AND NOT (e.edge_id = ANY($4::text[]))
+   AND EXISTS ({_SUPERSEDED_SQL})
+   AND NOT EXISTS (
+       SELECT 1 FROM knowledge_nodes k
+        WHERE k.node_id IN (e.source_id, e.target_id) AND k.node_id LIKE 'node-sem-%'
+          AND (k.status = 'established'
+               OR coalesce(k.content, '{{}}'::jsonb) ? 'review'))"""
+
+
+async def _drop_superseded_rows(
+    store: Any, where: tuple[str, str, str, str], edges: list
+) -> None:
+    """Remove the unreviewed semantic rows an older IR of the artifact wrote
+    and this extraction did not write again, in one transaction. ``where`` is
+    ``(project_id, graph_id, artifact_id, ir_id)``. Established or reviewed
+    rows, and nodes with such an edge, are never touched. Best-effort: a
+    failure is logged and rolled back, and the stale rows stay as before."""
+    pool = getattr(store, "_pool", None)
+    if pool is None:
+        return
+    project_id, graph_id, artifact_id, ir_id = where
+    edge_ids = [e.edge_id for e in edges]
+    try:
+        async with pool.acquire() as conn, conn.transaction():
+            await conn.execute(
+                _DROP_STALE_SEM_EDGES_SQL, project_id, graph_id, artifact_id, edge_ids
+            )
+            await conn.execute(
+                _DROP_STALE_SEM_NODES_SQL, project_id, graph_id, artifact_id, ir_id
+            )
+    except Exception as exc:  # noqa: BLE001 — stale rows are what was there before
+        logger.warning("stale semantic rows of %s not dropped: %s", artifact_id, exc)
+
+
+def _keep_raw(raw_sink: dict[str, bytes] | None, content: bytes) -> None:
+    if raw_sink is not None:
+        raw_sink["raw"] = content
+
+
 async def _understand_one_artifact(
     job: Job,
     attempt: JobAttempt,
@@ -2312,6 +2612,7 @@ async def _understand_one_artifact(
     result: KnowledgeUnderstandResult,
     *,
     origin_actor: str = "",
+    ctx: _UnderstandContext | None = None,
 ) -> None:
     """Parse → IR → graph for one artifact (per-artifact extract).
 
@@ -2319,17 +2620,20 @@ async def _understand_one_artifact(
     ``proposed`` — machine-authored content is never auto-established —
     and each row records that origin and this job, so the review inbox
     names who wrote it and can establish the job's rows as one run.
+    ``ctx`` (ADR-116) carries the job's vocabulary and extract mode; the
+    parser and the model calls run in a worker thread, never on the loop.
     """
     from umrs.knowledge.ir import build_knowledge_ir
 
+    ctx = ctx if ctx is not None else _UnderstandContext()
+    raw_sink: dict[str, bytes] = {}
     prepared = await _understand_input(
-        job, attempt, store, s3_client, bucket, src, result
+        job, attempt, store, s3_client, bucket, src, result, raw_sink=raw_sink
     )
     if prepared is None:
         return
     artifact_id, kind, content, parsed = prepared
 
-    # Build KnowledgeIR
     ir = build_knowledge_ir(
         project_id=project_id,
         artifact_id=artifact_id,
@@ -2338,35 +2642,30 @@ async def _understand_one_artifact(
         extracted=parsed,
         extractor_version=_KNOWLEDGE_EXTRACTOR_VERSION,
     )
-
-    # Store IR (write-once idempotent)
-    try:
-        inserted = await store.insert_ir(
-            ir_id=ir.ir_id,
-            artifact_id=artifact_id,
-            ir_type=kind,
-            content=ir.to_dict(),
-            content_hash=ir.content_hash,
-        )
-    except Exception as exc:  # noqa: BLE001 — best-effort adapter path, reported not raised
-        logger.error("IR insert failed: %s: %s", artifact_id, exc)
-        result.failed_items.append({"artifact_id": artifact_id, "error": str(exc)})
+    inserted = await _store_ir(store, ir, artifact_id, kind, result)
+    if inserted is None:
         return
-
-    if await _already_understood(store, job, artifact_id, inserted):
+    if await _already_understood(store, job, artifact_id, inserted, ir.ir_id):
         result.already_ir += 1
         return
 
     # Inserted now, or present from an attempt that died before its nodes.
     result.ir_ids.append(ir.ir_id)
 
-    # Build and upsert graph nodes/edges (into the target graph: the
-    # requesting named graph when the ingest ran with graph_id in spec,
-    # otherwise the project's default graph). Prose artifacts gain
-    # semantic concept/entity nodes via graph-JSON import (W3) or
-    # site-LLM extraction (W2).
+    # Graph rows go into the target graph: the requesting named graph when
+    # the ingest ran with graph_id in spec, otherwise the project's default
+    # graph. Prose artifacts gain semantic concept/entity nodes via
+    # graph-JSON import (W3) or site-LLM extraction (W2).
+    inputs = _ExtractInputs(
+        vocab=ctx.vocab,
+        mode=ctx.mode,
+        raw=raw_sink.get("raw"),
+        source_name=_source_name(src),
+        deadline=ctx.deadline,
+    )
     notes: list[str] = []
-    nodes, edges = _nodes_edges_for_artifact(
+    nodes, edges = await asyncio.to_thread(
+        _nodes_edges_for_artifact,
         artifact_id,
         ir.ir_id,
         kind,
@@ -2375,41 +2674,29 @@ async def _understand_one_artifact(
         project_id,
         target_graph_id,
         notes=notes,
+        inputs=inputs,
     )
-    if notes:
-        # Report it: an ingest that produced only structural nodes is not a
-        # clean run (it gates only the best-effort skill-proposal leg below).
-        result.degraded = True
-        result.degraded_reason = "; ".join(
-            filter(None, [result.degraded_reason, *dict.fromkeys(notes)])
-        )
+    _note_degraded(result, notes)
     # D-35: agent-authored content (and, K1.6, a kept assistant answer)
     # enters the two-tier graph as proposed — the establish seam (human) is
     # the only promotion; a vouched answer names its establisher.
     nodes, edges = _tiered_rows(nodes, edges, job, origin_actor)
-
-    try:
-        for node in nodes:
-            await store.upsert_node(node)
-        for edge in edges:
-            await store.upsert_edge(edge)
-        result.nodes_created += len(nodes)
-        result.edges_created += len(edges)
-    except Exception as exc:  # noqa: BLE001 — best-effort adapter path, reported not raised
-        logger.error("Node/edge upsert failed: %s: %s", artifact_id, exc)
-        result.failed_items.append(
-            {"artifact_id": artifact_id, "error": f"graph: {exc}"}
-        )
+    if not await _write_rows(store, nodes, edges, artifact_id, result):
         return
+    await _drop_superseded_rows(
+        store, (project_id, target_graph_id, artifact_id, ir.ir_id), edges
+    )
+    ctx.sem_node_ids.extend(
+        n.node_id for n in nodes if str(n.node_id).startswith("node-sem-")
+    )
 
-    summary = _build_summary(parsed)
     KnowledgeEvent(
         event_type="ingest",
         job_id=job.job_id,
         attempt_id=attempt.attempt_id,
         artifact_id=artifact_id,
         ir_id=ir.ir_id,
-        details=f"summary: {summary}",
+        details=f"summary: {_build_summary(parsed)}",
     ).emit()
 
     # Best-effort: derive A2L link for UNDERSTAND step (ADR-017)
@@ -2685,18 +2972,8 @@ _ENTITY_TYPES = {
     "material",
 }
 
-_PROSE_EXTRACT_SYSTEM = (
-    "You extract a knowledge graph from scientific/technical documents. "
-    "Reply with a JSON object only, no prose outside the JSON. Schema:\n"
-    '{"entities": [{"name": "short canonical name", "type": "one of: concept, '
-    "method, technique, property, process, model, paper, dataset, software, "
-    'application, person, material, finding"}], '
-    '"relations": [{"source": "entity name", "target": "entity name", '
-    '"relation": "short verb phrase"}]}\n'
-    "Rules: at most 40 entities and 60 relations; names concise (≤6 words); "
-    "only relations between listed entities; skip trivial/generic mentions."
-)
-
+# The extraction prompt is built from the graph's vocabulary since ADR-116
+# (knowledge/llm_extract.system_prompt); the fixed 13-type list is gone.
 
 def _semantic_db_type(semantic_type: str) -> str:
     """Semantic label → DB-allowed node_type (content keeps the raw label)."""
@@ -2708,6 +2985,27 @@ def _slug_label(value: Any, *, max_len: int = 40) -> str:
     text = "".join(ch if ch.isalnum() else "-" for ch in str(value).lower())
     slug = "-".join(part for part in text.split("-") if part)
     return slug[:max_len] or "node"
+
+
+_ID_SLUG_MAX = 40
+_UNCUT = 1 << 20
+
+
+def _id_slug(value: Any) -> str:
+    """Slug for a semantic node or edge id, at most 40 characters. A longer
+    slug is cut to 31 and given an 8-hex hash of the whole slug, so two
+    names that share their first 40 characters never share an id (they
+    overwrote each other before ADR-116)."""
+    full = _slug_label(value, max_len=_UNCUT)
+    if len(full) <= _ID_SLUG_MAX:
+        return full
+    digest = hashlib.sha256(full.encode("utf-8")).hexdigest()[:8]
+    return f"{full[: _ID_SLUG_MAX - 9]}-{digest}"
+
+
+def _name_key(value: Any) -> str:
+    """Uncut slug: the lookup key of a node name or id within one payload."""
+    return _slug_label(value, max_len=_UNCUT)
 
 
 def _first_str(*values: Any, default: str = "") -> str:
@@ -2851,6 +3149,20 @@ def _registry_chat_candidates(project_id: str) -> list[Any]:
     return [ep for ep in (*own, *shared) if _is_chat_endpoint(ep)]
 
 
+def _wanted_model_names(wanted: str) -> set[str]:
+    """``wanted`` plus, for an ADR-106 role alias (``svc-fast``), the models
+    whose roster entries serve it."""
+    names = {wanted}
+    try:
+        from umrs.orchestrator.provision_roster import is_role_alias, role_alias_models
+
+        if is_role_alias(wanted):
+            names.update(role_alias_models(wanted))
+    except Exception as exc:  # noqa: BLE001 — an unreadable roster matches by name only
+        logger.warning("role alias %s unresolved: %s", wanted, exc)
+    return names
+
+
 def _extract_chat_endpoint(project_id: str) -> tuple[str, str] | None:
     """(base_url, model) for semantic extraction, or None when none is usable.
 
@@ -2859,7 +3171,8 @@ def _extract_chat_endpoint(project_id: str) -> tuple[str, str] | None:
     registry — the one internal inference API (ADR-068, gap D-63) — instead of
     the old default http://127.0.0.1:11434, which inside a container is the
     container itself and refused every request. UMRS_KNOWLEDGE_EXTRACT_MODEL,
-    when set, picks among the candidates.
+    when set, picks among the candidates; it may name an ADR-106 role alias,
+    which matches the endpoints serving the alias's models (ADR-116 D-2).
     """
     wanted = os.environ.get("UMRS_KNOWLEDGE_EXTRACT_MODEL", "").strip()
     explicit = os.environ.get("UMRS_AGENT_LITELLM_URL", "").strip()
@@ -2867,80 +3180,239 @@ def _extract_chat_endpoint(project_id: str) -> tuple[str, str] | None:
         return explicit, wanted or "gpt-oss"
     candidates = _registry_chat_candidates(project_id)
     if wanted:
+        names = _wanted_model_names(wanted)
         candidates = [
-            ep for ep in candidates if wanted in (ep.model, _served_model_name(ep))
+            ep for ep in candidates if names & {ep.model, _served_model_name(ep)}
         ]
     if not candidates:
         return None
     return candidates[0].litellm_url, _served_model_name(candidates[0])
 
 
-def _extract_timeout() -> float:
-    """Seconds allowed for one extraction call (UMRS_KNOWLEDGE_EXTRACT_TIMEOUT).
+# The slowest decode rate the default call timeout allows for (tok/s per
+# stream). A laptop-class model decodes ~30 tok/s, RIKYU ~57 tok/s per stream
+# (fewer with four windows in flight on one endpoint).
+_EXTRACT_MIN_DECODE_TOK_S = 25.0
 
-    60 s suits a datacenter endpoint. A laptop-class model decodes ~30 tok/s,
-    and a reply that runs to the 1800-token cap needs about a minute on its own
-    — measured 2026-10-09: the same 5-sentence note took 4.6 s or 16.3 s, and
+
+def _extract_timeout(max_tokens: int = 0) -> float:
+    """Seconds allowed for one extraction call.
+
+    UMRS_KNOWLEDGE_EXTRACT_TIMEOUT, when set, wins (at least 5 s). Otherwise
+    the timeout covers a reply that runs to ``max_tokens`` at
+    ``_EXTRACT_MIN_DECODE_TOK_S``, and never less than 60 s: the call is not
+    streamed, so the whole reply must arrive inside it (ADR-116 raised the
+    cap from 1800 to 2500 tokens, UMRS_KNOWLEDGE_EXTRACT_MAX_TOKENS; 2500
+    tokens need 100 s at 25 tok/s).
+    Measured 2026-10-09: the same 5-sentence note took 4.6 s or 16.3 s, and
     once timed out at 60 s.
     """
+    floor = max(60.0, max_tokens / _EXTRACT_MIN_DECODE_TOK_S)
+    raw = os.environ.get("UMRS_KNOWLEDGE_EXTRACT_TIMEOUT", "").strip()
+    if not raw:
+        return floor
     try:
-        return max(5.0, float(os.environ.get("UMRS_KNOWLEDGE_EXTRACT_TIMEOUT", "60")))
+        return max(5.0, float(raw))
     except ValueError:
-        return 60.0
+        return floor
+
+
+def _extract_failed(notes: list[str], reason: str) -> None:
+    logger.warning("LLM prose extraction unavailable: %s", reason)
+    notes.append(f"semantic extraction unavailable: {reason}")
 
 
 def _llm_extract_document(
-    text: str, project_id: str = "", notes: list[str] | None = None
+    text: str, project_id: str = "", notes: list[str] | None = None, **kw: Any
 ) -> dict[str, Any] | None:
-    """Site-LLM semantic extraction for prose artifacts (W2).
+    """Site-LLM semantic extraction for prose artifacts (W2; ADR-116 D-2).
+
+    The whole text is read in windows (``knowledge.llm_extract``), blocking:
+    the understand job calls this from a worker thread. Keyword options:
+    ``vocab`` (the job's extraction vocabulary; default the built-in one),
+    ``extract_mode`` (``full`` | ``lite`` = one window | ``off`` = no call),
+    ``parser_id`` (recorded in each evidence item).
 
     Disabled with UMRS_KNOWLEDGE_LLM_EXTRACT=0. Any failure still degrades to
     the structural file-node view and the job still succeeds — but the reason
     is appended to ``notes`` so the run is reported as degraded rather than as
     a clean ingest that silently produced an empty graph.
     """
-    if os.environ.get("UMRS_KNOWLEDGE_LLM_EXTRACT", "1") in ("0", "false"):
+    if _llm_extract_disabled():
         return None
+    from umrs.knowledge.llm_extract import normalize_mode
 
-    def _fail(reason: str) -> None:
-        logger.warning("LLM prose extraction unavailable: %s", reason)
-        if notes is not None:
-            notes.append(f"semantic extraction unavailable: {reason}")
-
-    target = _extract_chat_endpoint(project_id)
+    sink = notes if notes is not None else []
+    mode = normalize_mode(kw.get("extract_mode"))
+    if mode == "off":
+        return None
+    target = kw.get("target") or _extract_chat_endpoint(project_id)
     if target is None:
-        _fail("no READY chat endpoint in the registry and UMRS_AGENT_LITELLM_URL unset")
+        _extract_failed(sink, _NO_ENDPOINT)
         return None
-    base_url, model = target
-    try:
-        from umrs.knowledge.agent_executor import _default_litellm_chat
+    return _windowed_extract(text, target, sink, mode, kw)
 
-        reply = _default_litellm_chat(
-            [
-                {"role": "system", "content": _PROSE_EXTRACT_SYSTEM},
-                {"role": "user", "content": text[:9000]},
-            ],
-            model=model,
-            base_url=base_url,
-            api_key=None,
-            max_tokens=1800,
-            timeout=_extract_timeout(),
-        )
-    except Exception as exc:  # noqa: BLE001 — degraded structural view, reported
-        _fail(f"{type(exc).__name__}: {exc}")
+
+def _windowed_extract(
+    text: str, target: tuple[str, str], notes: list[str], mode: str, kw: dict[str, Any]
+) -> dict[str, Any] | None:
+    import functools
+
+    from umrs.knowledge import llm_extract, pretag
+    from umrs.knowledge.agent_executor import _default_litellm_chat
+
+    base_url, model = target
+    settings = llm_extract.ExtractSettings.from_env()
+    vocab = kw.get("vocab") or llm_extract.default_vocabulary()
+    chat = functools.partial(
+        _default_litellm_chat,
+        model=model,
+        base_url=base_url,
+        api_key=None,
+        max_tokens=settings.max_tokens,
+        timeout=_extract_timeout(settings.max_tokens),
+        reasoning_fallback=True,
+    )
+    request = llm_extract.ExtractRequest(
+        chat=chat,
+        model=model,
+        vocab=vocab,
+        mode=mode,
+        parser_id=str(kw.get("parser_id") or "raw"),
+        tagger=pretag.window_tagger(vocab, notes),
+        settings=settings,
+        deadline=kw.get("deadline"),
+    )
+    payload = llm_extract.extract_document(text, request, notes)
+    if payload is None:
+        logger.warning("LLM prose extraction produced nothing: %s", notes[-1:])
+    return payload
+
+
+# The node_type values the DB CHECK constraint allows (migrations/0055).
+_NODE_TYPES = frozenset(
+    {"class", "function", "file", "module", "concept", "entity", "relationship"}
+)
+
+
+def _node_bucket(entry: dict[str, Any], semantic_type: str) -> str:
+    """The vocabulary's bucket for the node (ADR-116 D-6) when it is one the
+    DB allows, else today's rule (entity types vs concept)."""
+    bucket = str(entry.get("bucket") or "")
+    return bucket if bucket in _NODE_TYPES else _semantic_db_type(semantic_type)
+
+
+def _semantic_content(
+    entry: dict[str, Any], artifact_id: str, semantic_type: str, name: str, extractor: str
+) -> dict[str, Any]:
+    """Node content; an extractor payload (ADR-116 [C-ING]) adds aliases,
+    evidence, the extractor id and, for an unclassified type, ``type_raw``."""
+    content: dict[str, Any] = {
+        "artifact_id": artifact_id,
+        "semantic_type": semantic_type,
+        "source": str(entry.get("id") or name),
+    }
+    if not extractor:
+        return content
+    content.update(
+        aliases=list(entry.get("aliases") or []),
+        evidence=list(entry.get("evidence") or []),
+        extractor=extractor,
+    )
+    if semantic_type == "unclassified":
+        content["type_raw"] = str(entry.get("type_raw") or "")
+    return content
+
+
+@dataclass(frozen=True)
+class _SemScope:
+    """The ids and graph one artifact's semantic rows are written under."""
+
+    artifact_id: str
+    ir_id: str
+    project_id: str
+    graph_id: str
+    scope: str
+    extractor: str
+
+
+def _semantic_node(entry: dict[str, Any], where: _SemScope) -> tuple[Any, str]:
+    """One KnowledgeNode and its id slug."""
+    from umrs.knowledge.store import KnowledgeNode
+
+    name = " ".join(str(entry.get("name", "")).split())[:120]
+    semantic_type = str(entry.get("type", "concept")).strip().lower()
+    slug = _id_slug(entry.get("id") or name)
+    node_id = f"node-sem-{where.scope}{slug}-{where.artifact_id}"
+    node = KnowledgeNode(
+        node_id=node_id,
+        project_id=where.project_id,
+        label=name,
+        node_type=_node_bucket(entry, semantic_type),
+        content=_semantic_content(
+            entry, where.artifact_id, semantic_type, name, where.extractor
+        ),
+        content_hash=_sha256_hex(f"sem-{where.scope}{node_id}".encode()),
+        source_ir=where.ir_id,
+        graph_id=where.graph_id,
+    )
+    return node, slug
+
+
+def _relation_of(entry: dict[str, Any], extractor: str) -> tuple[str, str]:
+    """``(relation_type, id part)``: a vocabulary relation as the extractor
+    mapped it (an unmatched ``related_to`` keeps its raw phrase in the id),
+    else today's slug of the payload's relation."""
+    if not extractor:
+        relation = _slug_label(entry.get("relation", "related"), max_len=40)
+        return relation, relation
+    relation = str(entry.get("relation") or "related_to")
+    raw = str(entry.get("rel_raw") or "")
+    return relation, _id_slug(f"{relation}-{raw}" if raw else relation)
+
+
+def _semantic_edge(
+    entry: dict[str, Any], ids: dict[str, tuple[str, str]], where: _SemScope
+) -> Any | None:
+    """One relation edge, or None when an endpoint is unknown or both are one."""
+    from umrs.knowledge.store import KnowledgeEdge
+
+    source = ids.get(_name_key(entry.get("source", "")))
+    target = ids.get(_name_key(entry.get("target", "")))
+    if not source or not target or source[0] == target[0]:
         return None
-    match = re.search(r"\{.*\}", reply, re.DOTALL)
-    if match is None:
-        _fail(f"model {model!r} replied without a JSON graph")
-        return None
-    try:
-        raw = json.loads(match.group(0))
-    except (json.JSONDecodeError, ValueError):
-        _fail(f"model {model!r} replied with invalid JSON")
-        return None
-    if isinstance(raw, dict) and "entities" in raw and "nodes" not in raw:
-        raw = {**raw, "nodes": raw.get("entities"), "edges": raw.get("relations")}
-    return _normalize_graph_payload(raw)
+    relation, rel_part = _relation_of(entry, where.extractor)
+    content: dict[str, Any] = {"semantic": True, "artifact_id": where.artifact_id}
+    if where.extractor:
+        content["extractor"] = where.extractor
+    if entry.get("rel_raw"):
+        content["rel_raw"] = str(entry["rel_raw"])
+    return KnowledgeEdge(
+        edge_id=(
+            f"edge-sem-{where.scope}{source[1]}-{rel_part}-{target[1]}-{where.artifact_id}"
+        ),
+        project_id=where.project_id,
+        source_id=source[0],
+        target_id=target[0],
+        relation_type=relation,
+        content=content,
+        graph_id=where.graph_id,
+    )
+
+
+def _mentions_edge(node: Any, slug: str, where: _SemScope) -> Any:
+    from umrs.knowledge.store import KnowledgeEdge
+
+    file_part = f"{where.scope}{where.artifact_id}"  # the id shape since W2
+    return KnowledgeEdge(
+        edge_id=f"edge-merge-{where.scope}{file_part}-{slug}-{where.artifact_id}",
+        project_id=where.project_id,
+        source_id=f"node-file-{where.scope}{where.artifact_id}",
+        target_id=node.node_id,
+        relation_type="mentions",
+        content={"semantic": True, "artifact_id": where.artifact_id},
+        graph_id=where.graph_id,
+    )
 
 
 def _semantic_nodes_edges(
@@ -2953,74 +3425,138 @@ def _semantic_nodes_edges(
     """Normalized graph payload → KnowledgeNode/KnowledgeEdge rows (W2/W3).
 
     Node ids carry the artifact suffix, so the same concept ingested from two
-    documents stays distinct; 'mentions' edges link each semantic node to its
-    source file node.
+    documents stays distinct (ADR-116 D-7 proposes ``same_as`` between them);
+    'mentions' edges link each semantic node to its source file node. A
+    payload from the windowed extractor (``payload["extractor"]``) carries
+    mapped types, buckets, aliases and evidence into the rows.
     """
-    from umrs.knowledge.store import KnowledgeEdge, KnowledgeNode
-
-    scope = _node_id_scope(project_id, graph_id)
-    file_id = f"node-file-{scope}{artifact_id}"
+    where = _SemScope(
+        artifact_id=artifact_id,
+        ir_id=ir_id,
+        project_id=project_id,
+        graph_id=graph_id,
+        scope=_node_id_scope(project_id, graph_id),
+        extractor=str(payload.get("extractor") or ""),
+    )
     nodes: list = []
-    node_id_by_name: dict[str, str] = {}
+    slugs: list[str] = []
+    ids: dict[str, tuple[str, str]] = {}
     for entry in payload.get("nodes", []):
-        name = " ".join(str(entry.get("name", "")).split())[:120]
-        semantic_type = str(entry.get("type", "concept")).strip().lower()
-        slug = _slug_label(entry.get("id") or name)
-        node_id = f"node-sem-{scope}{slug}-{artifact_id}"
-        node_id_by_name[slug] = node_id
-        node_id_by_name[_slug_label(name)] = node_id
-        nodes.append(
-            KnowledgeNode(
-                node_id=node_id,
-                project_id=project_id,
-                label=name,
-                node_type=_semantic_db_type(semantic_type),
-                content={
-                    "artifact_id": artifact_id,
-                    "semantic_type": semantic_type,
-                    "source": str(entry.get("id") or name),
-                },
-                content_hash=_sha256_hex(f"sem-{scope}{node_id}".encode()),
-                source_ir=ir_id,
-                graph_id=graph_id,
-            )
-        )
-    edges: list = []
-    for entry in payload.get("edges", []):
-        src_slug = _slug_label(entry.get("source", ""))
-        dst_slug = _slug_label(entry.get("target", ""))
-        source_id = node_id_by_name.get(src_slug)
-        target_id = node_id_by_name.get(dst_slug)
-        if not source_id or not target_id or source_id == target_id:
-            continue
-        relation = _slug_label(entry.get("relation", "related"), max_len=40)
-        edges.append(
-            KnowledgeEdge(
-                edge_id=f"edge-sem-{scope}{src_slug}-{relation}-{dst_slug}-{artifact_id}",
-                project_id=project_id,
-                source_id=source_id,
-                target_id=target_id,
-                relation_type=relation,
-                content={"semantic": True, "artifact_id": artifact_id},
-                graph_id=graph_id,
-            )
-        )
-    for node in nodes:
-        slug = node.node_id.removeprefix(f"node-sem-{scope}").rsplit(
-            f"-{artifact_id}", 1
-        )[0]
-        edges.append(
-            KnowledgeEdge(
-                edge_id=f"edge-merge-{scope}{file_id.replace('node-file-', '')}-{slug}-{artifact_id}",
-                project_id=project_id,
-                source_id=file_id,
-                target_id=node.node_id,
-                relation_type="mentions",
-                content={"semantic": True, "artifact_id": artifact_id},
-                graph_id=graph_id,
-            )
-        )
+        node, slug = _semantic_node(entry, where)
+        ids[_name_key(entry.get("id") or node.label)] = (node.node_id, slug)
+        ids.setdefault(_name_key(node.label), (node.node_id, slug))
+        nodes.append(node)
+        slugs.append(slug)
+    edges = [
+        edge
+        for entry in payload.get("edges", [])
+        if (edge := _semantic_edge(entry, ids, where)) is not None
+    ]
+    edges += [_mentions_edge(n, slug, where) for n, slug in zip(nodes, slugs, strict=True)]
     return nodes, edges
+
+
+@dataclass(frozen=True)
+class _ExtractInputs:
+    """Per-artifact extraction inputs beside the text (ADR-116): the job's
+    vocabulary and extract mode, the artifact's original bytes and name (the
+    document parser reads them; the text the caller has stays the text
+    chunking and embedding use)."""
+
+    vocab: Any = None
+    mode: str = "full"
+    raw: bytes | None = None
+    source_name: str = ""
+    # The understand job's extraction deadline (``time.monotonic()``).
+    deadline: float | None = None
+
+    def bound(self) -> dict[str, Any]:
+        """``{"timeout_s": seconds left}`` when a deadline is set, else ``{}``."""
+        if self.deadline is None:
+            return {}
+        return {"timeout_s": self.deadline - time.monotonic()}
+
+
+def _parsed_text(
+    text: str, kind: str, notes: list[str], inputs: _ExtractInputs
+) -> tuple[str, str]:
+    """``(extraction text, parser id)`` through the D-1 parser seam; the
+    Docling parse runs inside what is left of the job's budget."""
+    from umrs.knowledge.doc_parse import parse_for_extraction
+
+    raw = inputs.raw if inputs.raw is not None else text.encode("utf-8")
+    parsed = parse_for_extraction(
+        raw, inputs.source_name, kind, fallback_text=text, **inputs.bound()
+    )
+    notes.extend(parsed.notes)
+    return parsed.text, parsed.parser
+
+
+def _extraction_input(
+    text: str, kind: str, notes: list[str], inputs: _ExtractInputs
+) -> tuple[str, str, str]:
+    """``(text, mode, parser id)`` the model reads. An agent session-history
+    package is read as its turn texts, one window at most."""
+    from umrs.knowledge.llm_extract import session_history_text
+
+    history = session_history_text(text)
+    if history is not None:
+        mode = "off" if inputs.mode == "off" else "lite"
+        return history, mode, "session-history"
+    if inputs.mode == "off":
+        return text, "off", "raw"
+    parsed, parser_id = _parsed_text(text, kind, notes, inputs)
+    return parsed, inputs.mode, parser_id
+
+
+def _llm_extract_disabled() -> bool:
+    """UMRS_KNOWLEDGE_LLM_EXTRACT=0 (or false) turns semantic extraction off."""
+    return os.environ.get("UMRS_KNOWLEDGE_LLM_EXTRACT", "1") in ("0", "false")
+
+
+_NO_ENDPOINT = "no READY chat endpoint in the registry and UMRS_AGENT_LITELLM_URL unset"
+
+
+def _endpoint_before_parse(
+    kind: str, project_id: str, notes: list[str], inputs: _ExtractInputs
+) -> dict[str, Any] | None:
+    """``{"target": ...}`` resolved before a Docling parse (a parse whose
+    text no model could read is wasted work), ``{}`` when the parse is
+    cheap, or None (reason noted) when no chat endpoint is usable."""
+    from umrs.knowledge.doc_parse import wants_docling
+
+    if inputs.mode == "off" or not wants_docling(inputs.source_name, kind):
+        return {}
+    target = _extract_chat_endpoint(project_id)
+    if target is None:
+        _extract_failed(notes, _NO_ENDPOINT)
+        return None
+    return {"target": target}
+
+
+def _model_payload(
+    text: str, kind: str, project_id: str, notes: list[str], inputs: _ExtractInputs
+) -> dict[str, Any] | None:
+    """The site-LLM payload for structure-free prose, or None (mode off,
+    extraction switched off, or no endpoint: then nothing is parsed)."""
+    if _llm_extract_disabled():
+        return None
+    extra = _endpoint_before_parse(kind, project_id, notes, inputs)
+    if extra is None:
+        return None
+    text, mode, parser_id = _extraction_input(text, kind, notes, inputs)
+    if mode == "off":
+        return None
+    return _llm_extract_document(
+        text,
+        project_id=project_id,
+        notes=notes,
+        vocab=inputs.vocab,
+        extract_mode=mode,
+        parser_id=parser_id,
+        deadline=inputs.deadline,
+        **extra,
+    )
 
 
 def _nodes_edges_for_artifact(
@@ -3032,6 +3568,7 @@ def _nodes_edges_for_artifact(
     project_id: str,
     target_graph_id: str,
     notes: list[str] | None = None,
+    inputs: _ExtractInputs | None = None,
 ) -> tuple[list, list]:
     """Structural nodes/edges plus, for prose artifacts, semantic ones.
 
@@ -3043,6 +3580,9 @@ def _nodes_edges_for_artifact(
     the document. The document node, the deterministic structure and a
     graph-JSON payload the author wrote keep the actor's tier (the caller
     demotes everything for agent origins).
+
+    Blocking (document parser, model calls): the understand job runs it in a
+    worker thread (ADR-116).
     """
     nodes = _build_nodes(
         artifact_id, ir_id, parsed, project_id, graph_id=target_graph_id
@@ -3056,7 +3596,8 @@ def _nodes_edges_for_artifact(
     model_extracted = payload is None and len(nodes) == 1
     if model_extracted:
         # Structural parse found nothing semantic → LLM extraction (W2).
-        payload = _llm_extract_document(text, project_id=project_id, notes=notes)
+        sink = notes if notes is not None else []
+        payload = _model_payload(text, kind, project_id, sink, inputs or _ExtractInputs())
     if payload is not None:
         sem_nodes, sem_edges = _semantic_nodes_edges(
             artifact_id, ir_id, project_id, target_graph_id, payload
@@ -3073,6 +3614,10 @@ def _nodes_edges_for_artifact(
 # ── Result Persistence ───────────────────────────────────────────────────────
 
 
+# Written into the attempt result only when set (truthy).
+_OPTIONAL_RESULT_KEYS = ("archive_key", "partial_reads", "extract_notes", "same_as_proposed")
+
+
 def _write_result(attempt: JobAttempt, result: Any) -> None:
     """Store job result in attempt metrics."""
     result_dict = {
@@ -3086,10 +3631,10 @@ def _write_result(attempt: JobAttempt, result: Any) -> None:
         "degraded": getattr(result, "degraded", False),
         "degraded_reason": getattr(result, "degraded_reason", ""),
     }
-    if getattr(result, "archive_key", ""):
-        result_dict["archive_key"] = result.archive_key
-    if getattr(result, "partial_reads", None):
-        result_dict["partial_reads"] = result.partial_reads
+    for key in _OPTIONAL_RESULT_KEYS:
+        value = getattr(result, key, None)
+        if value:
+            result_dict[key] = value
     attempt.metrics["result"] = json.dumps(result_dict)
     logger.info(
         "Job result written: type=%s degraded=%s",
@@ -5003,6 +5548,27 @@ def _store_artifact_provenance(
         pass
 
 
+_AUTO_MODE_ENV = "UMRS_KNOWLEDGE_EXTRACT_AUTO_MODE"
+
+
+def auto_extract_mode() -> str:
+    """The extract mode of the automatic ingest of workflow and pipeline
+    outputs (ADR-116 D-2): ``UMRS_KNOWLEDGE_EXTRACT_AUTO_MODE``, default
+    ``lite`` (one window, the pre-ADR-116 cost)."""
+    from umrs.knowledge.llm_extract import normalize_mode
+
+    return normalize_mode(os.environ.get(_AUTO_MODE_ENV), "lite")
+
+
+def _job_extract_mode(job: Any, explicit: str | None = None) -> str:
+    """``explicit``, else the job spec's ``extract_mode``, else ``full`` (a
+    user upload reads the whole document)."""
+    from umrs.knowledge.llm_extract import normalize_mode
+
+    spec = getattr(job, "spec", None) or {}
+    return normalize_mode(explicit or spec.get("extract_mode"), "full")
+
+
 def _enqueue_ingest_job(
     deduped: list[dict[str, Any]],
     bucket: str,
@@ -5012,8 +5578,12 @@ def _enqueue_ingest_job(
     attempt: Any,
     workflow: str,
     step: str,
+    extract_mode: str | None = None,
 ) -> str | None:
-    """Enqueue the KNOWLEDGE_INGEST job. Returns job ID or None."""
+    """Enqueue the KNOWLEDGE_INGEST job. Returns job ID or None.
+
+    Its spec carries ``extract_mode`` (default: the auto mode), which the
+    understand job it chains inherits (ADR-116 D-2)."""
     from .models import JobType
     from .service import JobSubmission, get_job_service
 
@@ -5042,6 +5612,7 @@ def _enqueue_ingest_job(
                 "sources": ingest_sources,
                 "bucket": bucket,
                 "project_id": project_id,
+                "extract_mode": extract_mode or auto_extract_mode(),
             },
             priority=job.priority,
             max_attempts=3,
@@ -5096,8 +5667,12 @@ def _enqueue_understand_job(
     user_id: str,
     job: Any,
     sources: list[dict[str, Any]] | None = None,
+    extract_mode: str | None = None,
 ) -> str | None:
     """Enqueue the KNOWLEDGE_UNDERSTAND job. Returns job ID or None.
+
+    ``extract_mode`` (ADR-116 D-2): given, else the parent job's, else
+    ``full``.
 
     ``sources`` carries the already-collected deduplicated descriptors (the
     preferential source: concurrent provenance persistence must not race a
@@ -5132,6 +5707,8 @@ def _enqueue_understand_job(
                 "origin_actor": job.spec.get("origin_actor", ""),
                 # K1.6: a kept (proposed) or vouched (established) /save.
                 **tier_fields(job.spec),
+                # ADR-116 D-2: full | lite | off.
+                "extract_mode": _job_extract_mode(job, extract_mode),
             },
             priority=job.priority,
             max_attempts=3,
@@ -5352,11 +5929,14 @@ def enqueue_knowledge_ingest(
     attempt: Any,
     workflow: str = "default",
     step: str = "main",
+    extract_mode: str | None = None,
 ) -> list[str]:
     """Enqueue KNOWLEDGE_INGEST and KNOWLEDGE_UNDERSTAND jobs.
 
     Idempotent by content hash — checks artifact_storage first.
-    Returns list of enqueued job IDs.
+    Returns list of enqueued job IDs. This is the automatic ingest of a
+    run's outputs: its understand jobs run ``extract_mode`` when given,
+    else the auto mode (default ``lite``, ADR-116 D-2).
 
     Sets artifact metadata:
       - produced_by_job_id
@@ -5385,8 +5965,11 @@ def enqueue_knowledge_ingest(
         )
         return enqueued
 
+    from umrs.knowledge.llm_extract import normalize_mode
+
+    mode = normalize_mode(extract_mode, auto_extract_mode())
     return _enqueue_ingest_chain(
-        deduped, bucket, project_id, user_id, job, attempt, workflow, step
+        deduped, bucket, project_id, user_id, job, attempt, workflow, step, mode
     )
 
 
@@ -5399,14 +5982,17 @@ def _enqueue_ingest_chain(
     attempt: Any,
     workflow: str,
     step: str,
+    extract_mode: str | None = None,
 ) -> list[str]:
-    """Enqueue the ingest→understand chain + provenance edges (fail-soft)."""
+    """Enqueue the ingest→understand chain + provenance edges (fail-soft).
+    Both jobs carry ``extract_mode`` (default: the auto mode)."""
+    mode = extract_mode or auto_extract_mode()
     enqueued: list[str] = []
 
     # 3. Enqueue KNOWLEDGE_INGEST job (with provenance metadata)
     try:
         ingest_job_id = _enqueue_ingest_job(
-            deduped, bucket, project_id, user_id, job, attempt, workflow, step
+            deduped, bucket, project_id, user_id, job, attempt, workflow, step, mode
         )
         if ingest_job_id:
             enqueued.append(ingest_job_id)
@@ -5418,7 +6004,9 @@ def _enqueue_ingest_chain(
     # is concurrent and must not gate UNDERSTAND construction on a just-written
     # table being visible (fire-and-forget ordering is not a contract).
     try:
-        us_job_id = _enqueue_understand_job(project_id, user_id, job, deduped)
+        us_job_id = _enqueue_understand_job(
+            project_id, user_id, job, deduped, extract_mode=mode
+        )
         if us_job_id:
             enqueued.append(us_job_id)
     except Exception as exc:  # noqa: BLE001 — best-effort adapter path, reported not raised

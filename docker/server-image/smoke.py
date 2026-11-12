@@ -21,16 +21,56 @@ import time
 # Import names of the libraries the server process and its modality loaders
 # import. A missing or ABI-broken wheel fails here, not at the first request.
 LIBRARIES = (
-    "zmq", "boto3", "PIL", "psycopg2", "asyncpg", "pandas", "tabulate",
-    "diskcache", "jsonschema", "httpx", "requests", "yaml", "fastapi",
-    "uvicorn", "multipart", "jose", "torch", "torchvision", "transformers",
-    "sentence_transformers", "sklearn", "spacy", "langchain",
-    "langchain_community", "langchain_openai", "bentoml", "cv2", "sysv_ipc",
-    "pypdf", "pptx", "rich",
+    "zmq",
+    "boto3",
+    "PIL",
+    "psycopg2",
+    "asyncpg",
+    "pandas",
+    "tabulate",
+    "diskcache",
+    "jsonschema",
+    "httpx",
+    "requests",
+    "yaml",
+    "fastapi",
+    "uvicorn",
+    "multipart",
+    "jose",
+    "torch",
+    "torchvision",
+    "transformers",
+    "sentence_transformers",
+    "sklearn",
+    "spacy",
+    "langchain",
+    "langchain_community",
+    "langchain_openai",
+    "bentoml",
+    "cv2",
+    "sysv_ipc",
+    "pypdf",
+    "pptx",
+    "rich",
+    # ADR-116 D-9 (umrs[kg-ingest]): Docling's converter and PDF pipeline
+    # options, and GLiNER. Both run on CPU torch, so the CPU variant imports
+    # them too; their weights are staged on the host, never in the image.
+    "docling",
+    "docling.document_converter",
+    "docling.datamodel.pipeline_options",
+    "gliner",
+    # GLiNER staging converts the DeBERTa-v3 spm.model tokenizer, which needs
+    # protobuf; without it `ingest_models stage gliner` fails in the image.
+    "google.protobuf",
 )
 
 # umrs modules on the server's boot path and the embedding modality loader.
-UMRS_MODULES = ("umrs.inference.loading", "umrs.server.main", "umrs.knowledge.text_embedder")
+UMRS_MODULES = (
+    "umrs.inference.loading",
+    "umrs.server.main",
+    "umrs.knowledge.text_embedder",
+    "umrs.knowledge.ingest_models",
+)
 
 SPACY_MODEL = "en_core_web_sm"
 

@@ -1,4 +1,4 @@
-"""First-class ontology for knowledge graphs (minimal loop).
+"""First-class ontology for knowledge graphs.
 
 A Knowledge Graph binds to an Ontology (``ontology_id`` / ``ontology_version``
 on the registry row, migration 0069); the ontology defines the *valid* entity
@@ -9,24 +9,26 @@ storage.
 Resolution order in :func:`ontology_for_graph`:
 
 1. no graph / no ``ontology_id``            → :data:`DEFAULT_ONTOLOGY`
-2. ``ontology_id == "r4-default"``          → :data:`DEFAULT_ONTOLOGY`
-   (``ontology_version`` must match)
-3. inline serialized ontology in the graph meta (``graph["ontology"]`` or
-   ``graph["provenance"]["ontology"]``) with a matching id → that ontology
-4. otherwise → :class:`ValueError` (unknown ontology reference — fail loud)
+2. a built-in id (``r4-default``, ``r4-science``) → that ontology
+   (``ontology_version`` must match when given)
+3. the ontology registry (``knowledge_ontologies``, migrations 0091 and
+   0139) when a registry store is handed in; an id without a version
+   resolves the latest live version
+4. inline serialized ontology in the graph meta (``graph["ontology"]`` or
+   ``graph["provenance"]["ontology"]``) with a matching id (legacy path)
+5. otherwise → :class:`ValueError` (unknown ontology reference — fail loud)
 
-Documented next architectural step (NOT implemented): a first-class
-``knowledge_ontologies`` registry table. That is a new PG schema —
-review-required per mutation-safety. Until then, custom ontologies travel
-inline in graph provenance and this module is the single binding site;
-query semantics (graph-visible types) derive from the same objects.
+ADR-116 D-4 adds optional fields (aliases, descriptions, relation domain and
+range, class buckets, abstract classes, prefixes, source format). They are
+absent from older serialized ontologies and default to empty.
 
 CRITICAL: No imports from ``umrs.api`` or ``umrs.server`` (foundation module).
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+import re
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -37,6 +39,12 @@ from .store import KnowledgeStore
 CANONICAL_RELATION_TYPES: frozenset[str] = frozenset(
     {"depends_on", "cites", "implements"}
 )
+
+# The 7 node_type values the knowledge_nodes CHECK constraint admits. Every
+# ontology class maps onto one of them (ADR-116 D-6, ``class_buckets``).
+NODE_TYPE_BUCKETS: frozenset[str] = KnowledgeStore.ALLOWED_NODE_TYPES
+
+R4_SCIENCE_ID = "r4-science"
 
 
 @dataclass(frozen=True)
@@ -49,9 +57,8 @@ class Ontology:
     relation_types: frozenset[str]
     description: str = ""
     # ADR-049 Leg C: relations the closure inference legs MAY traverse.
-    # Additive in v1 — absent from serialized payloads means the declaring
-    # ontology's own default (here: depends_on only, the dependency
-    # relation whose closure scientists actually ask for).
+    # Serialized absence defaults to depends_on only when the ontology
+    # declares depends_on (ontology_from_dict).
     transitive_relations: frozenset[str] = frozenset({"depends_on"})
     # ADR-049 Leg D: (extracted-content key, canonical relation) pairs the
     # graph sink additionally EMITS edges for, on top of the base
@@ -63,10 +70,25 @@ class Ontology:
     # Members MUST reference declared entity_types — checked in from_dict /
     # declared-types validation, never silently widened.
     subtype_of: tuple[tuple[str, str], ...] = ()
+    # ADR-116 D-4: optional vocabulary detail (absent in older payloads).
+    # term (class or relation) -> alias strings
+    aliases: tuple[tuple[str, tuple[str, ...]], ...] = ()
+    # term -> description
+    descriptions: tuple[tuple[str, str], ...] = ()
+    # (relation, domain class, range class); "" means any class
+    relation_signatures: tuple[tuple[str, str, str], ...] = ()
+    # class -> one of NODE_TYPE_BUCKETS
+    class_buckets: tuple[tuple[str, str], ...] = ()
+    # classes allowed in queries but never assigned to an extracted node
+    abstract_types: frozenset[str] = frozenset()
+    # prefix -> IRI base
+    prefixes: tuple[tuple[str, str], ...] = ()
+    # "linkml" | "json" | "builtin" | ""
+    source_format: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize for graph provenance / API payloads."""
-        out = {
+        out: dict[str, Any] = {
             "ontology_id": self.ontology_id,
             "version": self.version,
             "entity_types": sorted(self.entity_types),
@@ -75,64 +97,168 @@ class Ontology:
             "description": self.description,
         }
         if self.extraction_fields:
-            out["extraction_fields"] = {
-                field: relation for field, relation in sorted(self.extraction_fields)
-            }
+            out["extraction_fields"] = dict(sorted(self.extraction_fields))
         if self.subtype_of:
-            out["subtype_of"] = {
-                child: parent for child, parent in sorted(self.subtype_of)
-            }
+            out["subtype_of"] = dict(sorted(self.subtype_of))
+        out.update(self._optional_dict())
         return out
+
+    def _optional_dict(self) -> dict[str, Any]:
+        """The ADR-116 optional fields, each only when set."""
+        optional: dict[str, Any] = {
+            "aliases": {term: list(names) for term, names in sorted(self.aliases)},
+            "descriptions": dict(sorted(self.descriptions)),
+            "relation_signatures": [
+                {"relation": rel, "domain": dom, "range": rng}
+                for rel, dom, rng in sorted(self.relation_signatures)
+            ],
+            "class_buckets": dict(sorted(self.class_buckets)),
+            "abstract_types": sorted(self.abstract_types),
+            "prefixes": dict(sorted(self.prefixes)),
+            "source_format": self.source_format,
+        }
+        return {key: value for key, value in optional.items() if value}
+
+
+def normalize_term(raw: Any) -> str:
+    """Canonical lowercase snake_case form of a class or relation name.
+
+    ``MachineLearningModel`` → ``machine_learning_model``; ``data-set`` →
+    ``data_set``; ``  Neural Network `` → ``neural_network``.
+    """
+    text = _CAMEL_UPPER_RUN.sub(r"\1_\2", str(raw).strip())
+    text = _CAMEL_LOWER_UPPER.sub(r"\1_\2", text)
+    return _NON_WORD.sub("_", text.lower()).strip("_")
+
+
+_CAMEL_UPPER_RUN = re.compile(r"([A-Z]+)([A-Z][a-z])")
+_CAMEL_LOWER_UPPER = re.compile(r"([a-z0-9])([A-Z])")
+_NON_WORD = re.compile(r"[^a-z0-9]+")
+
+
+def _str_pairs(value: Any) -> tuple[tuple[str, str], ...]:
+    """Sorted (key, value) string pairs from a mapping; () otherwise."""
+    if not isinstance(value, Mapping):
+        return ()
+    return tuple(sorted((str(k), str(v)) for k, v in value.items()))
+
+
+def _alias_pairs(value: Any) -> tuple[tuple[str, tuple[str, ...]], ...]:
+    """Sorted (term, aliases) pairs from ``{term: [alias, ...]}``."""
+    if not isinstance(value, Mapping):
+        return ()
+    return tuple(
+        sorted(
+            (str(term), tuple(str(a) for a in names)) for term, names in value.items()
+        )
+    )
+
+
+def _signature_triples(value: Any) -> tuple[tuple[str, str, str], ...]:
+    """Sorted (relation, domain, range) triples from the serialized list."""
+    if not isinstance(value, list):
+        return ()
+    triples = []
+    for item in value:
+        if isinstance(item, Mapping):
+            triples.append(
+                (
+                    str(item["relation"]),
+                    str(item.get("domain") or ""),
+                    str(item.get("range") or ""),
+                )
+            )
+        else:
+            rel, dom, rng = item
+            triples.append((str(rel), str(dom), str(rng)))
+    return tuple(sorted(triples))
+
+
+def _require_declared(
+    field_name: str, members: Iterable[str], declared: frozenset[str]
+) -> None:
+    unknown = sorted({m for m in members if m not in declared})
+    if unknown:
+        raise ValueError(
+            f"{field_name} references undeclared entity types "
+            f"{unknown} — declare them in entity_types first"
+        )
+
+
+def _check_signatures(
+    triples: tuple[tuple[str, str, str], ...],
+    entity_types: frozenset[str],
+    relation_types: frozenset[str],
+) -> None:
+    unknown_relations = sorted(
+        {rel for rel, _d, _r in triples if rel not in relation_types}
+    )
+    if unknown_relations:
+        raise ValueError(
+            f"relation_signatures name undeclared relation types {unknown_relations}"
+        )
+    classes = [c for _rel, dom, rng in triples for c in (dom, rng) if c]
+    _require_declared("relation_signatures", classes, entity_types)
+
+
+def _check_buckets(
+    pairs: tuple[tuple[str, str], ...], entity_types: frozenset[str]
+) -> None:
+    _require_declared("class_buckets", (cls for cls, _b in pairs), entity_types)
+    bad = sorted({bucket for _cls, bucket in pairs if bucket not in NODE_TYPE_BUCKETS})
+    if bad:
+        raise ValueError(
+            f"class_buckets use unknown buckets {bad} (allowed: {sorted(NODE_TYPE_BUCKETS)})"
+        )
+
+
+def _transitive_from(value: Any, relation_types: frozenset[str]) -> frozenset[str]:
+    """Serialized transitive set; absence means depends_on only when declared."""
+    if value is None:
+        return frozenset({"depends_on"}) & relation_types
+    return frozenset(str(t) for t in value)
 
 
 def ontology_from_dict(raw: Mapping[str, Any]) -> Ontology:
     """Build an Ontology from a serialized mapping (strict shape)."""
-    transitive = raw.get("transitive_relations")
-    extraction = raw.get("extraction_fields") or {}
-    subtype = raw.get("subtype_of") or {}
     try:
-        entity_types = frozenset(str(t) for t in raw["entity_types"])
-        subtype_pairs = (
-            tuple(sorted((str(c), str(p)) for c, p in subtype.items()))
-            if isinstance(subtype, Mapping)
-            else ()
-        )
-        unknown_subtype_members = sorted(
-            {
-                member
-                for pair in subtype_pairs
-                for member in pair
-                if member not in entity_types
-            }
-        )
-        if unknown_subtype_members:
-            raise ValueError(
-                f"subtype_of references undeclared entity types "
-                f"{unknown_subtype_members} — declare them in entity_types first"
-            )
-        return Ontology(
-            ontology_id=str(raw["ontology_id"]),
-            version=str(raw["version"]),
-            entity_types=entity_types,
-            relation_types=frozenset(str(t) for t in raw["relation_types"]),
-            description=str(raw.get("description", "")),
-            transitive_relations=(
-                frozenset(str(t) for t in transitive)
-                if transitive is not None
-                else frozenset({"depends_on"})
-            ),
-            extraction_fields=tuple(
-                sorted(
-                    (str(field), str(relation))
-                    for field, relation in extraction.items()
-                )
-            )
-            if isinstance(extraction, Mapping)
-            else (),
-            subtype_of=subtype_pairs,
-        )
+        return _ontology_from_mapping(raw)
     except (KeyError, TypeError) as exc:
         raise ValueError(f"invalid serialized ontology: missing {exc}") from exc
+
+
+def _ontology_from_mapping(raw: Mapping[str, Any]) -> Ontology:
+    entity_types = frozenset(str(t) for t in raw["entity_types"])
+    relation_types = frozenset(str(t) for t in raw["relation_types"])
+    subtype_pairs = _str_pairs(raw.get("subtype_of"))
+    _require_declared(
+        "subtype_of", (m for pair in subtype_pairs for m in pair), entity_types
+    )
+    signatures = _signature_triples(raw.get("relation_signatures"))
+    _check_signatures(signatures, entity_types, relation_types)
+    buckets = _str_pairs(raw.get("class_buckets"))
+    _check_buckets(buckets, entity_types)
+    abstract = frozenset(str(t) for t in raw.get("abstract_types") or ())
+    _require_declared("abstract_types", abstract, entity_types)
+    return Ontology(
+        ontology_id=str(raw["ontology_id"]),
+        version=str(raw["version"]),
+        entity_types=entity_types,
+        relation_types=relation_types,
+        description=str(raw.get("description", "")),
+        transitive_relations=_transitive_from(
+            raw.get("transitive_relations"), relation_types
+        ),
+        extraction_fields=_str_pairs(raw.get("extraction_fields")),
+        subtype_of=subtype_pairs,
+        aliases=_alias_pairs(raw.get("aliases")),
+        descriptions=_str_pairs(raw.get("descriptions")),
+        relation_signatures=signatures,
+        class_buckets=buckets,
+        abstract_types=abstract,
+        prefixes=_str_pairs(raw.get("prefixes")),
+        source_format=str(raw.get("source_format") or ""),
+    )
 
 
 DEFAULT_ONTOLOGY = Ontology(
@@ -145,6 +271,34 @@ DEFAULT_ONTOLOGY = Ontology(
         "knowledge_nodes DB CHECK constraint plus the canonical compiler relations."
     ),
 )
+
+BUILTIN_ONTOLOGY_IDS: tuple[str, ...] = (DEFAULT_ONTOLOGY.ontology_id, R4_SCIENCE_ID)
+
+
+def r4_science_ontology() -> Ontology:
+    """The built-in ``r4-science@1`` ontology (ADR-116 D-4)."""
+    from .r4_science_schema import r4_science_ontology as _build
+
+    return _build()
+
+
+def builtin_ontology(ontology_id: Any, version: Any = None) -> Ontology | None:
+    """The built-in ontology with this id, or None when the id is not built in.
+
+    Raises :class:`ValueError` when the id is built in but the version is not.
+    """
+    if ontology_id == DEFAULT_ONTOLOGY.ontology_id:
+        ontology = DEFAULT_ONTOLOGY
+    elif ontology_id == R4_SCIENCE_ID:
+        ontology = r4_science_ontology()
+    else:
+        return None
+    if version not in (None, ontology.version):
+        raise ValueError(
+            f"ontology {ontology_id!r} has no version {version!r} "
+            f"(current: {ontology.version!r})"
+        )
+    return ontology
 
 
 class OntologyViolationError(ValueError):
@@ -178,35 +332,30 @@ def ontology_for_graph(
 ) -> Ontology:
     """Resolve the ontology bound to a graph registry row (or meta mapping).
 
-    Resolution order (ADR-049 Leg A):
+    Resolution order (ADR-049 Leg A, ADR-116 D-5):
 
     1. no graph / no ``ontology_id``        → :data:`DEFAULT_ONTOLOGY`
-    2. ``ontology_id == "r4-default"``      → :data:`DEFAULT_ONTOLOGY`
-       (``ontology_version`` must match)
-    3. **registry-backed live record** (0091, when a registry store is
-       handed in) at the pinned (id, version) → that ontology
+    2. a built-in id                        → that ontology
+       (``ontology_version`` must match when given)
+    3. **registry-backed record** (0091, when a registry store is handed
+       in) of the graph's project or global, at the pinned (id, version) —
+       retired versions included, since retiring blocks new bindings only —
+       or at the latest live version when the graph pins none → that ontology
     4. inline serialized ontology in the graph meta (LEGACY path), strict
        consistency (id + pinned version must match the payload)
     5. otherwise → :class:`ValueError` (unknown ontology reference — fail
        loud, never smudged to the default).
     """
-    if not graph:
+    if not graph or not graph.get("ontology_id"):
         return DEFAULT_ONTOLOGY
     ontology_id = graph.get("ontology_id")
     version = graph.get("ontology_version")
-    if not ontology_id:
-        return DEFAULT_ONTOLOGY
-    if ontology_id == DEFAULT_ONTOLOGY.ontology_id:
-        if version not in (None, DEFAULT_ONTOLOGY.version):
-            raise ValueError(
-                f"ontology 'r4-default' has no version {version!r} "
-                f"(current: {DEFAULT_ONTOLOGY.version!r})"
-            )
-        return DEFAULT_ONTOLOGY
-    if registry is not None and version is not None:
-        record = registry.live_coordinate(str(ontology_id), str(version))
-        if record is not None:
-            return record.ontology
+    builtin = builtin_ontology(ontology_id, version)
+    if builtin is not None:
+        return builtin
+    record = _registry_record(registry, ontology_id, version, graph.get("project_id"))
+    if record is not None:
+        return record.ontology
     custom = _inline_ontology(graph, ontology_id, version)
     if custom is not None:
         return custom
@@ -216,6 +365,43 @@ def ontology_for_graph(
         "registry (ADR-049 Leg A), keep it as inline provenance (legacy), "
         "or use 'r4-default'"
     )
+
+
+def _registry_record(
+    registry: Any | None, ontology_id: Any, version: Any, project_id: Any
+) -> Any | None:
+    """Registry record for (id, version); latest live version when None.
+
+    Only a global record or one of the graph's own project counts, the
+    project's own first (a graph with no project reads global records
+    only): another project's record would put its class descriptions into
+    this graph's extraction prompt. A pinned version that was retired after
+    the graph was bound keeps resolving (retiring blocks new bindings only,
+    ``pinned_ontology_version``).
+    """
+    if registry is None:
+        return None
+    scope = project_id or None
+    if version is None:
+        latest = getattr(registry, "latest_live_version", None)
+        version = latest(str(ontology_id), scope) if latest is not None else None
+        if version is None:
+            return None
+    record = _coordinate_record(registry, str(ontology_id), str(version), scope)
+    if record is None or getattr(record, "project_id", None) in (None, scope):
+        return record
+    return None
+
+
+def _coordinate_record(
+    registry: Any, ontology_id: str, version: str, scope: str | None
+) -> Any | None:
+    """``resolve_coordinate`` (live or retired, scoped) when the registry has
+    it; a bare ``live_coordinate`` otherwise (the result is scope-checked)."""
+    resolve = getattr(registry, "resolve_coordinate", None)
+    if resolve is not None:
+        return resolve(ontology_id, version, scope)
+    return registry.live_coordinate(ontology_id, version)
 
 
 def _inline_ontology(
@@ -262,12 +448,18 @@ def validate_graph_payload(
 
 
 __all__ = [
+    "BUILTIN_ONTOLOGY_IDS",
     "CANONICAL_RELATION_TYPES",
     "DEFAULT_ONTOLOGY",
+    "NODE_TYPE_BUCKETS",
+    "R4_SCIENCE_ID",
     "Ontology",
     "OntologyViolationError",
+    "builtin_ontology",
+    "normalize_term",
     "ontology_for_graph",
     "ontology_from_dict",
+    "r4_science_ontology",
     "validate_graph_payload",
 ]
 

@@ -235,6 +235,9 @@ async def create_graph(
             },
         )
     project_id = _stored_project(body.kind, project_id, scope)
+    ontology_version = _checked_ontology_version(
+        request, body.ontology_id, body.ontology_version, project_id
+    )
     graph = registry.create_graph(
         body.name,
         description=body.description,
@@ -242,10 +245,56 @@ async def create_graph(
         project_id=project_id,
         kind=body.kind,
         ontology_id=body.ontology_id,
-        ontology_version=body.ontology_version,
+        ontology_version=ontology_version,
         provenance=body.provenance,
     )
     return graph.to_dict()
+
+
+def _checked_ontology_version(
+    request: Request,
+    ontology_id: str | None,
+    version: str | None,
+    project_id: str | None,
+) -> str | None:
+    """The ontology version to store for a graph binding (ADR-116 D-5).
+
+    The coordinate must be built in or registered live (400
+    ``ontology.not_found``); an id without a version pins the latest live
+    version. A version without an id is 400 ``ontology.invalid``.
+    """
+    from . import knowledge_ontologies as ontology_api
+
+    if not ontology_id:
+        if version:
+            ontology_api.ontology_error(
+                "invalid", "ontology_version needs an ontology_id"
+            )
+        return version
+    return ontology_api.pinned_ontology_version(
+        request, ontology_id, version, project_id
+    )
+
+
+def _patched_ontology(
+    request: Request, body: UpdateGraphRequest, existing: Any
+) -> tuple[str | None, str | None]:
+    """(ontology_id, ontology_version) a PATCH writes; (None, None) = unchanged.
+
+    ``ontology_id: ""`` unbinds the graph (back to the default vocabulary).
+    """
+    ontology_id = body.ontology_id
+    if ontology_id is None and body.ontology_version is not None:
+        ontology_id = existing.ontology_id or None
+    if ontology_id is None:
+        _checked_ontology_version(request, None, body.ontology_version, None)
+        return None, None
+    if ontology_id == "":
+        return "", ""
+    version = _checked_ontology_version(
+        request, ontology_id, body.ontology_version, existing.project_id
+    )
+    return ontology_id, version
 
 
 @router.get("/{graph_id}")
@@ -404,6 +453,8 @@ async def update_graph(
                 "message": "Graph lifecycle is outside the caller's access tier.",
             },
         )
+    # Validate the ontology binding before any write (ADR-116 D-5).
+    ontology_id, ontology_version = _patched_ontology(request, body, existing)
     if body.status is not None:
         if body.status not in GRAPH_STATUSES:
             raise_typed(
@@ -416,8 +467,8 @@ async def update_graph(
         graph_id,
         description=body.description,
         kind=body.kind,
-        ontology_id=body.ontology_id,
-        ontology_version=body.ontology_version,
+        ontology_id=ontology_id,
+        ontology_version=ontology_version,
     )
     assert graph is not None
     return graph.to_dict()
