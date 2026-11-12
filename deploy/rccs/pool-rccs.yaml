@@ -282,18 +282,21 @@ endpoints:
   #  Storage (2026-11-12): the Lustre project quota (5 TB, rccs-dmp/
   #  masaru.nagaso) is full, so Engram's tables (~203 GB) and BOTH ranks'
   #  weight files (~106 GB each, either node can be the head) sit on each
-  #  m2 node's local NVMe under /var/tmp/umrs-tf (upstream's layout, and
+  #  staged node's local NVMe under /var/tmp/umrs-tf (upstream's layout, and
   #  faster than a network file system: NFS prefill measured 2-3x slower).
   #  Only the EXL3 checkpoint, the kit and the token map stay on Lustre.
-  #  Hence one partition: m2 is the staged pair; staging m0/m1 the same way
-  #  lets a roll's successor overlap (dsv41_stage_local.sbatch, ledger).
+  #  Pairs (maintainer 2026-11-13: "if m2 pair is still occupied, we can use
+  #  another ng-dgx-m*"): m2, m0 and m1 each carry the node-local data
+  #  (dsv41_stage_local.sbatch); UMRS picks the earliest start, so a roll's
+  #  successor overlaps on a free pair. The adapter's preflight refuses a
+  #  pair whose /var/tmp/umrs-tf is missing (a node rebuild wipes it).
   #  m3 stays the ADR-074 step lane. Every setting is spelled out: the site
   #  env loader never runs on rccs (HARD-20261105-SITEENV).
   - name: deepseek-v4.1-flash-1017
     model: DeepSeek-V4.1-Flash-1017
     service: {project_id: default, user: mnagaso, replicas: 1, max_surge: 1}
     aliases: [svc-chat, deepseek-v4.1-flash]
-    partition: ng-dgx-m2
+    partition: ng-dgx-m2,ng-dgx-m0,ng-dgx-m1
     node_count: 2
     max_model_len: 131072
     access: [system]

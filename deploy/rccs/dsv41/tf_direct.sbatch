@@ -30,12 +30,36 @@ export TF_FABRIC_IFACE=${TF_FABRIC_IFACE:-enP2p1s0f1np1} TF_MASTER_IFACE=${TF_MA
 export TF_RDMA=${TF_RDMA:-1} TF_MEMORY_RESERVE_GIB=${TF_MEMORY_RESERVE_GIB:-11.5}
 export TF_WORKER_MODE=step RIVAULT_MN_WORKER_MODE=step RIVAULT_USERNS_MODE=host RCCS_SKIP_CDI=1
 export TF_SERVED_NAME=DeepSeek-V4.1-Flash-1017
-# KEEP=1: queue the next 23 h job now (same name, singleton), so the pair comes back ~2 min after this one's walltime
-# (stopgap until the roster's service block is converged; cancel the chain with `scancel -n dsv41-tf-direct`)
-if [ "${KEEP:-0}" = 1 ]; then
-  sbatch --dependency=singleton -J dsv41-tf-direct -p "$SLURM_JOB_PARTITION" \
-    --export=ALL,IMG="$IMG",BENCH=0,ABLATE=0,KEEP=1 "$D/tf_direct.sbatch" | sed 's/^/[keep] /'
-fi
+# KEEP=1: keep-alive chain (stopgap until the roster's service block is converged; stop it with
+# `scancel -n dsv41-tf-direct`). LEAD_S before the walltime, the successor goes to the staged pair
+# ($D/run/staged-pairs) with the earliest start: another pair that can start within LEAD_S overlaps this job (no gap),
+# else this pair, queued behind this job (singleton; a gap of one load, ~2 min). Maintainer 2026-11-13: "if m2 pair is
+# still occupied, we can use another ng-dgx-m*".
+LEAD_S=${LEAD_S:-3000}
+secs_left() { squeue -h -j "$SLURM_JOB_ID" -o %L | awk -F'[-:]' '{n=NF; s=$n+60*$(n-1); if (n>2) s+=3600*$(n-2); if (n>3) s+=86400*$(n-3); print s}'; }
+start_epoch() { sbatch --test-only -p "$1" -N 2 --exclusive --mem=0 -t 23:00:00 --wrap=true 2>&1 |
+  grep -oP 'to start at \K\S+' | head -1 | xargs -r -I{} date -d {} +%s; }
+pick_pair() { # prints "<partition> <start epoch>" of the earliest other staged pair
+  local p t best="" bt=9999999999
+  while read -r p; do
+    [ -n "$p" ] && [ "$p" != "$SLURM_JOB_PARTITION" ] || continue
+    t=$(start_epoch "$p"); [ -n "$t" ] || continue
+    if (( t < bt )); then bt=$t; best=$p; fi
+  done < <(sort -u "$D/run/staged-pairs" 2>/dev/null)
+  [ -n "$best" ] && echo "$best $bt"
+}
+submit_successor() {
+  local pick p t args=(-J dsv41-tf-direct "--export=ALL,IMG=$IMG,BENCH=0,ABLATE=0,KEEP=1")
+  pick=$(pick_pair); read -r p t <<< "$pick"
+  if [ -n "$p" ] && (( t <= $(date +%s) + LEAD_S )); then
+    echo "$(date -Is) [keep] successor on $p (starts $(date -d @"$t" +%H:%M), overlapping this job)"
+    sbatch -p "$p" "${args[@]}" "$D/tf_direct.sbatch" | sed 's/^/[keep] /'
+  else
+    echo "$(date -Is) [keep] no other staged pair free in time; successor queued on $SLURM_JOB_PARTITION"
+    sbatch --dependency=singleton -p "$SLURM_JOB_PARTITION" "${args[@]}" "$D/tf_direct.sbatch" | sed 's/^/[keep] /'
+  fi
+}
+SUCCESSOR=0
 KEYF=$D/tf-api-key
 [ -s "$KEYF" ] || ( umask 077; head -c 24 /dev/urandom | base64 | tr -d '/+=' > "$KEYF" )
 VLLM_API_KEY=$(cat "$KEYF"); export VLLM_API_KEY
@@ -44,6 +68,14 @@ echo "$(date -Is) job=$SLURM_JOB_ID nodes=$SLURM_JOB_NODELIST image=$IMG drafts=
 source "$MR/venue.sh"
 rivault_venue_prepare "$SLURM_JOB_ID" cgroupfs
 export TF_VENUE_SH=$MR/venue.sh
+# the engine image into every node's store first, one node at a time (an in-driver archive load once returned
+# empty output and no image, job 468248, likely two venue prepares re-pinning the runroot at once)
+ARCH=$HF/images/tensorfold-dsv41-${IMG##*:}-aarch64.tar
+for n in $(scontrol show hostnames "$SLURM_JOB_NODELIST"); do
+  srun -N1 -n1 -w "$n" --overlap bash -c 'source "$1" && rivault_venue_prepare "$2" cgroupfs >/dev/null 2>&1;
+    podman image exists "$3" || podman load -q -i "$4" >/dev/null; podman image exists "$3" && echo "$(hostname -s) image ok"' \
+    _ "$MR/venue.sh" "$SLURM_JOB_ID" "$IMG" "$ARCH"
+done
 # shellcheck disable=SC1091
 source "$MR/tensorfold_runner.sh"
 trap 'echo "$(date -Is) stopping"; tensorfold_stop; exit 0' TERM INT
@@ -88,6 +120,9 @@ fi
 relaunches=0
 while true; do
   sleep 30
+  if [ "${KEEP:-0}" = 1 ] && [ "$SUCCESSOR" = 0 ] && (( $(secs_left) <= LEAD_S )); then
+    submit_successor; SUCCESSOR=1
+  fi
   st=$(podman inspect "$TF_R0_NAME" --format '{{.State.Status}}' 2>/dev/null)
   if [ "$st" != running ]; then
     relaunches=$((relaunches + 1)); echo "$(date -Is) rank 0 '${st:-gone}', relaunch $relaunches"
