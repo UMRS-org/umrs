@@ -1,0 +1,99 @@
+{
+ "label": "gb10-pair-tcp10g",
+ "world": 2,
+ "ranks": [
+  {
+   "rank": 0,
+   "host": "ng-dgx-m2-12.cloud.r-ccs.riken.jp",
+   "gpu": "NVIDIA GB10",
+   "cc": "12.1",
+   "mem_total_GiB": 121.62520599365234,
+   "d2d_copy_GBps": 227.61148776470844,
+   "h2d_GBps": 58.99513542815785,
+   "d2h_GBps": 59.04460727435797,
+   "bf16_gemm_4096_TFLOPS": 92.78714202817936,
+   "bf16_gemm_8192_TFLOPS": 97.20802392781962,
+   "bf16_skinny_4x7168x14336_GBps_weights": 218.73369189458182
+  },
+  {
+   "rank": 1,
+   "host": "ng-dgx-m2-13.cloud.r-ccs.riken.jp",
+   "gpu": "NVIDIA GB10",
+   "cc": "12.1",
+   "mem_total_GiB": 121.62520217895508,
+   "d2d_copy_GBps": 235.0122142271266,
+   "h2d_GBps": 59.07731353911718,
+   "d2h_GBps": 58.9560684594183,
+   "bf16_gemm_4096_TFLOPS": 94.0994492630366,
+   "bf16_gemm_8192_TFLOPS": 98.72263272179588,
+   "bf16_skinny_4x7168x14336_GBps_weights": 228.6516554495389
+  }
+ ],
+ "allreduce": [
+  {
+   "bytes": 8192,
+   "lat_us": 444.6498118340969,
+   "algbw_GBps": 0.01842348693730363,
+   "busbw_GBps": 0.01842348693730363
+  },
+  {
+   "bytes": 32768,
+   "lat_us": 441.23316183686256,
+   "algbw_GBps": 0.07426459032133068,
+   "busbw_GBps": 0.07426459032133068
+  },
+  {
+   "bytes": 131072,
+   "lat_us": 682.1299064904451,
+   "algbw_GBps": 0.19215108259123947,
+   "busbw_GBps": 0.19215108259123947
+  },
+  {
+   "bytes": 524288,
+   "lat_us": 719.6380384266376,
+   "algbw_GBps": 0.7285440346458948,
+   "busbw_GBps": 0.7285440346458948
+  },
+  {
+   "bytes": 2097152,
+   "lat_us": 1867.5763346254826,
+   "algbw_GBps": 1.1229270585186313,
+   "busbw_GBps": 1.1229270585186313
+  },
+  {
+   "bytes": 8388608,
+   "lat_us": 7262.040581554174,
+   "algbw_GBps": 1.155130972595684,
+   "busbw_GBps": 1.155130972595684
+  },
+  {
+   "bytes": 33554432,
+   "lat_us": 28742.777965962887,
+   "algbw_GBps": 1.167403931510554,
+   "busbw_GBps": 1.167403931510554
+  },
+  {
+   "bytes": 134217728,
+   "lat_us": 114664.80400413275,
+   "algbw_GBps": 1.1705224560028247,
+   "busbw_GBps": 1.1705224560028247
+  },
+  {
+   "bytes": 536870912,
+   "lat_us": 457378.0244681984,
+   "algbw_GBps": 1.1738012831382298,
+   "busbw_GBps": 1.1738012831382298
+  }
+ ],
+ "nccl_env": {
+  "NCCL_IB_DISABLE": "1",
+  "NCCL_DEBUG_SUBSYS": "INIT,NET",
+  "NCCL_NET_PLUGIN": "spcx",
+  "NCCL_DEBUG": "INFO",
+  "NCCL_SOCKET_IFNAME": "enP7s7",
+  "NCCL_VERSION": "2.30.7"
+ },
+ "torch": "2.13.0a0+9186a08b2c.nv26.07",
+ "nccl": "2.30.7",
+ "time": "2026-11-12T03:45:18+0000"
+}

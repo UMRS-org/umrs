@@ -1,0 +1,313 @@
+<title>DeepSeek-V4.1 on GB10 and PRO 6000</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&family=Space+Grotesk:wght@500;600&display=swap">
+<style>
+/* Layout: one reading column (~72ch) with full-width figures; lab-notebook tone, data first. */
+:root {
+  --bg: #fbfbfa; --surface: #ffffff; --ink: #14161a; --ink-2: #4b505a; --ink-3: #7a7f88;
+  --rule: #e2e3e6; --grid: #eceef1; --accent: #2a78d6; --pending: #8a6a00; --pending-bg: #fff6dc;
+  --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a;
+  --f-display: "Space Grotesk", "IBM Plex Sans", system-ui, sans-serif;
+  --f-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --f-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #141517; --surface: #1b1c1f; --ink: #eef0f3; --ink-2: #b9bdc5; --ink-3: #8b9099;
+  --rule: #2c2e33; --grid: #25272b; --accent: #3987e5; --pending: #e0b54a; --pending-bg: #2b2414;
+  --s1: #3987e5; --s2: #d95926; --s3: #199e70; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #141517; --surface: #1b1c1f; --ink: #eef0f3; --ink-2: #b9bdc5; --ink-3: #8b9099;
+  --rule: #2c2e33; --grid: #25272b; --accent: #3987e5; --pending: #e0b54a; --pending-bg: #2b2414;
+  --s1: #3987e5; --s2: #d95926; --s3: #199e70; color-scheme: dark }
+body { background: var(--bg); color: var(--ink); font: 15px/1.6 var(--f-body); }
+.wrap { max-width: 980px; margin: 0 auto; padding-block: 40px 72px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+.prose { max-width: 72ch; }
+h1 { font: 600 clamp(28px, 4.2vw, 40px)/1.15 var(--f-display); margin: 6px 0 10px; text-wrap: balance; letter-spacing: -0.01em; }
+h2 { font: 600 22px/1.25 var(--f-display); margin: 48px 0 10px; text-wrap: balance; }
+h3 { font: 600 16px/1.3 var(--f-body); margin: 26px 0 6px; }
+p { margin: 0 0 12px; }
+.eyebrow { font: 500 12px/1 var(--f-mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-3); }
+.lede { font-size: 17px; color: var(--ink-2); }
+.meta { display: flex; flex-wrap: wrap; gap: 8px 18px; font: 13px/1.4 var(--f-mono); color: var(--ink-3); margin: 14px 0 0; }
+.status { display: inline-flex; align-items: center; gap: 6px; font: 500 12px/1 var(--f-mono); padding: 5px 9px; border-radius: 999px;
+  color: var(--pending); background: var(--pending-bg); border: 1px solid color-mix(in srgb, var(--pending) 40%, transparent); }
+.status::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.findings { display: grid; gap: 10px; margin: 18px 0 0; padding: 0; list-style: none; }
+.findings li { display: grid; grid-template-columns: 7.5em 1fr; gap: 14px; padding: 12px 0; border-top: 1px solid var(--rule); }
+.findings li:last-child { border-bottom: 1px solid var(--rule); }
+.findings b { font: 600 22px/1.1 var(--f-display); font-variant-numeric: tabular-nums; }
+.findings span { color: var(--ink-2); }
+@media (max-width: 560px) { .findings li { grid-template-columns: 1fr; gap: 2px; } }
+.tablewrap { overflow-x: auto; margin: 10px 0 6px; }
+table { border-collapse: collapse; font-size: 13.5px; min-width: 100%; }
+th, td { text-align: left; padding: 7px 12px 7px 0; border-bottom: 1px solid var(--rule); vertical-align: top; }
+th { font: 500 12px/1.3 var(--f-mono); color: var(--ink-3); text-transform: uppercase; letter-spacing: 0.05em; }
+td.n, th.n { text-align: right; font-variant-numeric: tabular-nums; font-family: var(--f-mono); }
+.figs { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 28px 32px; margin: 16px 0 4px; }
+figure { margin: 0; min-width: 0; }
+figcaption { font-size: 13px; color: var(--ink-2); margin-top: 6px; }
+.ftitle { font: 600 14px/1.3 var(--f-body); margin-bottom: 2px; }
+.fsub { font-size: 12.5px; color: var(--ink-3); margin-bottom: 6px; }
+svg.chart { width: 100%; height: auto; display: block; overflow: visible; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 12.5px; color: var(--ink-2); margin: 4px 0 2px; }
+.legend i { display: inline-block; width: 12px; height: 3px; border-radius: 2px; vertical-align: middle; margin-right: 6px; }
+.seg { display: inline-flex; border: 1px solid var(--rule); border-radius: 8px; overflow: hidden; margin: 6px 0 0; }
+.seg button { font: 500 12.5px var(--f-body); color: var(--ink-2); background: var(--surface); border: 0; padding: 6px 12px; cursor: pointer; }
+.seg button[aria-pressed="true"] { background: var(--ink); color: var(--bg); }
+.seg button:focus-visible, details summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.pending { border: 1px dashed color-mix(in srgb, var(--pending) 55%, transparent); background: var(--pending-bg); border-radius: 10px; padding: 16px 18px; margin: 14px 0; }
+.pending p:last-child { margin: 0; }
+code, .mono { font-family: var(--f-mono); font-size: 0.92em; }
+details { margin: 10px 0; }
+details summary { cursor: pointer; color: var(--ink-2); font-size: 13.5px; }
+.tip { position: fixed; pointer-events: none; z-index: 20; background: var(--surface); color: var(--ink); border: 1px solid var(--rule);
+  border-radius: 8px; padding: 7px 10px; font: 12.5px/1.45 var(--f-body); box-shadow: 0 4px 16px rgba(0,0,0,.12); max-width: 260px; }
+.tip b { font-family: var(--f-mono); font-variant-numeric: tabular-nums; }
+.note { font-size: 13px; color: var(--ink-3); }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+
+<div class="wrap">
+  <header class="prose">
+    <div class="eyebrow">RIKEN R-CCS · rccs cluster · UMRS service tier</div>
+    <h1>DeepSeek-V4.1-Flash-1017 on GB10 and RTX PRO 6000</h1>
+    <p class="lede">How the node architecture, the GPU and the interconnect shape LLM serving, measured with one client and one workload. The GB10 leg is complete; the RTX PRO 6000 leg runs when its queued job starts.</p>
+    <div class="meta">
+      <span class="status">Interim · GB10 leg done, PRO 6000 leg queued</span>
+      <span>measured 2026-11-12</span>
+      <span>rccs jobs 468148, 468257</span>
+    </div>
+  </header>
+
+  <section class="prose">
+    <h2>What the GB10 pair shows</h2>
+    <ul class="findings">
+      <li><b>2.3×</b><span>Single-stream decode drops from 45.3 to 19.5 tok/s when the two tensor-parallel ranks talk over 10 Gb/s TCP instead of 200 Gb/s RoCE. Same nodes, engine, weights and settings.</span></li>
+      <li><b>+28 ms</b><span>The added time per token. Decode is latency-bound on the link: an 8 KiB all-reduce takes 23 µs over RoCE and 445 µs over TCP, and the ranks exchange small messages many times per token.</span></li>
+      <li><b>2.5×</b><span>Prefill falls from ~2,050 to ~805 tok/s over TCP and stays flat from 12k to 87k tokens: it hits the link's bandwidth ceiling (1.17 GB/s). Over RoCE it matches the recipe author's figure (~2,150 tok/s), so there it is compute-bound, not link-bound.</span></li>
+      <li><b>1.3–1.9×</b><span>Decode gain from the checkpoint's DSpark draft blocks (58 / 84 tok/s for prose / code). They fit in memory on rccs after all: 9 GiB left per node after load.</span></li>
+      <li><b>~13 ms</b><span>The memory-bandwidth floor per decoded token on GB10 (≈2.9 GB of active weights per rank at 227 GB/s measured). The measured 21.4 ms leaves about 8 ms for synchronisation, launches and sampling.</span></li>
+    </ul>
+  </section>
+
+  <section>
+    <div class="prose">
+      <h2>Two platforms</h2>
+      <p>Both serve the same model, DeepSeek-V4.1-Flash-1017 (552B total MoE backbone parameters, about 16B active per decoded token, plus Engram lookup tables). They cannot share one engine. The MiaAI recipe's kernel kit is 203 cubins built for the GB10 (sm_121), which do not load on the RTX PRO 6000 (sm_120), and one of its TP=2 ranks needs ~99 GiB, more than a 96 GB card. So the PRO 6000 side serves NVIDIA's NVFP4 checkpoint with SGLang. Engine and quantization differ along with the hardware, and the comparison table marks it.</p>
+    </div>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th></th><th>ng-dgx-m2 pair (GB10)</th><th>ai-pro6000 ×2 (RTX PRO 6000)</th></tr></thead>
+        <tbody>
+          <tr><td>Accelerators</td><td>2 nodes × 1 GB10, unified LPDDR5x (121.6 GiB a node)</td><td>2 nodes × 2 discrete RTX PRO 6000 Blackwell, 96 GB GDDR7 each; 1 TB host RAM a node</td></tr>
+          <tr><td>Parallelism</td><td>TP=2, one rank per node</td><td>TP=4: 2 ranks per node over PCIe, 2 nodes over the network (SGLang refuses PP for V4.1)</td></tr>
+          <tr><td>Interconnect</td><td>QSFP ConnectX-7, RoCE v2, one 200G rail addressed (the twin port has no IPv4); TCP blocked on it, so rendezvous uses the 10G mgmt NIC</td><td>probed when the job starts</td></tr>
+          <tr><td>Engine</td><td>TensorFold native (Zig), MiaAI recipe <span class="mono">c7f2b851</span></td><td>SGLang nightly <span class="mono">314bce7c</span> (DeepSeek-V4.1 native, SM120 kernels)</td></tr>
+          <tr><td>Weights</td><td>Mia-AiLab EXL3 EAQ v1, 2.9 bpw (197 GiB) + Engram FP8 tables on local NVMe</td><td>nvidia NVFP4 (399 GiB; Engram MXFP4 in host RAM)</td></tr>
+          <tr><td>Serving settings</td><td>context 131,072 · 4 streams · DSpark drafts on (off in one ablation) · vision off</td><td>context 131,072 · TP=4 · DSpark speculative decoding</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <div class="prose">
+      <h2>The link itself</h2>
+      <p>NCCL all-reduce between the two GB10 ranks inside the serving image, from 8 KiB to 512 MiB, over the QSFP RoCE rail and over TCP on the 10G management NIC. Raw RDMA on the rail reaches 109 Gb/s with a 1.4 µs write latency.</p>
+    </div>
+    <div class="figs">
+      <figure>
+        <div class="ftitle">All-reduce latency</div><div class="fsub">µs, log scale, by message size</div>
+        <div class="legend"><span><i style="background:var(--s1)"></i>RoCE 200G</span><span><i style="background:var(--s2)"></i>TCP 10G</span></div>
+        <svg class="chart" id="c-arlat" viewBox="0 0 460 260" role="img" aria-label="All-reduce latency by message size, RoCE versus TCP"></svg>
+      </figure>
+      <figure>
+        <div class="ftitle">All-reduce bus bandwidth</div><div class="fsub">GB/s, by message size</div>
+        <div class="legend"><span><i style="background:var(--s1)"></i>RoCE 200G</span><span><i style="background:var(--s2)"></i>TCP 10G</span></div>
+        <svg class="chart" id="c-arbw" viewBox="0 0 460 260" role="img" aria-label="All-reduce bus bandwidth by message size, RoCE versus TCP"></svg>
+      </figure>
+    </div>
+    <details><summary>All-reduce table</summary><div class="tablewrap"><table id="t-ar"></table></div></details>
+  </section>
+
+  <section>
+    <div class="prose">
+      <h2>Serving on the GB10 pair</h2>
+      <p>Three configurations on the same pair: production (RoCE, drafts on), drafts off, and drafts off over TCP. Prompts are randomized so nothing hits the prompt cache; temperature 0, thinking off, 512 output tokens; median of two repetitions. The client runs on the head node.</p>
+    </div>
+    <div class="seg" role="group" aria-label="Workload">
+      <button type="button" id="b-prose" aria-pressed="true">Prose</button><button type="button" id="b-code" aria-pressed="false">Code</button>
+    </div>
+    <div class="figs">
+      <figure>
+        <div class="ftitle">Decode speed per stream</div><div class="fsub">tok/s, by concurrent streams</div>
+        <div class="legend" id="lg-dec"></div>
+        <svg class="chart" id="c-dec" viewBox="0 0 460 260" role="img" aria-label="Per-stream decode speed by concurrency for three configurations"></svg>
+      </figure>
+      <figure>
+        <div class="ftitle">Aggregate decode throughput</div><div class="fsub">tok/s across all streams</div>
+        <div class="legend" id="lg-agg"></div>
+        <svg class="chart" id="c-agg" viewBox="0 0 460 260" role="img" aria-label="Aggregate decode throughput by concurrency for three configurations"></svg>
+      </figure>
+      <figure>
+        <div class="ftitle">Prefill speed</div><div class="fsub">prompt tok/s, by prompt length (tokens, log scale)</div>
+        <div class="legend" id="lg-pre"></div>
+        <svg class="chart" id="c-pre" viewBox="0 0 460 260" role="img" aria-label="Prefill speed by prompt length for three configurations"></svg>
+      </figure>
+      <figure>
+        <div class="ftitle">Time to first token, 6.1k-token prompts</div><div class="fsub">seconds, by concurrent requests</div>
+        <div class="legend" id="lg-mix"></div>
+        <svg class="chart" id="c-mix" viewBox="0 0 460 260" role="img" aria-label="Time to first token for 6.1 thousand token prompts by concurrency"></svg>
+      </figure>
+    </div>
+    <details><summary>Serving table</summary><div class="tablewrap"><table id="t-serve"></table></div></details>
+  </section>
+
+  <section class="prose">
+    <h2>Reading the numbers</h2>
+    <h3>Decode is bandwidth plus latency</h3>
+    <p>A decoded token reads the active weights once. At ~16B active parameters and 2.9 bits a weight, each rank reads about 2.9 GB per token; at the 227 GB/s the GB10 copies at, that is ~13 ms, a ceiling near 78 tok/s per stream without drafts. The measured 21.4 ms per token over RoCE leaves ~8 ms for the ranks' synchronisation, kernel launches and sampling.</p>
+    <p>Over TCP each token costs 28.2 ms more. The small-message all-reduce penalty is 445 − 23 = 422 µs, so the extra time equals about 67 latency-bound exchanges per token. Bandwidth barely matters here: a decode exchange is kilobytes. What matters is the link's round-trip, which is why the 10G NIC loses so much on decode even though decode moves little data.</p>
+    <h3>Prefill shows the link's bandwidth</h3>
+    <p>Over TCP, prefill flattens at ~805 tok/s from 12k tokens up, which at the measured 1.17 GB/s means about 1.45 MB crosses the link per prompt token. At RoCE's prefill rate that is ~3 GB/s, a quarter of what the rail delivers (12 GB/s), so on RoCE prefill is limited by compute and Engram reads, matching the recipe author's 2,105–2,154 tok/s on Sparks with local Engram.</p>
+    <h3>Concurrency and drafts</h3>
+    <p>Four streams lift aggregate decode to 104 tok/s without drafts and 151 with them (code). Per-stream speed falls as streams share each round. The drafter helps code most (84 vs 44 tok/s), where draft blocks are accepted often; prose gains less (58 vs 46). Long prompts queue: with four concurrent 6.1k-token prompts, time to first token reaches 16–22 s because prefills of other streams run ahead.</p>
+    <h3>Distance to the recipe's own figures</h3>
+    <p>The recipe reports 80.7 tok/s (prose) and 118.1 (code) for one stream with drafts on; rccs measures 58 and 84. Prefill matches. Differences on rccs: one addressed QSFP rail instead of two, a 131,072-token pool instead of 524,288, and the GB10s at their default 2,418 MHz application clock instead of a 2,200 MHz lock (the opposite direction). The single rail is the likely cause; assigning an IPv4 to the twin port is a host change for RCCS.</p>
+  </section>
+
+  <section class="prose">
+    <h2>RTX PRO 6000 leg</h2>
+    <div class="pending">
+      <p><b>Queued:</b> rccs job 468124 holds both ai-pro6000 nodes for 23 h once they free up (other users' jobs run there now; Slurm's estimate was 2026-11-14 22:10). When it starts it probes the nodes, launches SGLang at TP=4, runs the same serving benchmark at 1–8 streams, then the all-reduce and memory benchmarks intra-node (PCIe) and inter-node (RDMA if present, and TCP), and keeps serving. This page is updated with those results.</p>
+    </div>
+    <p>What the comparison isolates when it lands:</p>
+    <ul>
+      <li><b>Memory bandwidth.</b> GDDR7 on a PRO 6000 is several times the GB10's 227 GB/s, and TP=4 splits the active weights four ways, so the per-token bandwidth floor drops by an order of magnitude. Decode should no longer be bandwidth-bound; synchronisation takes over.</li>
+      <li><b>Topology.</b> TP=4 mixes a PCIe hop inside a node with a network hop between nodes in every all-reduce, so the slower hop sets the pace, as the single TCP link did on the GB10 pair.</li>
+      <li><b>Unified versus discrete memory.</b> The GB10 shares one pool between host and GPU: weights, Engram and the OS compete, which is what forced the drafter and reserve decisions. The PRO 6000 nodes keep Engram in 1 TB of host RAM and read it across PCIe.</li>
+      <li><b>Engine and quantization.</b> TensorFold EXL3 2.9 bpw versus SGLang NVFP4 4 bit. This difference is confounded with the hardware and the report says so beside each number.</li>
+    </ul>
+  </section>
+
+  <section class="prose">
+    <h2>Method and caveats</h2>
+    <ul>
+      <li>Client: <span class="mono">serve_bench.py</span> (standard library only), streaming OpenAI chat API, run on each platform's head node. Decode tok/s counts output tokens after the first over the time to the last chunk; prefill tok/s is prompt tokens over time to first token.</li>
+      <li>Hardware numbers: <span class="mono">hw_bench.py</span> (PyTorch 2.13, NCCL 2.30.7) in the serving image; raw RDMA with <span class="mono">ib_write_bw / ib_write_lat</span>.</li>
+      <li>Two repetitions per point, medians shown. Single-stream decode varied by ±3 tok/s between repetitions.</li>
+      <li>The GB10 nodes run in rccs's shared Lustre environment: ~15 GiB of kernel slab stays resident, so a job gets ~105 GiB of the 121.6 GiB. The recipe asks for 112 GiB free; it runs here with vision off, a 131,072 context, a 100 GiB pre-start reclaim and the engine reserve at 11.5 GiB.</li>
+      <li>Scripts, staging and the serving entries: umrs branch <span class="mono">feat/dsv41-rccs-pro6000</span>, <span class="mono">deploy/rccs/dsv41/</span>. Raw JSON: <span class="mono">~/tmp/dsv41/bench/</span> on rccs.</li>
+    </ul>
+  </section>
+</div>
+<div class="tip" id="tip" hidden></div>
+
+<script>
+const D = {"roce_d1":{"dec_prose":[[1,58.02,57.05,31.98,0.17],[2,41.15,80.65,44.46,0.19],[4,29.95,116.05,57.92,0.33]],"dec_code":[[1,84.15,82.04,40.41,0.17],[2,55.45,106.73,53.22,0.24],[4,39.42,151.06,73.79,0.41]],"prefill":[[793.5,1328.44,0.6],[3135.5,1389.41,2.26],[12453.0,2135.37,5.83],[24898.0,2055.76,12.16],[49775.0,2030.51,24.52],[87117.0,2085.61,41.77]],"mixed":[[1,4.39,66.31],[2,8.26,71.7],[4,16.38,70.37]]},"roce_d0":{"dec_prose":[[1,46.4,45.26,21.39,0.3],[2,34.85,68.94,27.3,0.19],[4,26.21,103.4,37.38,0.31]],"dec_code":[[1,44.25,43.6,21.53,0.19],[2,37.64,74.14,27.01,0.24],[4,26.98,105.58,36.38,0.46]],"prefill":[[793.5,1251.31,0.64],[3135.5,1709.9,1.83],[12453.0,2131.71,5.84],[24898.0,1938.25,12.99],[49775.0,2052.7,24.33],[87117.0,2006.47,43.42]],"mixed":[[1,6.25,38.34],[2,10.6,31.73],[4,21.88,22.24]]},"tcp_d0":{"dec_prose":[[1,19.72,19.5,49.64,0.33],[2,17.07,33.89,58.75,0.28],[4,13.98,55.35,71.89,0.46]],"dec_code":[[1,19.17,19.04,51.89,0.23],[2,17.13,33.95,57.63,0.33],[4,14.02,55.36,71.45,0.55]],"prefill":[[793.5,612.27,1.3],[3135.5,749.74,4.18],[12453.0,798.95,15.59],[24898.0,805.33,30.92],[49775.0,807.64,61.63],[87117.0,802.71,108.53]],"mixed":[[1,7.74,16.94],[2,14.16,13.89],[4,27.11,9.33]]},"ar_roce":[[8192,23.2,0.35],[32768,28.9,1.13],[131072,46.5,2.82],[524288,322.0,1.63],[2097152,529.2,3.96],[8388608,753.4,11.13],[33554432,2796.4,12.0],[134217728,14293.2,9.39],[536870912,51204.6,10.48]],"ar_tcp":[[8192,444.6,0.02],[32768,441.2,0.07],[131072,682.1,0.19],[524288,719.6,0.73],[2097152,1867.6,1.12],[8388608,7262.0,1.16],[33554432,28742.8,1.17],[134217728,114664.8,1.17],[536870912,457378.0,1.17]]};
+const CFG = [
+  { key: "roce_d1", name: "RoCE, drafts on", color: "--s1" },
+  { key: "roce_d0", name: "RoCE, drafts off", color: "--s3" },
+  { key: "tcp_d0", name: "TCP 10G, drafts off", color: "--s2" },
+];
+const NS = "http://www.w3.org/2000/svg";
+const W = 460, H = 260, M = { l: 48, r: 14, t: 12, b: 34 };
+const tip = document.getElementById("tip");
+function el(tag, attrs, parent) { const e = document.createElementNS(NS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); if (parent) parent.appendChild(e); return e; }
+function fmtBytes(b) { return b >= 1 << 20 ? (b / (1 << 20)) + " MiB" : (b / 1024) + " KiB"; }
+function showTip(ev, html) { tip.innerHTML = html; tip.hidden = false; const x = Math.min(ev.clientX + 14, innerWidth - tip.offsetWidth - 8); tip.style.left = x + "px"; tip.style.top = (ev.clientY + 14) + "px"; }
+function hideTip() { tip.hidden = true; }
+function axisText(g, x, y, txt, anchor) { const t = el("text", { x, y, "text-anchor": anchor || "middle", fill: "var(--ink-3)", "font-size": 11, "font-family": "IBM Plex Mono, monospace" }, g); t.textContent = txt; return t; }
+function niceMax(v) { const p = Math.pow(10, Math.floor(Math.log10(v))); for (const m of [1, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10]) if (m * p >= v) return m * p; return 10 * p; }
+function yAxis(svg, max, ticks, fmt, logMin) {
+  const g = el("g", {}, svg), ih = H - M.t - M.b;
+  const y = logMin ? v => M.t + ih * (1 - (Math.log10(v) - Math.log10(logMin)) / (Math.log10(max) - Math.log10(logMin))) : v => M.t + ih * (1 - v / max);
+  for (const v of ticks) { const yy = y(v); el("line", { x1: M.l, x2: W - M.r, y1: yy, y2: yy, stroke: "var(--grid)", "stroke-width": 1 }, g); axisText(g, M.l - 6, yy + 4, fmt(v), "end"); }
+  el("line", { x1: M.l, x2: W - M.r, y1: H - M.b, y2: H - M.b, stroke: "var(--rule)", "stroke-width": 1 }, g);
+  return y;
+}
+function lineChart(id, series, opts) {
+  const svg = document.getElementById(id); svg.textContent = "";
+  const iw = W - M.l - M.r;
+  const xs = series[0].pts.map(p => p[0]);
+  const lx = v => Math.log10(v), x0 = lx(opts.xmin), x1 = lx(opts.xmax);
+  const x = v => M.l + iw * (lx(v) - x0) / (x1 - x0);
+  const y = yAxis(svg, opts.ymax, opts.yticks, opts.yfmt, opts.ylog);
+  const g = el("g", {}, svg);
+  for (const v of opts.xticks) axisText(g, x(v), H - M.b + 16, opts.xfmt(v));
+  for (const s of series) {
+    el("path", { d: s.pts.map((p, i) => (i ? "L" : "M") + x(p[0]).toFixed(1) + "," + y(p[1]).toFixed(1)).join(""), fill: "none", stroke: `var(${s.color})`, "stroke-width": 2, "stroke-linejoin": "round" }, g);
+    for (const p of s.pts) {
+      el("circle", { cx: x(p[0]), cy: y(p[1]), r: 4, fill: `var(${s.color})`, stroke: "var(--bg)", "stroke-width": 2 }, g);
+      const hit = el("circle", { cx: x(p[0]), cy: y(p[1]), r: 12, fill: "transparent", tabindex: 0 }, g);
+      const html = `<div>${s.name}</div>${opts.tipx(p[0])}<br><b>${opts.tipy(p)}</b>`;
+      hit.addEventListener("mousemove", ev => showTip(ev, html)); hit.addEventListener("mouseleave", hideTip);
+      hit.addEventListener("focus", () => { const r = hit.getBoundingClientRect(); showTip({ clientX: r.right, clientY: r.top }, html); }); hit.addEventListener("blur", hideTip);
+    }
+    if (s.label) { const last = s.pts[s.pts.length - 1]; const t = el("text", { x: x(last[0]) - 4, y: y(last[1]) - 9, "text-anchor": "end", fill: "var(--ink-2)", "font-size": 11.5 }, g); t.textContent = s.label; }
+  }
+}
+function barChart(id, groups, series, opts) {
+  const svg = document.getElementById(id); svg.textContent = "";
+  const iw = W - M.l - M.r, gw = iw / groups.length, bw = Math.min(26, (gw - 24) / series.length - 2);
+  const y = yAxis(svg, opts.ymax, opts.yticks, v => v);
+  const g = el("g", {}, svg);
+  groups.forEach((grp, gi) => {
+    const cx = M.l + gw * (gi + 0.5);
+    axisText(g, cx, H - M.b + 16, grp + (grp === 1 ? " stream" : " streams"));
+    series.forEach((s, si) => {
+      const v = s.vals[gi], bx = cx - (series.length * (bw + 2)) / 2 + si * (bw + 2), by = y(v), bh = H - M.b - by;
+      el("path", { d: `M${bx},${H - M.b} V${by + 4} Q${bx},${by} ${bx + 4},${by} H${bx + bw - 4} Q${bx + bw},${by} ${bx + bw},${by + 4} V${H - M.b} Z`, fill: `var(${s.color})` }, g);
+      if (opts.label && si === 0 || opts.labelAll) { const t = el("text", { x: bx + bw / 2, y: by - 5, "text-anchor": "middle", fill: "var(--ink-2)", "font-size": 10.5, "font-family": "IBM Plex Mono, monospace" }, g); t.textContent = Math.round(v); }
+      const hit = el("rect", { x: bx - 1, y: M.t, width: bw + 2, height: H - M.b - M.t, fill: "transparent", tabindex: 0 }, g);
+      const html = `<div>${s.name}</div>${grp} concurrent<br><b>${v.toFixed(1)} ${opts.unit}</b>`;
+      hit.addEventListener("mousemove", ev => showTip(ev, html)); hit.addEventListener("mouseleave", hideTip);
+      hit.addEventListener("focus", () => { const r = hit.getBoundingClientRect(); showTip({ clientX: r.right, clientY: r.top }, html); }); hit.addEventListener("blur", hideTip);
+    });
+  });
+}
+function legend(id) { document.getElementById(id).innerHTML = CFG.map(c => `<span><i style="background:var(${c.color})"></i>${c.name}</span>`).join(""); }
+["lg-dec", "lg-agg", "lg-pre", "lg-mix"].forEach(legend);
+
+lineChart("c-arlat", [
+  { name: "RoCE 200G", color: "--s1", pts: D.ar_roce.map(r => [r[0], r[1]]), label: "RoCE" },
+  { name: "TCP 10G", color: "--s2", pts: D.ar_tcp.map(r => [r[0], r[1]]), label: "TCP" },
+], { xmin: 8192, xmax: 536870912, xticks: [8192, 524288, 33554432, 536870912], xfmt: fmtBytes, ylog: 10, ymax: 1e6,
+     yticks: [10, 100, 1000, 10000, 100000, 1000000], yfmt: v => v >= 1000 ? (v / 1000) + "k" : v,
+     tipx: v => fmtBytes(v), tipy: p => p[1].toLocaleString() + " µs" });
+lineChart("c-arbw", [
+  { name: "RoCE 200G", color: "--s1", pts: D.ar_roce.map(r => [r[0], r[2]]), label: "RoCE" },
+  { name: "TCP 10G", color: "--s2", pts: D.ar_tcp.map(r => [r[0], r[2]]), label: "TCP" },
+], { xmin: 8192, xmax: 536870912, xticks: [8192, 524288, 33554432, 536870912], xfmt: fmtBytes, ymax: 14, yticks: [0, 4, 8, 12], yfmt: v => v,
+     tipx: v => fmtBytes(v), tipy: p => p[1].toFixed(2) + " GB/s" });
+
+let task = "prose";
+function drawServe() {
+  const k = "dec_" + task;
+  barChart("c-dec", [1, 2, 4], CFG.map(c => ({ name: c.name, color: c.color, vals: D[c.key][k].map(r => r[1]) })),
+    { ymax: 90, yticks: [0, 30, 60, 90], unit: "tok/s", label: true });
+  barChart("c-agg", [1, 2, 4], CFG.map(c => ({ name: c.name, color: c.color, vals: D[c.key][k].map(r => r[2]) })),
+    { ymax: 160, yticks: [0, 40, 80, 120, 160], unit: "tok/s", label: true });
+}
+drawServe();
+lineChart("c-pre", CFG.map(c => ({ name: c.name, color: c.color, pts: D[c.key].prefill.map(r => [r[0], r[1]]) })),
+  { xmin: 700, xmax: 100000, xticks: [1000, 10000, 100000], xfmt: v => (v / 1000) + "k", ymax: 2400, yticks: [0, 800, 1600, 2400], yfmt: v => v,
+    tipx: v => Math.round(v).toLocaleString() + " prompt tokens", tipy: p => Math.round(p[1]).toLocaleString() + " tok/s" });
+barChart("c-mix", [1, 2, 4], CFG.map(c => ({ name: c.name, color: c.color, vals: D[c.key].mixed.map(r => r[1]) })),
+  { ymax: 30, yticks: [0, 10, 20, 30], unit: "s", label: true });
+
+function setTask(t) { task = t; document.getElementById("b-prose").setAttribute("aria-pressed", t === "prose"); document.getElementById("b-code").setAttribute("aria-pressed", t === "code"); drawServe(); }
+document.getElementById("b-prose").addEventListener("click", () => setTask("prose"));
+document.getElementById("b-code").addEventListener("click", () => setTask("code"));
+
+document.getElementById("t-ar").innerHTML = "<thead><tr><th>Message</th><th class='n'>RoCE µs</th><th class='n'>RoCE GB/s</th><th class='n'>TCP µs</th><th class='n'>TCP GB/s</th></tr></thead><tbody>" +
+  D.ar_roce.map((r, i) => `<tr><td>${fmtBytes(r[0])}</td><td class='n'>${r[1]}</td><td class='n'>${r[2]}</td><td class='n'>${D.ar_tcp[i][1]}</td><td class='n'>${D.ar_tcp[i][2]}</td></tr>`).join("") + "</tbody>";
+let rows = "";
+for (const c of CFG) for (const t of ["prose", "code"]) for (const r of D[c.key]["dec_" + t])
+  rows += `<tr><td>${c.name}</td><td>decode, ${t}</td><td class='n'>${r[0]}</td><td class='n'>${r[1]}</td><td class='n'>${r[2]}</td><td class='n'>${r[3]}</td><td class='n'>${r[4]}</td></tr>`;
+for (const c of CFG) for (const r of D[c.key].prefill)
+  rows += `<tr><td>${c.name}</td><td>prefill, ${Math.round(r[0])} tokens</td><td class='n'>1</td><td class='n'>-</td><td class='n'>${Math.round(r[1])} (prefill)</td><td class='n'>-</td><td class='n'>${r[2]}</td></tr>`;
+document.getElementById("t-serve").innerHTML = "<thead><tr><th>Config</th><th>Phase</th><th class='n'>Streams</th><th class='n'>tok/s per stream</th><th class='n'>tok/s total</th><th class='n'>ITL ms</th><th class='n'>TTFT s</th></tr></thead><tbody>" + rows + "</tbody>";
+</script>
