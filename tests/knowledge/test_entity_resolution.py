@@ -93,8 +93,17 @@ async def _propose(store, node_ids, **kwargs):
 
 @pytest.fixture(autouse=True)
 def _env(monkeypatch):
-    for name in (er.ENABLE_ENV, er.THRESHOLD_ENV, er.MAX_PER_JOB_ENV):
+    for name in (er.ENABLE_ENV, er.THRESHOLD_ENV, er.MAX_PER_JOB_ENV, er.EMBEDDING_ENV):
         monkeypatch.delenv(name, raising=False)
+
+
+@pytest.fixture
+def embedding_on(monkeypatch):
+    """The embedding method is opt-in (ADR-116 D-7, measured 2026-11-12); these
+    tests check its mechanics at the threshold their fixture vectors were made
+    for."""
+    monkeypatch.setenv(er.EMBEDDING_ENV, "1")
+    monkeypatch.setenv(er.THRESHOLD_ENV, "0.92")
 
 
 # ── normalization and types ──────────────────────────────────────────────────
@@ -243,6 +252,7 @@ def _embed(texts):
     return [_VECTORS[t] for t in texts]
 
 
+@pytest.mark.usefixtures("embedding_on")
 async def test_the_embedding_method_pairs_close_labels_under_the_label_model():
     first = _node("ss", "stainless steel 316L", "art-b")
     store = FakeStore([first])
@@ -261,6 +271,7 @@ async def test_the_embedding_method_pairs_close_labels_under_the_label_model():
     assert all(call == (PROJECT, "/m/e5-base-v2#label", GRAPH) for call in store.nearest_calls)
 
 
+@pytest.mark.usefixtures("embedding_on")
 async def test_the_embedding_search_is_capped_and_batched(monkeypatch):
     """One exact scan per new node grew with new nodes x graph size, and
     UMRS_KNOWLEDGE_ER_MAX_PER_JOB capped written edges, not searches."""
@@ -290,6 +301,7 @@ async def test_the_embedding_method_keeps_the_type_rule():
     ).proposed == 0
 
 
+@pytest.mark.usefixtures("embedding_on")
 async def test_a_threshold_above_the_similarity_proposes_nothing(monkeypatch):
     monkeypatch.setenv(er.THRESHOLD_ENV, "0.99999")
     first = _node("ss", "stainless steel 316L", "art-b")
@@ -301,6 +313,7 @@ async def test_a_threshold_above_the_similarity_proposes_nothing(monkeypatch):
     assert result.proposed == 0
 
 
+@pytest.mark.usefixtures("embedding_on")
 async def test_a_failing_embedder_is_a_note_and_label_matches_still_land():
     def broken(_texts):
         raise RuntimeError("no model")
@@ -312,6 +325,7 @@ async def test_a_failing_embedder_is_a_note_and_label_matches_still_land():
     assert result.notes == ["entity_resolution_embedding_failed:RuntimeError"]
 
 
+@pytest.mark.usefixtures("embedding_on")
 async def test_an_embedder_without_a_name_is_skipped_by_name():
     new = _node("tp53", "TP53", "art-a")
     store = FakeStore([new])
@@ -451,3 +465,32 @@ def test_the_upsert_keeps_review_keys_unless_the_new_content_sets_them():
         assert "SET content = $5," not in update
         assert "'review', 'aliases_reviewed'" in update
         assert "NOT EXCLUDED.content ? k.key" in update
+
+
+async def test_the_embedding_method_is_off_by_default():
+    """Measured precision of label-vector matches was low (about 17% at cosine
+    >= 0.95 on 10 papers), so the method runs only when switched on."""
+    first = _node("ss", "stainless steel 316L", "art-b")
+    new = _node("ss316l", "SS316L alloy", "art-a")
+    store = FakeStore([first, new])
+    result = await _propose(
+        store, [first.node_id, new.node_id], embed_labels=_embed, embedder_name="e5"
+    )
+    assert result.proposed == 0
+    assert store.vectors == {}
+    assert not er.embedding_enabled()
+    assert er.threshold() == pytest.approx(0.97)
+
+
+async def test_single_character_labels_never_match_by_label():
+    """``R`` in one paper and ``R`` in another (a variable, a language) are not
+    evidence of one entity; neither are math symbols."""
+    nodes = [
+        _node("r", "R", "art-a"),
+        _node("r", "R", "art-b"),
+        _node("psi", "ψ(·)", "art-c"),
+        _node("psi", "ψ", "art-d"),
+    ]
+    store = FakeStore(nodes)
+    result = await _propose(store, [n.node_id for n in nodes])
+    assert result.proposed == 0

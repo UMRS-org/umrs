@@ -2043,7 +2043,13 @@ def _first_vector(reply: dict[str, Any]) -> list[float]:
 def _label_embedder() -> tuple[Any, str]:
     """``(embed_labels, embedder name)`` from the site's chunk embedder (the
     sandbox lane when the site opted in), or ``(None, "")`` when it has none.
-    A short label is one chunk, so its first vector is the label's vector."""
+    A short label is one chunk, so its first vector is the label's vector.
+    ``(None, "")`` too when the embedding method is off (the default), so the
+    embedder is not loaded for nothing."""
+    from umrs.knowledge.entity_resolution import embedding_enabled
+
+    if not embedding_enabled():
+        return None, ""
     try:
         lane, _reason = _chunk_embedder_for_site()
     except Exception as exc:  # noqa: BLE001 — label vectors are optional

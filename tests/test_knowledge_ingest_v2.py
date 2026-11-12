@@ -759,10 +759,21 @@ def test_the_label_embedder_reads_the_first_vector_of_each_label(monkeypatch):
         def chunk_and_embed(self, texts: list[str]) -> list[dict[str, Any]]:
             return [{"chunks": [{"text": t}], "vectors": [[1.0, float(len(t))]]} for t in texts]
 
+    monkeypatch.setenv("UMRS_KNOWLEDGE_ER_EMBEDDING", "1")
     monkeypatch.setattr(ka, "_chunk_embedder_for_site", lambda: (_Lane(), ""))
     embed, name = ka._label_embedder()
     assert embed(["ab", "abc"]) == [[1.0, 2.0], [1.0, 3.0]]
     assert name
+
+
+def test_the_label_embedder_is_not_loaded_while_the_embedding_method_is_off(monkeypatch):
+    monkeypatch.delenv("UMRS_KNOWLEDGE_ER_EMBEDDING", raising=False)
+
+    def _must_not_load():
+        raise AssertionError("the site embedder was loaded")
+
+    monkeypatch.setattr(ka, "_chunk_embedder_for_site", _must_not_load)
+    assert ka._label_embedder() == (None, "")
 
 
 def test_no_site_embedder_means_no_label_vectors(monkeypatch):

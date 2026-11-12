@@ -50,6 +50,14 @@ async def _init_codecs(conn) -> None:
 
 
 @pytest.fixture
+def embedding_on(monkeypatch):
+    """The embedding method is opt-in (ADR-116 D-7); these tests check its
+    mechanics at the threshold their vectors were made for."""
+    monkeypatch.setenv(er.EMBEDDING_ENV, "1")
+    monkeypatch.setenv(er.THRESHOLD_ENV, "0.92")
+
+
+@pytest.fixture
 async def db():
     asyncpg = pytest.importorskip("asyncpg")
     pool = await asyncpg.create_pool(dsn=_pg_url(), min_size=1, max_size=2, init=_init_codecs)
@@ -283,6 +291,7 @@ async def test_propose_same_as_writes_one_proposed_edge_on_postgres(db):
     assert again.proposed == 0  # existing same_as pairs are not proposed twice
 
 
+@pytest.mark.usefixtures("embedding_on")
 async def test_propose_same_as_by_embedding_on_postgres(db):
     store, _pool, project = db
     vectors = {
@@ -354,6 +363,7 @@ def test_the_graph_lane_links_an_entity_by_a_reviewed_alias_on_postgres():
 # ── review fixes ─────────────────────────────────────────────────────────────
 
 
+@pytest.mark.usefixtures("embedding_on")
 async def test_close_nodes_of_the_same_document_do_not_hide_a_cross_document_match(db):
     """The node itself and 11 near nodes of its own artifact filled LIMIT 10;
     the other document's node (cosine 0.949) was never seen."""

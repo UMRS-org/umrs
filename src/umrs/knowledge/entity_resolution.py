@@ -19,14 +19,18 @@ compatible: equal ``semantic_type``, or either side ``unclassified`` or
 Two methods:
 
 - ``label``: equal normalized label or alias (:func:`normalize_label`),
-  score 1.0.
-- ``embedding`` (only when the caller passes ``embed_labels``): the job's
+  score 1.0. Keys shorter than ``MIN_KEY_CHARS`` (single letters, math
+  symbols such as ``R`` or ``ψ``) never match.
+- ``embedding`` (opt-in: ``UMRS_KNOWLEDGE_ER_EMBEDDING=1`` and the caller
+  passes ``embed_labels``; measured 2026-11-12 on 10 papers with e5-base-v2,
+  about 17% of pairs at cosine >= 0.95 named one entity, against about 94%
+  for the label method, so it is off by default): the job's
   nodes are embedded as ``"<semantic_type>: <label>"`` and stored under the
   model name ``<embedder_name>#label``. The dense retrieval lane reads only
   its own model name or the same basename staged under another path
   (``dense.same_space_pattern``), so it never reads these vectors. Each new
   node's nearest label vectors in the same graph are accepted at cosine
-  similarity ``UMRS_KNOWLEDGE_ER_THRESHOLD`` (default 0.92) or above. Only
+  similarity ``UMRS_KNOWLEDGE_ER_THRESHOLD`` (default 0.97) or above. Only
   nodes an earlier resolution run embedded have label vectors; older nodes
   are reached by the label method only.
 
@@ -63,7 +67,10 @@ ENABLE_ENV = "UMRS_KNOWLEDGE_ENTITY_RESOLUTION"
 THRESHOLD_ENV = "UMRS_KNOWLEDGE_ER_THRESHOLD"
 MAX_PER_JOB_ENV = "UMRS_KNOWLEDGE_ER_MAX_PER_JOB"
 EMBED_MAX_ENV = "UMRS_KNOWLEDGE_ER_EMBED_MAX"
-DEFAULT_THRESHOLD = 0.92
+EMBEDDING_ENV = "UMRS_KNOWLEDGE_ER_EMBEDDING"
+DEFAULT_THRESHOLD = 0.97
+#: Shortest normalized label key the label method matches on.
+MIN_KEY_CHARS = 2
 DEFAULT_MAX_PER_JOB = 200
 #: Most new nodes the embedding method searches for per job: each search is
 #: an exact scan of the graph's label vectors (no ANN index on the untyped
@@ -82,6 +89,7 @@ NEIGHBOURS = 10
 LOOSE_TYPES = frozenset({"unclassified", "concept"})
 ORIGIN_ACTOR = "extracted"
 _OFF = frozenset({"0", "false", "off", "no"})
+_ON = frozenset({"1", "true", "on", "yes"})
 _METHOD_ORDER = {"label": 0, "embedding": 1}
 _NON_WORD = re.compile(r"[\W_]+", re.UNICODE)
 
@@ -110,6 +118,11 @@ class _Match:
 def enabled() -> bool:
     """``UMRS_KNOWLEDGE_ENTITY_RESOLUTION``: on unless ``0``/``false``."""
     return os.environ.get(ENABLE_ENV, "").strip().lower() not in _OFF
+
+
+def embedding_enabled() -> bool:
+    """``UMRS_KNOWLEDGE_ER_EMBEDDING``: the embedding method, off unless ``1``/``true``."""
+    return os.environ.get(EMBEDDING_ENV, "").strip().lower() in _ON
 
 
 def threshold() -> float:
@@ -194,7 +207,8 @@ def _pairable(
 
 def _keys(node: SemanticNodeRow) -> set[str]:
     names = (node.label, *node.aliases)
-    return {key for key in (normalize_label(name) for name in names) if key}
+    keys = (normalize_label(name) for name in names)
+    return {key for key in keys if len(key) >= MIN_KEY_CHARS}
 
 
 def _label_index(nodes: Iterable[SemanticNodeRow]) -> dict[str, list[SemanticNodeRow]]:
@@ -410,7 +424,7 @@ async def _embedding_or_note(
 ) -> list[_Match]:
     """The embedding method's matches; a failure is a note, and the label
     matches are still written."""
-    if embed_labels is None:
+    if embed_labels is None or not embedding_enabled():
         return []
     if not embedder_name:
         result.notes.append("entity_resolution_embedding_skipped:no_embedder_name")
