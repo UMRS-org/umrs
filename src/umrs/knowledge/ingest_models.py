@@ -78,6 +78,9 @@ from .ingest_models_stage import (
     stage_gliner,
 )
 
+#: Written into the bundle by the image build (docker/Dockerfile.server); an
+#: image built with UMRS_BUNDLE_INGEST_MODELS=0 has none.
+BUNDLE_NOTICE = "NOTICE-ingest-models.txt"
 DOC_PARSER_ENV = "UMRS_KNOWLEDGE_DOC_PARSER"
 DOCLING_ARTIFACTS_ENV = "UMRS_KNOWLEDGE_DOCLING_ARTIFACTS"
 GLINER_MODEL_ENV = "UMRS_KNOWLEDGE_GLINER_MODEL"
@@ -235,10 +238,29 @@ def main(argv: list[str] | None = None) -> int:
     return _stage_module.run_command(args)
 
 
+def bundle_status(root: str = BUNDLED_MODELS_ROOT) -> str:
+    """``bundled`` when the image carries both models, staged as the
+    understand stage checks them; ``not bundled (...)`` when the image was
+    built without the bundle. A bundle the runtime would treat as absent
+    (and so always fall back from) raises :class:`StagingError`, so the image
+    smoke fails the build instead."""
+    if not os.path.isfile(os.path.join(root, BUNDLE_NOTICE)):
+        return "not bundled (UMRS_BUNDLE_INGEST_MODELS=0)"
+    checks = (
+        (os.path.join(root, os.path.basename(BUNDLED_DOCLING_DIR)), is_docling_staged),
+        (os.path.join(root, os.path.basename(BUNDLED_GLINER_DIR)), is_gliner_staged),
+    )
+    for path, staged in checks:
+        if not staged(path):
+            raise StagingError(f"{path} is not staged")
+    return "bundled"
+
+
 __all__ = [
     "BUNDLED_DOCLING_DIR",
     "BUNDLED_GLINER_DIR",
     "BUNDLED_MODELS_ROOT",
+    "BUNDLE_NOTICE",
     "DEFAULT_GLINER_REPO",
     "DOCLING_REVISIONS",
     "DOCLING_SUBDIRS",
@@ -250,6 +272,7 @@ __all__ = [
     "SERVICE_FINAL_REASONS",
     "LicenceError",
     "StagingError",
+    "bundle_status",
     "configured_doc_parser",
     "configured_docling_artifacts",
     "configured_docling_max_bytes",

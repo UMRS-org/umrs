@@ -17,7 +17,6 @@ from __future__ import annotations
 import importlib
 import sys
 import time
-from pathlib import Path
 
 # Import names of the libraries the server process and its modality loaders
 # import. A missing or ABI-broken wheel fails here, not at the first request.
@@ -107,21 +106,12 @@ def check_spacy_model() -> None:
 
 
 def check_bundled_ingest_models(root: str = BUNDLED_MODELS) -> str:
-    """With the ingest bundle built in, both directories pass the staged check.
-
-    The understand stage treats a directory that fails the check as absent
-    and falls back (pypdf, no pre-tagging); a bundle that would always fall
-    back must fail the build instead.
-    """
+    """With the ingest bundle built in, both directories pass the staged check
+    the understand stage uses (``ingest_models.bundle_status``); a bundle that
+    would always fall back fails the build instead."""
     from umrs.knowledge import ingest_models
 
-    base = Path(root)
-    if not (base / INGEST_NOTICE).is_file():
-        return "not bundled (UMRS_BUNDLE_INGEST_MODELS=0)"
-    docling, gliner = base / "docling", base / "gliner_medium-v2.1"
-    assert ingest_models.is_docling_staged(docling), f"{docling} is not staged"
-    assert ingest_models.is_gliner_staged(gliner), f"{gliner} is not staged"
-    return "bundled"
+    return ingest_models.bundle_status(root)
 
 
 def main() -> int:
