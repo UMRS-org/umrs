@@ -271,9 +271,9 @@ endpoints:
   #  Memory (the reason this was refused on 2026-11-01/02): upstream wants
   #  112 GiB free per node and rank 0 holds ~104 GiB with the DSpark drafter
   #  and vision; an rccs m node gives ~105 GiB before swap (Lustre slab floor
-  #  ~15 GiB). So: drafter off (--no-drafts / --drafts 0 skips its ~3.5 GiB,
-  #  model.zig `drafts`), vision off (not passed), 131072 context, gate at
-  #  100 GiB after a 100 GiB GB10 reclaim; memguards kill a rank before the
+  #  ~15 GiB). So: vision off (not passed), 131072 context, gate at 100 GiB after a
+  #  100 GiB GB10 reclaim, engine reserve 11.5 GiB; the drafter fits (9 GiB
+  #  left per node after load, measured); memguards kill a rank before the
   #  node runs dry (an OOM freezes a GB10).
   #  Fabric: RDMA ring + NCCL_IB on the QSFP HCA (roceP2p1s0f1, GID probed);
   #  rendezvous, NCCL bootstrap and LiteLLM on enP7s7, because firewalld
@@ -311,7 +311,9 @@ endpoints:
       TF_WORKER_CACHE_DIR: "/var/tmp/umrs-tf/rank-cache-45ee5d0f"
       TF_CONTEXT: "131072"
       TF_PARALLEL: "4"
-      TF_DRAFTS: "0"
+      # drafter on (measured 2026-11-12, job 468257): 1.3-1.9x decode, 9 GiB
+      # left per node after load, no memguard event through 87k-token prompts
+      TF_DRAFTS: "1"
       TF_MIN_AVAIL_GIB: "100"
       # the load check counts the drafter even with drafts off (98.8 GiB vs
       # 110.6 - 12.2); 11.5 admits the ~95 GiB actually loaded, ~15 GiB left

@@ -94,7 +94,7 @@ def test_deepseek_v41_chat_services_on_m_pairs_and_ai_pro6000():
         "tf_partitions": ["ng-dgx-m2"],
         "sg_partition": "ai-pro6000",
         "runners": ("tensorfold-dsv41", "sglang-mn"),
-        "tf_fit": ("0", "131072", "100"),
+        "tf_fit": ("1", "131072", "100"),
         "tf_rendezvous": ("enP7s7", "step"),
         "chat_owners": ["deepseek-v4.1-flash-1017", "deepseek-v4.1-flash-1017-nvfp4"],
     }
