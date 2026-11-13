@@ -107,7 +107,7 @@ def _split_entries(client_entries, refused, skip) -> PrefilterResult:
     return result
 
 
-def _eligible(entry) -> bool:
+def plain_embedding_bucket(entry) -> bool:
     """Plain embedding bucket whose objects are pre-loaded for the model."""
     if entry is None or not getattr(entry, "store_embeddings_flag", False):
         return False
@@ -123,7 +123,7 @@ def _eligible(entry) -> bool:
 
 def _indexed_keys(entry, bucket, keys) -> set[str]:
     """Keys whose stored rows match the current ETag (and model)."""
-    if not keys or not _eligible(entry):
+    if not keys or not plain_embedding_bucket(entry):
         return set()
     try:
         etags = _head_etags(entry.s3_connection, bucket, keys)

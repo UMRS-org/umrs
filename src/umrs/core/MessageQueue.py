@@ -1050,6 +1050,7 @@ class MessageQueue:
         TaskCmd.UPLOAD_WORKFLOW: "_parse_upload_workflow",
         TaskCmd.WAIT_OUTPUT: "_parse_wait_output",
         TaskCmd.EXPORT_EMBEDDINGS: "_parse_simple_payload",
+        TaskCmd.KNN: "_parse_json_payload",
         TaskCmd.RECOMPUTE: "_parse_maintenance",
         TaskCmd.UPDATE: "_parse_maintenance",
         TaskCmd.CHECK: "_parse_maintenance",
@@ -1800,6 +1801,33 @@ class MessageQueue:
         finally:
             self.socket.setsockopt(zmq.RCVTIMEO, old_rcv)
 
+        return reply
+
+    def request_knn(self, client_id, n, s3_object, bucket, subdir=None):
+        """Send a KNN request and return the raw JSON reply (client role only).
+
+        *bucket* is the server's ``path_to_bucket``; *s3_object* the query
+        object's key in it; *subdir* (optional) limits the search to keys
+        under ``subdir/``.
+        """
+        if self.role != "client":
+            raise PermissionError("Only client can call 'request_knn'")
+
+        safe_client_id = (client_id or "").replace(":", "_")
+        body = {"n": n, "object": s3_object, "bucket": bucket}
+        if subdir:
+            body["subdir"] = subdir
+        request_str = f"{TaskCmd.KNN}:{safe_client_id}:{json.dumps(body)}"
+
+        old_rcv = self.socket.getsockopt(zmq.RCVTIMEO)
+        self.socket.setsockopt(zmq.RCVTIMEO, 120_000)
+        self.send_string(request_str)
+        try:
+            _, reply = self.recv_string()
+        except zmq.Again:
+            raise TimeoutError("Timeout waiting for KNN reply") from None
+        finally:
+            self.socket.setsockopt(zmq.RCVTIMEO, old_rcv)
         return reply
 
     def wait_for_new_data(self, client_id, full_bucket_name, timeout=60):

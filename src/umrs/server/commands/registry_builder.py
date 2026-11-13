@@ -15,6 +15,7 @@ from .enroll_user import EnrollUserHandler
 from .export_embeddings import ExportEmbeddingsHandler
 from .file_upload import FileHandler
 from .job import JobCancelHandler, JobListHandler, JobSubmitHandler
+from .knn import KnnHandler
 from .maintenance import CheckHandler, RecomputeHandler, ReloadHandler, UpdateHandler
 from .model import ModelDownloadHandler, ModelListHandler, ModelRegisterHandler
 from .process_objects import ProcessObjectsBatchHandler
@@ -55,6 +56,7 @@ def build_registry() -> CommandRegistry:
     # --- File management --------------------------------------------------
     r.register(TaskCmd.FILE, FileHandler())
     r.register(TaskCmd.EXPORT_EMBEDDINGS, ExportEmbeddingsHandler())
+    r.register(TaskCmd.KNN, KnnHandler())  # client command: _authorize + D-7 apply
     r.register(TaskCmd.WAIT_OUTPUT, WaitOutputHandler())
 
     # --- User management (admin-only) -------------------------------------

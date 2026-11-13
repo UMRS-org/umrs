@@ -338,3 +338,27 @@ def pretty_print_check(check_dict, print_output=True):
     if print_output:
         print(message)
     return message
+
+
+def _score_bar(score, width=10):
+    """``█``/``░`` bar for a cosine score, clamped to [0, 1]."""
+    filled = max(0, min(width, int(score * width)))
+    return "█" * filled + "░" * (width - filled)
+
+
+def pretty_print_knn(query, bucket_name, n, results, duration_s, cached, n_indexed=0):
+    """KNN reply summary (port of upstream bd0e6bc1 / 8912c150): a header with
+    ``k/n`` (requested vs. indexed in the searched scope) and one row per hit."""
+    emb_note = "(embedding cached)" if cached else "(embedding recomputed)"
+    kn = f"{n}/{n_indexed}" if n_indexed else str(n)
+    header = (
+        f"KNN results  |  query: {query}  |  bucket: {bucket_name}"
+        f"  |  k/n: {kn}  |  server time: {duration_s:.3f}s  {emb_note}"
+    )
+    rows = [
+        [f"#{i}", f"{hit['score']:.4f}", _score_bar(hit["score"]),
+         hit["object"].rsplit("/", 1)[-1]]
+        for i, hit in enumerate(results, 1)
+    ]
+    table = format_table("", ["#", "Score", "", "Object"], rows, empty_message="No results.")
+    return f"{header}\n\n{table}"

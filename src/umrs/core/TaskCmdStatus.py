@@ -20,6 +20,7 @@ class TaskCmd:
     STATUS = "STATUS"
     STATUS_ALL = "STATUS_ALL"  # one snapshot: every client for an admin session, else the caller only
     EXPORT_EMBEDDINGS = "EXPORT_EMBEDDINGS"
+    KNN = "KNN"  # cosine nearest neighbours of one object in its bucket's table
     # Model registry commands
     MODEL_REGISTER = "MODEL_REGISTER"
     MODEL_LIST = "MODEL_LIST"
