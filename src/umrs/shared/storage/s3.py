@@ -14,6 +14,7 @@ from botocore.exceptions import ClientError
 from charset_normalizer import from_bytes, from_path
 from PIL import Image
 
+from umrs.shared.storage.s3_upload import upload_local_file
 from umrs.shared.utils import compute_md5, md5_of_file
 
 # Suppress only SSL warnings from urllib3
@@ -573,10 +574,7 @@ def s3_store_image(s3, path_to_bucket, subdir, in_path, mq, metadata_args, check
     if subdir is not None:
         s3_key = f"{subdir}/{s3_key}"
 
-    if os.path.exists(in_path):
-        s3.upload_file(in_path, path_to_bucket, s3_key, ExtraArgs=metadata_args)
-    else:
-        raise FileNotFoundError(f"Error: {in_path} not found")
+    upload_local_file(s3, path_to_bucket, s3_key, in_path, extra_args=metadata_args)
 
     s3_object = f"s3://{path_to_bucket}/{s3_key}"
     mq.notify_s3(s3_object)
@@ -629,10 +627,7 @@ def s3_store_text_file(s3, path_to_bucket, subdir, in_path, mq, metadata_args):
     if subdir is not None:
         s3_key = f"{subdir}/{s3_key}"
 
-    if os.path.exists(in_path):
-        s3.upload_file(in_path, path_to_bucket, s3_key, ExtraArgs=metadata_args)
-    else:
-        raise FileNotFoundError(f"Error: {in_path} not found")
+    upload_local_file(s3, path_to_bucket, s3_key, in_path, extra_args=metadata_args)
 
     s3_object = f"s3://{path_to_bucket}/{s3_key}"
     mq.notify_s3(s3_object)
