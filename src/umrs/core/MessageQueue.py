@@ -7,6 +7,7 @@ import random
 import shutil
 import socket
 import tempfile
+import threading
 import time
 
 from umrs.core.TaskCmdStatus import TaskCmd
@@ -44,6 +45,18 @@ def _resolve_default_data_port_range() -> DataPortRange:
 DATA_PORT_RANGE = _resolve_default_data_port_range()
 DATA_BASE_PORT = DATA_PORT_RANGE.base_port
 DEFAULT_NB_MSG = 10240
+
+# Client data PUSH socket: how long close() keeps flushing queued S3 URIs to
+# the server (upstream 8f9fe001). LINGER 0 dropped them, so an upload that
+# notified PROCESS_OBJECTS and closed at once lost the tail of its batch.
+DATA_LINGER_ENV = "UMRS_DATA_LINGER_MS"
+DEFAULT_DATA_LINGER_MS = 30_000
+
+
+def _data_linger_ms() -> int:
+    from umrs.shared.env_knobs import env_int
+
+    return env_int(DATA_LINGER_ENV, DEFAULT_DATA_LINGER_MS, lo=0, hi=600_000)
 
 # Sentinel for the control-loop dispatcher: continue the loop (never a parser result).
 _CONTINUE = object()
@@ -406,6 +419,9 @@ class MessageQueue:
         # Retained so close() can stop their background threads. Empty unless
         # UMRS_ZMQ_AUTH_TYPE is curve/session.
         self._zmq_authenticators: list = []
+        # Server data queues: one PROCESS_OBJECTS collector reads at a time
+        # (wait_for_s3_events); a ZMQ socket is not thread-safe.
+        self._s3_events_lock = threading.Lock()
 
         # Task 11: ZMQ file-transfer /tmp space guard
         self._check_tmp_disk_space()
@@ -490,21 +506,24 @@ class MessageQueue:
             self._zmq_authenticators.append(authenticator)
 
     def _initialize_data_queue(self):
+        # HWMs only apply to pipes created after they are set: set them before
+        # bind/connect (upstream 8f9fe001), else libzmq keeps its default 1000.
         if self.role == "server":
             # Server uses PULL socket to receive pushed data
             self.socket = self.context.socket(zmq.PULL)
+            self.socket.setsockopt(zmq.RCVHWM, self.max_msg)
             self._apply_socket_security(self.socket, server=True)
             bind_host = "127.0.0.1" if self.tunnel_mode else "*"
             self.socket.bind(f"tcp://{bind_host}:{self.port}")  # Data channel bind
-            self.socket.setsockopt(zmq.RCVHWM, self.max_msg)  # e.g. max queued messages
             self.set_timeouts(self.timeout, self.timeout)
         else:  # client
-            # Client uses PUSH socket to send data
+            # Client uses PUSH socket to send data; close() flushes queued URIs
+            # for up to UMRS_DATA_LINGER_MS.
             self.socket = self.context.socket(zmq.PUSH)
-            self.socket.setsockopt(zmq.LINGER, 0)  # Don't block on close/term
+            self.socket.setsockopt(zmq.LINGER, _data_linger_ms())
+            self.socket.setsockopt(zmq.SNDHWM, self.max_msg)
             self._apply_socket_security(self.socket, server=False)
             self.socket.connect(f"tcp://{self.server_ip}:{self.port}")
-            self.socket.setsockopt(zmq.SNDHWM, self.max_msg)  # e.g. max queued messages
             self.set_timeouts(self.timeout, self.timeout)
 
     def _initialize_control_queue(self):
@@ -1339,36 +1358,44 @@ class MessageQueue:
             extra.append(result[1])
 
     def wait_for_s3_events(self, nb_objects, debug=False, timeout_s=60):
-        """Block until new messages arrive, then read all available messages.
+        """Collect *nb_objects* S3 event messages from this data queue.
 
         Args:
             nb_objects: Number of S3 event messages to collect.
             debug: Enable debug printing.
-            timeout_s: Maximum wall-clock seconds to wait before returning
-                       with whatever messages have been collected so far.
-                       Default 60s.  Set to 0 or None for no limit.
+            timeout_s: Inactivity timeout (upstream 8f9fe001): seconds with
+                       no message before giving up. Each message resets it,
+                       so a slow but steady stream is never cut off. Set to
+                       0 or None for no limit.
+
+        Concurrent callers (several PROCESS_OBJECTS batches of one client)
+        read one after the other, each a contiguous run of the stream.
 
         Returns:
             List of received message strings (may be shorter than nb_objects
-            if the timeout fires).
+            if the inactivity timeout fires).
         """
         if self.role != "server":
             raise PermissionError("Only server can call 'wait_for_s3_events'.")
 
-        messages = []
         logger.debug(
-            "Listening for %s new messages (timeout=%s)",
+            "Listening for %s new messages (inactivity_timeout=%s)",
             nb_objects,
             timeout_s,
         )
-        nb_received = 0
-        start = time.time()
-        while nb_received < nb_objects:
-            if timeout_s and (time.time() - start) > timeout_s:
+        with self._s3_events_lock:
+            return self._collect_s3_events(nb_objects, timeout_s)
+
+    def _collect_s3_events(self, nb_objects, timeout_s):
+        messages = []
+        last_received = time.monotonic()
+        while len(messages) < nb_objects:
+            if timeout_s and (time.monotonic() - last_received) > timeout_s:
+                messages.extend(self._drain_buffered(nb_objects - len(messages)))
                 logger.warning(
-                    "wait_for_s3_events timed out after %s seconds (%s/%s received)",
+                    "wait_for_s3_events: no message for %s s, %s/%s received",
                     timeout_s,
-                    nb_received,
+                    len(messages),
                     nb_objects,
                 )
                 break
@@ -1378,9 +1405,23 @@ class MessageQueue:
                     "Received S3 event payload_bytes=%s", len(message.encode("utf-8"))
                 )
                 messages.append(message)
-                nb_received += 1
-
+                last_received = time.monotonic()
         return messages
+
+    def _drain_buffered(self, remaining):
+        """Up to *remaining* messages already buffered, without blocking."""
+        drained = []
+        old_recv = self.socket.RCVTIMEO
+        self.socket.RCVTIMEO = 0
+        try:
+            while len(drained) < remaining:
+                _, message = self.recv_string()
+                if not message:
+                    break
+                drained.append(message)
+        finally:
+            self.socket.RCVTIMEO = old_recv
+        return drained
 
     def _check_tmp_disk_space(self) -> None:
         """Guard against ZMQ file-transfer space exhaustion.
