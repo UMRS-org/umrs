@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from email.utils import format_datetime
 from typing import Any
 
@@ -73,7 +73,16 @@ def _quoted(etag: str) -> str:
 
 
 def _http_date(value: Any) -> str:
-    return format_datetime(value, usegmt=True) if isinstance(value, datetime) else ""
+    """RFC 9110 date for ``Last-Modified``.
+
+    ``format_datetime(usegmt=True)`` accepts only ``datetime.timezone.utc``;
+    botocore returns ``LastModified`` with dateutil's ``tzutc()``, so normalise
+    first (a naive value is taken as UTC).
+    """
+    if not isinstance(value, datetime):
+        return ""
+    aware = value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+    return format_datetime(aware.astimezone(timezone.utc), usegmt=True)
 
 
 def object_meta(head: dict[str, Any], key: str) -> ObjectMeta:
