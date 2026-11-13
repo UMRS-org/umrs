@@ -408,6 +408,10 @@ Each Mini-Rivault instance provides:
 - S3 credentials are per-user (separate `.s3cfg` files)
 - Admin should set appropriate Slurm partitions and resource limits per user/group
 
+### Local inference tuning (server environment)
+
+- `UMRS_INFERENCE_BATCH_SIZE` (default `0` = one forward pass per batch): cap on objects per local embedding forward pass; when set, the S3 load of the next chunk overlaps the compute of the current one. Lower it (e.g. 64) on CPU/GPU OOM. Invalid values fall back to `0` with a warning.
+
 ## Monitoring and Troubleshooting
 
 ### Expected Launch Log Summary

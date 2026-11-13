@@ -12,6 +12,10 @@ client, different process and latency class). Not to be merged (R6.1).
 import json
 import logging
 import os
+import queue
+import threading
+from dataclasses import dataclass, field
+from typing import NamedTuple
 
 import numpy as np
 
@@ -65,6 +69,39 @@ DIRECT_COMPUTE_TASKS = frozenset(
 DIRECT_COMPUTE_MODEL_TYPES = frozenset({"user_script", "bentoml"})
 
 
+def is_direct_compute(model, modality_name, task) -> bool:
+    """True when the model does its own S3 I/O (no pre-loaded objects)."""
+    model_type = getattr(model, "type", None)
+    return (
+        model_type in DIRECT_COMPUTE_MODEL_TYPES
+        or (task is not None and task in DIRECT_COMPUTE_TASKS)
+        or (task is None and modality_name in DIRECT_COMPUTE_MODALITIES)
+    )
+
+
+def inference_batch_size() -> int:
+    """``UMRS_INFERENCE_BATCH_SIZE``: max objects per model forward pass.
+
+    0 (the default) keeps the single forward pass over the whole batch.
+    A value that is not a non-negative integer falls back to 0 with a
+    warning, so a typo never stops ingestion.
+    """
+    raw = os.getenv("UMRS_INFERENCE_BATCH_SIZE", "").strip()
+    if not raw:
+        return 0
+    try:
+        value = int(raw)
+    except ValueError:
+        value = -1
+    if value < 0:
+        logger.warning(
+            "UMRS_INFERENCE_BATCH_SIZE=%r is not a non-negative integer; "
+            "using 0 (one forward pass, no cap)", raw,
+        )
+        return 0
+    return value
+
+
 def compute_embeddings_core(
     model,
     modality_name,
@@ -100,16 +137,7 @@ def compute_embeddings_core(
         lists.  ``saved_s3_keys`` is a list of ``None`` for modalities that
         don't produce output files.
     """
-    model_type = getattr(model, "type", None)
-
-    # Determine if this is a direct-compute path.
-    is_direct = (
-        model_type in DIRECT_COMPUTE_MODEL_TYPES
-        or (task is not None and task in DIRECT_COMPUTE_TASKS)
-        or (task is None and modality_name in DIRECT_COMPUTE_MODALITIES)
-    )
-
-    if is_direct:
+    if is_direct_compute(model, modality_name, task):
         embeddings, checksums, metadata, saved_s3_keys = model.compute_embeddings(
             s3_connection,
             s3_keys,
@@ -245,7 +273,7 @@ def compute_and_store_embedding(
 
 
 def compute_and_store_embedding_batch(items, store_fn=None):
-    """Batch variant: single model call across multiple (bucket, keys) items.
+    """Batch variant: one model across multiple (bucket, keys) items.
 
     Each item in `items` is a dict with keys:
         path_to_bucket, s3_keys, data_base, table_name, model, device,
@@ -253,46 +281,50 @@ def compute_and_store_embedding_batch(items, store_fn=None):
         indexing_job_id, model_version, model_path
 
     All items must share the same model. Returns a list of per-item exit bools
-    (True = success).
+    (True = success). With ``UMRS_INFERENCE_BATCH_SIZE`` > 0 each forward
+    pass holds at most that many objects and the S3 load of the next batch
+    overlaps the compute of the current one (``_pipelined_embed``).
     """
     if not items:
         return []
 
     model = items[0]["model"]
-    modality_name = items[0]["modality_name"]
-    task = items[0].get("task")
-
-    model_type = getattr(model, "type", None)
-    is_direct = (
-        model_type in DIRECT_COMPUTE_MODEL_TYPES
-        or (task is not None and task in DIRECT_COMPUTE_TASKS)
-        or (task is None and modality_name in DIRECT_COMPUTE_MODALITIES)
-    )
-
-    if is_direct:
+    if is_direct_compute(model, items[0]["modality_name"], items[0].get("task")):
         return _process_direct_batch(items, store_fn)
 
-    # Standard path: load all data then run one model forward pass.
-    all_objects, all_checksums, all_metadata, all_saved, slices = _load_batch_data(items)
-    if not all_objects:
-        return [False] * len(items)
+    batch_size = inference_batch_size()
+    t_wall0 = _time.perf_counter()
+    per_item, t_io, t_compute = _embed_items(items, model, batch_size)
+    t_wall = _time.perf_counter() - t_wall0
 
-    all_embeddings = model.compute_embeddings(all_objects)
+    n_objects = sum(len(data.checksums) for data in per_item)
+    if n_objects == 0:
+        return [False] * len(items)
+    _log_embed_timing(model, n_objects, batch_size, t_wall, t_io, t_compute)
 
     # Route through the sanctioned fallback (single boundary-tagged point).
     store_fn = _resolve_store_fn(store_fn)
-
-    results = []
-    for item, (start, end, sizes, has_zero) in zip(items, slices):
-        embeddings = all_embeddings[start:end]
-        run_ok = _store_batch_slice(
-            store_fn, item, embeddings,
-            all_checksums[start:end], all_metadata[start:end], all_saved[start:end],
-            sizes, has_zero, model.model_name,
+    return [
+        _store_batch_slice(
+            store_fn, item, data.embeddings, data.checksums, data.metadata,
+            [None] * len(item["s3_keys"]), data.sizes, data.has_zero,
+            model.model_name,
         )
-        results.append(run_ok)
+        for item, data in zip(items, per_item)
+    ]
 
-    return results
+
+def _log_embed_timing(model, n_objects, batch_size, t_wall, t_io, t_compute):
+    """DEBUG timing line; ``umrs_embed_timing`` carries the same numbers."""
+    logger.debug(
+        "[embed] n=%d wall=%.3fs io=%.3fs compute=%.3fs model=%s batch_size=%d",
+        n_objects, t_wall, t_io, t_compute,
+        getattr(model, "model_name", "?"), batch_size,
+        extra={"umrs_embed_timing": {
+            "n_objects": n_objects, "wall_s": t_wall, "io_s": t_io,
+            "compute_s": t_compute, "batch_size": batch_size,
+        }},
+    )
 
 
 def _process_direct_batch(items, store_fn):
@@ -314,21 +346,201 @@ def _process_direct_batch(items, store_fn):
     return results
 
 
-def _load_batch_data(items):
-    """Load every item's S3 objects once; returns flat arrays + per-item slices."""
-    all_objects, all_checksums, all_metadata, all_saved, slices = [], [], [], [], []
-    for item in items:
-        objects, metadata, checksums, sizes, has_zero = load_data_from_s3(
-            item["s3_connection"], item["path_to_bucket"], item["s3_keys"],
-            item["modality_name"],
+# ---------------------------------------------------------------------------
+# Standard-path compute: sequential (one pass) or pipelined (capped passes).
+# ---------------------------------------------------------------------------
+
+# Batches loaded ahead of the one being computed (bounds memory).
+_PREFETCH_DEPTH = 2
+
+
+class _Segment(NamedTuple):
+    """Consecutive keys of one item, loaded from S3 in one call."""
+
+    item_idx: int
+    objects: list
+    metadata: list
+    checksums: list
+    sizes: list
+    has_zero: bool
+
+
+@dataclass
+class _ItemData:
+    """Everything one item needs for its store call, in key order."""
+
+    embeddings: list = field(default_factory=list)
+    checksums: list = field(default_factory=list)
+    metadata: list = field(default_factory=list)
+    sizes: list = field(default_factory=list)
+    has_zero: bool = False
+
+    def add(self, segment: _Segment, embeddings) -> None:
+        self.embeddings.extend(embeddings)
+        self.checksums.extend(segment.checksums)
+        self.metadata.extend(segment.metadata)
+        self.sizes.extend(segment.sizes)
+        self.has_zero = self.has_zero or segment.has_zero
+
+
+def _load_segment(items, item_idx, keys) -> _Segment:
+    item = items[item_idx]
+    loaded = load_data_from_s3(
+        item["s3_connection"], item["path_to_bucket"], keys, item["modality_name"],
+    )
+    return _Segment(item_idx, *loaded)
+
+
+def _distribute(per_item, segments, embeddings) -> None:
+    """Hand each segment its rows of ``embeddings`` (same order as loaded)."""
+    offset = 0
+    for segment in segments:
+        count = len(segment.objects)
+        per_item[segment.item_idx].add(segment, embeddings[offset:offset + count])
+        offset += count
+
+
+def _compute(model, segments):
+    """One forward pass over the segments' objects -> (embeddings, seconds)."""
+    objects = [obj for segment in segments for obj in segment.objects]
+    if not objects:
+        return [], 0.0
+    t0 = _time.perf_counter()
+    embeddings = model.compute_embeddings(objects)
+    return embeddings, _time.perf_counter() - t0
+
+
+def _embed_items(items, model, batch_size):
+    """Returns ``(per_item, io_seconds, compute_seconds)``."""
+    if batch_size > 0:
+        return _pipelined_embed(items, model, batch_size)
+    return _sequential_embed(items, model)
+
+
+def _sequential_embed(items, model):
+    """Load every item, then one forward pass over all objects."""
+    t0 = _time.perf_counter()
+    segments = [
+        _load_segment(items, idx, item["s3_keys"]) for idx, item in enumerate(items)
+    ]
+    t_io = _time.perf_counter() - t0
+    embeddings, t_compute = _compute(model, segments)
+    per_item = [_ItemData() for _ in items]
+    _distribute(per_item, segments, embeddings)
+    return per_item, t_io, t_compute
+
+
+def _iter_key_batches(items, batch_size):
+    """Flatten every item's keys, then cut them into ``batch_size`` slices."""
+    flat = [(idx, key) for idx, item in enumerate(items) for key in item["s3_keys"]]
+    for start in range(0, len(flat), batch_size):
+        yield flat[start:start + batch_size]
+
+
+def _group_runs(key_batch):
+    """``[(idx, key), ...]`` -> ``[(idx, [keys])]`` for consecutive equal idx."""
+    runs: list[tuple[int, list]] = []
+    for idx, key in key_batch:
+        if runs and runs[-1][0] == idx:
+            runs[-1][1].append(key)
+        else:
+            runs.append((idx, [key]))
+    return runs
+
+
+def _load_key_batch(items, key_batch):
+    return [_load_segment(items, idx, keys) for idx, keys in _group_runs(key_batch)]
+
+
+class _PrefetchError:
+    """Carries a loader exception from the prefetch thread to the consumer."""
+
+    def __init__(self, exc: BaseException) -> None:
+        self.exc = exc
+
+
+class _Prefetcher:
+    """Load batches on one background thread, at most ``depth`` ahead.
+
+    Iterating yields loaded batches in order and re-raises a loader
+    failure on the consumer thread. Leaving the ``with`` block (normally
+    or on an exception) stops the loader and joins it, so no thread
+    outlives the call.
+    """
+
+    _DONE = object()
+
+    def __init__(self, load, batches, depth=_PREFETCH_DEPTH):
+        self._load = load
+        self._batches = batches
+        self._queue: queue.Queue = queue.Queue(maxsize=depth)
+        self._stop = threading.Event()
+        self.io_seconds = 0.0
+        self._thread = threading.Thread(
+            target=self._run, name="umrs-embed-prefetch", daemon=True,
         )
-        start = len(all_objects)
-        all_objects.extend(objects)
-        all_checksums.extend(checksums)
-        all_metadata.extend(metadata)
-        all_saved.extend([None] * len(item["s3_keys"]))
-        slices.append((start, len(all_objects), sizes, has_zero))
-    return all_objects, all_checksums, all_metadata, all_saved, slices
+
+    def __enter__(self):
+        self._thread.start()
+        return self
+
+    def __exit__(self, *exc_info):
+        self._stop.set()
+        self._drain()
+        self._thread.join()
+        return False
+
+    def __iter__(self):
+        while True:
+            loaded = self._queue.get()
+            if loaded is self._DONE:
+                return
+            if isinstance(loaded, _PrefetchError):
+                raise loaded.exc
+            yield loaded
+
+    def _run(self) -> None:
+        try:
+            for batch in self._batches:
+                t0 = _time.perf_counter()
+                loaded = self._load(batch)
+                self.io_seconds += _time.perf_counter() - t0
+                if not self._put(loaded):
+                    return
+        except Exception as exc:  # noqa: BLE001 — re-raised on the consumer thread
+            self._put(_PrefetchError(exc))
+            return
+        self._put(self._DONE)
+
+    def _put(self, loaded) -> bool:
+        """Blocking put that gives up once the consumer has left."""
+        while not self._stop.is_set():
+            try:
+                self._queue.put(loaded, timeout=0.05)
+                return True
+            except queue.Full:
+                continue
+        return False
+
+    def _drain(self) -> None:
+        while True:
+            try:
+                self._queue.get_nowait()
+            except queue.Empty:
+                return
+
+
+def _pipelined_embed(items, model, batch_size):
+    """Overlap the S3 load of batch N+1 with the forward pass of batch N."""
+    per_item = [_ItemData() for _ in items]
+    t_compute = 0.0
+    batches = list(_iter_key_batches(items, batch_size))
+    with _Prefetcher(lambda batch: _load_key_batch(items, batch), batches) as prefetch:
+        for segments in prefetch:
+            embeddings, seconds = _compute(model, segments)
+            t_compute += seconds
+            _distribute(per_item, segments, embeddings)
+    return per_item, prefetch.io_seconds, t_compute
 
 
 def _job_metadata_fields(idj, mv, mp, embeddings) -> dict:
