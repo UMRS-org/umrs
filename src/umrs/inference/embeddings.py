@@ -28,6 +28,7 @@ from sentence_transformers import SentenceTransformer
 from sklearn.cluster import KMeans
 
 from umrs.metrics import METRICS
+from umrs.shared.env_knobs import env_int
 from umrs.shared.storage.s3 import load_data_from_s3
 from umrs.shared.utils import zero_out_embeddings_for_empty_objects
 
@@ -84,22 +85,9 @@ def inference_batch_size() -> int:
 
     0 (the default) keeps the single forward pass over the whole batch.
     A value that is not a non-negative integer falls back to 0 with a
-    warning, so a typo never stops ingestion.
+    warning (``env_knobs`` rule), so a typo never stops ingestion.
     """
-    raw = os.getenv("UMRS_INFERENCE_BATCH_SIZE", "").strip()
-    if not raw:
-        return 0
-    try:
-        value = int(raw)
-    except ValueError:
-        value = -1
-    if value < 0:
-        logger.warning(
-            "UMRS_INFERENCE_BATCH_SIZE=%r is not a non-negative integer; "
-            "using 0 (one forward pass, no cap)", raw,
-        )
-        return 0
-    return value
+    return env_int("UMRS_INFERENCE_BATCH_SIZE", 0, lo=0)
 
 
 def compute_embeddings_core(

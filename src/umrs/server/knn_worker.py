@@ -26,13 +26,13 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
-import os
 import time
 from dataclasses import dataclass
 
 from psycopg2 import sql
 
 from umrs.core.TaskCmdStatus import TaskStatus
+from umrs.shared.env_knobs import env_int
 
 logger = logging.getLogger(__name__)
 
@@ -79,19 +79,9 @@ class KnnOutcome:
 
 
 def max_k() -> int:
-    """``UMRS_KNN_MAX_K`` (default 100); an invalid value keeps the default."""
-    raw = os.getenv("UMRS_KNN_MAX_K", "").strip()
-    if not raw:
-        return DEFAULT_MAX_K
-    try:
-        value = int(raw)
-    except ValueError:
-        value = 0
-    if value <= 0:
-        logger.warning("UMRS_KNN_MAX_K=%r is not a positive integer; using %d",
-                       raw, DEFAULT_MAX_K)
-        return DEFAULT_MAX_K
-    return value
+    """``UMRS_KNN_MAX_K`` (default 100, >= 1); an invalid value keeps the
+    default with a warning (``env_knobs`` rule)."""
+    return env_int("UMRS_KNN_MAX_K", DEFAULT_MAX_K, lo=1)
 
 
 def _parse_k(value) -> int:

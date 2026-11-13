@@ -21,23 +21,22 @@ every row. Scope rules:
 from __future__ import annotations
 
 import logging
-import os
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
 from psycopg2 import sql as pgsql
 
+from umrs.shared.env_knobs import env_flag
+
 logger = logging.getLogger(__name__)
 
 _HEAD_WORKERS = 10
 _OWN_IO_MODEL_TYPES = frozenset({"user_script", "user_workflow", "bentoml"})
-_OFF_VALUES = frozenset({"0", "false", "no", "off"})
 
 
 def prefilter_enabled() -> bool:
-    """``UMRS_PREFILTER_INDEXED`` (default on)."""
-    raw = os.getenv("UMRS_PREFILTER_INDEXED", "1").strip().lower()
-    return raw not in _OFF_VALUES
+    """``UMRS_PREFILTER_INDEXED`` (default on; ``0/false/no/off`` turn it off)."""
+    return env_flag("UMRS_PREFILTER_INDEXED", default=True)
 
 
 @dataclass
