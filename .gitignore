@@ -2,6 +2,7 @@
 *.pyc
 __pycache__/
 *.egg-info/
+*~
 
 # Demo result/output images (auto-generated, not source)
 demos/*/results/
