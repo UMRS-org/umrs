@@ -300,3 +300,89 @@ def test_postgres_connection_returned_when_table_is_missing(pg_database):
 
     assert result.entries == [("alice", ["s3://a/k1"])]
     assert len(data_base.db_pool._used) == baseline
+
+
+# --- the HEAD phase is bounded (review U1) ---------------------------------------------
+
+
+class _DeadS3:
+    """Every HEAD fails (an unreachable or overloaded store)."""
+
+    def __init__(self, delay_s=0.0):
+        self.delay_s = delay_s
+        self.heads = 0
+
+    def head_object(self, Bucket, Key):  # noqa: N803, ARG002 — boto3 signature
+        import time
+
+        self.heads += 1
+        time.sleep(self.delay_s)
+        raise ConnectionError("Connect timeout on endpoint URL")
+
+
+def test_new_objects_cost_no_head_request():
+    """Review U1: every key was HEADed before the DB said whether any was
+    indexed, so a fresh upload of 8000 objects paid 8000 HEADs for nothing."""
+    s3 = _FakeS3({f"k{i}": f"e{i}" for i in range(50)})
+    db = _FakeDataBase(rows=[("a/k3", "e3", "clip")])
+    cfg = _Cfg({"a": _entry(db, s3)})
+
+    result = indexed_prefilter.filter_already_indexed(
+        cfg, [("alice", [f"s3://a/k{i}" for i in range(50)])])
+
+    assert s3.heads == ["a/k3"]
+    assert result.skipped == {"a": 1}
+
+
+def test_failing_heads_trip_the_breaker_and_skip_nothing():
+    """Review U1: each HEAD error was swallowed per key, so a dead store was
+    still asked about every key (minutes each with retries) before any work."""
+    s3 = _DeadS3()
+    keys = [f"k{i}" for i in range(500)]
+    db = _FakeDataBase(rows=[(f"a/{k}", "e", "clip") for k in keys])
+    cfg = _Cfg({"a": _entry(db, s3)})
+    entries = [("alice", [f"s3://a/{k}" for k in keys])]
+
+    result = indexed_prefilter.filter_already_indexed(cfg, entries)
+
+    assert result.entries == entries
+    assert s3.heads <= indexed_prefilter.HEAD_MAX_FAILURES + indexed_prefilter._HEAD_WORKERS
+
+
+def test_the_head_phase_has_an_overall_deadline(monkeypatch):
+    import time
+
+    monkeypatch.setenv("UMRS_PREFILTER_HEAD_BUDGET_S", "1")
+    monkeypatch.setattr(indexed_prefilter, "HEAD_MAX_FAILURES", 10_000)
+    keys = [f"k{i}" for i in range(400)]
+    db = _FakeDataBase(rows=[(f"a/{k}", "e", "clip") for k in keys])
+    cfg = _Cfg({"a": _entry(db, _DeadS3(delay_s=0.2))})
+    entries = [("alice", [f"s3://a/{k}" for k in keys])]
+
+    t0 = time.monotonic()
+    result = indexed_prefilter.filter_already_indexed(cfg, entries)
+
+    assert time.monotonic() - t0 < 3  # 400 x 0.2 s / 10 workers would be 8 s
+    assert result.entries == entries
+
+
+def test_missing_objects_do_not_trip_the_breaker():
+    """A deleted object answers 404: the store is healthy, the rest still count."""
+    from botocore.exceptions import ClientError
+
+    class _GoneS3(_FakeS3):
+        def head_object(self, Bucket, Key):  # noqa: N803 — boto3 signature
+            if Key.startswith("gone"):
+                self.heads.append(f"{Bucket}/{Key}")
+                raise ClientError({"Error": {"Code": "404"}}, "HeadObject")
+            return super().head_object(Bucket=Bucket, Key=Key)
+
+    gone = [f"gone{i}" for i in range(indexed_prefilter.HEAD_MAX_FAILURES + 5)]
+    s3 = _GoneS3({"k1": "e1"})
+    db = _FakeDataBase(rows=[(f"a/{k}", "e", "clip") for k in gone] + [("a/k1", "e1", "clip")])
+    cfg = _Cfg({"a": _entry(db, s3)})
+
+    result = indexed_prefilter.filter_already_indexed(
+        cfg, [("alice", [f"s3://a/{k}" for k in [*gone, "k1"]])])
+
+    assert result.skipped == {"a": 1}

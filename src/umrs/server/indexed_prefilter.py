@@ -13,7 +13,11 @@ every row. Scope rules:
 * only plain embedding buckets (store_embeddings on, the model gets
   pre-loaded objects): user scripts, workflows, file-producing and
   direct-compute models always run, since a re-upload may be a re-trigger;
-* any S3 or DB error for a bucket means nothing is skipped there.
+* any S3 or DB error for a bucket means nothing is skipped there;
+* only keys the table already holds are HEADed (a fresh upload costs none),
+  and the HEAD phase gives up on the bucket (skipping nothing) after
+  :data:`HEAD_MAX_FAILURES` failed HEADs or ``UMRS_PREFILTER_HEAD_BUDGET_S``
+  seconds: it runs on the batch collector thread, before any work starts.
 
 ``UMRS_PREFILTER_INDEXED=0`` turns the filter off.
 """
@@ -21,22 +25,34 @@ every row. Scope rules:
 from __future__ import annotations
 
 import logging
-from concurrent.futures import ThreadPoolExecutor
+import threading
+from concurrent.futures import ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 
 from psycopg2 import sql as pgsql
 
-from umrs.shared.env_knobs import env_flag
+from umrs.shared.env_knobs import env_flag, env_int
 
 logger = logging.getLogger(__name__)
 
 _HEAD_WORKERS = 10
+HEAD_MAX_FAILURES = 20  # failed HEADs before a bucket's phase gives up
+DEFAULT_HEAD_BUDGET_S = 30
 _OWN_IO_MODEL_TYPES = frozenset({"user_script", "user_workflow", "bentoml"})
 
 
 def prefilter_enabled() -> bool:
     """``UMRS_PREFILTER_INDEXED`` (default on; ``0/false/no/off`` turn it off)."""
     return env_flag("UMRS_PREFILTER_INDEXED", default=True)
+
+
+def head_budget_s() -> int:
+    """``UMRS_PREFILTER_HEAD_BUDGET_S``: wall-clock bound of one bucket's HEADs."""
+    return env_int("UMRS_PREFILTER_HEAD_BUDGET_S", DEFAULT_HEAD_BUDGET_S, lo=1, hi=3600)
+
+
+class HeadPhaseAborted(Exception):
+    """The HEAD phase hit its deadline or its failure limit."""
 
 
 @dataclass
@@ -125,8 +141,13 @@ def _indexed_keys(entry, bucket, keys) -> set[str]:
     if not keys or not plain_embedding_bucket(entry):
         return set()
     try:
-        etags = _head_etags(entry.s3_connection, bucket, keys)
         stored = _stored_rows(entry.data_base, entry.table_name, bucket, keys)
+        keys = [key for key in keys if f"{bucket}/{key}" in stored]  # HEAD only these
+        etags = _head_etags(entry.s3_connection, bucket, keys) if keys else {}
+    except HeadPhaseAborted as exc:  # fail open, without a traceback per batch
+        logger.warning("[PROCESS] indexed pre-filter gave up on bucket %s (%s); "
+                       "indexing every object", bucket, exc)
+        return set()
     except Exception:  # fail open: nothing skipped, all indexed
         logger.warning("[PROCESS] indexed pre-filter failed for bucket %s; "
                        "indexing every object", bucket, exc_info=True)
@@ -147,15 +168,59 @@ def _matches(etag, rows, model_name) -> bool:
     )
 
 
-def _head_etags(s3, bucket, keys) -> dict[str, str | None]:
-    def _head(key):
-        try:
-            return key, s3.head_object(Bucket=bucket, Key=key)["ETag"].strip('"')
-        except Exception:  # noqa: BLE001 — a missing/unreadable object is just not skipped
-            return key, None
+class _Breaker:
+    """Counts failed HEADs; once tripped, the remaining HEADs are not sent."""
 
-    with ThreadPoolExecutor(max_workers=min(_HEAD_WORKERS, len(keys))) as pool:
-        return dict(pool.map(_head, keys))
+    def __init__(self, limit: int):
+        self.limit = limit
+        self.failures = 0
+        self._lock = threading.Lock()
+
+    @property
+    def tripped(self) -> bool:
+        return self.failures >= self.limit
+
+    def fail(self) -> None:
+        with self._lock:
+            self.failures += 1
+
+
+_MISSING_CODES = frozenset({"404", "NoSuchKey", "NotFound"})
+
+
+def _is_missing(exc) -> bool:
+    """A 404: the object is gone, the store is fine (no breaker count)."""
+    response = getattr(exc, "response", None) or {}
+    return str(response.get("Error", {}).get("Code")) in _MISSING_CODES
+
+
+def _head(s3, bucket, key, breaker: _Breaker):
+    if breaker.tripped:
+        return key, None
+    try:
+        return key, s3.head_object(Bucket=bucket, Key=key)["ETag"].strip('"')
+    except Exception as exc:  # noqa: BLE001 — a missing/unreadable object is just not skipped
+        if not _is_missing(exc):
+            breaker.fail()
+        return key, None
+
+
+def _head_etags(s3, bucket, keys) -> dict[str, str | None]:
+    """ETag per key; :class:`HeadPhaseAborted` past the deadline or the
+    failure limit (review U1: a dead store was asked about every key)."""
+    breaker = _Breaker(HEAD_MAX_FAILURES)
+    budget_s = head_budget_s()
+    pool = ThreadPoolExecutor(max_workers=min(_HEAD_WORKERS, len(keys)))
+    try:
+        futures = [pool.submit(_head, s3, bucket, key, breaker) for key in keys]
+        done, pending = wait(futures, timeout=budget_s)
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
+    if pending:
+        raise HeadPhaseAborted(f"HEADs exceeded {budget_s}s")
+    if breaker.tripped:
+        raise HeadPhaseAborted(f"{breaker.failures} HEAD(s) failed")
+    return dict(future.result() for future in done)
 
 
 def _stored_rows(data_base, table_name, bucket, keys) -> dict[str, set[tuple]]:
