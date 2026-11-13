@@ -204,7 +204,7 @@ class _KnnMQ:
         self.replies = list(replies)
         self.calls = []
 
-    def request_knn(self, username, k, s3_key, bucket):
+    def request_knn(self, username, k, s3_key, bucket, **_kwargs):
         self.calls.append((username, k, s3_key, bucket))
         reply = self.replies.pop(0)
         if isinstance(reply, BaseException):
@@ -260,6 +260,45 @@ def test_bench_knn_warm_up_stops_on_an_error_reply(monkeypatch):
     args = type("A", (), {"username": "u", "k": 3, "bucket": "b"})
     with pytest.raises(SystemExit, match="No bucket entry"):
         bench_knn._warm_cache(connection, args, "q.png")
+
+
+class _BenchS3:
+    def __init__(self):
+        self.uploads = []
+        self.deleted = []
+
+    def upload_file(self, path, bucket, key, **_kwargs):
+        self.uploads.append((path, bucket, key))
+
+    def delete_object(self, Bucket, Key):  # noqa: N803 — boto3 signature
+        self.deleted.append((Bucket, Key))
+
+
+def test_bench_knn_uploads_its_query_under_the_reserved_key_and_removes_it(
+    monkeypatch, tmp_path
+):
+    """Review U1: the bench uploaded its query as <bucket>/<basename>,
+    overwriting a corpus object of that name and leaving it to be searched."""
+    from types import SimpleNamespace
+
+    bench_knn = _load("bench_knn")
+    image = tmp_path / "cat.jpeg"
+    image.write_bytes(b"jpeg")
+    s3 = _BenchS3()
+    seen = []
+    monkeypatch.setattr(bench_knn, "_connect_s3", lambda *_a: s3)
+    monkeypatch.setattr(bench_knn, "resolve_connection", lambda **_k: SimpleNamespace(
+        server_host="h", control_port=1, tunnel_mode=False))
+    monkeypatch.setattr(bench_knn, "_benchmark", lambda _a, _c, key: seen.append(key) or [])
+    monkeypatch.setattr(sys, "argv", ["bench_knn.py", "--image", str(image), "--bucket", "b",
+                                      "--username", "u", "--s3cfg", "c"])
+
+    bench_knn.main()
+
+    (key,) = seen
+    assert key.startswith(".umrs-knn/") and key.endswith("-cat.jpeg")
+    assert s3.uploads == [(str(image), "b", key)]
+    assert s3.deleted == [("b", key)]
 
 
 def test_bench_knn_has_no_client_id_flag():

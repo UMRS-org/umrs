@@ -1914,32 +1914,25 @@ class MessageQueue:
 
         return reply
 
-    def request_knn(self, client_id, n, s3_object, bucket, subdir=None):
+    def request_knn(self, client_id, n, s3_object, bucket, subdir=None, *,
+                    query_name=None, timeout_ms=120_000):
         """Send a KNN request and return the raw JSON reply (client role only).
 
         *bucket* is the server's ``path_to_bucket``; *s3_object* the query
         object's key in it; *subdir* (optional) limits the search to keys
-        under ``subdir/``.
+        under ``subdir/``; *query_name* (optional) is the name the reply
+        shows for the query. Raises TimeoutError after *timeout_ms*.
         """
         if self.role != "client":
             raise PermissionError("Only client can call 'request_knn'")
-
-        safe_client_id = (client_id or "").replace(":", "_")
         body = {"n": n, "object": s3_object, "bucket": bucket}
         if subdir:
             body["subdir"] = subdir
-        request_str = f"{TaskCmd.KNN}:{safe_client_id}:{json.dumps(body)}"
-
-        old_rcv = self.socket.getsockopt(zmq.RCVTIMEO)
-        self.socket.setsockopt(zmq.RCVTIMEO, 120_000)
-        self.send_string(request_str)
-        try:
-            _, reply = self.recv_string()  # (None, None) on timeout, never zmq.Again
-        finally:
-            self.socket.setsockopt(zmq.RCVTIMEO, old_rcv)
-        if reply is None:
-            raise TimeoutError("Timeout waiting for KNN reply")
-        return reply
+        if query_name:
+            body["query_name"] = query_name
+        return self.request_model_command(
+            client_id, TaskCmd.KNN, json.dumps(body), timeout_ms=timeout_ms
+        )
 
     def wait_for_new_data(self, client_id, full_bucket_name, timeout=60):
         if self.role != "client":

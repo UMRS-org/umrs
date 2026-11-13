@@ -22,7 +22,7 @@ class _S3:
         self.uploads = []
         self.deleted = []
 
-    def upload_file(self, path, bucket, key):
+    def upload_file(self, path, bucket, key, **_kwargs):
         self.uploads.append((path, bucket, key))
 
     def delete_object(self, Bucket, Key):  # noqa: N803 — boto3 signature
@@ -33,10 +33,13 @@ class _MQ:
     def __init__(self, reply):
         self.reply = reply
         self.requests = []
+        self.names = []
         self.closed = False
 
-    def request_knn(self, client_id, n, s3_object, bucket, subdir=None):
+    def request_knn(self, client_id, n, s3_object, bucket, subdir=None, *, query_name=None,
+                    **_kwargs):
         self.requests.append((client_id, n, s3_object, bucket, subdir))
+        self.names.append(query_name)
         if isinstance(self.reply, BaseException):
             raise self.reply
         if self.reply is None or isinstance(self.reply, str):
@@ -125,7 +128,8 @@ def test_a_connection_without_profile_keeps_the_s3cfg_endpoint(image, s3):
 @pytest.mark.parametrize(
     ("reply", "message"),
     [("SERVER_OVERLOADED", "Server overloaded"),
-     ("UNAUTHORIZED:KNN", "Not authorized"),
+     ("UNAUTHORIZED:KNN", "Authorization denied for KNN"),
+     ("CMD_ERROR", "Unexpected server reply for KNN"),
      (TimeoutError("Timeout waiting for KNN reply"), "Timeout waiting for KNN reply"),
      (None, "No reply")],
 )
@@ -177,9 +181,18 @@ def test_the_query_object_is_removed_after_an_error_reply(image, s3):
 
 
 def test_the_reserved_query_dir_matches_the_server():
+    from umrs.client.knn import QUERY_UPLOAD_DIR as CLIENT_DIR
     from umrs.server.knn_worker import QUERY_UPLOAD_DIR
 
-    assert client_umrs._KNN_QUERY_DIR == QUERY_UPLOAD_DIR
+    assert CLIENT_DIR == QUERY_UPLOAD_DIR
+
+
+@pytest.mark.parametrize(("alias", "name"), [("images/pets", "pets/q.png"), ("images", "q.png")])
+def test_the_request_names_the_query_as_the_user_did(image, s3, alias, name):
+    """Review U1: the reply named the deleted .umrs-knn/<uuid>- key."""
+    ctx = _ctx(image, _OK, alias=alias)
+    assert client_umrs._action_knn(ctx) == 0
+    assert ctx.control_mq.names == [name]
 
 
 def test_json_output_carries_the_reply(image, s3, capsys):

@@ -7,7 +7,6 @@ import os
 import sys
 import time
 import traceback
-import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, NoReturn
@@ -18,6 +17,7 @@ from umrs.cli.completion import (
     print_completion_script,
     uninstall_completion,
 )
+from umrs.client import knn as knn_client
 from umrs.client.control_api import UMRSControlAPI
 from umrs.client.control_commands import (
     MODEL_SCOPE_CHOICES,
@@ -6218,66 +6218,18 @@ def _knn_target(ctx):
     return bucket_alias, subdir, entry, username, file_path
 
 
-# Equal to umrs.server.knn_worker.QUERY_UPLOAD_DIR (the server never returns
-# or counts keys under it); the client does not import the server module.
-_KNN_QUERY_DIR = ".umrs-knn"
-
-
-def _knn_query_key(file_path, subdir):
-    """A fresh key under ``[<subdir>/].umrs-knn/`` for the query image.
-
-    The query used to go up under its basename and so replaced any object of
-    that name, a collaborator's in a shared bucket included (review U1).
-    """
-    name = f"{_KNN_QUERY_DIR}/{uuid.uuid4().hex}-{os.path.basename(file_path)}"
-    return f"{subdir}/{name}" if subdir else name
-
-
-def _knn_upload(ctx, entry, file_path, subdir):
-    """Upload the query image to a reserved, unique key; ``(s3, key)``."""
+def _knn_s3(ctx, entry):
+    """The S3 client the query image goes up with (the bucket's s3cfg)."""
     s3, _ = connect_to_s3(
         _client_s3cfg_path(entry.s3_configuration_file),
         endpoint_url_override=_profile_minio_override(ctx),
     )
-    s3_key = _knn_query_key(file_path, subdir)
-    s3.upload_file(file_path, entry.path_to_bucket, s3_key)
-    return s3, s3_key
-
-
-def _knn_remove_query(s3, bucket, key):
-    """Delete the uploaded query object; a failure only warns."""
-    try:
-        s3.delete_object(Bucket=bucket, Key=key)
-    except Exception as exc:  # noqa: BLE001 — the search result stands
-        print(f"Warning: could not remove the KNN query object {key}: {exc}",
-              file=sys.stderr)
+    return s3
 
 
 def _knn_error(args, message):
     print(api_json(status="error", action="knn", message=message, output_format=args.output))
     return 1
-
-
-# Plain-text control replies that KNN can get instead of a JSON object.
-_KNN_PLAIN_REPLIES = {
-    "SERVER_OVERLOADED": "Server overloaded: no worker free for KNN, retry later",
-    "UNAUTHORIZED:KNN": "Not authorized to run KNN",
-}
-
-
-def _knn_decode(raw):
-    """The server's KNN reply as a dict; a plain-text reply is a _KnnCliError."""
-    if raw is None:
-        raise _KnnCliError("No reply from the server for KNN")
-    if raw in _KNN_PLAIN_REPLIES:
-        raise _KnnCliError(_KNN_PLAIN_REPLIES[raw])
-    try:
-        reply = _json.loads(raw)
-    except ValueError:
-        raise _KnnCliError(f"Unexpected server reply for KNN: {raw[:200]!r}") from None
-    if not isinstance(reply, dict):
-        raise _KnnCliError(f"Unexpected server reply for KNN: {raw[:200]!r}")
-    return reply
 
 
 def _knn_print(args, bucket_alias, response):
@@ -6295,17 +6247,22 @@ def _knn_print(args, bucket_alias, response):
 
 def _action_knn(ctx):
     """Upload a local image, then ask the server for its k nearest neighbours
-    in the bucket (port of upstream 487e3efb / e04b3d4e / bd0e6bc1)."""
+    in the bucket (port of upstream 487e3efb / e04b3d4e / bd0e6bc1).
+
+    The query goes up under a reserved unique key and is removed after the
+    reply (``umrs.client.knn``); the reply names it as the user did.
+    """
     args = ctx.args
-    uploaded = None
     try:
         bucket_alias, subdir, entry, username, file_path = _knn_target(ctx)
-        s3, s3_key = _knn_upload(ctx, entry, file_path, subdir)
-        uploaded = (s3, entry.path_to_bucket, s3_key)
-        raw = ctx.control_mq.request_knn(
-            username, args.n, s3_key, entry.path_to_bucket, subdir=subdir or None
-        )
-        return _knn_print(args, bucket_alias, _knn_decode(raw))
+        bucket = entry.path_to_bucket
+        with knn_client.uploaded_query(_knn_s3(ctx, entry), bucket, file_path,
+                                       subdir) as s3_key:
+            response = UMRSControlAPI(ctx.control_mq, username).knn(
+                args.n, s3_key, bucket, subdir=subdir or None,
+                query_name=knn_client.query_name(file_path, subdir),
+            )
+        return _knn_print(args, bucket_alias, response)
     except _KnnCliError as exc:
         return _knn_error(args, str(exc))
     except Exception as exc:  # noqa: BLE001 — every failure is one error line
@@ -6313,8 +6270,6 @@ def _action_knn(ctx):
             traceback.print_exc()
         return _knn_error(args, str(exc))
     finally:
-        if uploaded:
-            _knn_remove_query(*uploaded)
         ctx.control_mq.close()
 
 

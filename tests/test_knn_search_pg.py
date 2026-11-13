@@ -430,3 +430,52 @@ def test_a_failed_query_returns_the_connection(pg_table):
     assert status == TaskStatus.ERROR
     assert reply["status"] == "error"
     assert len(data_base.db_pool._used) == baseline
+
+
+class _SlowCount(_Recorder):
+    """The scope count takes 2 s (a shared table of millions of rows)."""
+
+    def execute(self, query, params=None):
+        text = query if isinstance(query, str) else query.as_string(self._cur)
+        if "COUNT(DISTINCT" in text:
+            self.statements.append(text)
+            return self._cur.execute("SELECT pg_sleep(2), 1")
+        return super().execute(query, params)
+
+
+def test_the_scope_count_is_bounded_by_the_statement_timeout(pg_table, monkeypatch):
+    """Review U1: the COUNT(DISTINCT) over the shared table ran with no
+    statement_timeout, holding one of the 5 pooled connections for as long
+    as the scan took; now it is cut off and n_indexed is unknown."""
+    data_base, table = pg_table
+    _insert(data_base, table,
+            [(f"{ALICE}/a{i}.png", f"a{i}", [1, 0.1 * i, 0], "clip") for i in range(3)])
+    monkeypatch.setenv("UMRS_KNN_EXACT_TIMEOUT_MS", "200")
+    request = KnnRequest(n=3, s3_object="q.png", bucket=ALICE)
+    scope = knn_worker._Scope.of(_entry(data_base, table), request)
+
+    results, n_indexed = knn_worker._with_cursor(
+        data_base, lambda cur: knn_worker._scoped_nearest(_SlowCount(cur), scope, "[1,0,0]",
+                                                          "eq", 3))
+
+    assert n_indexed is None
+    assert len(results) == 3
+
+
+def test_k_above_pgvectors_ef_search_bound_still_answers(pg_hnsw_table):
+    """Review U1: hnsw.ef_search accepts 1..1000; set to k=2000 (an admin's
+    UMRS_KNN_MAX_K=5000) Postgres refused it and the KNN failed."""
+    data_base, index_db, table = pg_hnsw_table
+    _insert(data_base, table,
+            [(f"{ALICE}/a{i}.png", f"a{i}", [1, 0.01 * i, 0], "clip") for i in range(5)])
+    request = KnnRequest(n=2000, s3_object="q.png", bucket=ALICE)
+    scope = knn_worker._Scope.of(_entry(index_db, table), request)
+
+    def _work(cur):
+        cur.execute("SELECT '[1,0,0]'::vector")  # pgvector loaded on this backend
+        return knn_worker._scoped_nearest(cur, scope, "[1,0,0]", "eq", 2000)
+
+    results, n_indexed = knn_worker._with_cursor(index_db, _work)
+
+    assert n_indexed == 5
+    assert len(results) == 5

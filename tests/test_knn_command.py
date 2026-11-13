@@ -591,33 +591,47 @@ def test_score_bar_survives_non_finite_scores():
 # --- wire + task + pretty print ---------------------------------------------------------
 
 
-def test_request_knn_wire_format():
+def _knn_client_mq(recv, sent=None):
+    """A client queue whose request_knn runs the real request_model_command."""
     from umrs.core.MessageQueue import MessageQueue
 
     mq = MagicMock()
     mq.role = "client"
     mq.socket.getsockopt.return_value = 8000
-    sent = []
-    mq.send_string = sent.append
-    mq.recv_string = MagicMock(return_value=(None, '{"status": "ok"}'))
+    mq.send_string = (sent.append if sent is not None else lambda _request: None)
+    mq.recv_string = recv
+    mq.request_model_command = lambda *a, **k: MessageQueue.request_model_command(mq, *a, **k)
+    return mq
 
-    reply = MessageQueue.request_knn(mq, "al:ice", 4, "pets/q.png", ALICE_BUCKET, subdir="pets")
+
+def test_request_knn_wire_format():
+    from umrs.core.MessageQueue import MessageQueue
+
+    sent = []
+    mq = _knn_client_mq(MagicMock(return_value=(None, '{"status": "ok"}')), sent)
+
+    reply = MessageQueue.request_knn(mq, "al:ice", 4, "pets/.umrs-knn/ab-q.png", ALICE_BUCKET,
+                                     subdir="pets", query_name="pets/q.png")
 
     assert reply == '{"status": "ok"}'
     cmd, client, body = sent[0].split(":", 2)
     assert (cmd, client) == ("KNN", "al_ice")
-    assert json.loads(body) == {"n": 4, "object": "pets/q.png", "bucket": ALICE_BUCKET,
-                                "subdir": "pets"}
-    mq.socket.setsockopt.assert_called_with(__import__("zmq").RCVTIMEO, 8000)
+    assert json.loads(body) == {"n": 4, "object": "pets/.umrs-knn/ab-q.png",
+                                "bucket": ALICE_BUCKET, "subdir": "pets",
+                                "query_name": "pets/q.png"}
+    zmq = __import__("zmq")
+    assert mq.socket.setsockopt.call_args_list[0].args == (zmq.RCVTIMEO, 120_000)
+    mq.socket.setsockopt.assert_called_with(zmq.RCVTIMEO, 8000)
 
 
-def _knn_client_mq(recv):
-    mq = MagicMock()
-    mq.role = "client"
-    mq.socket.getsockopt.return_value = 8000
-    mq.send_string = lambda _request: None
-    mq.recv_string = recv
-    return mq
+def test_request_knn_takes_a_caller_timeout():
+    """Review U1: the 120 s window was hard-coded; request_knn now goes
+    through request_model_command and takes timeout_ms."""
+    from umrs.core.MessageQueue import MessageQueue
+
+    mq = _knn_client_mq(MagicMock(return_value=(None, "{}")))
+    MessageQueue.request_knn(mq, "alice", 1, "q.png", ALICE_BUCKET, timeout_ms=5_000)
+    assert mq.socket.setsockopt.call_args_list[0].args == (__import__("zmq").RCVTIMEO, 5_000)
 
 
 def test_request_knn_timeout_is_a_timeout_error():
@@ -626,7 +640,7 @@ def test_request_knn_timeout_is_a_timeout_error():
     from umrs.core.MessageQueue import MessageQueue
 
     mq = _knn_client_mq(MagicMock(return_value=(None, None)))
-    with pytest.raises(TimeoutError, match="KNN reply"):
+    with pytest.raises(TimeoutError, match="'KNN' within 120s"):
         MessageQueue.request_knn(mq, "alice", 4, "q.png", ALICE_BUCKET)
     assert mq.socket.setsockopt.call_args_list[-1].args == (__import__("zmq").RCVTIMEO, 8000)
 
@@ -683,3 +697,168 @@ def test_pretty_print_without_results():
     text = pretty_print_knn("q.png", ALICE_BUCKET, 3, [], 0.0, True)
     assert "k/n: 3 " in text
     assert "No results." in text
+
+
+# --- review U1 round 3 ------------------------------------------------------------------
+
+
+class _ParamCursor:
+    """Records (statement, params); the index pass answers *rows* rows."""
+
+    def __init__(self, rows=0, cancel_on=None):
+        self.calls: list[tuple[str, object]] = []
+        self.rows = rows
+        self.cancel_on = cancel_on
+
+    def execute(self, query, params=None):
+        import psycopg2.errors
+
+        text = query if isinstance(query, str) else repr(query)
+        self.calls.append((text, params))
+        if self.cancel_on and self.cancel_on in text:
+            raise psycopg2.errors.QueryCanceled("canceling statement due to statement timeout")
+
+    def fetchone(self):
+        return (self.rows, self.rows)
+
+    def fetchall(self):
+        return [(f"{ALICE_BUCKET}/a{i}.png", 0.9) for i in range(self.rows)]
+
+
+def _alice_scope():
+    return knn_worker._Scope(table="t", prefix=f"{ALICE_BUCKET}/",
+                             bucket_prefix=f"{ALICE_BUCKET}/", model=None, has_model=False)
+
+
+def test_ef_search_stays_inside_pgvectors_range():
+    """Review U1: hnsw.ef_search accepts 1..1000; k=2000 (UMRS_KNN_MAX_K
+    raised) made Postgres refuse the setting and the KNN failed."""
+    cur = _ParamCursor(rows=3)
+    knn_worker._scoped_nearest(cur, _alice_scope(), "[1,0]", "etag", 2000)
+    (params,) = [p for text, p in cur.calls if "hnsw.ef_search" in text]
+    assert 1 <= int(params[0]) <= 1000
+
+
+def test_the_count_runs_under_the_statement_timeout():
+    """Review U1: the COUNT(DISTINCT) scan of the shared table ran before any
+    statement_timeout, holding a pool connection for as long as it took."""
+    cur = _ParamCursor(rows=3)
+    knn_worker._scoped_nearest(cur, _alice_scope(), "[1,0]", "etag", 3)
+    texts = [text for text, _p in cur.calls]
+    first_count = next(i for i, t in enumerate(texts) if "COUNT" in t.upper())
+    first_timeout = next(i for i, t in enumerate(texts) if "statement_timeout" in t)
+    assert first_timeout < first_count
+
+
+def test_a_timed_out_count_keeps_the_index_answer():
+    cur = _ParamCursor(rows=2, cancel_on="COUNT")
+    results, n_indexed = knn_worker._scoped_nearest(cur, _alice_scope(), "[1,0]", "etag", 5)
+    assert [hit["object"] for hit in results] == [f"{ALICE_BUCKET}/a0.png",
+                                                  f"{ALICE_BUCKET}/a1.png"]
+    assert n_indexed is None
+    assert not any("enable_indexscan" in text for text, _p in cur.calls)
+
+
+def test_the_reply_names_the_users_query_not_the_upload_key(monkeypatch):
+    """Review U1: `umrs knn 5 cat.jpg alice-images/pets` printed the deleted
+    temporary key pets/.umrs-knn/<uuid>-cat.jpg as the query."""
+    monkeypatch.setattr(knn_worker, "search", lambda _e, _r: knn_worker.KnnOutcome(
+        results=[], cached=True, n_indexed=4))
+    request = knn_worker.parse_knn_request(json.dumps({
+        "n": 2, "object": "pets/.umrs-knn/3f2a-cat.jpg", "bucket": ALICE_BUCKET,
+        "subdir": "pets", "query_name": "pets/cat.jpg"}))
+    mq = _MQ()
+
+    knn_worker.knn_search_worker(_Threads(), "alice", request, object(), mq, SENDER, "knn")
+
+    (reply,) = _replies(mq)
+    assert reply["query"] == "pets/cat.jpg"
+    assert "query: pets/cat.jpg" in reply["summary"]
+    assert ".umrs-knn" not in reply["summary"]
+
+
+@pytest.mark.parametrize("name", ["../x.png", "/abs.png", 7])
+def test_an_unsafe_query_name_is_refused(name):
+    with pytest.raises(KnnRequestError):
+        knn_worker.parse_knn_request(_args(query_name=name))
+
+
+def test_a_failing_running_callback_still_replies_and_closes(monkeypatch):
+    """Review U1: the RUNNING callback ran outside the try, so a task-store
+    error there sent no reply (120 s client wait) and left the task open."""
+    monkeypatch.setattr(knn_worker, "search", lambda _e, _r: knn_worker.KnnOutcome(
+        results=[], cached=True, n_indexed=0))
+    statuses = []
+
+    def _callback(status):
+        statuses.append(status)
+        if status == TaskStatus.RUNNING:
+            raise OSError("diskcache timeout")
+
+    threads, mq = _Threads(), _MQ()
+    knn_worker.knn_search_worker(threads, "alice", _request(), object(), mq, SENDER, "knn",
+                                 _callback)
+
+    (reply,) = _replies(mq)
+    assert reply["status"] == "ok"
+    assert statuses == [TaskStatus.RUNNING, TaskStatus.COMPLETED]
+    assert "removed" in threads.calls
+
+
+def test_searchable_entry_uses_the_shared_bucket_access_rule(buckets, monkeypatch):
+    """Review U1: KNN re-implemented the export rule; one rule now serves both."""
+    from umrs.server import step_staging
+
+    seen = []
+
+    def _rule(cfg, bucket, user):
+        seen.append((bucket, user))
+        return cfg.get(bucket)
+
+    monkeypatch.setattr(step_staging, "accessible_bucket_entry", _rule, raising=False)
+    assert knn_worker.searchable_entry(buckets, ALICE_BUCKET, "carol") is not None
+    assert seen == [(ALICE_BUCKET, "carol")]
+
+
+# --- one control-reply decoder (review U1) ----------------------------------------------
+
+
+class _ApiMQ:
+    def __init__(self, raw):
+        self.raw = raw
+        self.calls = []
+
+    def request_knn(self, client_id, n, s3_object, bucket, **kwargs):
+        self.calls.append((client_id, n, s3_object, bucket, kwargs))
+        return self.raw
+
+
+@pytest.mark.parametrize(
+    ("raw", "code"),
+    [("SERVER_OVERLOADED", "SERVER_OVERLOADED"), ("UNAUTHORIZED:KNN", "UNAUTHORIZED")],
+)
+def test_control_api_knn_decodes_plain_replies(raw, code):
+    from umrs.client.control_api import UMRSControlAPI
+
+    reply = UMRSControlAPI(_ApiMQ(raw), "alice").knn(2, "q.png", ALICE_BUCKET)
+    assert reply["status"] == "error"
+    assert reply["code"] == code
+
+
+def test_control_api_knn_passes_name_subdir_and_timeout():
+    from umrs.client.control_api import UMRSControlAPI
+
+    mq = _ApiMQ('{"status": "ok", "results": []}')
+    reply = UMRSControlAPI(mq, "alice").knn(2, "pets/.umrs-knn/x-q.png", ALICE_BUCKET,
+                                            subdir="pets", query_name="pets/q.png",
+                                            timeout_ms=9_000)
+    assert reply == {"status": "ok", "results": []}
+    assert mq.calls == [("alice", 2, "pets/.umrs-knn/x-q.png", ALICE_BUCKET,
+                         {"subdir": "pets", "query_name": "pets/q.png", "timeout_ms": 9_000})]
+
+
+def test_control_api_knn_names_a_non_json_reply():
+    from umrs.client.control_api import ControlReplyError, UMRSControlAPI
+
+    with pytest.raises(ControlReplyError, match="Unexpected server reply for KNN"):
+        UMRSControlAPI(_ApiMQ("CMD_ERROR"), "alice").knn(2, "q.png", ALICE_BUCKET)

@@ -62,7 +62,7 @@ USER_ALLOWED_COMMANDS: set[str] = frozenset(
         "HANDSHAKE",
         "HAND_CHECK",
         "EXPORT_EMBEDDINGS",
-        "KNN",  # nearest neighbours in the caller's own bucket (ownership checked)
+        "KNN",  # nearest neighbours in a bucket the caller owns or whose ADR-080 access list admits them
         "MODEL_REGISTER",
         "MODEL_LIST",
         "MODEL_DOWNLOAD",

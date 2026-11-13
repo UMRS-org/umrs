@@ -1,9 +1,9 @@
 """Handler for the KNN command (port of upstream 1798ac05 / e04b3d4e; plan U1 A6).
 
 ``KNN:<client_id>:{"n": <k>, "object": "<s3 key>", "bucket": "<path_to_bucket>"
-[, "subdir": "<prefix>"]}``. The registry has already checked the command
+[, "subdir": "<prefix>", "query_name": "<name shown for the query>"]}``. The registry has already checked the command
 and any project the payload names (ADR-097 D-7). This handler validates the
-request and the caller's ownership of the bucket on the event loop, so a
+request and the caller's access to the bucket on the event loop, so a
 refused request takes no pool slot, then runs the search on the pool
 (``umrs.server.knn_worker``), which replies with
 ``{"status": "ok", "results": [{"object", "score"}, ...], ...}``. Every
@@ -37,7 +37,7 @@ def _reply(ctx: HandlerContext, zmq_sender_id: Any, message: str) -> None:
 
 
 class KnnHandler(CommandHandler):
-    """Handle KNN — k nearest neighbours in the caller's own bucket."""
+    """Handle KNN — k nearest neighbours in a bucket the caller may read (own or ADR-080 shared)."""
 
     def execute(self, payload: Any, ctx: HandlerContext) -> None:
         task_id, update_status = self._make_task(ctx, TaskCmd.KNN, payload)

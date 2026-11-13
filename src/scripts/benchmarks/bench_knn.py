@@ -2,7 +2,9 @@
 """End-to-end latency benchmark for UMRS KNN search.
 
 Each virtual user gets its own ZMQ socket. The query image is uploaded to S3
-once (setup phase) and the embedding cache is warmed before timing starts, so
+once (setup phase) under the reserved ``.umrs-knn/<uuid>-<name>`` key, never
+over a bucket object, and removed at the end (``umrs.client.knn``, shared with
+``umrs knn``). The embedding cache is warmed before timing starts, so
 the benchmark measures the retrieval path only (DB kNN query + network round-
 trip), not model inference time. Every request is sent as ``--username``.
 Only ``{"status": "ok"}`` replies are timed; error, overloaded, unauthorized
@@ -35,7 +37,6 @@ from __future__ import annotations
 
 import argparse
 import contextlib
-import json
 import os
 import sys
 import time
@@ -50,16 +51,16 @@ for _path in (_SRC, _BENCH):
 
 from _bench_common import append_csv, fmt_ms, stats
 
+from umrs.client.control_api import ControlReplyError, UMRSControlAPI
+from umrs.client.knn import uploaded_query
 from umrs.shared.connection_profiles import resolve_connection
 
 
-def _upload_query_image(s3cfg_path: str, bucket: str, image_path: str, endpoint_override: str | None = None) -> str:
-    """Upload *image_path* to S3 and return the s3_key (basename)."""
+def _connect_s3(s3cfg_path: str, endpoint_override: str | None = None):
     from umrs.shared.storage.s3 import connect_to_s3
+
     s3, _ = connect_to_s3(os.path.expanduser(s3cfg_path), endpoint_url_override=endpoint_override)
-    s3_key = Path(image_path).name
-    s3.upload_file(str(image_path), bucket, s3_key)
-    return s3_key
+    return s3
 
 
 def _make_mq(server_ip: str, control_port: int, tunnel_mode: bool):
@@ -74,18 +75,13 @@ def _make_mq(server_ip: str, control_port: int, tunnel_mode: bool):
     )
 
 
-def _knn_error(raw) -> str | None:
-    """None for an ``{"status": "ok"}`` reply, else why it is not one
-    (error JSON, or a plain SERVER_OVERLOADED / UNAUTHORIZED reply)."""
+def _knn(mq, username: str, k: int, s3_key: str, bucket: str) -> dict:
+    """One KNN request through the shared control-reply decoder
+    (``UMRSControlAPI.knn``); a non-JSON reply is an error object."""
     try:
-        reply = json.loads(raw)
-    except (TypeError, ValueError):
-        return str(raw)
-    if not isinstance(reply, dict):
-        return str(raw)
-    if reply.get("status") == "ok":
-        return None
-    return str(reply.get("message", raw))
+        return UMRSControlAPI(mq, username).knn(k, s3_key, bucket)
+    except ControlReplyError as exc:
+        return {"status": "error", "message": str(exc)}
 
 
 class _LostReply(Exception):
@@ -99,11 +95,11 @@ def _timed_request(mq, username: str, k: int, s3_key: str, bucket: str) -> float
     """
     t0 = time.perf_counter()
     try:
-        raw = mq.request_knn(username, k, s3_key, bucket)
+        reply = _knn(mq, username, k, s3_key, bucket)
     except (TimeoutError, RuntimeError) as exc:
         raise _LostReply(str(exc)) from exc
     elapsed = time.perf_counter() - t0
-    return None if _knn_error(raw) is not None else elapsed
+    return elapsed if reply.get("status") == "ok" else None
 
 
 def _request_or_reconnect(mq, connect, username, k, s3_key, bucket):
@@ -235,12 +231,12 @@ def _warm_cache(connection, args, s3_key: str) -> None:
     print("Warming up embedding cache (1 KNN call)...")
     mq = _make_mq(connection.server_host, connection.control_port, connection.tunnel_mode)
     try:
-        raw = mq.request_knn(args.username, args.k, s3_key, args.bucket)
+        reply = _knn(mq, args.username, args.k, s3_key, args.bucket)
     finally:
         mq.close()
-    error = _knn_error(raw)
-    if error is not None:
-        raise SystemExit(f"KNN warm-up failed, nothing to benchmark: {error}")
+    if reply.get("status") != "ok":
+        raise SystemExit(
+            f"KNN warm-up failed, nothing to benchmark: {reply.get('message', reply)}")
     print("  Cache warmed.")
 
 
@@ -257,6 +253,7 @@ def _print_row(s: dict) -> None:
 
 
 def _run_sweep(args, connection, s3_key: str, label: str) -> list[dict]:
+    """One row per (N, k); the CSV names the query by its file name."""
     n_values, k_values = _sweep_values(args)
     rows = []
     for N in n_values:
@@ -272,7 +269,7 @@ def _run_sweep(args, connection, s3_key: str, label: str) -> list[dict]:
             _print_row(s)
             if label:
                 s["label"] = label
-            s["query"] = s3_key
+            s["query"] = Path(args.image).name
             rows.append(s)
     return rows
 
@@ -285,10 +282,17 @@ def main():
     )
 
     print(f"Uploading query image '{args.image}' to S3 bucket '{args.bucket}'...")
-    s3_key = _upload_query_image(args.s3cfg, args.bucket, args.image, args.endpoint)
-    print(f"  s3_key = {s3_key}")
-    _warm_cache(connection, args, s3_key)
+    s3 = _connect_s3(args.s3cfg, args.endpoint)
+    with uploaded_query(s3, args.bucket, str(args.image), None) as s3_key:
+        print(f"  s3_key = {s3_key}")
+        rows = _benchmark(args, connection, s3_key)
+    if args.csv:
+        append_csv(args.csv, rows)
 
+
+def _benchmark(args, connection, s3_key: str) -> list[dict]:
+    """Warm the cache, print the header, run the sweep."""
+    _warm_cache(connection, args, s3_key)
     label = args.label or ""
     print(
         f"\nUMRS KNN latency benchmark"
@@ -300,10 +304,7 @@ def main():
     header = f"{'N':>4}  {'k':>4}  {'mean':>8}  {'p50':>8}  {'p95':>8}  {'p99':>8}  {'min':>8}  {'max':>8}  {'rps':>8}  {'err':>4}"
     print(header)
     print("-" * len(header))
-
-    rows = _run_sweep(args, connection, s3_key, label)
-    if args.csv:
-        append_csv(args.csv, rows)
+    return _run_sweep(args, connection, s3_key, label)
 
 
 if __name__ == "__main__":

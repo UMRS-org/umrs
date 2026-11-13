@@ -7,16 +7,19 @@ model) carries the object's ETag, else computed with the bucket's model.
 Rows with that ETag (the query itself, byte-identical copies) are never
 returned as neighbours. Scope rules:
 
-* the caller must own the bucket (``bucket_owned_by``, the rule
-  PROCESS_OBJECTS, EXPORT_EMBEDDINGS and WAIT_OUTPUT share); another user's
-  bucket reads like a missing one (checked by ``KnnHandler`` before launch);
+* the caller must own the bucket or be admitted by its ADR-080 access list
+  (``step_staging.accessible_bucket_entry``, the rule EXPORT_EMBEDDINGS
+  shares); another user's bucket reads like a missing one (checked by
+  ``KnnHandler`` before launch);
 * every query only sees rows of that bucket (``s3_object`` starts with
   ``<bucket>/``, or ``<bucket>/<subdir>/`` with a sub-directory) and, where
   the table records it, the bucket's current model: a table several buckets
   share never answers with another bucket's objects;
 * ``subdir`` is a normalised relative path: ``..``, absolute paths and
   backslashes are refused;
-* ``k`` must be >= 1 and is capped at ``UMRS_KNN_MAX_K`` (default 100).
+* ``k`` must be >= 1 and is capped at ``UMRS_KNN_MAX_K`` (default 100);
+* ``query_name`` (optional) is only what the reply shows as the query (the
+  CLI uploads under a temporary key); it is validated like ``object``.
 
 All SQL is parameterised; the table name goes through ``sql.Identifier``.
 """
@@ -41,6 +44,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_MAX_K = 100
 DEFAULT_EXACT_TIMEOUT_MS = 10_000
 HNSW_DEFAULT_EF_SEARCH = 40  # pgvector's default hnsw.ef_search
+HNSW_MAX_EF_SEARCH = 1000  # pgvector's upper bound for hnsw.ef_search
 
 # ``umrs knn`` uploads its query image under ``[<subdir>/]<QUERY_UPLOAD_DIR>/``
 # with a unique name and deletes it after the reply; such keys are never
@@ -76,6 +80,11 @@ class KnnRequest:
     s3_object: str
     bucket: str
     subdir: str | None = None
+    query_name: str | None = None
+
+    def display_query(self) -> str:
+        """The query as the caller named it (else its S3 key)."""
+        return self.query_name or self.s3_object
 
     def scope_prefix(self) -> str:
         """The ``s3_object`` prefix every result must carry. The DB stores
@@ -91,7 +100,7 @@ class KnnOutcome:
 
     results: list
     cached: bool
-    n_indexed: int
+    n_indexed: int | None  # None when the bounded count timed out
 
 
 # ---------------------------------------------------------------------------
@@ -141,10 +150,17 @@ def normalise_subdir(raw) -> str | None:
     return "/".join(parts) or None
 
 
-def _object_key(raw) -> str:
+def _object_key(raw, what: str = "object") -> str:
     """The query object's key, unchanged once it is a safe relative key."""
-    _path_parts(raw, "object")
+    _path_parts(raw, what)
     return raw
+
+
+def _query_name(raw) -> str | None:
+    """Optional display name of the query, checked like ``object``."""
+    if raw is None:
+        return None
+    return _object_key(raw, "query_name")
 
 
 def _bucket_name(raw) -> str:
@@ -154,7 +170,7 @@ def _bucket_name(raw) -> str:
 
 
 def parse_knn_request(args_str) -> KnnRequest:
-    """``{"n", "object", "bucket"[, "subdir"]}`` -> :class:`KnnRequest`."""
+    """``{"n", "object", "bucket"[, "subdir", "query_name"]}`` -> :class:`KnnRequest`."""
     try:
         args = json.loads(args_str)
     except (TypeError, ValueError) as exc:
@@ -166,16 +182,22 @@ def parse_knn_request(args_str) -> KnnRequest:
         s3_object=_object_key(args.get("object")),
         bucket=_bucket_name(args.get("bucket")),
         subdir=normalise_subdir(args.get("subdir")),
+        query_name=_query_name(args.get("query_name")),
     )
 
 
 def searchable_entry(buckets_cfg, bucket: str, user: str):
-    """The bucket's server entry when *user* may search it, else :class:`KnnError`."""
-    from umrs.server.indexed_prefilter import plain_embedding_bucket
-    from umrs.server.step_staging import bucket_owned_by
+    """The bucket's server entry when *user* may search it, else :class:`KnnError`.
 
-    entry = buckets_cfg.get(bucket)
-    if entry is None or not bucket_owned_by(bucket, user):
+    Access is the export rule (own bucket or ADR-080 access list), shared
+    through ``step_staging.accessible_bucket_entry``; KNN adds only the
+    plain-embedding-table check.
+    """
+    from umrs.server import step_staging
+    from umrs.server.indexed_prefilter import plain_embedding_bucket
+
+    entry = step_staging.accessible_bucket_entry(buckets_cfg, bucket, user)
+    if entry is None:
         raise KnnError(f"No bucket entry found for path: {bucket}")
     if not plain_embedding_bucket(entry):
         raise KnnError(f"Bucket {bucket} has no embedding table to search")
@@ -256,20 +278,52 @@ def _finite_score(value) -> float:
     return score if math.isfinite(score) else 0.0
 
 
-def _count_indexed(cur, scope: _Scope, etag: str) -> tuple[int, int]:
-    """``(n_indexed, n_candidates)``: distinct indexed objects in the searched
-    scope (ef8b7037), and how many of them a search may return (the query's
-    own ETag rows are never returned)."""
+def _count_indexed(cur, scope: _Scope) -> int:
+    """Distinct indexed objects in the searched scope (ef8b7037)."""
     model_sql, model_params = scope.model_filter()
     query = sql.SQL(
-        "SELECT COUNT(DISTINCT s3_object),"
-        " COUNT(DISTINCT s3_object) FILTER (WHERE checksum IS DISTINCT FROM %s) FROM {}"
+        "SELECT COUNT(DISTINCT s3_object) FROM {}"
         " WHERE starts_with(s3_object, %s) AND strpos(s3_object, %s) = 0"
         " AND embedding IS NOT NULL{}"
     ).format(sql.Identifier(scope.table), model_sql)
-    cur.execute(query, [etag, scope.prefix, _QUERY_UPLOAD_SEGMENT, *model_params])
-    n_indexed, n_candidates = cur.fetchone()
-    return int(n_indexed), int(n_candidates)
+    cur.execute(query, [scope.prefix, _QUERY_UPLOAD_SEGMENT, *model_params])
+    return int(cur.fetchone()[0])
+
+
+def _has_more_candidates(cur, scope: _Scope, etag: str, found: int) -> bool:
+    """Whether the scope holds more returnable rows than the *found* ones.
+
+    Stops after ``found + 1`` rows instead of counting the whole scope (the
+    query's own ETag rows are never returned, so they do not count).
+    """
+    model_sql, model_params = scope.model_filter()
+    query = sql.SQL(
+        "SELECT COUNT(*) FROM (SELECT 1 FROM {}"
+        " WHERE starts_with(s3_object, %s) AND strpos(s3_object, %s) = 0"
+        " AND checksum IS DISTINCT FROM %s AND embedding IS NOT NULL{} LIMIT %s) AS c"
+    ).format(sql.Identifier(scope.table), model_sql)
+    cur.execute(query, [scope.prefix, _QUERY_UPLOAD_SEGMENT, etag, *model_params, found + 1])
+    return int(cur.fetchone()[0]) > found
+
+
+def _bounded(cur, name: str, run, on_timeout):
+    """``run()`` in a savepoint; when it hits the statement timeout the
+    transaction stays usable and *on_timeout* is the answer."""
+    savepoint = sql.Identifier(name)
+    cur.execute(sql.SQL("SAVEPOINT {}").format(savepoint))
+    try:
+        value = run()
+    except pg_errors.QueryCanceled:
+        cur.execute(sql.SQL("ROLLBACK TO SAVEPOINT {}").format(savepoint))
+        logger.warning("KNN: %s timed out (UMRS_KNN_EXACT_TIMEOUT_MS)", name)
+        return on_timeout
+    cur.execute(sql.SQL("RELEASE SAVEPOINT {}").format(savepoint))
+    return value
+
+
+def _ef_search(k: int) -> int:
+    """hnsw.ef_search for *k*: at least pgvector's default, at most its bound."""
+    return min(HNSW_MAX_EF_SEARCH, max(HNSW_DEFAULT_EF_SEARCH, k))
 
 
 def exact_timeout_ms() -> int:
@@ -282,19 +336,27 @@ def _scoped_nearest(cur, scope: _Scope, vector: str, etag: str, k: int):
 
     A table several buckets share carries an HNSW index, which yields at most
     ``hnsw.ef_search`` candidates from the whole table before the scope filter.
-    ef_search is raised to k for this transaction, so a k above pgvector's
-    default (40) no longer falls short on its own (review U1). When the index
-    still answers fewer rows than the scope can give (another tenant's crowd
-    of near-duplicates took the candidates), the query runs again as an exact
-    scan, bounded by :func:`exact_timeout_ms`.
+    ef_search is raised to k for this transaction (within pgvector's 1..1000),
+    so a k above pgvector's default (40) no longer falls short on its own
+    (review U1). Every scan after the index pass (the scope count, the
+    candidate check, the exact pass) runs under :func:`exact_timeout_ms`:
+    these read the shared table, other tenants' rows included, and hold a
+    pooled connection. When the index answers fewer than k rows and the
+    scope has more (another tenant's crowd of near-duplicates took the
+    candidates), the query runs again as an exact scan. A timed-out count
+    reports ``n_indexed`` as None; a timed-out check or exact pass keeps the
+    index's answer.
     """
-    n_indexed, n_candidates = _count_indexed(cur, scope, etag)
-    cur.execute("SELECT set_config('hnsw.ef_search', %s, true)",
-                [str(max(HNSW_DEFAULT_EF_SEARCH, k))])
+    cur.execute("SELECT set_config('hnsw.ef_search', %s, true)", [str(_ef_search(k))])
     results = _nearest(cur, scope, vector, etag, k)
-    if len(results) >= min(k, n_candidates):
-        return results, n_indexed
-    return _exact_nearest(cur, scope, vector, etag, k, results), n_indexed
+    cur.execute("SELECT set_config('statement_timeout', %s, true)", [str(exact_timeout_ms())])
+    n_indexed = _bounded(cur, "knn_count", lambda: _count_indexed(cur, scope), None)
+    if len(results) < k and _bounded(
+        cur, "knn_candidates", lambda: _has_more_candidates(cur, scope, etag, len(results)),
+        False,
+    ):
+        results = _exact_nearest(cur, scope, vector, etag, k, results)
+    return results, n_indexed
 
 
 def _exact_nearest(cur, scope: _Scope, vector, etag, k, approximate) -> list[dict]:
@@ -373,7 +435,7 @@ def _ok_reply(request: KnnRequest, outcome: KnnOutcome, duration_s: float) -> di
     return {
         "status": "ok",
         "n": request.n,
-        "query": request.s3_object,
+        "query": request.display_query(),
         "bucket": request.bucket,
         "subdir": request.subdir,
         "results": outcome.results,
@@ -381,7 +443,7 @@ def _ok_reply(request: KnnRequest, outcome: KnnOutcome, duration_s: float) -> di
         "cached": outcome.cached,
         "n_indexed": outcome.n_indexed,
         "summary": pretty_print_knn(
-            request.s3_object, request.bucket, request.n, outcome.results,
+            request.display_query(), request.bucket, request.n, outcome.results,
             duration_s, outcome.cached, outcome.n_indexed,
         ),
     }
@@ -427,6 +489,17 @@ def _close_knn_work(active_threads, user, key, update_status_callback, status) -
             update_status_callback(status)
 
 
+def _report_running(update_status_callback) -> None:
+    """RUNNING for the task; a task-store failure here only logs, so the
+    caller still gets its reply and the task still closes (review U1)."""
+    if not update_status_callback:
+        return
+    try:
+        update_status_callback(TaskStatus.RUNNING)
+    except Exception:
+        logger.warning("KNN: could not mark the task RUNNING", exc_info=True)
+
+
 def knn_search_worker(
     active_threads,
     user,
@@ -445,10 +518,9 @@ def knn_search_worker(
     cannot finish before its entry exists. The reply and the bookkeeping run
     in ``finally``: the caller always gets an answer and the entry closes.
     """
-    if update_status_callback:
-        update_status_callback(TaskStatus.RUNNING)
     reply, status = error_reply(*_FAILED), TaskStatus.ERROR
     try:
+        _report_running(update_status_callback)
         if buckets_cfg is not None:
             active_threads.update_thread_dict(buckets_cfg, {request.bucket: None}, key, user=user)
         reply, status = run_knn(entry, request)
