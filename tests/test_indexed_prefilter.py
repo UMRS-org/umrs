@@ -350,19 +350,32 @@ def test_failing_heads_trip_the_breaker_and_skip_nothing():
 
 
 def test_the_head_phase_has_an_overall_deadline(monkeypatch):
+    """Only the HEAD phase is timed: the first filter call in a process also
+    imports the embedding stack (~2.3 s), which made this test fail when run
+    on its own (review U1)."""
     import time
 
     monkeypatch.setenv("UMRS_PREFILTER_HEAD_BUDGET_S", "1")
     monkeypatch.setattr(indexed_prefilter, "HEAD_MAX_FAILURES", 10_000)
+    head_etags, durations = indexed_prefilter._head_etags, []
+
+    def _timed_head_etags(*args, **kwargs):
+        t0 = time.monotonic()
+        try:
+            return head_etags(*args, **kwargs)
+        finally:
+            durations.append(time.monotonic() - t0)
+
+    monkeypatch.setattr(indexed_prefilter, "_head_etags", _timed_head_etags)
     keys = [f"k{i}" for i in range(400)]
     db = _FakeDataBase(rows=[(f"a/{k}", "e", "clip") for k in keys])
     cfg = _Cfg({"a": _entry(db, _DeadS3(delay_s=0.2))})
     entries = [("alice", [f"s3://a/{k}" for k in keys])]
 
-    t0 = time.monotonic()
     result = indexed_prefilter.filter_already_indexed(cfg, entries)
 
-    assert time.monotonic() - t0 < 3  # 400 x 0.2 s / 10 workers would be 8 s
+    assert len(durations) == 1
+    assert durations[0] < 2  # 400 x 0.2 s / 10 workers would be 8 s
     assert result.entries == entries
 
 
