@@ -387,3 +387,25 @@ def test_bound_project_creates_personal_buckets_on_its_bound_store(default_s3, b
     resp = TestClient(app).post("/umrs/buckets", json={"project": "opossum", "alias": "clips"})
     assert resp.status_code == 201, resp.text
     assert made == ["alice.opossum.clips", "alice.opossum.clips-output"]
+
+
+# Live regression 2026-11-13: botocore returns LastModified with dateutil's
+# tzutc(), and email.utils.format_datetime(usegmt=True) accepts only
+# datetime.timezone.utc, so every download answered 500 after the S1 rollout.
+def test_last_modified_from_botocore_tzutc_is_an_http_date():
+    from dateutil.tz import tzutc
+    from umrs.api._ranged_download import _http_date
+
+    value = datetime(2026, 11, 13, 9, 30, 0, tzinfo=tzutc())
+    assert _http_date(value) == "Fri, 13 Nov 2026 09:30:00 GMT"
+
+
+def test_last_modified_naive_or_offset_is_normalised_to_gmt():
+    from datetime import timedelta
+
+    from umrs.api._ranged_download import _http_date
+
+    assert _http_date(datetime(2026, 11, 13, 9, 30, 0)) == "Fri, 13 Nov 2026 09:30:00 GMT"
+    jst = timezone(timedelta(hours=9))
+    assert _http_date(datetime(2026, 11, 13, 18, 30, 0, tzinfo=jst)) == "Fri, 13 Nov 2026 09:30:00 GMT"
+    assert _http_date("not a datetime") == ""
