@@ -416,6 +416,7 @@ def _handle_info(args):
         "update",
         "check",
         "export_embeddings",
+        "knn",
         "job *",
         "endpoint *",
         "workflow *",
@@ -6166,6 +6167,119 @@ def _action_export_embeddings(ctx):
     return 0
 
 
+class _KnnCliError(Exception):
+    """A ``knn`` invocation that cannot be sent (message printed as an error)."""
+
+
+def _client_s3cfg_path(s3_configuration_file):
+    """The bucket's s3cfg, or the container default when it is absent."""
+    expanded = os.path.expanduser(s3_configuration_file)
+    default_docker_s3cfg = get_default_docker_s3cfg()
+    if not os.path.exists(expanded) and os.path.exists(default_docker_s3cfg):
+        return default_docker_s3cfg
+    return expanded
+
+
+def _profile_minio_override(ctx):
+    """The profile's minio_url when a profile file was given (-c), else None."""
+    connection = getattr(ctx, "connection", None)
+    if connection is None or getattr(connection, "profile_name", None) is None:
+        return None
+    return getattr(connection, "minio_url", None) or None
+
+
+def _knn_target(ctx):
+    """``(bucket_alias, subdir, entry, username, file_path)`` for ``knn``."""
+    args = ctx.args
+    bucket_alias, subdir = decompose_bucket_alias_arg(args.bucket_alias)
+    entry = ctx.buckets_cfg.get(bucket_alias)
+    if entry is None:
+        raise _KnnCliError(f"Bucket alias not found: {bucket_alias}")
+    username = getattr(args, "username", None) or (
+        ctx.user.get("username") if isinstance(ctx.user, dict) else None
+    )
+    if not username:
+        raise _KnnCliError("No username provided and none found in config")
+    file_path = os.path.abspath(args.image_path)
+    if not os.path.isfile(file_path):
+        raise _KnnCliError(f"File not found: {file_path}")
+    return bucket_alias, subdir, entry, username, file_path
+
+
+def _knn_upload(ctx, entry, file_path, subdir):
+    """Upload the query image to the bucket (under *subdir*); its S3 key."""
+    s3, _ = connect_to_s3(
+        _client_s3cfg_path(entry.s3_configuration_file),
+        endpoint_url_override=_profile_minio_override(ctx),
+    )
+    s3_key = os.path.basename(file_path)
+    if subdir:
+        s3_key = f"{subdir}/{s3_key}"
+    s3.upload_file(file_path, entry.path_to_bucket, s3_key)
+    return s3_key
+
+
+def _knn_error(args, message):
+    print(api_json(status="error", action="knn", message=message, output_format=args.output))
+    return 1
+
+
+def _knn_print(args, bucket_alias, response):
+    """The server's summary (text) or the whole reply (``--output json``)."""
+    if response.get("status") != "ok":
+        return _knn_error(args, response.get("message", "Server error"))
+    if args.output != "json":
+        print(response.get("summary", ""))
+        return 0
+    payload = {k: v for k, v in response.items() if k != "status"}
+    payload["path_to_bucket"] = payload.pop("bucket", None)
+    print(api_json(action="knn", bucket=bucket_alias, output_format="json", **payload))
+    return 0
+
+
+def _action_knn(ctx):
+    """Upload a local image, then ask the server for its k nearest neighbours
+    in the bucket (port of upstream 487e3efb / e04b3d4e / bd0e6bc1)."""
+    args = ctx.args
+    try:
+        bucket_alias, subdir, entry, username, file_path = _knn_target(ctx)
+        s3_key = _knn_upload(ctx, entry, file_path, subdir)
+        raw = ctx.control_mq.request_knn(
+            username, args.n, s3_key, entry.path_to_bucket, subdir=subdir or None
+        )
+        return _knn_print(args, bucket_alias, _json.loads(raw))
+    except _KnnCliError as exc:
+        return _knn_error(args, str(exc))
+    except Exception as exc:  # noqa: BLE001 — every failure is one error line
+        if args.verbose:
+            traceback.print_exc()
+        return _knn_error(args, str(exc))
+    finally:
+        ctx.control_mq.close()
+
+
+def _add_knn_parser(subparsers):
+    """``umrs knn <n> <image_path> <bucket_alias[/subdir]> [username]``."""
+    knn_p = subparsers.add_parser(
+        "knn",
+        help="Find the n nearest neighbours of a local image in a bucket's embeddings",
+    )
+    knn_p.add_argument("n", type=int, help="Number of nearest neighbours to return")
+    knn_p.add_argument("image_path", help="Local image to use as the query")
+    knn_p.add_argument(
+        "bucket_alias",
+        help=(
+            "Bucket alias from the client configuration; 'alias/subdir' uploads the "
+            "query under subdir/ and searches only objects under it"
+        ),
+    )
+    knn_p.add_argument(
+        "username",
+        nargs="?",
+        help="Configured username owning the bucket (defaults to config if omitted)",
+    )
+
+
 def _action_s3_transfer(ctx):
     """Handle upload_file, upload_dir, and download_results actions."""
     args = ctx.args
@@ -6928,6 +7042,7 @@ _ACTION_HANDLERS = {
     "check": _action_maintenance,
     "reload": _action_maintenance,
     "export_embeddings": _action_export_embeddings,
+    "knn": _action_knn,
 }
 
 
@@ -7551,6 +7666,9 @@ def main():
         nargs="?",
         help="Configured username owning the bucket (defaults to config if omitted)",
     )
+
+    # === k nearest neighbours of a local image (server-side pgvector) ===
+    _add_knn_parser(subparsers)
 
     # --- Model registry commands ---
     model_p = subparsers.add_parser(
@@ -8342,6 +8460,7 @@ def main():
             "update",
             "reload",
             "export_embeddings",
+            "knn",
         }
         or workflow_bucket_needs_config
         or status_needs_config

@@ -152,6 +152,12 @@ umrs -c conf_umrs.json export_embeddings alice-text ./out.csv \
     --db-host localhost --db-port 15432 --db-user umrs --db-password umrs_dev
 ```
 
+To find the `n` most similar indexed images to a local one (cosine, server-side;
+`alias/subdir` uploads the query under `subdir/` and searches only there):
+```bash
+umrs -c conf_umrs.json knn 5 ./query.png alice-images/pets
+```
+
 ## 8. Download Results
 
 If your modality produces output files (e.g., segmentation masks):
@@ -283,6 +289,7 @@ See [Demo 07](../demos/07_user_model/README.md) for a complete example
 | `umrs status [target]` | Check processing status |
 | `umrs data download <bucket> <path>` | Download output files |
 | `umrs export_embeddings <bucket> <path>` | Export embeddings to CSV/JSONL |
+| `umrs knn <n> <image> <bucket[/subdir]>` | Nearest indexed images to a local image |
 | `umrs recompute` | Recompute all embeddings |
 | `umrs update` | Update missing embeddings |
 | `umrs check` | S3 ↔ DB consistency check |
