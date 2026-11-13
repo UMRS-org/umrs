@@ -8,6 +8,7 @@ All tables share the aligned-column style used by ``umrs bucket list``::
       value1   value2
 """
 
+import math
 import sys
 
 from umrs.shared.utils import utc_to_local
@@ -341,7 +342,10 @@ def pretty_print_check(check_dict, print_output=True):
 
 
 def _score_bar(score, width=10):
-    """``█``/``░`` bar for a cosine score, clamped to [0, 1]."""
+    """``█``/``░`` bar for a cosine score, clamped to [0, 1]; a non-finite
+    score (NaN from a zero-norm vector) is an empty bar, never a crash."""
+    if not math.isfinite(score):
+        score = 0.0
     filled = max(0, min(width, int(score * width)))
     return "█" * filled + "░" * (width - filled)
 

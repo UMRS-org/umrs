@@ -337,6 +337,33 @@ def test_end_to_end_through_the_real_thread_pool(buckets, tmp_path, monkeypatch)
     assert statuses[-1] == TaskStatus.COMPLETED
 
 
+def test_fast_searches_leave_no_phantom_running_entry(buckets, tmp_path, monkeypatch):
+    """Review U1: launch_knn registered the STATUS entry after the worker had
+    started, so a millisecond search finished first and its entry stayed Running."""
+    from diskcache import Cache
+    from umrs.core.UMRSThreads import ThreadStatus, UMRSThreads
+
+    monkeypatch.setenv("UMRS_SERVICE_LIFECYCLE", "manual")
+    monkeypatch.setattr(knn_worker, "search", lambda _entry, _request: knn_worker.KnnOutcome(
+        results=[], cached=True, n_indexed=0))
+    threads = UMRSThreads(Cache(str(tmp_path / "status")), Cache(str(tmp_path / "threads")))
+    mq = _MQ()
+    ctx = _ctx(mq, buckets)
+    ctx.task_manager.active_threads = threads
+    try:
+        for _ in range(20):
+            _dispatch(ctx, {"n": 3, "object": "q.png", "bucket": ALICE_BUCKET})
+        threads.waitall()
+        entries = [threads.thread_dict[ident] for ident in threads.thread_dict]
+    finally:
+        threads.close()
+
+    assert len(_replies(mq)) == 20
+    assert entries
+    assert {entry["status"] for entry in entries} == {ThreadStatus.DONE}
+    assert all(entry["work"][0]["bucket"] == ALICE_BUCKET for entry in entries)
+
+
 # --- worker bookkeeping -------------------------------------------------------------
 
 
@@ -379,10 +406,9 @@ def test_worker_replies_ok_and_completes(monkeypatch):
     assert threads.calls == ["done", ("record", ("alice",), "knn"), "removed"]
 
 
-@pytest.mark.parametrize("exc", [KnnError("S3 load failed for q.png: gone"), RuntimeError("boom")])
-def test_worker_turns_failures_into_an_error_reply(monkeypatch, exc):
+def test_worker_relays_a_refusal_verbatim(monkeypatch):
     def _fail(_entry, _req):
-        raise exc
+        raise KnnError("Bucket alice.xp.images has no embedding table to search")
 
     monkeypatch.setattr(knn_worker, "search", _fail)
     threads, mq, statuses = _Threads(), _MQ(), []
@@ -391,10 +417,108 @@ def test_worker_turns_failures_into_an_error_reply(monkeypatch, exc):
                                  statuses.append)
 
     (reply,) = _replies(mq)
-    assert reply["status"] == "error"
-    assert str(exc) in reply["message"]
+    assert reply == {"status": "error", "code": "KNN_REFUSED",
+                     "message": "Bucket alice.xp.images has no embedding table to search"}
     assert statuses == [TaskStatus.RUNNING, TaskStatus.ERROR]
     assert "removed" in threads.calls
+
+
+_SECRET = 'connection to server at "10.9.8.7", port 5432 failed; table "t"'
+
+
+def test_worker_never_forwards_backend_exception_text(monkeypatch, caplog):
+    """Review U1: raw psycopg2/botocore text carried internal hosts to the caller."""
+    def _fail(_entry, _req):
+        raise RuntimeError(_SECRET)
+
+    monkeypatch.setattr(knn_worker, "search", _fail)
+    threads, mq, statuses = _Threads(), _MQ(), []
+
+    knn_worker.knn_search_worker(threads, "alice", _request(), object(), mq, SENDER, "knn",
+                                 statuses.append)
+
+    (reply,) = _replies(mq)
+    assert reply == {"status": "error", "code": "KNN_FAILED", "message": "KNN search failed"}
+    assert "10.9.8.7" in caplog.text  # kept server-side
+    assert statuses == [TaskStatus.RUNNING, TaskStatus.ERROR]
+
+
+def test_s3_load_failure_is_reported_without_the_endpoint(monkeypatch):
+    from umrs.shared.storage import s3 as s3_mod
+
+    def _boom(*_a, **_k):
+        raise OSError('Could not connect to the endpoint URL: "http://10.9.8.7:8333/b/q.png"')
+
+    monkeypatch.setattr(s3_mod, "load_data_from_s3", _boom)
+    entry = SimpleNamespace(s3_connection=None, modality_name="image")
+    reply, status = knn_worker.run_knn(entry, _request())
+
+    assert status == TaskStatus.ERROR
+    assert reply["code"] == "KNN_S3_UNAVAILABLE"
+    assert "q.png" in reply["message"]
+    assert "10.9.8.7" not in json.dumps(reply)
+
+
+def test_worker_still_replies_when_the_summary_fails(monkeypatch):
+    """Review U1: only search() was guarded; a failure building the reply left
+    the caller waiting 120 s and the STATUS entry Running."""
+    monkeypatch.setattr(knn_worker, "search", lambda _e, _r: knn_worker.KnnOutcome(
+        results=[{"object": f"{ALICE_BUCKET}/a.png", "score": 0.5}], cached=True, n_indexed=1))
+
+    def _broken(*_a, **_k):
+        raise ValueError("cannot convert float NaN to integer")
+
+    monkeypatch.setattr("umrs.shared.pretty_print.pretty_print_knn", _broken)
+    threads, mq, statuses = _Threads(), _MQ(), []
+
+    knn_worker.knn_search_worker(threads, "alice", _request(), object(), mq, SENDER, "knn",
+                                 statuses.append)
+
+    (reply,) = _replies(mq)
+    assert reply["status"] == "error"
+    assert statuses == [TaskStatus.RUNNING, TaskStatus.ERROR]
+    assert threads.calls == ["done", ("record", ("alice",), "knn"), "removed"]
+
+
+def test_bookkeeping_runs_even_if_the_worker_itself_raises(monkeypatch):
+    def _explode(_entry, _request):
+        raise SystemError("unexpected")
+
+    monkeypatch.setattr(knn_worker, "run_knn", _explode)
+    threads, mq, statuses = _Threads(), _MQ(), []
+
+    with pytest.raises(SystemError):
+        knn_worker.knn_search_worker(threads, "alice", _request(), object(), mq, SENDER,
+                                     "knn", statuses.append)
+
+    (reply,) = _replies(mq)
+    assert reply["status"] == "error"
+    assert statuses == [TaskStatus.RUNNING, TaskStatus.ERROR]
+    assert "removed" in threads.calls
+
+
+def test_a_nan_score_is_a_zero_score():
+    """pgvector's <=> is NaN for a zero-norm vector; the reply stays valid JSON."""
+    class _Cur:
+        def execute(self, *_a):
+            pass
+
+        def fetchall(self):
+            return [(f"{ALICE_BUCKET}/z.png", float("nan")), (f"{ALICE_BUCKET}/a.png", 0.8)]
+
+    scope = knn_worker._Scope(table="t", prefix=f"{ALICE_BUCKET}/",
+                              bucket_prefix=f"{ALICE_BUCKET}/", model=None, has_model=False)
+    results = knn_worker._nearest(_Cur(), scope, "[0,0]", "etag", 2)
+    assert results == [{"object": f"{ALICE_BUCKET}/z.png", "score": 0.0},
+                       {"object": f"{ALICE_BUCKET}/a.png", "score": 0.8}]
+    json.loads(json.dumps(results), parse_constant=pytest.fail)
+
+
+def test_score_bar_survives_non_finite_scores():
+    from umrs.shared.pretty_print import _score_bar
+
+    assert _score_bar(float("nan")) == "░" * 10
+    assert _score_bar(float("inf")) == "░" * 10
 
 
 # --- wire + task + pretty print ---------------------------------------------------------

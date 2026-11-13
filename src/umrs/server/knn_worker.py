@@ -26,6 +26,7 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+import math
 import time
 from dataclasses import dataclass
 
@@ -40,11 +41,22 @@ DEFAULT_MAX_K = 100
 
 
 class KnnError(Exception):
-    """A KNN request that cannot run; the message goes back to the caller."""
+    """A KNN request that cannot run; the message goes back to the caller,
+    so it never carries backend exception text."""
+
+    code = "KNN_REFUSED"
 
 
 class KnnRequestError(KnnError, ValueError):
     """A malformed KNN request (refused before any thread is launched)."""
+
+    code = "KNN_BAD_REQUEST"
+
+
+class KnnStorageError(KnnError):
+    """The query object could not be read from the bucket."""
+
+    code = "KNN_S3_UNAVAILABLE"
 
 
 @dataclass(frozen=True)
@@ -233,7 +245,14 @@ def _nearest(cur, scope: _Scope, vector: str, etag: str, k: int) -> list[dict]:
         " ORDER BY embedding <=> %s::vector LIMIT %s"
     ).format(sql.Identifier(scope.table), model_sql)
     cur.execute(query, [vector, scope.prefix, etag, *model_params, vector, k])
-    return [{"object": row[0], "score": float(row[1])} for row in cur.fetchall()]
+    return [{"object": row[0], "score": _finite_score(row[1])} for row in cur.fetchall()]
+
+
+def _finite_score(value) -> float:
+    """pgvector's ``<=>`` is NaN when a vector has zero norm: score it 0.0
+    so the reply stays valid JSON and the summary renders."""
+    score = float(value)
+    return score if math.isfinite(score) else 0.0
 
 
 def _count_indexed(cur, scope: _Scope) -> int:
@@ -257,7 +276,12 @@ def _load_query(entry, request: KnnRequest):
             entry.modality_name,
         )
     except Exception as exc:
-        raise KnnError(f"S3 load failed for {request.s3_object}: {exc}") from exc
+        # The S3 error names the server-side endpoint: log it, never reply it.
+        logger.warning("KNN: S3 load of %s/%s failed: %s",
+                       request.bucket, request.s3_object, exc)
+        raise KnnStorageError(
+            f"Could not read the query object {request.s3_object} from the bucket"
+        ) from exc
     return checksums[0], objects[0]
 
 
@@ -299,19 +323,43 @@ def _ok_reply(request: KnnRequest, outcome: KnnOutcome, duration_s: float) -> di
     }
 
 
+def _error_reply(code: str, message: str) -> dict:
+    return {"status": "error", "code": code, "message": message}
+
+
+_FAILED = ("KNN_FAILED", "KNN search failed")
+
+
 def run_knn(entry, request: KnnRequest) -> tuple[dict, str]:
-    """``(reply, final task status)``; never raises."""
+    """``(reply, final task status)``; never raises.
+
+    Building the reply is guarded too (a summary that cannot render must not
+    leave the caller waiting). Only :class:`KnnError` messages, which never
+    carry backend text, reach the caller; anything else is logged here and
+    answered with a fixed message (review U1).
+    """
     t0 = time.perf_counter()
     try:
         outcome = search(entry, request)
+        duration_s = round(time.perf_counter() - t0, 3)
+        return _ok_reply(request, outcome, duration_s), TaskStatus.COMPLETED
     except KnnError as exc:
         logger.warning("KNN refused for %s/%s: %s", request.bucket, request.s3_object, exc)
-        return {"status": "error", "message": str(exc)}, TaskStatus.ERROR
-    except Exception as exc:
+        return _error_reply(exc.code, str(exc)), TaskStatus.ERROR
+    except Exception:
         logger.exception("KNN search failed for %s/%s", request.bucket, request.s3_object)
-        return {"status": "error", "message": f"KNN search failed: {exc}"}, TaskStatus.ERROR
-    duration_s = round(time.perf_counter() - t0, 3)
-    return _ok_reply(request, outcome, duration_s), TaskStatus.COMPLETED
+        return _error_reply(*_FAILED), TaskStatus.ERROR
+
+
+def _close_knn_work(active_threads, user, key, update_status_callback, status) -> None:
+    """Close the STATUS entry and the task, whatever happened before."""
+    try:
+        active_threads.update_status_to_done()
+        active_threads.record_status_for_users_by_key([user], key)
+        active_threads.remove_from_running_list()
+    finally:
+        if update_status_callback:
+            update_status_callback(status)
 
 
 def knn_search_worker(
@@ -323,15 +371,23 @@ def knn_search_worker(
     zmq_sender_id,
     key,
     update_status_callback=None,
+    buckets_cfg=None,
 ):
-    """Pool worker for the KNN command: search, reply, bookkeeping."""
+    """Pool worker for the KNN command: register, search, reply, bookkeeping.
+
+    The STATUS entry is registered here on the pool thread (as
+    ``process_model_group`` does), so a search that ends in milliseconds
+    cannot finish before its entry exists. The reply and the bookkeeping run
+    in ``finally``: the caller always gets an answer and the entry closes.
+    """
     if update_status_callback:
         update_status_callback(TaskStatus.RUNNING)
-    reply, status = run_knn(entry, request)
-    with contextlib.suppress(RuntimeError):
-        control_mq.send_string(json.dumps(reply, ensure_ascii=False), zmq_sender_id)
-    active_threads.update_status_to_done()
-    active_threads.record_status_for_users_by_key([user], key)
-    active_threads.remove_from_running_list()
-    if update_status_callback:
-        update_status_callback(status)
+    reply, status = _error_reply(*_FAILED), TaskStatus.ERROR
+    try:
+        if buckets_cfg is not None:
+            active_threads.update_thread_dict(buckets_cfg, {request.bucket: None}, key)
+        reply, status = run_knn(entry, request)
+    finally:
+        with contextlib.suppress(RuntimeError):
+            control_mq.send_string(json.dumps(reply, ensure_ascii=False), zmq_sender_id)
+        _close_knn_work(active_threads, user, key, update_status_callback, status)

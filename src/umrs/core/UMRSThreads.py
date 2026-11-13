@@ -275,18 +275,20 @@ class UMRSThreads:
         update_status_callback=None,
     ):
         """Run one KNN search (``knn_worker.KnnRequest``) on the pool; *entry*
-        is the bucket's server entry, already checked against *user*."""
+        is the bucket's server entry, already checked against *user*.
+
+        The worker registers its own STATUS entry before searching: doing it
+        here, after submission, raced a fast search and left a phantom
+        Running entry (review U1).
+        """
         from umrs.server.knn_worker import knn_search_worker
 
         thread_ident, _future = self._submit_to_pool(
             knn_search_worker,
             (self, user, request, entry, control_mq, zmq_sender_id, key,
-             update_status_callback),
+             update_status_callback, buckets_cfg),
             key,
             update_status_callback=update_status_callback,
-        )
-        self.update_thread_dict(
-            buckets_cfg, {request.bucket: None}, key, thread_ident=thread_ident
         )
         return thread_ident
 
