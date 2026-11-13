@@ -77,17 +77,6 @@ def _head_for(path, metadata=None, etag=None, **extra):
 # --- one retry layer: botocore's -------------------------------------------
 
 
-def test_a_failed_upload_is_not_retried_on_top_of_botocore(sleeps, local_file):
-    """Review U1: a hand-written loop stacked on botocore's own retries turned
-    one file into (loop attempts x botocore attempts) requests."""
-    fake = FakeS3(failures=[_client_error("SlowDown", 503)])
-    with pytest.raises(ClientError):
-        s3_upload.upload_local_file(fake, "b", "k", str(local_file), skip_unchanged=False)
-    assert fake.uploads == []
-    assert fake.failures == []  # exactly one upload_file call
-    assert sleeps == []
-
-
 def _upload_failed(code):
     from boto3.exceptions import S3UploadFailedError
 
@@ -95,6 +84,24 @@ def _upload_failed(code):
         f"Failed to upload doc.txt to b/k: An error occurred ({code}) when calling "
         f"the PutObject operation: short body"
     )
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [_client_error("SlowDown", 503), _upload_failed("SlowDown"), _upload_failed("AccessDenied")],
+    ids=["client-error-slowdown", "upload-failed-slowdown", "upload-failed-access-denied"],
+)
+def test_a_failed_upload_is_not_retried_on_top_of_botocore(sleeps, local_file, failure):
+    """Review U1: a hand-written loop stacked on botocore's own retries turned
+    one file into (loop attempts x botocore attempts) requests. boto3's
+    upload_file wraps every PutObject error in S3UploadFailedError, so the
+    wrapped form is the one production sees."""
+    fake = FakeS3(failures=[failure, failure, failure])
+    with pytest.raises(type(failure)):
+        s3_upload.upload_local_file(fake, "b", "k", str(local_file), skip_unchanged=False)
+    assert fake.uploads == []
+    assert len(fake.failures) == 2  # exactly one upload_file call
+    assert sleeps == []
 
 
 @pytest.mark.parametrize(
@@ -120,6 +127,18 @@ def test_incomplete_body_retries_are_bounded(sleeps, local_file):
         s3_upload.upload_local_file(fake, "b", "k", str(local_file), skip_unchanged=False)
     assert len(fake.failures) == 10 - s3_upload.INCOMPLETE_BODY_ATTEMPTS
     assert fake.uploads == []
+    assert sleeps == [0, 1]
+
+
+def test_incomplete_body_attempts_constant_bounds_the_loop(sleeps, local_file, monkeypatch):
+    """Review U1: the loop read a delays tuple, not INCOMPLETE_BODY_ATTEMPTS,
+    so raising the constant changed nothing."""
+    monkeypatch.setattr(s3_upload, "INCOMPLETE_BODY_ATTEMPTS", 5)
+    fake = FakeS3(failures=[_client_error("IncompleteBody")] * 10)
+    with pytest.raises(ClientError):
+        s3_upload.upload_local_file(fake, "b", "k", str(local_file), skip_unchanged=False)
+    assert len(fake.failures) == 5
+    assert sleeps == [0, 1, 1, 1]
 
 
 def _s3cfg(tmp_path):

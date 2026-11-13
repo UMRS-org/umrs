@@ -112,10 +112,12 @@ umrs -c conf_umrs.json upload_dir ./images/ alice-images
 Upload automatically triggers embedding computation on the server.
 
 A file whose bytes and metadata already match the stored object is not sent
-again (`UMRS_S3_UPLOAD_SKIP_UNCHANGED=0` turns this off). Each S3 request
-(upload, part, HEAD, ...) is tried at most `UMRS_S3_MAX_ATTEMPTS` times in
-total (default 5, 1..10; an invalid value keeps 5 with a warning), with
-botocore's standard backoff; there is no second retry loop on top.
+again (`UMRS_S3_UPLOAD_SKIP_UNCHANGED=0` turns this off). botocore retries
+transient errors of each S3 request (upload, part, HEAD, ...) up to
+`UMRS_S3_MAX_ATTEMPTS` times in total (default 5, 1..10; an invalid value
+keeps 5 with a warning), with its standard backoff. One error is handled
+apart: an upload the store answers with `IncompleteBody` (short request body,
+which botocore does not retry) is sent again, up to 3 times in total.
 When an upload ends, the client keeps flushing queued object notices to the
 server for up to `UMRS_DATA_LINGER_MS` milliseconds (default 30000, 0..600000).
 

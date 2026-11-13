@@ -50,8 +50,12 @@ _MISSING_CODES = frozenset({"404", "NoSuchKey", "NotFound"})
 # The short-body error botocore does not retry (its standard mode retries
 # RequestTimeout-like codes, throttling and 5xx only); 6632dfb0 retried it.
 INCOMPLETE_BODY = "IncompleteBody"
-INCOMPLETE_BODY_ATTEMPTS = 3
-_INCOMPLETE_BODY_DELAYS_S = (0, 1)
+INCOMPLETE_BODY_ATTEMPTS = 3  # total sends, first included; the only bound
+
+
+def _incomplete_body_delay_s(retry: int) -> int:
+    """Seconds before retry number *retry* (1-based): 0 s, then 1 s (6632dfb0)."""
+    return 0 if retry == 1 else 1
 
 
 def s3_max_attempts() -> int:
@@ -162,13 +166,15 @@ def _is_incomplete_body(exc) -> bool:
 def _upload_retrying_incomplete_body(s3, bucket, key, local_path, extra_args) -> None:
     """``upload_file``, sent up to :data:`INCOMPLETE_BODY_ATTEMPTS` times on
     ``IncompleteBody`` only; every other error is botocore's to retry."""
-    for attempt, delay in enumerate(_INCOMPLETE_BODY_DELAYS_S + (None,), start=1):
+    attempts = INCOMPLETE_BODY_ATTEMPTS
+    for attempt in range(1, attempts + 1):
         try:
             s3.upload_file(local_path, bucket, key, ExtraArgs=extra_args)
             return
         except (S3UploadFailedError, ClientError) as exc:
-            if delay is None or not _is_incomplete_body(exc):
+            if attempt == attempts or not _is_incomplete_body(exc):
                 raise
+            delay = _incomplete_body_delay_s(attempt)
             logger.warning("upload s3://%s/%s: %s, retry %d/%d in %ss", bucket, key,
-                           INCOMPLETE_BODY, attempt, len(_INCOMPLETE_BODY_DELAYS_S), delay)
+                           INCOMPLETE_BODY, attempt, attempts - 1, delay)
             time.sleep(delay)
