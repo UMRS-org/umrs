@@ -1,19 +1,20 @@
 #!/usr/bin/env python3
-import threading
 import argparse
 import json
 import logging
 import os
+import socket
 import sys
-import socket 
+import threading
+
 import diskcache
 
 # Add the parent directory of this script (src) to sys.path
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 
 
-import traceback
 import contextlib
+import traceback
 
 import umrs.server.config as _server_config
 from umrs.admin.daemon_signal import (
@@ -22,17 +23,16 @@ from umrs.admin.daemon_signal import (
     remove_pid_file,
     write_pid_file,
 )
-from umrs.core.MessageQueue import MessageQueue, DATA_PORT_RANGE
+from umrs.core.MessageQueue import DATA_PORT_RANGE, MessageQueue
 from umrs.core.TaskCmdStatus import TaskCmd, TaskStatus
 from umrs.core.TaskManager import TaskManager
 from umrs.core.thread_pool import PoolConfig, ServerOverloadedError, ThreadPoolManager
-from umrs.orchestrator.site_config import resolve_site_config_path
 from umrs.inference.embedding_backend import LocalEmbeddingBackend
-from umrs.server.config import ENABLE_PRETTY_PRINT, get_default_db_subdir
-from umrs.server.durable_job_runtime import start_durable_job_runtime_from_env
-from umrs.server.model_path_validator import enforce_model_paths
+from umrs.orchestrator.site_config import resolve_site_config_path
 from umrs.server.commands import HandlerContext, build_registry
 from umrs.server.commands.base import make_status_callback
+from umrs.server.config import ENABLE_PRETTY_PRINT, get_default_db_subdir
+from umrs.server.durable_job_runtime import start_durable_job_runtime_from_env
 from umrs.server.job_tracking_handler import build_durable_job_backend_from_env
 from umrs.server.json_config import load_server_cfg_file
 from umrs.server.maintenance import (
@@ -43,10 +43,8 @@ from umrs.server.maintenance import (
     reload_configuration,
     update_objects,
 )
-from umrs.server.model_registry_handler import (
-    build_durable_model_backend_from_env,
-)
-from umrs.server.sql import create_umrs_server_db_user, create_server_db_pool
+from umrs.server.model_path_validator import enforce_model_paths
+from umrs.server.model_registry_handler import build_durable_model_backend_from_env
 from umrs.server.provisioning import (
     ServerCfg,
     configure_user,
@@ -54,6 +52,7 @@ from umrs.server.provisioning import (
     is_client_configured,
     reconcile_status_on_startup,
 )
+from umrs.server.sql import create_server_db_pool, create_umrs_server_db_user
 from umrs.shared.config import (
     get_default_json_server_file,
     get_default_tmp_subdir,
@@ -77,6 +76,7 @@ def configure_server_logging():
 
 
 # --------------------------- Boot and hot-reload ----------------------------
+
 
 def _init_session_curve_provider():
     """Create and register the shared session CURVE provider when enabled.
@@ -114,14 +114,16 @@ def perform_initial_config(configure_file, status_store, skip_create_users=False
     if not os.path.exists(configure_file):
         sys.exit(f"Configuration file '{configure_file}' not found.")
 
-    admin_s3_configuration_file, users, server_cfg = load_server_cfg_file(configure_file)
+    admin_s3_configuration_file, users, server_cfg = load_server_cfg_file(
+        configure_file
+    )
     check_duplicated_database(users)
     print("Configuration loaded successfully.")
 
     # Task 10: model path boot check — fail fast if paths are inaccessible
     try:
         enforce_model_paths(require_at_least_one=False)
-    except Exception:
+    except Exception:  # noqa: BLE001 — server loop must survive per-command failures
         logger.warning("Model path validation failed (non-fatal without config)")
 
     # Get the directory containing configure_file
@@ -139,20 +141,29 @@ def perform_initial_config(configure_file, status_store, skip_create_users=False
     # in-memory registry. No-op in any other auth mode.
     _init_session_curve_provider()
 
-    control_mq = MessageQueue(role='server', queue_type='control', timeout_ms=1000, tmp_dir = tmp_dir, status_store=status_store)
+    control_mq = MessageQueue(
+        role="server",
+        queue_type="control",
+        timeout_ms=1000,
+        tmp_dir=tmp_dir,
+        status_store=status_store,
+    )
+
     # Align MessageQueue debug with server pretty-print setting (off by default)
     try:
         control_mq.set_debug(ENABLE_PRETTY_PRINT)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — server loop must survive per-command failures
         # Debug flag is optional; log but do not raise
         print(f"Warning: failed to set debug mode on control queue: {e}")
 
     bind_host = "127.0.0.1" if control_mq.tunnel_mode else "*"
     auth_type = os.environ.get("UMRS_ZMQ_AUTH_TYPE", "none")
-    print(f"Subscribed to zeroMQ message queue on {socket.gethostname()} "
-      f"{bind_host}:{control_mq.port} "
-      f"(data ports {DATA_PORT_RANGE.label}, auth={auth_type})")
-   
+    print(
+        f"Subscribed to zeroMQ message queue on {socket.gethostname()} "
+        f"{bind_host}:{control_mq.port} "
+        f"(data ports {DATA_PORT_RANGE.label}, auth={auth_type})"
+    )
+
     if not skip_create_users:
         for user in users:
             create_s3_sql_users(user, admin_s3_configuration_file)
@@ -167,10 +178,11 @@ def perform_initial_config(configure_file, status_store, skip_create_users=False
     print(f"-->  Models will be run on device: {device}")
 
     embedding_backend = LocalEmbeddingBackend()
-    print("\n######################\nServer configuration done!\n######################\n")
+    print(
+        "\n######################\nServer configuration done!\n######################\n"
+    )
 
     return control_mq, server_cfg, device, embedding_backend
-
 
 
 #########################        Main server loop        #########################
@@ -233,19 +245,28 @@ def server_event_loop(
 
     try:
         while True:
-            print("####### Waiting for new objects in the S3 bucket (Press CTRL+C to exit)... #######", flush=True)
+            print(
+                "####### Waiting for new objects in the S3 bucket (Press CTRL+C to exit)... #######",
+                flush=True,
+            )
             task_manager.tasks_status.pretty_print_tasks(limit=20)
 
             # Honor SIGHUP-triggered hot reload from the offline admin CLI.
             if consume_reload_request():
                 try:
                     outcome = reload_configuration(
-                        configure_file, buckets_cfg, user_config_map,
+                        configure_file,
+                        buckets_cfg,
+                        user_config_map,
                         log_output=ENABLE_PRETTY_PRINT,
                     )
-                    filter_outcome(task_manager.active_threads, outcome, buckets_cfg, "reload")
+                    filter_outcome(
+                        task_manager.active_threads, outcome, buckets_cfg, "reload"
+                    )
                     if "error" in outcome:
-                        print(f"Warning: SIGHUP reload reported errors: {outcome['error']}")
+                        print(
+                            f"Warning: SIGHUP reload reported errors: {outcome['error']}"
+                        )
                     else:
                         print("SIGHUP reload complete.")
                 except Exception as exc:  # noqa: BLE001 - best-effort reload
@@ -256,15 +277,17 @@ def server_event_loop(
                 metrics = task_manager.active_threads.pool.metrics()
                 logger.debug(
                     "Pool: active=%d pending=%d (max %d/%d)",
-                    metrics.active_count, metrics.pending_count,
-                    metrics.max_workers, metrics.max_pending,
+                    metrics.active_count,
+                    metrics.pending_count,
+                    metrics.max_workers,
+                    metrics.max_pending,
                 )
-            except Exception:
+            except Exception:  # noqa: BLE001, S110 — server loop must survive per-command failures
                 pass
 
             try:
                 result = control_mq.server_control_queue_loop()
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 — server loop must survive per-command failures
                 print(f"ERROR in control queue loop: {e}", flush=True)
                 traceback.print_exc()
                 continue
@@ -286,50 +309,94 @@ def server_event_loop(
                 _reply_command_error(control_mq, payload, cmd, cmd_exc)
                 continue
 
-            finished_threads_ident_list = task_manager.active_threads.clean_finished_threads()
+            finished_threads_ident_list = (
+                task_manager.active_threads.clean_finished_threads()
+            )
             logger.debug("finished_threads=%s", finished_threads_ident_list)
-            task_manager.update_status_by_threads_ident_list(finished_threads_ident_list, TaskStatus.COMPLETED)
+            task_manager.update_status_by_threads_ident_list(
+                finished_threads_ident_list, TaskStatus.COMPLETED
+            )
 
             # After any event and cleanup, update per-user task status summaries
             try:
                 users = {entry.s3_username for entry in buckets_cfg.values()}
                 users = {u for u in users if u}
-                task_manager.active_threads.record_status_for_users_by_key(users, TaskCmd.PROCESS_OBJECTS)
-            except Exception as e:
+                task_manager.active_threads.record_status_for_users_by_key(
+                    users, TaskCmd.PROCESS_OBJECTS
+                )
+            except Exception as e:  # noqa: BLE001 — server loop must survive per-command failures
                 # Non-fatal: do not disrupt server loop on status recording errors
                 print(f"Warning: failed to update task status: {e}")
 
     except KeyboardInterrupt:
         print("\nInterrupted by user. Waiting for running tasks to finish...")
         finished_threads_ident_list = task_manager.active_threads.waitall()
-        task_manager.update_status_by_threads_ident_list(finished_threads_ident_list, TaskStatus.COMPLETED)
+        task_manager.update_status_by_threads_ident_list(
+            finished_threads_ident_list, TaskStatus.COMPLETED
+        )
         task_manager.active_threads.close()
         task_manager.tasks_status.close()
         print("All tasks finished. Exiting now.")
         control_mq.close()
         sys.exit(0)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — server loop must survive per-command failures
         print(f"\nFATAL: Unhandled exception in server event loop: {e}", flush=True)
         import traceback
+
         traceback.print_exc()
         try:
             task_manager.active_threads.close()
             task_manager.tasks_status.close()
             control_mq.close()
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — server loop must survive per-command failures
             print(f"Warning: error during shutdown cleanup: {e}")
         sys.exit(1)
 
-def handle_maintenance_flags(task_manager, args, buckets_cfg, device, embedding_backend, configure_file, server_cfg):
+
+def handle_maintenance_flags(
+    task_manager,
+    args,
+    buckets_cfg,
+    device,
+    embedding_backend,
+    configure_file,
+    server_cfg,
+):
     # do in this order
     if args.force_recompute:
-        recompute_all_objects(task_manager.active_threads, None, buckets_cfg, device, embedding_backend, TaskCmd.RECOMPUTE, log_output=ENABLE_PRETTY_PRINT)
+        recompute_all_objects(
+            task_manager.active_threads,
+            None,
+            buckets_cfg,
+            device,
+            embedding_backend,
+            TaskCmd.RECOMPUTE,
+            log_output=ENABLE_PRETTY_PRINT,
+        )
     if args.force_update:
-        update_objects(task_manager.active_threads, None, buckets_cfg, device, embedding_backend, TaskCmd.UPDATE, verbose=False, log_output=ENABLE_PRETTY_PRINT)
+        update_objects(
+            task_manager.active_threads,
+            None,
+            buckets_cfg,
+            device,
+            embedding_backend,
+            TaskCmd.UPDATE,
+            verbose=False,
+            log_output=ENABLE_PRETTY_PRINT,
+        )
     if args.check_objects:
-        check_objects(task_manager.active_threads, None, buckets_cfg, TaskCmd.CHECK, verbose=False, log_output=ENABLE_PRETTY_PRINT)
+        check_objects(
+            task_manager.active_threads,
+            None,
+            buckets_cfg,
+            TaskCmd.CHECK,
+            verbose=False,
+            log_output=ENABLE_PRETTY_PRINT,
+        )
     if args.check_incomplete_command:
-        incomplete_commands = task_manager.tasks_status.list_incomplete_tasks(mark_override=True)
+        incomplete_commands = task_manager.tasks_status.list_incomplete_tasks(
+            mark_override=True
+        )
         for command, info in incomplete_commands.items():
             client_id, cmd, payload = command
             task_id = int(info["id"])
@@ -347,16 +414,29 @@ def handle_maintenance_flags(task_manager, args, buckets_cfg, device, embedding_
 
             if cmd == TaskCmd.PROCESS_OBJECTS:
                 s3_objects = json.loads(payload)
-                thread_ident = task_manager.active_threads.launch_s3_threads(s3_objects,
-                                                                             buckets_cfg, device, embedding_backend,
-                                                                             cmd,
-                                                                             update_status_callback=update_status_func)
+                thread_ident = task_manager.active_threads.launch_s3_threads(
+                    s3_objects,
+                    buckets_cfg,
+                    device,
+                    embedding_backend,
+                    cmd,
+                    update_status_callback=update_status_func,
+                )
                 task_manager.associate_thread_with_task(thread_ident, task_id)
             elif cmd in (TaskCmd.RECOMPUTE, TaskCmd.UPDATE, TaskCmd.CHECK):
                 user_config_map = server_cfg.user_config_map
-                thread_ident = _handle_maintenance_command(task_manager.active_threads, cmd, client_id, buckets_cfg,
-                                                            device, embedding_backend, configure_file, user_config_map, cmd,
-                                                            update_status_callback=update_status_func)
+                thread_ident = _handle_maintenance_command(
+                    task_manager.active_threads,
+                    cmd,
+                    client_id,
+                    buckets_cfg,
+                    device,
+                    embedding_backend,
+                    configure_file,
+                    user_config_map,
+                    cmd,
+                    update_status_callback=update_status_func,
+                )
                 if thread_ident is None:
                     update_status_func(TaskStatus.COMPLETED)
                 else:
@@ -367,21 +447,29 @@ def handle_maintenance_flags(task_manager, args, buckets_cfg, device, embedding_
                 files = json.loads(payload)
                 for file in files:
                     if not os.path.exists(file):
-                        print(f"Trying to recover file: {file}, but it no longer exists. Skipping.")
+                        print(
+                            f"Trying to recover file: {file}, but it no longer exists. Skipping."
+                        )
                         continue
                     print(f"Recovering file: {file}")
 
                     ok, uname, dest = _persist_uploaded_user_config(
-                        file, configure_file, user_config_map, expected_username=client_id
+                        file,
+                        configure_file,
+                        user_config_map,
+                        expected_username=client_id,
                     )
                     if ok:
                         print(f"User config persisted for '{uname}' -> {dest}")
                     else:
-                        print(f"Note: file '{file}' was not recognized as a valid user config or there was an identity mismatch; left in place.")
+                        print(
+                            f"Note: file '{file}' was not recognized as a valid user config or there was an identity mismatch; left in place."
+                        )
 
                 update_status_func(TaskStatus.COMPLETED)
             else:
                 print("\tNothing to do for command of type {cmd}")
+
 
 def check_umrs_config_directory():
     umrs_config_dir = os.getenv(get_umrs_cfg_env_var_name())
@@ -397,7 +485,10 @@ def check_umrs_config_directory():
             return default_dir
         else:
             return None
+
+
 # ---------------------------------- CLI ------------------------------------
+
 
 def set_batch_size(batch_size: int) -> None:
     """Set UMRS_INFERENCE_BATCH_SIZE from the CLI arg if not already in env."""
@@ -405,7 +496,9 @@ def set_batch_size(batch_size: int) -> None:
         os.environ["UMRS_INFERENCE_BATCH_SIZE"] = str(batch_size)
         print(f"[inference] batch_size={batch_size} (from --batch-size)")
     else:
-        print(f"[inference] batch_size={os.environ['UMRS_INFERENCE_BATCH_SIZE']} (from env, --batch-size ignored)")
+        print(
+            f"[inference] batch_size={os.environ['UMRS_INFERENCE_BATCH_SIZE']} (from env, --batch-size ignored)"
+        )
 
 
 def main():
@@ -413,6 +506,7 @@ def main():
     # bootstrap so it works without a configured UMRS_CONFIG directory.
     if len(sys.argv) > 1 and sys.argv[1] == "admin":
         from umrs.cli.admin import main as admin_main
+
         return admin_main(sys.argv[2:])
 
     configure_server_logging()
@@ -422,22 +516,69 @@ def main():
     if umrs_cfg_dir:
         default_json_server_path = f"{umrs_cfg_dir}/{get_default_json_server_file()}"
     else:
-        sys.exit(f"No valid UMRS configuration directory. The default directory is {get_default_umrs_cfg_dir()} or the value of the environment variable {get_umrs_cfg_env_var_name()}. Check it exists.")
+        sys.exit(
+            f"No valid UMRS configuration directory. The default directory is {get_default_umrs_cfg_dir()} or the value of the environment variable {get_umrs_cfg_env_var_name()}. Check it exists."
+        )
 
-    parser = argparse.ArgumentParser(description="UMRS server", formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument('-c', '--conf', required=(default_json_server_path is None), default=default_json_server_path, help=f"Config file path. The default directory is {get_default_umrs_cfg_dir()} or the value of the environment variable {get_umrs_cfg_env_var_name()}.")
-    parser.add_argument('--force-recompute', action='store_true', help='Recompute all embeddings by scanning all S3 directories. Existing entries will be fully overwritten.')
-    parser.add_argument('--force-update', action='store_true', help='Recompute embeddings only for missing or mismatched entries. Only those entries will be updated in the database.')
-    parser.add_argument('--check-objects', action='store_true', help='Check all the buckets to see if the corresponding objects are stored in the database')
-    parser.add_argument('--pretty-print', action='store_true', help='Enable server-side pretty-printed tables and summaries (default: off)')
-    parser.add_argument('--check-incomplete-command', action='store_true', help='Force checking for incomplete commands after a crash (default: off)')
-    parser.add_argument('--pool-max-workers', type=int, default=None,
-                        help='Max worker threads in the pool (default: UMRS_POOL_MAX_WORKERS or 16)')
-    parser.add_argument('--pool-max-pending', type=int, default=None,
-                        help='Max pending tasks before rejecting requests (default: UMRS_POOL_MAX_PENDING or 64)')
-    parser.add_argument("--skip-create-users", action="store_true", help="Disable MinIO and PostgresSQL checks for bucket/user configuration to speed up server startup.",)
-    parser.add_argument('--batch-size', type=int, default=64,
-                        help='Max objects per model forward pass (sets UMRS_INFERENCE_BATCH_SIZE if not already in env). 0 = no limit.')
+    parser = argparse.ArgumentParser(
+        description="UMRS server",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    parser.add_argument(
+        "-c",
+        "--conf",
+        required=(default_json_server_path is None),
+        default=default_json_server_path,
+        help=f"Config file path. The default directory is {get_default_umrs_cfg_dir()} or the value of the environment variable {get_umrs_cfg_env_var_name()}.",
+    )
+    parser.add_argument(
+        "--force-recompute",
+        action="store_true",
+        help="Recompute all embeddings by scanning all S3 directories. Existing entries will be fully overwritten.",
+    )
+    parser.add_argument(
+        "--force-update",
+        action="store_true",
+        help="Recompute embeddings only for missing or mismatched entries. Only those entries will be updated in the database.",
+    )
+    parser.add_argument(
+        "--check-objects",
+        action="store_true",
+        help="Check all the buckets to see if the corresponding objects are stored in the database",
+    )
+    parser.add_argument(
+        "--pretty-print",
+        action="store_true",
+        help="Enable server-side pretty-printed tables and summaries (default: off)",
+    )
+    parser.add_argument(
+        "--check-incomplete-command",
+        action="store_true",
+        help="Force checking for incomplete commands after a crash (default: off)",
+    )
+    parser.add_argument(
+        "--pool-max-workers",
+        type=int,
+        default=None,
+        help="Max worker threads in the pool (default: UMRS_POOL_MAX_WORKERS or 16)",
+    )
+    parser.add_argument(
+        "--pool-max-pending",
+        type=int,
+        default=None,
+        help="Max pending tasks before rejecting requests (default: UMRS_POOL_MAX_PENDING or 64)",
+    )
+    parser.add_argument(
+        "--skip-create-users",
+        action="store_true",
+        help="Disable MinIO and PostgresSQL checks for bucket/user configuration to speed up server startup.",
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=64,
+        help="Max objects per model forward pass (sets UMRS_INFERENCE_BATCH_SIZE if not already in env). 0 = no limit.",
+    )
     args = parser.parse_args()
     set_batch_size(args.batch_size)
     configure_file = args.conf
@@ -448,11 +589,17 @@ def main():
 
     print(f"Starting UMRS server with configuration file: {configure_file}")
     site_config_path = resolve_site_config_path()
-    print(f"Site config file is: {site_config_path or 'none found (environment variables only)'}")
-    status_store = diskcache.Cache(f"{get_default_tmp_subdir()}/status_store", size_limit = 500*1024*1024)
+    print(
+        f"Site config file is: {site_config_path or 'none found (environment variables only)'}"
+    )
+    status_store = diskcache.Cache(
+        f"{get_default_tmp_subdir()}/status_store", size_limit=500 * 1024 * 1024
+    )
 
     print("Initialized status store")
-    thread_dict = diskcache.Cache(f"{get_default_tmp_subdir()}/thread_dict", size_limit = 500*1024*1024)
+    thread_dict = diskcache.Cache(
+        f"{get_default_tmp_subdir()}/thread_dict", size_limit=500 * 1024 * 1024
+    )
 
     print("Initialized thread dictionary")
 
@@ -462,15 +609,23 @@ def main():
         pool_kwargs["max_workers"] = args.pool_max_workers
     if args.pool_max_pending is not None:
         pool_kwargs["max_pending"] = args.pool_max_pending
-    thread_pool = ThreadPoolManager(PoolConfig(**pool_kwargs)) if pool_kwargs else ThreadPoolManager()
+    thread_pool = (
+        ThreadPoolManager(PoolConfig(**pool_kwargs))
+        if pool_kwargs
+        else ThreadPoolManager()
+    )
 
     create_umrs_server_db_user()
     db_pool_size = thread_pool._config.max_workers + 15
     task_db_pool = create_server_db_pool(pool_size=db_pool_size)
-    task_manager = TaskManager(status_store, thread_dict, task_db_pool, thread_pool=thread_pool, reset=False)
+    task_manager = TaskManager(
+        status_store, thread_dict, task_db_pool, thread_pool=thread_pool, reset=False
+    )
 
     print("Performing initial configuration...")
-    control_mq, server_cfg, device, embedding_backend = perform_initial_config(configure_file, status_store, skip_create_users=args.skip_create_users)
+    control_mq, server_cfg, device, embedding_backend = perform_initial_config(
+        configure_file, status_store, skip_create_users=args.skip_create_users
+    )
 
     print("Initial configuration done.")
     reconcile_status_on_startup(task_manager.active_threads, server_cfg.buckets_cfg)
@@ -504,7 +659,7 @@ def main():
             server_cfg.buckets_cfg,
             getattr(server_cfg, "user_config_map", None),
         )
-    except Exception as _ctx_exc:
+    except Exception as _ctx_exc:  # noqa: BLE001 — server loop must survive per-command failures
         print(f"Warning: could not set reload context: {_ctx_exc}")
 
     # Start HTTP sidecar so the Platform Gateway can proxy REST requests
@@ -518,16 +673,26 @@ def main():
             print(f"HTTP sidecar started (thread={_sidecar_thread.name}).")
         else:
             print("HTTP sidecar disabled by configuration.")
-    except Exception as _sc_exc:
+    except Exception as _sc_exc:  # noqa: BLE001 — server loop must survive per-command failures
         print(f"Warning: HTTP sidecar failed to start: {_sc_exc}")
 
-    handle_maintenance_flags(task_manager, args, server_cfg.buckets_cfg, device, embedding_backend, configure_file, server_cfg)
+    handle_maintenance_flags(
+        task_manager,
+        args,
+        server_cfg.buckets_cfg,
+        device,
+        embedding_backend,
+        configure_file,
+        server_cfg,
+    )
 
     print("Entering main server event loop.")
     cfg_summary = pretty_print_cfg(server_cfg, print_output=ENABLE_PRETTY_PRINT)
 
     print(f"Server configuration summary:\n{cfg_summary}")
-    task_manager.active_threads.record_status("system", "config", {"summary": cfg_summary})
+    task_manager.active_threads.record_status(
+        "system", "config", {"summary": cfg_summary}
+    )
 
     print("Server is ready to process tasks.")
     # Install SIGHUP handler and write a PID file so the offline admin CLI
