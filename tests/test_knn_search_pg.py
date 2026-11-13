@@ -342,6 +342,84 @@ def test_another_tenants_crowd_cannot_starve_the_search(pg_hnsw_table):
     assert len(index_db.db_pool._used) == 0
 
 
+class _Recorder:
+    """Cursor proxy: records every statement the search runs."""
+
+    def __init__(self, cur):
+        self._cur = cur
+        self.statements: list[str] = []
+
+    def execute(self, query, params=None):
+        text = query if isinstance(query, str) else query.as_string(self._cur)
+        self.statements.append(text)
+        return self._cur.execute(query, params)
+
+    def __getattr__(self, name):
+        return getattr(self._cur, name)
+
+
+def _scoped(data_base, table, n, vector="[1,0,0]", etag="eq"):
+    """``(results, n_indexed, statements)`` of one scoped search."""
+    request = KnnRequest(n=n, s3_object="q.png", bucket=ALICE)
+    scope = knn_worker._Scope.of(_entry(data_base, table), request)
+    recorders: list[_Recorder] = []
+
+    def _work(cur):
+        recorders.append(_Recorder(cur))
+        return knn_worker._scoped_nearest(recorders[0], scope, vector, etag, n)
+
+    results, n_indexed = knn_worker._with_cursor(data_base, _work)
+    return results, n_indexed, recorders[0].statements
+
+
+def _ran_exact_pass(statements):
+    return any("enable_indexscan" in s for s in statements)
+
+
+def test_k_above_the_default_ef_search_stays_on_the_index(pg_hnsw_table):
+    """Review U1: HNSW yields at most hnsw.ef_search (40) rows, so every k
+    above 40 re-ran the query as a scan of the whole shared table."""
+    data_base, index_db, table = pg_hnsw_table
+    _insert(data_base, table,
+            [(f"{ALICE}/a{i}.png", f"a{i}", [1, 0.01 * i, 0], "clip") for i in range(80)])
+
+    results, n_indexed, statements = _scoped(index_db, table, n=60)
+
+    assert n_indexed == 80
+    assert len(results) == 60
+    assert not _ran_exact_pass(statements)
+
+
+def test_an_indexed_query_object_does_not_force_the_exact_pass(pg_table):
+    """Review U1: n_indexed counts the query's own row, which the search
+    excludes, so k >= n_indexed always looked short by one."""
+    data_base, table = pg_table
+    _insert(data_base, table, [(f"{ALICE}/q.png", "eq", [1, 0, 0], "clip")] + [
+        (f"{ALICE}/a{i}.png", f"a{i}", [1, 0.1 * i, 0], "clip") for i in range(1, 10)
+    ])
+
+    results, n_indexed, statements = _scoped(data_base, table, n=20)
+
+    assert n_indexed == 10
+    assert len(results) == 9
+    assert not _ran_exact_pass(statements)
+
+
+def test_uploaded_query_objects_are_never_neighbours(pg_table):
+    """`umrs knn` uploads its query under <subdir>/.umrs-knn/; should one of
+    those ever be indexed it is neither returned nor counted."""
+    data_base, table = pg_table
+    _insert(data_base, table, [
+        (f"{ALICE}/pets/.umrs-knn/0a1b-q.png", "x1", [1, 0, 0], "clip"),
+        (f"{ALICE}/.umrs-knn/0a1c-q.png", "x2", [1, 0, 0], "clip"),
+        (f"{ALICE}/pets/cat.png", "c1", [1, 1, 0], "clip"),
+    ])
+    outcome = _search(_entry(data_base, table))
+
+    assert _objects(outcome) == [f"{ALICE}/pets/cat.png"]
+    assert outcome.n_indexed == 1
+
+
 def test_a_failed_query_returns_the_connection(pg_table):
     data_base, _table = pg_table
     entry = _entry(data_base, f"missing_{uuid.uuid4().hex[:8]}")

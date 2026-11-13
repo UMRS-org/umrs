@@ -258,7 +258,8 @@ def test_another_users_bucket_is_refused_before_launch(buckets):
     _dispatch(ctx, {"n": 3, "object": "q.png", "bucket": ALICE_BUCKET}, client_id="bob")
 
     ctx.task_manager.active_threads.launch_knn.assert_not_called()
-    assert _replies(mq) == [{"status": "error", "message": f"No bucket entry found for path: {ALICE_BUCKET}"}]
+    assert _replies(mq) == [{"status": "error", "code": "KNN_REFUSED",
+                             "message": f"No bucket entry found for path: {ALICE_BUCKET}"}]
 
 
 def test_a_bad_request_is_refused_before_launch(buckets):
@@ -269,6 +270,7 @@ def test_a_bad_request_is_refused_before_launch(buckets):
     ctx.task_manager.active_threads.launch_knn.assert_not_called()
     (reply,) = _replies(mq)
     assert reply["status"] == "error"
+    assert reply["code"] == "KNN_BAD_REQUEST"  # review U1: the code never reached the wire
     assert "n must be >= 1" in reply["message"]
 
 
@@ -362,6 +364,30 @@ def test_fast_searches_leave_no_phantom_running_entry(buckets, tmp_path, monkeyp
     assert entries
     assert {entry["status"] for entry in entries} == {ThreadStatus.DONE}
     assert all(entry["work"][0]["bucket"] == ALICE_BUCKET for entry in entries)
+
+
+def test_a_shared_bucket_search_is_recorded_for_the_caller(buckets, tmp_path, monkeypatch):
+    """Review U1: the work took the bucket owner as its user, so a member of an
+    ADR-080 shared bucket left a Running 'knn' entry in the owner's STATUS and
+    never saw the search in their own."""
+    from diskcache import Cache
+    from umrs.core.UMRSThreads import ThreadStatus, UMRSThreads
+
+    monkeypatch.setenv("UMRS_SERVICE_LIFECYCLE", "manual")
+    monkeypatch.setattr(knn_worker, "search", lambda _entry, _request: knn_worker.KnnOutcome(
+        results=[], cached=True, n_indexed=0))
+    threads = UMRSThreads(Cache(str(tmp_path / "status")), Cache(str(tmp_path / "threads")))
+    try:
+        knn_worker.knn_search_worker(threads, "bob", _request(), object(), _MQ(user="bob"),
+                                     SENDER, "knn", None, buckets)
+        owner = threads.status_store.get("alice", {}).get("knn")
+        caller = threads.status_store.get("bob", {}).get("knn")
+    finally:
+        threads.close()
+
+    assert owner is None
+    assert [info["status"] for info in caller["data"]] == [ThreadStatus.DONE]
+    assert [work["user"] for info in caller["data"] for work in info["work"]] == ["bob"]
 
 
 # --- worker bookkeeping -------------------------------------------------------------
@@ -512,6 +538,47 @@ def test_a_nan_score_is_a_zero_score():
     assert results == [{"object": f"{ALICE_BUCKET}/z.png", "score": 0.0},
                        {"object": f"{ALICE_BUCKET}/a.png", "score": 0.8}]
     json.loads(json.dumps(results), parse_constant=pytest.fail)
+
+
+class _SlowExactCursor:
+    """The index answers too few rows; the exact pass hits statement_timeout."""
+
+    def __init__(self):
+        self.statements: list[str] = []
+        self.exact = False
+
+    def execute(self, query, _params=None):
+        import psycopg2.errors
+
+        text = query if isinstance(query, str) else repr(query)
+        self.statements.append(text)
+        if "enable_indexscan" in text:
+            self.exact = True
+        elif "ROLLBACK TO SAVEPOINT" in text:
+            self.exact = False
+        elif self.exact and "ORDER BY" in text:
+            raise psycopg2.errors.QueryCanceled("canceling statement due to statement timeout")
+
+    def fetchone(self):
+        return (5, 5)
+
+    def fetchall(self):
+        return [(f"{ALICE_BUCKET}/a.png", 0.9)]
+
+
+def test_a_timed_out_exact_pass_keeps_the_index_answer():
+    """The exact pass is bounded by statement_timeout; when it fires the
+    search answers with what the index found instead of failing."""
+    cur = _SlowExactCursor()
+    scope = knn_worker._Scope(table="t", prefix=f"{ALICE_BUCKET}/",
+                              bucket_prefix=f"{ALICE_BUCKET}/", model=None, has_model=False)
+
+    results, n_indexed = knn_worker._scoped_nearest(cur, scope, "[1,0]", "etag", 5)
+
+    assert results == [{"object": f"{ALICE_BUCKET}/a.png", "score": 0.9}]
+    assert n_indexed == 5
+    assert any("statement_timeout" in s for s in cur.statements)
+    assert any("ROLLBACK TO SAVEPOINT" in s for s in cur.statements)
 
 
 def test_score_bar_survives_non_finite_scores():

@@ -20,9 +20,13 @@ BUCKET = "alice.xp.images"
 class _S3:
     def __init__(self):
         self.uploads = []
+        self.deleted = []
 
     def upload_file(self, path, bucket, key):
         self.uploads.append((path, bucket, key))
+
+    def delete_object(self, Bucket, Key):  # noqa: N803 — boto3 signature
+        self.deleted.append((Bucket, Key))
 
 
 class _MQ:
@@ -141,16 +145,41 @@ def test_subdir_alias_uploads_under_it_and_scopes_the_search(image, s3, capsys):
 
     assert client_umrs._action_knn(ctx) == 0
 
-    assert s3.uploads == [(str(image), BUCKET, "pets/q.png")]
-    assert ctx.control_mq.requests == [("alice", 2, "pets/q.png", BUCKET, "pets")]
+    ((path, bucket, key),) = s3.uploads
+    assert (path, bucket) == (str(image), BUCKET)
+    assert key.startswith("pets/.umrs-knn/")
+    assert key.endswith("-q.png")
+    assert ctx.control_mq.requests == [("alice", 2, key, BUCKET, "pets")]
     assert capsys.readouterr().out.strip() == _OK["summary"]
     assert ctx.control_mq.closed
 
 
-def test_without_subdir_the_key_is_the_file_name(image, s3):
+def test_the_query_never_overwrites_an_object_of_the_bucket(image, s3):
+    """Review U1: the query went up under its basename, so `umrs knn 5
+    img001.jpg` replaced the bucket's own (maybe a collaborator's) img001.jpg."""
     ctx = _ctx(image, _OK, username="alice")
-    assert client_umrs._action_knn(ctx) == 0
-    assert ctx.control_mq.requests == [("alice", 2, "q.png", BUCKET, None)]
+    statuses = [client_umrs._action_knn(ctx),
+                client_umrs._action_knn(_ctx(image, _OK, username="alice"))]
+
+    keys = [key for _path, _bucket, key in s3.uploads]
+    shapes = [(key.split("/")[0], key.rsplit("-", 1)[1]) for key in keys]
+    assert (statuses, shapes) == ([0, 0], [(".umrs-knn", "q.png")] * 2)
+    assert len(set(keys)) == 2  # one fresh key per query
+    assert ctx.control_mq.requests == [("alice", 2, keys[0], BUCKET, None)]
+    assert s3.deleted == [(BUCKET, key) for key in keys]  # removed after the reply
+
+
+def test_the_query_object_is_removed_after_an_error_reply(image, s3):
+    ctx = _ctx(image, {"status": "error", "message": "no"})
+    assert client_umrs._action_knn(ctx) == 1
+    ((_path, _bucket, key),) = s3.uploads
+    assert s3.deleted == [(BUCKET, key)]
+
+
+def test_the_reserved_query_dir_matches_the_server():
+    from umrs.server.knn_worker import QUERY_UPLOAD_DIR
+
+    assert client_umrs._KNN_QUERY_DIR == QUERY_UPLOAD_DIR
 
 
 def test_json_output_carries_the_reply(image, s3, capsys):

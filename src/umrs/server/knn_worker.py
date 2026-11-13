@@ -30,6 +30,7 @@ import math
 import time
 from dataclasses import dataclass
 
+from psycopg2 import errors as pg_errors
 from psycopg2 import sql
 
 from umrs.core.TaskCmdStatus import TaskStatus
@@ -38,6 +39,14 @@ from umrs.shared.env_knobs import env_int
 logger = logging.getLogger(__name__)
 
 DEFAULT_MAX_K = 100
+DEFAULT_EXACT_TIMEOUT_MS = 10_000
+HNSW_DEFAULT_EF_SEARCH = 40  # pgvector's default hnsw.ef_search
+
+# ``umrs knn`` uploads its query image under ``[<subdir>/]<QUERY_UPLOAD_DIR>/``
+# with a unique name and deletes it after the reply; such keys are never
+# searched or counted, should one ever be indexed.
+QUERY_UPLOAD_DIR = ".umrs-knn"
+_QUERY_UPLOAD_SEGMENT = f"/{QUERY_UPLOAD_DIR}/"
 
 
 class KnnError(Exception):
@@ -227,15 +236,16 @@ def _cached_embedding(cur, scope: _Scope, etag: str):
 
 def _nearest(cur, scope: _Scope, vector: str, etag: str, k: int) -> list[dict]:
     """The *k* closest rows in scope, minus exact copies of the query
-    (same ETag, a30136cb)."""
+    (same ETag, a30136cb) and uploaded query objects."""
     model_sql, model_params = scope.model_filter()
     query = sql.SQL(
         "SELECT s3_object, 1.0 - (embedding <=> %s::vector) AS score FROM {}"
-        " WHERE starts_with(s3_object, %s) AND checksum IS DISTINCT FROM %s"
-        " AND embedding IS NOT NULL{}"
+        " WHERE starts_with(s3_object, %s) AND strpos(s3_object, %s) = 0"
+        " AND checksum IS DISTINCT FROM %s AND embedding IS NOT NULL{}"
         " ORDER BY embedding <=> %s::vector LIMIT %s"
     ).format(sql.Identifier(scope.table), model_sql)
-    cur.execute(query, [vector, scope.prefix, etag, *model_params, vector, k])
+    cur.execute(query, [vector, scope.prefix, _QUERY_UPLOAD_SEGMENT, etag, *model_params,
+                        vector, k])
     return [{"object": row[0], "score": _finite_score(row[1])} for row in cur.fetchall()]
 
 
@@ -246,34 +256,63 @@ def _finite_score(value) -> float:
     return score if math.isfinite(score) else 0.0
 
 
-def _count_indexed(cur, scope: _Scope) -> int:
-    """Distinct indexed objects in the searched scope (ef8b7037)."""
+def _count_indexed(cur, scope: _Scope, etag: str) -> tuple[int, int]:
+    """``(n_indexed, n_candidates)``: distinct indexed objects in the searched
+    scope (ef8b7037), and how many of them a search may return (the query's
+    own ETag rows are never returned)."""
     model_sql, model_params = scope.model_filter()
     query = sql.SQL(
-        "SELECT COUNT(DISTINCT s3_object) FROM {}"
-        " WHERE starts_with(s3_object, %s) AND embedding IS NOT NULL{}"
+        "SELECT COUNT(DISTINCT s3_object),"
+        " COUNT(DISTINCT s3_object) FILTER (WHERE checksum IS DISTINCT FROM %s) FROM {}"
+        " WHERE starts_with(s3_object, %s) AND strpos(s3_object, %s) = 0"
+        " AND embedding IS NOT NULL{}"
     ).format(sql.Identifier(scope.table), model_sql)
-    cur.execute(query, [scope.prefix, *model_params])
-    return int(cur.fetchone()[0])
+    cur.execute(query, [etag, scope.prefix, _QUERY_UPLOAD_SEGMENT, *model_params])
+    n_indexed, n_candidates = cur.fetchone()
+    return int(n_indexed), int(n_candidates)
+
+
+def exact_timeout_ms() -> int:
+    """``UMRS_KNN_EXACT_TIMEOUT_MS``: statement_timeout of the exact pass."""
+    return env_int("UMRS_KNN_EXACT_TIMEOUT_MS", DEFAULT_EXACT_TIMEOUT_MS, lo=100, hi=600_000)
 
 
 def _scoped_nearest(cur, scope: _Scope, vector: str, etag: str, k: int):
     """``(results, n_indexed)``, exact within the caller's scope.
 
-    A table several buckets share carries an HNSW index, which filters after
-    its scan: it yields ``hnsw.ef_search`` candidates from the whole table,
-    so another tenant's crowd of near-duplicates could leave the caller with
-    no result (and tell them such a crowd exists). When the index answers
-    fewer rows than the scope holds, the query runs again as an exact scan,
-    local to this transaction (review U1).
+    A table several buckets share carries an HNSW index, which yields at most
+    ``hnsw.ef_search`` candidates from the whole table before the scope filter.
+    ef_search is raised to k for this transaction, so a k above pgvector's
+    default (40) no longer falls short on its own (review U1). When the index
+    still answers fewer rows than the scope can give (another tenant's crowd
+    of near-duplicates took the candidates), the query runs again as an exact
+    scan, bounded by :func:`exact_timeout_ms`.
     """
-    n_indexed = _count_indexed(cur, scope)
+    n_indexed, n_candidates = _count_indexed(cur, scope, etag)
+    cur.execute("SELECT set_config('hnsw.ef_search', %s, true)",
+                [str(max(HNSW_DEFAULT_EF_SEARCH, k))])
     results = _nearest(cur, scope, vector, etag, k)
-    if len(results) >= min(k, n_indexed):
+    if len(results) >= min(k, n_candidates):
         return results, n_indexed
+    return _exact_nearest(cur, scope, vector, etag, k, results), n_indexed
+
+
+def _exact_nearest(cur, scope: _Scope, vector, etag, k, approximate) -> list[dict]:
+    """The query as an exact scan, local to this transaction; when it hits
+    the statement timeout, the index's *approximate* answer stands."""
+    cur.execute("SAVEPOINT knn_exact")
+    cur.execute("SELECT set_config('statement_timeout', %s, true)", [str(exact_timeout_ms())])
     cur.execute("SET LOCAL enable_indexscan = off")
     cur.execute("SET LOCAL enable_seqscan = on")
-    return _nearest(cur, scope, vector, etag, k), n_indexed
+    try:
+        results = _nearest(cur, scope, vector, etag, k)
+    except pg_errors.QueryCanceled:
+        cur.execute("ROLLBACK TO SAVEPOINT knn_exact")
+        logger.warning("KNN: exact pass over %s timed out; answering with the index's %d row(s)",
+                       scope.prefix, len(approximate))
+        return approximate
+    cur.execute("RELEASE SAVEPOINT knn_exact")
+    return results
 
 
 def _with_cursor(data_base, work):
@@ -348,7 +387,8 @@ def _ok_reply(request: KnnRequest, outcome: KnnOutcome, duration_s: float) -> di
     }
 
 
-def _error_reply(code: str, message: str) -> dict:
+def error_reply(code: str, message: str) -> dict:
+    """The KNN error shape, one for the handler's refusals and the worker's."""
     return {"status": "error", "code": code, "message": message}
 
 
@@ -370,10 +410,10 @@ def run_knn(entry, request: KnnRequest) -> tuple[dict, str]:
         return _ok_reply(request, outcome, duration_s), TaskStatus.COMPLETED
     except KnnError as exc:
         logger.warning("KNN refused for %s/%s: %s", request.bucket, request.s3_object, exc)
-        return _error_reply(exc.code, str(exc)), TaskStatus.ERROR
+        return error_reply(exc.code, str(exc)), TaskStatus.ERROR
     except Exception:
         logger.exception("KNN search failed for %s/%s", request.bucket, request.s3_object)
-        return _error_reply(*_FAILED), TaskStatus.ERROR
+        return error_reply(*_FAILED), TaskStatus.ERROR
 
 
 def _close_knn_work(active_threads, user, key, update_status_callback, status) -> None:
@@ -407,10 +447,10 @@ def knn_search_worker(
     """
     if update_status_callback:
         update_status_callback(TaskStatus.RUNNING)
-    reply, status = _error_reply(*_FAILED), TaskStatus.ERROR
+    reply, status = error_reply(*_FAILED), TaskStatus.ERROR
     try:
         if buckets_cfg is not None:
-            active_threads.update_thread_dict(buckets_cfg, {request.bucket: None}, key)
+            active_threads.update_thread_dict(buckets_cfg, {request.bucket: None}, key, user=user)
         reply, status = run_knn(entry, request)
     finally:
         with contextlib.suppress(RuntimeError):

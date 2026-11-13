@@ -31,6 +31,27 @@ def _annotate_works(works, field_name, per_bucket) -> list[str]:
     return sorted(user for user in users if user)
 
 
+def _nb_objects(s3_keys):
+    """A work's object count: the count itself, len of the keys, or N/A."""
+    if isinstance(s3_keys, int):
+        return s3_keys
+    return len(s3_keys) if s3_keys is not None else "N/A"
+
+
+def _work_entry(bucket_fields, path_to_bucket, s3_keys, key) -> dict:
+    """One STATUS work for a bucket, its user the bucket owner."""
+    owner, table_name, modality_name, db_name = bucket_fields
+    return {
+        "user": owner,
+        "data_base": db_name,
+        "table_name": table_name,
+        "modality_name": modality_name,
+        "bucket": path_to_bucket,
+        "work_type": key,
+        "nb_objects": _nb_objects(s3_keys),
+    }
+
+
 class UMRSThreads:
     """
     Manages background tasks submitted by the server command handlers.
@@ -451,8 +472,13 @@ class UMRSThreads:
         return thread_ident
 
     def update_thread_dict(
-        self, buckets_cfg, keys_per_bucket, key, thread_ident="self"
+        self, buckets_cfg, keys_per_bucket, key, thread_ident="self", *, user=None
     ):
+        """Register the thread's works (one per bucket) as Running.
+
+        A work's user is the bucket owner, unless *user* names who runs it
+        (KNN by an ADR-080 shared-bucket member: their STATUS, not the owner's).
+        """
         array_of_works = []
         for path_to_bucket in keys_per_bucket:
             selected_fields = ["s3_username", "table_name", "modality_name", "db_name"]
@@ -462,19 +488,9 @@ class UMRSThreads:
                     f"WARNING: No bucket config for '{path_to_bucket}', skipping"
                 )
                 continue
-            user, table_name, modality_name, db_name = result
-            s3_keys = keys_per_bucket[path_to_bucket]
-            work = {
-                "user": user,
-                "data_base": db_name,
-                "table_name": table_name,
-                "modality_name": modality_name,
-                "bucket": path_to_bucket,
-                "work_type": key,
-                "nb_objects": s3_keys
-                if isinstance(s3_keys, int)
-                else (len(s3_keys) if s3_keys is not None else "N/A"),
-            }
+            work = _work_entry(result, path_to_bucket, keys_per_bucket[path_to_bucket], key)
+            if user:
+                work["user"] = user
             array_of_works.append(work)
         with self.lock:
             thread_id = self.thread_id

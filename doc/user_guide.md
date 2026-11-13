@@ -161,7 +161,9 @@ umrs -c conf_umrs.json export_embeddings alice-text ./out.csv \
 ```
 
 To find the `n` most similar indexed images to a local one (cosine, server-side;
-`alias/subdir` uploads the query under `subdir/` and searches only there):
+`alias/subdir` searches only under `subdir/`). The query is uploaded to a fresh
+key under `[subdir/].umrs-knn/`, so it never replaces an object of the bucket,
+and deleted after the reply:
 ```bash
 umrs -c conf_umrs.json knn 5 ./query.png alice-images/pets
 ```

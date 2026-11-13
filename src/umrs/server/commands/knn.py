@@ -6,7 +6,8 @@ and any project the payload names (ADR-097 D-7). This handler validates the
 request and the caller's ownership of the bucket on the event loop, so a
 refused request takes no pool slot, then runs the search on the pool
 (``umrs.server.knn_worker``), which replies with
-``{"status": "ok", "results": [{"object", "score"}, ...], ...}``.
+``{"status": "ok", "results": [{"object", "score"}, ...], ...}``. Every
+refusal, here or in the worker, is ``{"status": "error", "code", "message"}``.
 """
 
 from __future__ import annotations
@@ -18,7 +19,12 @@ from typing import Any
 
 from umrs.core.TaskCmdStatus import TaskCmd, TaskStatus
 from umrs.core.thread_pool import ServerOverloadedError
-from umrs.server.knn_worker import KnnError, parse_knn_request, searchable_entry
+from umrs.server.knn_worker import (
+    KnnError,
+    error_reply,
+    parse_knn_request,
+    searchable_entry,
+)
 
 from .base import CommandHandler, HandlerContext
 
@@ -43,7 +49,7 @@ class KnnHandler(CommandHandler):
         except KnnError as exc:
             logger.warning("KNN refused for %s: %s", client_id, exc)
             update_status(TaskStatus.ERROR)
-            _reply(ctx, zmq_sender_id, json.dumps({"status": "error", "message": str(exc)}))
+            _reply(ctx, zmq_sender_id, json.dumps(error_reply(exc.code, str(exc))))
             return
 
         try:

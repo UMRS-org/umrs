@@ -7,6 +7,7 @@ import os
 import sys
 import time
 import traceback
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, NoReturn
@@ -6217,17 +6218,39 @@ def _knn_target(ctx):
     return bucket_alias, subdir, entry, username, file_path
 
 
+# Equal to umrs.server.knn_worker.QUERY_UPLOAD_DIR (the server never returns
+# or counts keys under it); the client does not import the server module.
+_KNN_QUERY_DIR = ".umrs-knn"
+
+
+def _knn_query_key(file_path, subdir):
+    """A fresh key under ``[<subdir>/].umrs-knn/`` for the query image.
+
+    The query used to go up under its basename and so replaced any object of
+    that name, a collaborator's in a shared bucket included (review U1).
+    """
+    name = f"{_KNN_QUERY_DIR}/{uuid.uuid4().hex}-{os.path.basename(file_path)}"
+    return f"{subdir}/{name}" if subdir else name
+
+
 def _knn_upload(ctx, entry, file_path, subdir):
-    """Upload the query image to the bucket (under *subdir*); its S3 key."""
+    """Upload the query image to a reserved, unique key; ``(s3, key)``."""
     s3, _ = connect_to_s3(
         _client_s3cfg_path(entry.s3_configuration_file),
         endpoint_url_override=_profile_minio_override(ctx),
     )
-    s3_key = os.path.basename(file_path)
-    if subdir:
-        s3_key = f"{subdir}/{s3_key}"
+    s3_key = _knn_query_key(file_path, subdir)
     s3.upload_file(file_path, entry.path_to_bucket, s3_key)
-    return s3_key
+    return s3, s3_key
+
+
+def _knn_remove_query(s3, bucket, key):
+    """Delete the uploaded query object; a failure only warns."""
+    try:
+        s3.delete_object(Bucket=bucket, Key=key)
+    except Exception as exc:  # noqa: BLE001 — the search result stands
+        print(f"Warning: could not remove the KNN query object {key}: {exc}",
+              file=sys.stderr)
 
 
 def _knn_error(args, message):
@@ -6274,9 +6297,11 @@ def _action_knn(ctx):
     """Upload a local image, then ask the server for its k nearest neighbours
     in the bucket (port of upstream 487e3efb / e04b3d4e / bd0e6bc1)."""
     args = ctx.args
+    uploaded = None
     try:
         bucket_alias, subdir, entry, username, file_path = _knn_target(ctx)
-        s3_key = _knn_upload(ctx, entry, file_path, subdir)
+        s3, s3_key = _knn_upload(ctx, entry, file_path, subdir)
+        uploaded = (s3, entry.path_to_bucket, s3_key)
         raw = ctx.control_mq.request_knn(
             username, args.n, s3_key, entry.path_to_bucket, subdir=subdir or None
         )
@@ -6288,6 +6313,8 @@ def _action_knn(ctx):
             traceback.print_exc()
         return _knn_error(args, str(exc))
     finally:
+        if uploaded:
+            _knn_remove_query(*uploaded)
         ctx.control_mq.close()
 
 
