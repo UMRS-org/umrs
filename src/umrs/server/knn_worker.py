@@ -225,15 +225,6 @@ def _cached_embedding(cur, scope: _Scope, etag: str):
     return row[0] if row else None
 
 
-def _query_vector(cur, scope, etag, obj, model) -> tuple[str, bool]:
-    """``(vector literal, cached)`` for the query object."""
-    cached = _cached_embedding(cur, scope, etag)
-    if cached is not None:
-        return cached, True
-    embeddings = model.compute_embeddings([obj])
-    return _vector_literal(embeddings[0]), False
-
-
 def _nearest(cur, scope: _Scope, vector: str, etag: str, k: int) -> list[dict]:
     """The *k* closest rows in scope, minus exact copies of the query
     (same ETag, a30136cb)."""
@@ -266,6 +257,38 @@ def _count_indexed(cur, scope: _Scope) -> int:
     return int(cur.fetchone()[0])
 
 
+def _scoped_nearest(cur, scope: _Scope, vector: str, etag: str, k: int):
+    """``(results, n_indexed)``, exact within the caller's scope.
+
+    A table several buckets share carries an HNSW index, which filters after
+    its scan: it yields ``hnsw.ef_search`` candidates from the whole table,
+    so another tenant's crowd of near-duplicates could leave the caller with
+    no result (and tell them such a crowd exists). When the index answers
+    fewer rows than the scope holds, the query runs again as an exact scan,
+    local to this transaction (review U1).
+    """
+    n_indexed = _count_indexed(cur, scope)
+    results = _nearest(cur, scope, vector, etag, k)
+    if len(results) >= min(k, n_indexed):
+        return results, n_indexed
+    cur.execute("SET LOCAL enable_indexscan = off")
+    cur.execute("SET LOCAL enable_seqscan = on")
+    return _nearest(cur, scope, vector, etag, k), n_indexed
+
+
+def _with_cursor(data_base, work):
+    """Run ``work(cursor)`` on a pooled connection, then roll back and return
+    it: a read must not leave the conn idle in transaction."""
+    conn = data_base.get_conn()
+    try:
+        with conn.cursor() as cur:
+            return work(cur)
+    finally:
+        with contextlib.suppress(Exception):
+            conn.rollback()
+        data_base.put_conn(conn)
+
+
 def _load_query(entry, request: KnnRequest):
     """``(etag, object)`` of the query object in the caller's bucket."""
     from umrs.shared.storage.s3 import load_data_from_s3
@@ -286,20 +309,22 @@ def _load_query(entry, request: KnnRequest):
 
 
 def search(entry, request: KnnRequest) -> KnnOutcome:
-    """Run one KNN search against *entry* (ownership already checked)."""
+    """Run one KNN search against *entry* (ownership already checked).
+
+    No connection is held while the model computes the query embedding: the
+    per-experience pool is small and raises when exhausted, so concurrent
+    searches would starve ingestion into the same database (review U1).
+    """
     etag, obj = _load_query(entry, request)
     scope = _Scope.of(entry, request)
     data_base = entry.data_base
-    conn = data_base.get_conn()
-    try:
-        with conn.cursor() as cur:
-            vector, cached = _query_vector(cur, scope, etag, obj, entry.model)
-            results = _nearest(cur, scope, vector, etag, request.n)
-            n_indexed = _count_indexed(cur, scope)
-    finally:
-        with contextlib.suppress(Exception):
-            conn.rollback()  # a read must not leave the conn idle in transaction
-        data_base.put_conn(conn)
+    vector = _with_cursor(data_base, lambda cur: _cached_embedding(cur, scope, etag))
+    cached = vector is not None
+    if not cached:
+        vector = _vector_literal(entry.model.compute_embeddings([obj])[0])
+    results, n_indexed = _with_cursor(
+        data_base, lambda cur: _scoped_nearest(cur, scope, vector, etag, request.n)
+    )
     return KnnOutcome(results=results, cached=cached, n_indexed=n_indexed)
 
 

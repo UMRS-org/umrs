@@ -276,6 +276,72 @@ def test_exact_duplicates_of_the_query_are_not_neighbours(pg_table):
 # --- connection hygiene ---------------------------------------------------------------
 
 
+class _PoolWatchingModel(_Model):
+    """Records how many pool connections are checked out during inference."""
+
+    def __init__(self, data_base):
+        super().__init__()
+        self.data_base = data_base
+        self.used_during_compute = []
+
+    def compute_embeddings(self, objects):
+        self.used_during_compute.append(len(self.data_base.db_pool._used))
+        return super().compute_embeddings(objects)
+
+
+def test_no_connection_is_held_through_the_forward_pass(pg_table):
+    """Review U1: the per-experience pool (maxconn 5, raises when full) lent a
+    connection to every KNN for the whole model forward pass."""
+    data_base, table = pg_table
+    _insert(data_base, table, [(f"{ALICE}/a.png", "a1", [1, 0, 0], "clip")])
+    model = _PoolWatchingModel(data_base)
+
+    outcome = _search(_entry(data_base, table, model=model))
+
+    assert outcome.cached is False
+    assert model.used_during_compute == [0]
+    assert len(data_base.db_pool._used) == 0
+
+
+@pytest.fixture
+def pg_hnsw_table(pg_table):
+    """``pg_table`` plus the HNSW index every embedding table gets, read
+    through connections whose planner always takes it (as on a large table)."""
+    from psycopg2 import pool as pg_pool
+    from umrs.server.sql import DataBase
+
+    data_base, table = pg_table
+    _exec(data_base, f"CREATE INDEX ON {table} USING hnsw (embedding vector_cosine_ops)")
+    index_pool = pg_pool.SimpleConnectionPool(
+        1, 3, host=_PG, port=os.environ.get("POSTGRES_PORT", "5432"),
+        user=os.environ.get("POSTGRES_USER", "postgres"),
+        password=os.environ.get("POSTGRES_PASSWORD", ""),
+        dbname=os.environ.get("POSTGRES_DB", "postgres"),
+        options="-c enable_seqscan=off",
+    )
+    index_db = DataBase(index_pool, os.environ.get("POSTGRES_DB", "postgres"), "test")
+    index_db.add_table(table, {"id": "int", "s3_object": "text", "checksum": "text",
+                               "embedding": "vector", "model": "text"})
+    yield data_base, index_db, table
+    index_pool.closeall()
+
+
+def test_another_tenants_crowd_cannot_starve_the_search(pg_hnsw_table):
+    """Review U1: HNSW filters after its scan (ef_search = 40 candidates from
+    the whole table). Bob's 60 near-copies of the query used to fill every
+    candidate, so Alice got no result although her bucket holds 5 rows."""
+    data_base, index_db, table = pg_hnsw_table
+    crowd = [(f"{BOB}/copy{i}.png", f"b{i}", [1, 0.001 * i, 0], "clip") for i in range(60)]
+    mine = [(f"{ALICE}/a{i}.png", f"a{i}", [1, 1 + i, 0], "clip") for i in range(5)]
+    _insert(data_base, table, crowd + mine)
+
+    outcome = _search(_entry(index_db, table), n=5)
+
+    assert outcome.n_indexed == 5
+    assert _objects(outcome) == [f"{ALICE}/a{i}.png" for i in range(5)]
+    assert len(index_db.db_pool._used) == 0
+
+
 def test_a_failed_query_returns_the_connection(pg_table):
     data_base, _table = pg_table
     entry = _entry(data_base, f"missing_{uuid.uuid4().hex[:8]}")
