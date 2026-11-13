@@ -144,9 +144,7 @@ def _indexed_keys(entry, bucket, keys) -> set[str]:
     if not keys or not plain_embedding_bucket(entry):
         return set()
     try:
-        stored = _stored_rows(entry.data_base, entry.table_name, bucket, keys)
-        keys = [key for key in keys if f"{bucket}/{key}" in stored]  # HEAD only these
-        etags = _head_etags(entry.s3_connection, bucket, keys) if keys else {}
+        stored, etags = _stored_and_etags(entry, bucket, keys)
     except HeadPhaseAborted as exc:  # fail open, without a traceback per batch
         logger.warning("[PROCESS] indexed pre-filter gave up on bucket %s (%s); "
                        "indexing every object", bucket, exc)
@@ -157,9 +155,17 @@ def _indexed_keys(entry, bucket, keys) -> set[str]:
         return set()
     model_name = getattr(entry.model, "model_name", None)
     return {
-        key for key in keys
+        key for key in etags
         if _matches(etags.get(key), stored.get(f"{bucket}/{key}"), model_name)
     }
+
+
+def _stored_and_etags(entry, bucket, keys):
+    """``(stored rows, {key: ETag})``; only keys that have rows are HEADed,
+    so a fresh upload costs no HEAD (review U1)."""
+    stored = _stored_rows(entry.data_base, entry.table_name, bucket, keys)
+    keys = [key for key in keys if f"{bucket}/{key}" in stored]
+    return stored, (_head_etags(entry.s3_connection, bucket, keys) if keys else {})
 
 
 def _matches(etag, rows, model_name) -> bool:
