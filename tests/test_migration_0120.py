@@ -168,6 +168,11 @@ def test_0120_applies_and_both_lanes_read_it(pg_conn: Any) -> None:
     with pg_conn.cursor() as cur:
         cur.execute(_sql())
         _seed(cur)
+        # Pin the planner statistics to what the table holds now: otherwise
+        # the plan below follows whatever the last autoanalyze sampled while
+        # earlier tests churned knowledge_nodes, and the index choice flips
+        # with suite timing. ANALYZE in this transaction rolls back with it.
+        cur.execute("ANALYZE knowledge_nodes")
         # Three rows: take the scans a tiny table prefers off the table, so
         # the plan shows whether the lane's expression reaches the index (a
         # GIN index is only ever read by a Bitmap Index Scan).
