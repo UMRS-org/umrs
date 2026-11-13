@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=64", "setuptools-scm>=8"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "UMRS"
+dynamic = ["version"]
+description = "Unified Multimodal Retriever Service"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.11"
+authors = [
+    { name = "Emmanuel Jeannot" , email = "emmanuel.jeannot@inria.fr" },
+    { name = "Masaru Nagaso" , email = "masaru.nagaso@riken.jp" },
+    { name = "Emil Vatai" , email = "emil.vatai@riken.jp" },
+]
+keywords = ["ai", "science", "llm", "rag", "hpc", "slurm"]
+
+[tool.setuptools_scm]
+tag_regex = "^ai4s-platform/(?P<version>[vV]?\\d+(?:\\.\\d+){0,2}[^\\+]*)(?:\\+.*)?$"
+git_describe_command = "git describe --dirty --tags --long --match 'ai4s-platform/v*'"
+
+[tool.black]
+line-length = 100
+
+[tool.ruff]
+# target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # pyflakes
+    "I",      # isort
+    "B",      # flake8-bugbear
+    "C4",     # flake8-comprehensions
+    "UP",     # pyupgrade
+    "ARG",    # flake8-unused-arguments
+    "SIM",    # flake8-simplify
+]
+ignore = [
+    "E501",   # line too long (handled by formatter)
+    "B008",   # do not perform function calls in argument defaults
+    "B009",   # do not call getattr with a constant attribute value
+    "ARG001", # unused function argument (common in APIs)
+]
+
+# [tool.ruff.lint.isort]
+# known-first-party = []
