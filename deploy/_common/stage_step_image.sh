@@ -207,8 +207,9 @@ prepare_site_packages() {
     (cd "${WS}" && uv pip install --no-config --quiet --target "${site}" --python 3.11 \
         --python-version 3.11 --python-platform "${UV_PLATFORM}" --only-binary :all: \
         --require-hashes -r "${WS}/step-requirements.txt") >&2
-    # The umrs wheel declares server-side dependencies (r4-contracts) the
-    # worker never imports; the tier above is the whole runtime.
+    # The umrs wheel declares server-side dependencies (r4-contracts, and
+    # umrs-protocol from ADR-117 U2.0) the worker never imports; the tier
+    # above is the whole runtime.
     (cd "${WS}" && uv pip install --no-config --quiet --target "${site}" --python 3.11 \
         --python-version 3.11 --python-platform "${UV_PLATFORM}" --no-deps "${wheel}") >&2
     # Console scripts carry the build host's interpreter path; the PEP 610

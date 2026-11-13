@@ -115,14 +115,19 @@ log "Installing server dependencies from ${SRC_DIR}/requirements.txt ..."
 # pip will skip them if the version satisfies the requirement.
 pip install --quiet -r "${SRC_DIR}/requirements.txt"
 
-# ─── Install r4-contracts when available (shared DTOs required by umrs) ─────
+# ─── Install umrs-protocol and r4-contracts from local paths only ──────────
+# Neither is published (nor is umrs), so a package-index fallback would install
+# whatever someone registered under the name (dependency confusion): a missing
+# checkout fails instead. umrs-protocol (ADR-117 D-2) goes first, in the same
+# pip command, so r4-contracts never resolves it from an index.
+PROTOCOL_DIR="${REPO_ROOT}/protocol"
 R4_CONTRACTS_DIR="${R4_CONTRACTS_DIR:-${REPO_ROOT}/../r4-contracts}"
-if [[ -f "${R4_CONTRACTS_DIR}/pyproject.toml" ]]; then
-    log "Installing r4-contracts (editable) from ${R4_CONTRACTS_DIR} ..."
-    pip install --quiet -e "${R4_CONTRACTS_DIR}"
-else
-    log "r4-contracts not found at ${R4_CONTRACTS_DIR} — pip will resolve from the package index."
-fi
+[[ -f "${PROTOCOL_DIR}/pyproject.toml" ]] \
+    || die "umrs-protocol not found at ${PROTOCOL_DIR} (incomplete umrs checkout)."
+[[ -f "${R4_CONTRACTS_DIR}/pyproject.toml" ]] \
+    || die "r4-contracts not found at ${R4_CONTRACTS_DIR}; set R4_CONTRACTS_DIR to the superproject's r4-contracts."
+log "Installing umrs-protocol and r4-contracts (editable) from ${PROTOCOL_DIR} and ${R4_CONTRACTS_DIR} ..."
+pip install --quiet -e "${PROTOCOL_DIR}" -e "${R4_CONTRACTS_DIR}"
 
 # ─── Install umrs package in editable mode ───────────────────────────────────
 log "Installing umrs package (editable mode) ..."
@@ -131,6 +136,7 @@ pip install --quiet -e "${SRC_DIR}"
 # ─── Verify key imports ─────────────────────────────────────────────────────
 log "Verifying installation..."
 python3 -c "
+import umrs_protocol; print('  umrs-protocol OK')
 import r4_contracts; print('  r4-contracts OK')
 import umrs; print(f'  umrs package OK ({umrs.__file__})')
 import torch; print(f'  torch {torch.__version__} (CUDA: {torch.cuda.is_available()})')
