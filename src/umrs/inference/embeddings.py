@@ -476,6 +476,7 @@ class _Prefetcher:
         self._stop.set()
         self._drain()
         self._thread.join()
+        self._drain()  # a put that raced the first drain leaves nothing behind
         return False
 
     def __iter__(self):
@@ -490,6 +491,10 @@ class _Prefetcher:
     def _run(self) -> None:
         try:
             for batch in self._batches:
+                # The consumer may have left while the last put raced its
+                # drain: never start another S3 load (bucket locks are held).
+                if self._stop.is_set():
+                    return
                 t0 = _time.perf_counter()
                 loaded = self._load(batch)
                 self.io_seconds += _time.perf_counter() - t0

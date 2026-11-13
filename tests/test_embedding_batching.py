@@ -263,6 +263,34 @@ def test_model_failure_stops_a_blocked_loader(monkeypatch):
     assert _prefetch_threads() == []
 
 
+def test_loader_starts_no_batch_after_the_consumer_left():
+    """Review U1: a put racing the consumer's drain could succeed after the
+    stop, and the loader went on to a full S3 load of the next batch while
+    the bucket locks were still held."""
+    loads: list[int] = []
+    prefetch = embeddings._Prefetcher(lambda batch: loads.append(batch) or batch, [1, 2, 3])
+
+    def _racing_put(_loaded):
+        prefetch._stop.set()  # the consumer leaves while this put is in flight
+        return True  # ...and the put still lands in the slot the drain freed
+
+    prefetch._put = _racing_put
+    prefetch._run()
+    assert loads == [1]
+
+
+def test_exit_drains_an_item_put_after_the_first_drain():
+    prefetch = embeddings._Prefetcher(lambda batch: batch, [])
+
+    class _LateThread:
+        def join(self):
+            prefetch._queue.put_nowait("late")  # a put that raced the first drain
+
+    prefetch._thread = _LateThread()
+    prefetch.__exit__(None, None, None)
+    assert prefetch._queue.empty()
+
+
 def test_timing_is_logged_at_debug(monkeypatch, loader, caplog):
     monkeypatch.setenv("UMRS_INFERENCE_BATCH_SIZE", "2")
     model = _FakeModel()
