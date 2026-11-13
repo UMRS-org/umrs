@@ -8,13 +8,22 @@ umrs.server.structured_logging). Upstream's CSV also had columns for a
 ``[TIMING]`` line that no UMRS server writes, so they were always NA and are
 gone (review U1).
 
-One batch logs "Batch assembled" (every client request, in order), "Tasks
-created" (the task ids, same order), then at most one "skipping N" line
-("per client: [...]" names each client's share) and "S3 events ready" or
-"All objects already indexed". Every (client, n) tuple is read; a skip
-count belongs to the batch it is logged in. A skip line without the
-per-client part (older servers) is attributed only when its batch has a
-single client, or when no batch is open (upstream logs).
+One batch logs "Batch assembled" (every client request, in order) and "Tasks
+created" (the task ids, same order) on the event loop. Its own collector
+thread logs, up to 60 s later, at most one "skipping N" line ("per client:
+[...]" names each client's share), then "S3 events ready" or "All objects
+already indexed". With several clients those lines interleave with the next
+batches' "Tasks created" (review U1), so the parser keeps, per client, the
+tasks still waiting for their collector, oldest first: a client's skip
+share goes to its oldest waiting task that has none yet, and "S3 events
+ready" resolves each listed client's oldest waiting task. A task whose skip
+share covers every object its client submitted is resolved there (no S3
+line follows); "All objects already indexed" resolves what the latest skip
+line assigned. Every (client, n) tuple is read. A skip line without the
+per-client part (older servers) is attributed only when exactly one task
+waits for a skip, or kept for the next S3 line when no task waits at all
+(upstream logs). The server logs no batch id, so two batches of the same
+client whose collectors finish out of order can still swap their shares.
 """
 
 import argparse
@@ -52,6 +61,13 @@ def parse_ts(s):
 def pairs(text):
     """Every ``('client', n)`` tuple in *text*, in order."""
     return [(client, int(n)) for client, n in P_PAIR.findall(text)]
+
+
+def _plus(a, b):
+    """``a + b``, or None when either is unknown."""
+    if a is None or b is None:
+        return None
+    return a + b
 
 
 def diff_s(t1, t2):
@@ -106,15 +122,18 @@ class LogParser:
         self.last_batch = {}       # user -> n_objects (latest Batch assembled)
         self.batch_counts = []     # [(user, n)] of the latest Batch assembled, in order
         self.last_task_id = {}     # user -> task_id (most recent Tasks created)
-        self.open_batch = {}       # user -> first task_id of the batch being collected
-        self.pending_skip = None   # skip count logged while no batch is open
+        self.open_tasks = {}       # user -> [task_id, ...] waiting for their collector, oldest first
+        self.submitted = {}        # open task_id -> objects its client sent in that batch
+        self.skip_seen = set()     # open task ids that already got their skip share
+        self.last_skip = []        # [(user, task_id)] the latest skip line assigned
+        self.pending_skip = None   # skip count logged while no task is open
         self.handlers = [
             (P_AUTH, self._on_auth),
             (P_PROCESS_REQ, self._on_process_req),
             (P_BATCH, self._on_batch),
             (P_TASKS, self._on_tasks_created),
             (P_SKIP, self._on_skip),
-            (P_ALL_INDEXED, self._close_batch),
+            (P_ALL_INDEXED, self._on_all_indexed),
             (P_S3_READY, self._on_s3_ready),
             (P_RUNNING, self._on_running),
             (P_COMPLETED, self._on_completed),
@@ -150,40 +169,77 @@ class LogParser:
             return self.batch_counts[index][1]
         return self.last_batch.get(user)
 
-    def _on_tasks_created(self, m):
-        ts = parse_ts(m.group(1))
-        self._close_batch(m)
-        for index, (user, tid) in enumerate(pairs(m.group(2))):
-            task_id = str(tid)
-            t = self._new_task(task_id, user)
-            t.t_tasks_created = ts
-            t.n_objects_batch = self._batch_count(index, user)
-            self.tasks[task_id] = t
-            self.last_task_id[user] = task_id
-            self.open_batch.setdefault(user, task_id)
-        self.batch_counts = []
+    def _created_task(self, index, user, tid, ts):
+        task = self._new_task(str(tid), user)
+        task.t_tasks_created = ts
+        task.n_objects_batch = self._batch_count(index, user)
+        self.tasks[task.task_id] = task
+        self.last_task_id[user] = task.task_id
+        return task
 
-    def _close_batch(self, _m=None):
-        self.open_batch = {}
+    def _on_tasks_created(self, m):
+        """Open each client's first task of the batch; earlier batches stay
+        open, since their collectors may still be logging (review U1)."""
+        ts = parse_ts(m.group(1))
+        firsts, totals = {}, {}
+        for index, (user, tid) in enumerate(pairs(m.group(2))):
+            task = self._created_task(index, user, tid, ts)
+            firsts.setdefault(user, task.task_id)
+            totals[user] = _plus(totals.get(user, 0), task.n_objects_batch)
+        for user, task_id in firsts.items():
+            self.open_tasks.setdefault(user, []).append(task_id)
+            self.submitted[task_id] = totals[user]
+        self.batch_counts = []
         self.pending_skip = None
+
+    def _resolve(self, user, task_id):
+        """*task_id*'s collector is done: it waits for no more lines."""
+        waiting = self.open_tasks.get(user, [])
+        if task_id in waiting:
+            waiting.remove(task_id)
+        self.skip_seen.discard(task_id)
+        self.submitted.pop(task_id, None)
 
     def _on_skip(self, m):
         total, per_client = int(m.group(2)), pairs(m.group(3).partition("per client:")[2])
-        if not self.open_batch:
-            self.pending_skip = total
-        elif per_client:
-            self._assign_skips(per_client)
-        elif len(self.open_batch) == 1:
-            self._assign_skips([(next(iter(self.open_batch)), total)])
+        if not per_client:
+            per_client = self._unnamed_skip(total)
+        assigned = [(user, self._assign_skip(user, n)) for user, n in per_client]
+        self.last_skip = [(user, tid) for user, tid in assigned if tid is not None]
 
-    def _assign_skips(self, per_client):
-        for user, n in per_client:
-            task = self.tasks.get(self.open_batch.get(user))
-            if task is not None:
-                task.n_skipped = n
+    def _unnamed_skip(self, total):
+        """A skip line without its per-client part (older servers)."""
+        waiting = [(user, tid) for user, tids in self.open_tasks.items()
+                   for tid in tids if tid not in self.skip_seen]
+        if not any(self.open_tasks.values()):
+            self.pending_skip = total
+        return [(waiting[0][0], total)] if len(waiting) == 1 else []
+
+    def _assign_skip(self, user, n):
+        """Give *n* to *user*'s oldest waiting task without a skip share yet."""
+        tid = next((t for t in self.open_tasks.get(user, ()) if t not in self.skip_seen), None)
+        if tid is None:
+            return None
+        self.tasks[tid].n_skipped = n
+        self.skip_seen.add(tid)
+        submitted = self.submitted.get(tid)
+        if submitted is not None and n >= submitted:
+            self._resolve(user, tid)  # fully skipped: no S3 line will name it
+        return tid
+
+    def _on_all_indexed(self, _m):
+        for user, tid in self.last_skip:
+            self._resolve(user, tid)
+        self.last_skip = []
+        self.pending_skip = None
 
     def _s3_task(self, user, ts):
-        tid = self.open_batch.get(user) or self.last_task_id.get(user)
+        waiting = self.open_tasks.get(user)
+        if waiting:
+            tid = waiting[0]
+            self._resolve(user, tid)
+            return self.tasks[tid]
+        tid = self.last_task_id.get(user)
         if tid in self.tasks:
             return self.tasks[tid]
         # task_id not yet seen (missing Tasks created line): store with a synthetic key
@@ -201,7 +257,7 @@ class LogParser:
             task.n_objects_s3 = n
             if self.pending_skip is not None:
                 task.n_skipped, self.pending_skip = self.pending_skip, None
-        self._close_batch()
+        self.pending_skip = None
 
     def _on_running(self, m):
         task = self.tasks.get(m.group(3))

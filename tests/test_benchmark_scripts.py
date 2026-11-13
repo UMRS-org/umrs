@@ -125,6 +125,54 @@ def test_parse_server_log_matches_batch_counts_by_position():
     assert rows == {"1": ["alice", 5, 9, 0], "2": ["bob", 2, 0, 2], "3": ["alice", 4, 0, 0]}
 
 
+_P = "2026-10-01 10:00:0{},000 INFO umrs.server.{}: [PROCESS] {}"
+
+# Each batch's skip and S3 lines come from its own collector thread, after
+# the next batch's "Tasks created" (several clients ingesting at once).
+OVERLAPPING_LOG = [
+    _P.format(1, "commands.process_objects", "Tasks created: [('alice', 1)]"),
+    _P.format(2, "commands.process_objects", "Tasks created: [('bob', 2)]"),
+    _P.format(3, "indexed_prefilter", "skipping 3 already-indexed object(s): {'a': 3} "
+                                      "per client: [('alice', 3)]"),
+    _P.format(4, "commands.process_objects", "S3 events ready — launching threads for "
+                                             "1 client(s): [('alice', 2)]"),
+    _P.format(5, "indexed_prefilter", "skipping 4 already-indexed object(s): {'b': 4} "
+                                      "per client: [('bob', 4)]"),
+    _P.format(6, "commands.process_objects", "All objects already indexed, nothing to do."),
+]
+
+
+def _skips(lines):
+    tasks = _load("parse_server_log").parse_lines(lines)
+    return {tid: (t.user, t.n_skipped, t.n_objects_s3) for tid, t in tasks.items()}
+
+
+def test_parse_server_log_keeps_skips_of_overlapping_batches():
+    """Review U1: one global open batch lost both skips here (alice's went
+    to bob's batch, alice's S3 line closed bob's, bob's became pending)."""
+    assert _skips(OVERLAPPING_LOG) == {"1": ("alice", 3, 2), "2": ("bob", 4, None)}
+
+
+def test_parse_server_log_an_s3_line_resolves_only_its_clients_task():
+    """Batch 1's S3 line must not close bob's batch 2: bob's skip and S3
+    line still reach task 2, and alice's next batch gets her next lines."""
+    lines = [
+        *OVERLAPPING_LOG[:2],
+        _P.format(3, "commands.process_objects", "S3 events ready — launching threads for "
+                                                 "1 client(s): [('alice', 5)]"),
+        _P.format(4, "commands.process_objects", "Tasks created: [('alice', 3)]"),
+        _P.format(5, "indexed_prefilter", "skipping 1 already-indexed object(s): {'b': 1} "
+                                          "per client: [('bob', 1)]"),
+        _P.format(6, "indexed_prefilter", "skipping 2 already-indexed object(s): {'a': 2} "
+                                          "per client: [('alice', 2)]"),
+        _P.format(7, "commands.process_objects", "S3 events ready — launching threads for "
+                                                 "1 client(s): [('bob', 6)]"),
+        _P.format(8, "commands.process_objects", "S3 events ready — launching threads for "
+                                                 "1 client(s): [('alice', 1)]"),
+    ]
+    assert _skips(lines) == {"1": ("alice", 0, 5), "2": ("bob", 1, 6), "3": ("alice", 2, 1)}
+
+
 def _load(name):
     spec = importlib.util.spec_from_file_location(f"bench_{name}", BENCH_DIR / f"{name}.py")
     module = importlib.util.module_from_spec(spec)
