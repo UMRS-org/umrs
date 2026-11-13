@@ -532,13 +532,26 @@ class UMRSThreads:
 
     def record_skipped_work(self, buckets_cfg, skipped_per_bucket, key) -> None:
         """A finished STATUS entry for buckets whose every object was skipped
-        as already indexed (no pool thread runs for them)."""
+        as already indexed (no pool thread runs for them).
+
+        The entry is closed whatever fails after it was registered (review
+        U1): the collector thread exits, so nothing else would mark it Done.
+        """
         if not skipped_per_bucket:
             return
-        self.update_thread_dict(buckets_cfg, dict(skipped_per_bucket), key)
-        users = self.annotate_works("nb_skipped_indexed", skipped_per_bucket, key)
-        self.update_status_to_done()
-        self.record_status_for_users_by_key(users, key)
+        try:
+            self.update_thread_dict(buckets_cfg, dict(skipped_per_bucket), key)
+            self.annotate_works("nb_skipped_indexed", skipped_per_bucket, key)
+        finally:
+            self._finish_own_entry(key)
+
+    def _finish_own_entry(self, key) -> None:
+        """Mark the calling thread's entry Done and re-record its users' STATUS."""
+        done_key = self.update_status_to_done()
+        entry = self.thread_dict.get(done_key) if done_key else None
+        users = sorted({w["user"] for w in (entry or {}).get("work", []) if w.get("user")})
+        if users:
+            self.record_status_for_users_by_key(users, key)
 
     def is_worker_thread(self):
         current_thread = threading.current_thread()
@@ -564,6 +577,7 @@ class UMRSThreads:
                 logger.info(
                     f"Error: cannot find '{thread_ident}' entry for {self.thread_dict=}"
                 )
+        return new_key
 
     def clean_finished_threads(self):
         from umrs.server.config import ENABLE_PRETTY_PRINT

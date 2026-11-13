@@ -341,6 +341,16 @@ def _report_group_pretty_status(active_threads, all_users) -> None:
         )
 
 
+def _annotate_skipped(active_threads, items, key) -> None:
+    """``nb_skipped_indexed`` on this thread's STATUS works; a STATUS write
+    failure only logs, so the group still runs and its callbacks still fire
+    (review U1)."""
+    try:
+        active_threads.annotate_works("nb_skipped_indexed", _skipped_counts(items), key)
+    except Exception:
+        logger.warning("[THREAD] could not annotate skipped counts in STATUS", exc_info=True)
+
+
 def process_model_group(
     active_threads,
     items,
@@ -366,7 +376,7 @@ def process_model_group(
     # Register this thread in thread_dict so update_status_to_done() can locate it.
     # Must happen before any items are popped (s3_keys and path_to_bucket are still present).
     active_threads.update_thread_dict(buckets_cfg, _submitted_counts(items), key)
-    active_threads.annotate_works("nb_skipped_indexed", _skipped_counts(items), key)
+    _annotate_skipped(active_threads, items, key)
 
     model_name = getattr(items[0].get("model"), "model_name", str(items[0].get("model")))
     logger.info(

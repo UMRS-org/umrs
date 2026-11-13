@@ -300,3 +300,54 @@ def test_parse_server_log_reads_the_lines_this_handler_writes(stack, caplog):
     assert (task.n_skipped, task.n_objects_s3) == (3, 2)
     assert task.t_running is not None
     assert task.t_completed is not None
+
+
+# --- no phantom Running entry when a STATUS write fails (review U1) -------------------
+
+
+def _running_entries(stack):
+    store = stack.threads.thread_dict
+    return [store[key] for key in list(store.iterkeys())
+            if store[key]["status"] == ThreadStatus.RUNNING]
+
+
+def _status_running(stack, user):
+    data = stack.threads.status_store.get(user, {}).get(_KEY, {}).get("data", [])
+    return [info for info in data if info["status"] == ThreadStatus.RUNNING]
+
+
+def test_a_failing_skip_annotation_leaves_no_running_entry(stack, monkeypatch):
+    """record_skipped_work registered the collector's entry as Running, then a
+    diskcache error in annotate_works skipped update_status_to_done: STATUS
+    showed a running process_objects work forever and `umrs download` kept
+    reporting the bucket as still processing."""
+
+    def _boom(*_args, **_kwargs):
+        raise OSError("diskcache timeout")
+
+    monkeypatch.setattr(stack.threads, "annotate_works", _boom)
+
+    _run(stack, {"alice": [f"s3://a/k{i}" for i in range(3)],
+                 "bob": [f"s3://b/k{i}" for i in range(2)]})
+
+    assert _running_entries(stack) == []
+    assert _status_running(stack, "alice") == []
+    assert stack.tasks.status[1][-1] == TaskStatus.COMPLETED
+    assert stack.tasks.status[2][-1] == TaskStatus.COMPLETED
+
+
+def test_a_failing_annotation_in_the_pool_thread_still_runs_the_group(stack, monkeypatch):
+    """process_model_group called annotate_works between registering its
+    entry and the RUNNING callbacks, unguarded: a failure there ended the
+    pool thread with its entry Running and every task stuck at LAUNCHED."""
+
+    def _boom(*_args, **_kwargs):
+        raise OSError("diskcache timeout")
+
+    monkeypatch.setattr(stack.threads, "annotate_works", _boom)
+
+    _run(stack, {"alice": [f"s3://a/k{i}" for i in range(5)]})  # k0..k2 indexed
+
+    assert [item["s3_keys"] for item in stack.backend.items] == [["k3", "k4"]]
+    assert _running_entries(stack) == []
+    assert stack.tasks.status[1][-1] == TaskStatus.COMPLETED
