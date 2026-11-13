@@ -1,7 +1,7 @@
 """Embedding batching and I/O-compute pipelining (plan U1 A4).
 
 Port of upstream c321d4f3, 898aac2d, 5894c924, e7b09f59, 384be72f and the
-core part of 30ad54f4: single-item calls go through the batch path,
+core part of 30ad54f4: the backend's one entry point is the batch path,
 ``UMRS_INFERENCE_BATCH_SIZE`` caps each forward pass, the S3 load of batch
 N+1 overlaps the compute of batch N, a loader failure reaches the caller and
 no prefetch thread outlives the call. Hermetic: S3 loads and the model are
@@ -147,49 +147,20 @@ def test_valid_knob_values(monkeypatch):
     assert embeddings.inference_batch_size() == 0
 
 
-def test_single_item_goes_through_the_batch_path(monkeypatch):
-    seen: list[list] = []
-
-    def fake_batch(items):
-        seen.append(items)
-        return [True]
-
-    monkeypatch.setattr(embedding_backend, "compute_and_store_embedding_batch", fake_batch)
-    backend = embedding_backend.LocalEmbeddingBackend()
-    ok = backend.compute_and_store(
-        "bucket", ["k0"], "db", "tbl", "model", "cpu", "image", "s3", None,
-        task="embedding", skip_existing=False,
-    )
-
-    assert ok is True
-    assert len(seen) == 1 and len(seen[0]) == 1
-    item = seen[0][0]
-    assert item["path_to_bucket"] == "bucket" and item["s3_keys"] == ["k0"]
-    assert item["task"] == "embedding" and item["skip_existing"] is False
-
-
-def test_single_item_is_batched_by_the_knob(monkeypatch, loader):
+def test_backend_batches_by_the_knob(monkeypatch, loader):
     monkeypatch.setenv("UMRS_INFERENCE_BATCH_SIZE", "2")
     model, store = _FakeModel(), _Store()
     monkeypatch.setattr(embeddings, "_resolve_store_fn", lambda _fn: store)
     backend = embedding_backend.LocalEmbeddingBackend()
 
-    ok = backend.compute_and_store(
-        "bucket", [f"k{i}" for i in range(5)], None, "tbl", model, "cpu", "image",
-        object(), None,
-    )
-
-    assert ok is True
+    assert backend.compute_and_store_batch([_item("bucket", 5, model)]) == [True]
     assert [len(c) for c in model.calls] == [2, 2, 1]
     assert store.calls[0]["embeddings"] == [f"emb:bucket/k{i}" for i in range(5)]
 
 
-def test_single_item_failure_returns_false(monkeypatch):
-    monkeypatch.setattr(
-        embedding_backend, "compute_and_store_embedding_batch", lambda _items: [False]
-    )
-    backend = embedding_backend.LocalEmbeddingBackend()
-    assert backend.compute_and_store("b", ["k"], None, "t", None, "cpu", "image", None, None) is False
+def test_backend_has_only_the_batch_entry_point():
+    """The single-item compute_and_store had no caller and was removed (review U1)."""
+    assert not hasattr(embedding_backend.LocalEmbeddingBackend, "compute_and_store")
 
 
 def test_pipeline_loads_next_batch_while_computing(monkeypatch):
