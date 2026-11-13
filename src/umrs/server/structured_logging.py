@@ -35,6 +35,10 @@ import os
 from datetime import datetime, timezone
 from typing import Any
 
+# The server's plain-text log line (``UMRS_LOG_FORMAT=text``, the default);
+# src/scripts/benchmarks/parse_server_log.py reads this shape.
+TEXT_LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
+
 
 class StructuredJSONFormatter(logging.Formatter):
     """Emit each log record as a single JSON line.

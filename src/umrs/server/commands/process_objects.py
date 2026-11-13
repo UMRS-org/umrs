@@ -55,10 +55,18 @@ def _apply_prefilter(ctx: HandlerContext, client_entries, client_callbacks):
 
 def _report_fully_skipped(ctx: HandlerContext, result, client_callbacks) -> None:
     """STATUS entry for buckets with nothing left (8f9fe001: it shows the
-    submitted count); clients with nothing left finish like a normal run."""
-    ctx.task_manager.active_threads.record_skipped_work(
-        ctx.buckets_cfg, result.fully_skipped(), _KEY,
-    )
+    submitted count); clients with nothing left finish like a normal run.
+
+    The STATUS write fails open (review U1): it runs on the batch collector
+    thread, so an error there (diskcache timeout, full disk) used to drop
+    every client of the batch, the ones with new objects included.
+    """
+    try:
+        ctx.task_manager.active_threads.record_skipped_work(
+            ctx.buckets_cfg, result.fully_skipped(), _KEY,
+        )
+    except Exception:
+        logger.warning("[PROCESS] STATUS for already-indexed buckets failed", exc_info=True)
     for cid in result.done_clients:
         cb = client_callbacks.get(cid)
         if cb:

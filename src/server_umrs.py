@@ -73,10 +73,9 @@ def configure_server_logging():
     """Route Python logger output into the server log stream."""
     level_name = os.getenv("UMRS_LOG_LEVEL", "INFO").upper()
     level = getattr(logging, level_name, logging.INFO)
-    logging.basicConfig(
-        level=level,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
+    from umrs.server.structured_logging import TEXT_LOG_FORMAT
+
+    logging.basicConfig(level=level, format=TEXT_LOG_FORMAT)
 
 
 # --------------------------- Boot and hot-reload ----------------------------

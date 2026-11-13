@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Bare-metal ingestion sweep with a PyTorch DataLoader: same steps and images as sweep_ingest.py, no UMRS server.
+"""Bare-metal ingestion sweep with a PyTorch DataLoader: the UMRS ingest steps, no UMRS server.
 
 Per run, in one long-lived process: upload to S3 (new prefix) -> optional already-indexed check
 (S3 HEAD + SQL) -> DataLoader workers (S3 GET + decode + transforms) -> ResNet-50 forward ->
 store into a dedicated PostgreSQL database (same table schema as UMRS).
-Writes log/baremetal_<tag>/baremetal.csv; plot it with: Rscript plot_breakdown.R <that csv>
+Writes log/baremetal_<tag>/baremetal.csv. Upstream plotted it with a plot_breakdown.R (and
+compared it with a sweep_ingest.py run); neither was published, so neither is part of this port.
 
 Usage (from src/, with umrs_env):
   python scripts/benchmarks/bench_baremetal_ingest.py -c ~/.config/umrs/n_users/users/user1_1.json \
@@ -41,7 +42,7 @@ TRANSFORM = transforms.Compose([
     transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
 ])
 
-# The steps of the breakdown figure (plot_breakdown.R), with the same meaning as for UMRS
+# The steps of the ingest breakdown, with the same meaning as for UMRS
 STEP_COLUMNS = ["client_startup", "client_upload", "index_check", "read_decode",
                 "forward", "store", "server_other"]
 # Finer measurements the steps are made of
@@ -473,7 +474,7 @@ def main(argv=None):
     if args.drop_db_at_end:
         drop_db(params, args.db_name)
         print(f"Database {args.db_name} dropped")
-    print(f"\n{csv_path}\nPlot: Rscript scripts/benchmarks/plot_breakdown.R {csv_path}")
+    print(f"\n{csv_path}")
 
 
 if __name__ == "__main__":

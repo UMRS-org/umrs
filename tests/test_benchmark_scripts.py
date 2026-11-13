@@ -1,9 +1,12 @@
 """Benchmark scripts under src/scripts/benchmarks (plan U1 A8).
 
 Smoke: each Python script imports and its ``--help`` works. Behaviour: the
-refactored server-log parser prints exactly what upstream's version printed
-for a fixed log, and the populate scripts' argument defaults match the
-constants upstream hard-coded (minus the host-specific paths).
+refactored server-log parser prints what upstream's version printed for a
+fixed log (minus the never-written [TIMING] columns; the skip line in this
+server's wording), and the populate scripts' argument defaults match the
+constants upstream hard-coded (minus the host-specific paths). That the
+parser reads the lines the real handler writes is checked in
+test_process_objects_prefilter.py.
 """
 
 from __future__ import annotations
@@ -56,11 +59,10 @@ SERVER_LOG = """\
 2026-10-01 10:00:01,000 INFO MessageQueue: recv cmd=PROCESS_OBJECTS client_id=alice fields=5 has_auth=true
 2026-10-01 10:00:01,500 INFO umrs.batch: Batch assembled: ('alice', 100)
 2026-10-01 10:00:02,000 INFO umrs.batch: Tasks created: ('alice', 7)
-2026-10-01 10:00:02,100 INFO umrs.s3: filter_already_indexed: skipping 3 already indexed objects
+2026-10-01 10:00:02,100 INFO umrs.server.indexed_prefilter: [PROCESS] skipping 3 already-indexed object(s): {'alice.xp.images': 3}
 2026-10-01 10:00:03,000 INFO umrs.s3: S3 events ready ('alice', 97)
 2026-10-01 10:00:03,500 INFO umrs.task: [TASK] client=alice task_id=7 → Running
 2026-10-01 10:00:09,250 INFO umrs.task: [TASK] client=alice task_id=7 → Completed
-2026-10-01 10:00:09,300 INFO umrs.timing: [TIMING] task_id=7,8 status=ok model=resnet path=batch batch_tasks=7,8 total_s=6.2 forward_s=1.25
 2026-10-01 10:00:10,000 INFO umrs.auth: Auth session created: user=bob role=user
 2026-10-01 10:00:10,200 INFO MessageQueue: recv cmd=PROCESS_OBJECTS client_id=bob fields=5 has_auth=true
 2026-10-01 10:00:10,300 INFO umrs.s3: filter_already_indexed: skipping 5 already indexed objects
@@ -70,7 +72,7 @@ unrelated line without timestamp
 """
 
 # Output of upstream main's parse_server_log.py on SERVER_LOG (captured
-# before the refactor into LogParser).
+# before the refactor into LogParser), without the [TIMING] columns.
 EXPECTED_TABLE = (
     "task_id   user        n_batch  n_skipped n_processed upload_s3(s)  "
     "s3_check(s) server_exec(s)  end_to_end(s) \n"
@@ -82,13 +84,9 @@ EXPECTED_TABLE = (
 )
 EXPECTED_CSV = (
     "task_id,user,n_batch,n_skipped,n_processed,upload_s3(s),s3_check(s),"
-    "server_exec(s),end_to_end(s),status,model,path,batch_tasks,s3_events(s),"
-    "index_check_sql(s),index_check_head(s),dispatch(s),lock_wait(s),"
-    "fetch_preprocess(s),forward(s),embed(s),store(s),count_update(s),"
-    "server_total(s)\n"
-    '7,alice,100,3,97,1.0,1.0,5.75,8.25,ok,resnet,batch,"7,8",NA,NA,NA,NA,NA,'
-    "NA,1.25,NA,NA,NA,6.2\n"
-    "?,bob,,5,12,0.2,,,,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA\n"
+    "server_exec(s),end_to_end(s)\n"
+    "7,alice,100,3,97,1.0,1.0,5.75,8.25\n"
+    "?,bob,,5,12,0.2,,,\n"
 )
 
 
@@ -214,7 +212,28 @@ class _KnnMQ:
         return reply
 
     def close(self):
-        pass
+        self.closed = True
+
+
+_OK_REPLY = '{"status": "ok", "results": []}'
+
+
+def test_bench_knn_reopens_its_socket_after_a_timeout(monkeypatch):
+    """A DEALER socket does not pair replies with requests: after a timeout
+    the late reply answered the next request on the same socket."""
+    bench_knn = _load("bench_knn")
+    first = _KnnMQ([_OK_REPLY, TimeoutError("slow")])
+    second = _KnnMQ([_OK_REPLY, _OK_REPLY])
+    made = [first, second]
+    monkeypatch.setattr(bench_knn, "_make_mq", lambda *_a: made.pop(0))
+
+    latencies, errors = bench_knn._worker("h", 1, False, 4, 0, "u", 3, "q.png", "b")
+
+    assert (len(latencies), errors) == (3, 1)
+    assert len(first.calls) == 2  # nothing more is sent on the timed-out socket
+    assert first.closed
+    assert len(second.calls) == 2
+    assert second.closed
 
 
 def test_bench_knn_counts_error_replies_instead_of_timing_them(monkeypatch):

@@ -2,13 +2,18 @@
 """
 Parse UMRS server logs and extract timing information per task.
 Usage: ./parse_server_log.py <logfile> [--csv]
+
+Reads the server's plain-text log (``TEXT_LOG_FORMAT`` in
+umrs.server.structured_logging). Upstream's CSV also had columns for a
+``[TIMING]`` line that no UMRS server writes, so they were always NA and are
+gone (review U1).
 """
 
 import argparse
 import csv
 import re
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 
 TS = r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3})"
@@ -17,30 +22,13 @@ P_AUTH        = re.compile(TS + r".*Auth session created: user=(\S+) role=")
 P_PROCESS_REQ = re.compile(TS + r".*cmd=PROCESS_OBJECTS client_id=(\S+) fields=")
 P_BATCH       = re.compile(TS + r".*Batch assembled:.*\('(\S+)',\s*(\d+)\)")
 P_TASKS       = re.compile(TS + r".*Tasks created:.*\('(\S+)',\s*(\d+)\)")
-P_SKIP        = re.compile(TS + r".*filter_already_indexed: skipping (\d+)")
+# This server logs "[PROCESS] skipping N already-indexed object(s): {...}"
+# (umrs.server.indexed_prefilter); upstream logged "filter_already_indexed:
+# skipping N", still read so older logs parse.
+P_SKIP        = re.compile(TS + r".*(?:\[PROCESS\]|filter_already_indexed:) skipping (\d+)")
 P_S3_READY    = re.compile(TS + r".*S3 events ready.*\('(\S+)',\s*(\d+)\)")
 P_RUNNING     = re.compile(TS + r".*\[TASK\] client=(\S+) task_id=(\d+) → Running")
 P_COMPLETED   = re.compile(TS + r".*\[TASK\] client=(\S+) task_id=(\d+) → Completed")
-P_TIMING      = re.compile(r"\[TIMING\] (.*)$")
-
-# [TIMING] keys -> CSV columns ("NA" when the log has no [TIMING] line for the task)
-TIMING_COLUMNS = [
-    ("status", "status"),
-    ("model", "model"),
-    ("path", "path"),
-    ("batch_tasks", "batch_tasks"),
-    ("s3_events_s", "s3_events(s)"),
-    ("index_check_sql_s", "index_check_sql(s)"),
-    ("index_check_head_s", "index_check_head(s)"),
-    ("dispatch_s", "dispatch(s)"),
-    ("lock_wait_s", "lock_wait(s)"),
-    ("fetch_preprocess_s", "fetch_preprocess(s)"),
-    ("forward_s", "forward(s)"),
-    ("embed_s", "embed(s)"),
-    ("store_s", "store(s)"),
-    ("count_update_s", "count_update(s)"),
-    ("total_s", "server_total(s)"),
-]
 
 HEADER = ["task_id", "user", "n_batch", "n_skipped", "n_processed",
           "upload_s3(s)", "s3_check(s)", "server_exec(s)", "end_to_end(s)"]
@@ -70,7 +58,6 @@ class Task:
     t_s3_ready: datetime = None
     t_running: datetime = None
     t_completed: datetime = None
-    timing: dict = field(default_factory=dict)   # key=value fields of the [TIMING] line
 
     @property
     def upload_s3(self):
@@ -113,7 +100,6 @@ class LogParser:
             (P_S3_READY, self._on_s3_ready),
             (P_RUNNING, self._on_running),
             (P_COMPLETED, self._on_completed),
-            (P_TIMING, self._on_timing),
         ]
 
     def feed(self, line):
@@ -180,12 +166,6 @@ class LogParser:
         if task is not None:
             task.t_completed = parse_ts(m.group(1))
 
-    def _on_timing(self, m):
-        fields = dict(kv.split("=", 1) for kv in m.group(1).split() if "=" in kv)
-        for task_id in fields.get("task_id", "").split(","):
-            if task_id in self.tasks:
-                self.tasks[task_id].timing = fields
-
 
 def parse_lines(lines):
     """Return the tasks (insertion-ordered dict) found in *lines*."""
@@ -196,10 +176,10 @@ def parse_lines(lines):
 
 
 def write_csv(tasks, out):
-    writer = csv.writer(out, lineterminator="\n")  # quotes batch_tasks="1,2"
-    writer.writerow(HEADER + [col for _, col in TIMING_COLUMNS])
+    writer = csv.writer(out, lineterminator="\n")
+    writer.writerow(HEADER)
     for t in tasks.values():
-        writer.writerow(t.summary_row() + [t.timing.get(key, "NA") for key, _ in TIMING_COLUMNS])
+        writer.writerow(t.summary_row())
 
 
 def write_table(tasks, out):
@@ -213,10 +193,7 @@ def write_table(tasks, out):
 def main():
     parser = argparse.ArgumentParser(description="Parse UMRS server logs for timing info.")
     parser.add_argument("logfile")
-    parser.add_argument("--csv", action="store_true",
-                        help="CSV output, including every field of the [TIMING] lines")
-    parser.add_argument("--timing", action="store_true",
-                        help="no effect: the [TIMING] columns are always in the CSV")
+    parser.add_argument("--csv", action="store_true", help="CSV output")
     args = parser.parse_args()
 
     with open(args.logfile) as f:

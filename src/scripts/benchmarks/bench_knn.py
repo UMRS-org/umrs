@@ -88,15 +88,37 @@ def _knn_error(raw) -> str | None:
     return str(reply.get("message", raw))
 
 
+class _LostReply(Exception):
+    """The request got no reply in time; its reply may still arrive later."""
+
+
 def _timed_request(mq, username: str, k: int, s3_key: str, bucket: str) -> float | None:
-    """Seconds one KNN request took, or None when it did not succeed."""
+    """Seconds one KNN request took, or None for an error reply.
+
+    Raises :class:`_LostReply` on a timeout or send failure.
+    """
     t0 = time.perf_counter()
     try:
         raw = mq.request_knn(username, k, s3_key, bucket)
-    except (TimeoutError, RuntimeError):
-        return None
+    except (TimeoutError, RuntimeError) as exc:
+        raise _LostReply(str(exc)) from exc
     elapsed = time.perf_counter() - t0
     return None if _knn_error(raw) is not None else elapsed
+
+
+def _request_or_reconnect(mq, connect, username, k, s3_key, bucket):
+    """``(seconds or None, mq to use next)``.
+
+    A DEALER socket does not pair replies with requests: after a timeout the
+    late reply would answer the next request. So the timed-out socket is
+    closed and the next request goes out on a fresh one (review U1).
+    """
+    try:
+        return _timed_request(mq, username, k, s3_key, bucket), mq
+    except _LostReply:
+        with contextlib.suppress(Exception):
+            mq.close()
+        return None, connect()
 
 
 def _worker(
@@ -111,12 +133,16 @@ def _worker(
     bucket: str,
 ) -> tuple[list[float], int]:
     """``(latencies of successful timed requests, failed timed requests)``."""
-    mq = _make_mq(server_ip, control_port, tunnel_mode)
+
+    def connect():
+        return _make_mq(server_ip, control_port, tunnel_mode)
+
+    mq = connect()
     latencies: list[float] = []
     errors = 0
     try:
         for i in range(warmup + n_requests):
-            elapsed = _timed_request(mq, username, k, s3_key, bucket)
+            elapsed, mq = _request_or_reconnect(mq, connect, username, k, s3_key, bucket)
             if i < warmup:
                 continue
             if elapsed is None:

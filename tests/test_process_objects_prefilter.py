@@ -9,7 +9,10 @@ never the post-filter count.
 
 from __future__ import annotations
 
+import importlib.util
+import logging
 import threading
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -228,3 +231,72 @@ def test_knob_off_indexes_everything(stack, monkeypatch):
     (_, work), = _works(stack, "a")
     assert work["nb_objects"] == 5
     assert "nb_skipped_indexed" not in work
+
+
+# --- fail open (review U1) ------------------------------------------------------
+
+
+def test_a_failing_prefilter_indexes_everything(stack, monkeypatch):
+    from umrs.server.commands import process_objects
+
+    def _boom(*_args):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(process_objects, "filter_already_indexed", _boom)
+    objects = [f"s3://a/k{i}" for i in range(5)]
+
+    _run(stack, {"alice": objects})
+
+    assert [item["s3_keys"] for item in stack.backend.items] == [[f"k{i}" for i in range(5)]]
+    assert stack.tasks.status[1][-1] == TaskStatus.COMPLETED
+
+
+def test_a_failing_skip_report_still_launches_the_rest_of_the_batch(stack, monkeypatch):
+    """The STATUS bookkeeping for a fully skipped bucket ran outside the
+    fail-open guard: one diskcache error there killed the collector thread,
+    so bob's new objects were never indexed and both tasks stayed LAUNCHED."""
+
+    def _boom(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(stack.threads, "record_skipped_work", _boom)
+
+    _run(stack, {"alice": [f"s3://a/k{i}" for i in range(3)],
+                 "bob": [f"s3://b/k{i}" for i in range(2)]})
+
+    assert [(i["path_to_bucket"], i["s3_keys"]) for i in stack.backend.items] == [
+        ("b", ["k0", "k1"])
+    ]
+    assert stack.tasks.status[1][-1] == TaskStatus.COMPLETED  # alice: all indexed
+    assert stack.tasks.status[2][-1] == TaskStatus.COMPLETED  # bob
+
+
+# --- the benchmark log parser reads this server's log (review U1) ----------------
+
+
+def _parse_server_log_module():
+    path = (Path(__file__).resolve().parents[1] / "src" / "scripts" / "benchmarks"
+            / "parse_server_log.py")
+    spec = importlib.util.spec_from_file_location("bench_parse_server_log", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_parse_server_log_reads_the_lines_this_handler_writes(stack, caplog):
+    """parse_server_log.py matched upstream's 'filter_already_indexed:
+    skipping N' wording, which this server never logs: n_skipped was always 0."""
+    from umrs.server.structured_logging import TEXT_LOG_FORMAT
+
+    with caplog.at_level(logging.INFO):
+        _run(stack, {"alice": [f"s3://a/k{i}" for i in range(5)]})  # k0..k2 indexed
+    formatter = logging.Formatter(TEXT_LOG_FORMAT)
+    lines = [formatter.format(record) for record in caplog.records]
+
+    tasks = _parse_server_log_module().parse_lines(lines)
+
+    (task,) = tasks.values()
+    assert (task.task_id, task.user) == ("1", "alice")
+    assert (task.n_skipped, task.n_objects_s3) == (3, 2)
+    assert task.t_running is not None
+    assert task.t_completed is not None
