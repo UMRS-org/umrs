@@ -8,12 +8,16 @@ Two behaviours on top of ``s3.upload_file``, for every ADR-055 backend
   type), the transfer is skipped. A multipart ETag (``<hex>-<parts>``) or an
   SSE-KMS / SSE-C ETag is not an MD5, so those always re-upload. Any HEAD
   failure also falls through to the upload, which reports real errors itself.
-* **Bounded retry, one layer.** Transient failures (connection errors,
-  timeouts, 5xx, throttling, ``RequestTimeout``) are retried by botocore in
-  its ``standard`` mode, configured on the client by :func:`s3_client_config`
-  (``connect_to_s3`` uses it). Upstream wrapped ``upload_file`` in its own
-  loop; on top of botocore's default retries that multiplied the attempts per
-  file (review U1), so this module adds no loop.
+* **Bounded retry, one layer per error.** Transient failures (connection
+  errors, timeouts, 5xx, throttling, ``RequestTimeout``) are retried by
+  botocore in its ``standard`` mode, configured on the client by
+  :func:`s3_client_config` (``connect_to_s3`` uses it). Upstream wrapped
+  ``upload_file`` in its own loop; on top of botocore's default retries that
+  multiplied the attempts per file (review U1). One code of upstream's set
+  is not retried by botocore: ``IncompleteBody``, the HTTP 400 that S3, MinIO
+  and SeaweedFS answer when the request body arrives short. Only that code
+  gets a loop here (:data:`INCOMPLETE_BODY_ATTEMPTS`, 0 s then 1 s apart as
+  in upstream), so attempts never multiply.
 
 Knobs: ``UMRS_S3_MAX_ATTEMPTS`` (total attempts per S3 request, first try
 included, default 5 = botocore's legacy default, 1..10) and
@@ -24,7 +28,9 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 
+from boto3.exceptions import S3UploadFailedError
 from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
 
@@ -40,6 +46,12 @@ DEFAULT_MAX_ATTEMPTS = 5
 MAX_ATTEMPTS = 10
 
 _MISSING_CODES = frozenset({"404", "NoSuchKey", "NotFound"})
+
+# The short-body error botocore does not retry (its standard mode retries
+# RequestTimeout-like codes, throttling and 5xx only); 6632dfb0 retried it.
+INCOMPLETE_BODY = "IncompleteBody"
+INCOMPLETE_BODY_ATTEMPTS = 3
+_INCOMPLETE_BODY_DELAYS_S = (0, 1)
 
 
 def s3_max_attempts() -> int:
@@ -136,5 +148,27 @@ def upload_local_file(
     ):
         logger.debug("skip upload, unchanged: s3://%s/%s", bucket, key)
         return False
-    s3.upload_file(local_path, bucket, key, ExtraArgs=extra_args)
+    _upload_retrying_incomplete_body(s3, bucket, key, local_path, extra_args)
     return True
+
+
+def _is_incomplete_body(exc) -> bool:
+    """``IncompleteBody`` as a ClientError, or wrapped by s3transfer."""
+    if isinstance(exc, ClientError):
+        return exc.response.get("Error", {}).get("Code") == INCOMPLETE_BODY
+    return f"({INCOMPLETE_BODY})" in str(exc)
+
+
+def _upload_retrying_incomplete_body(s3, bucket, key, local_path, extra_args) -> None:
+    """``upload_file``, sent up to :data:`INCOMPLETE_BODY_ATTEMPTS` times on
+    ``IncompleteBody`` only; every other error is botocore's to retry."""
+    for attempt, delay in enumerate(_INCOMPLETE_BODY_DELAYS_S + (None,), start=1):
+        try:
+            s3.upload_file(local_path, bucket, key, ExtraArgs=extra_args)
+            return
+        except (S3UploadFailedError, ClientError) as exc:
+            if delay is None or not _is_incomplete_body(exc):
+                raise
+            logger.warning("upload s3://%s/%s: %s, retry %d/%d in %ss", bucket, key,
+                           INCOMPLETE_BODY, attempt, len(_INCOMPLETE_BODY_DELAYS_S), delay)
+            time.sleep(delay)

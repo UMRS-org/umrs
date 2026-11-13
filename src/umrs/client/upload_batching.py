@@ -33,6 +33,10 @@ class BatchedNotifier:
     *notify(count, blocking)* sends ``PROCESS_OBJECTS count`` and returns False
     when the server rejected it. The proxy exposes ``notify_s3`` so it can be
     handed to the ``s3_store_*`` helpers in place of the data queue.
+
+    *blocking* (``upload_dir --blocking``) applies to every batch, mid-upload
+    ones included (review U1); only the flush after an aborted upload never
+    blocks, so the abort's own error surfaces.
     """
 
     def __init__(
@@ -40,8 +44,11 @@ class BatchedNotifier:
         data_mq,
         notify: Callable[[int, bool], bool],
         batch_size: int | None = None,
+        *,
+        blocking: bool = False,
     ):
         self._data_mq = data_mq
+        self.blocking = blocking
         self._notify = notify
         size = NOTIFY_BATCH_SIZE if batch_size is None else batch_size
         self.batch_size = max(1, int(size))
@@ -54,10 +61,14 @@ class BatchedNotifier:
         self.pending += 1
         self.total += 1
         if self.pending >= self.batch_size:
-            self.flush(blocking=False)
+            self.flush()
 
-    def flush(self, blocking: bool = False) -> bool:
-        """Notify the server of every pending URI; False once any was rejected."""
+    def flush(self, blocking: bool | None = None) -> bool:
+        """Notify the server of every pending URI; False once any was rejected.
+
+        *blocking* defaults to the notifier's own setting."""
+        if blocking is None:
+            blocking = self.blocking
         if self.pending > 0:
             count, self.pending = self.pending, 0
             if not self._notify(count, blocking):
@@ -79,14 +90,18 @@ class BatchedNotifier:
             self.ok = False
 
     @contextmanager
-    def flushing(self, blocking: bool = False) -> Iterator[BatchedNotifier]:
-        """Flush on exit; on an abort flush (non-blocking) and re-raise."""
+    def flushing(self, blocking: bool | None = None) -> Iterator[BatchedNotifier]:
+        """Flush on exit; on an abort flush (non-blocking) and re-raise.
+
+        *blocking*, when given, becomes the setting of every flush."""
+        if blocking is not None:
+            self.blocking = blocking
         try:
             yield self
         except BaseException:
             self._flush_after_abort()
             raise
-        self.flush(blocking=blocking)
+        self.flush()
 
 
 def _file_subdir(rel_dir: str, subdir: str | None) -> str | None:

@@ -1,7 +1,8 @@
 """S3 upload retry and skip-unchanged (port of upstream 6632dfb0 + b951866f; plan U1 A2).
 
-Retries are botocore's alone (standard mode, ``UMRS_S3_MAX_ATTEMPTS`` set in
-``connect_to_s3``); ``s3_upload`` adds no loop of its own.
+Retries are botocore's (standard mode, ``UMRS_S3_MAX_ATTEMPTS`` set in
+``connect_to_s3``); ``s3_upload`` adds a loop only for ``IncompleteBody``,
+the one code of upstream's transient set that botocore does not retry.
 Hermetic: a fake client stands in for boto3, no network and no real store.
 """
 
@@ -85,6 +86,40 @@ def test_a_failed_upload_is_not_retried_on_top_of_botocore(sleeps, local_file):
     assert fake.uploads == []
     assert fake.failures == []  # exactly one upload_file call
     assert sleeps == []
+
+
+def _upload_failed(code):
+    from boto3.exceptions import S3UploadFailedError
+
+    return S3UploadFailedError(
+        f"Failed to upload doc.txt to b/k: An error occurred ({code}) when calling "
+        f"the PutObject operation: short body"
+    )
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [_client_error("IncompleteBody"), _upload_failed("IncompleteBody")],
+    ids=["client-error", "upload-failed"],
+)
+def test_incomplete_body_is_retried(sleeps, local_file, failure):
+    """Review U1: upstream 6632dfb0 retried IncompleteBody (an HTTP 400 when
+    the body arrives short); botocore's standard mode does not, so dropping
+    the loop aborted upload_dir on the first short body."""
+    fake = FakeS3(failures=[failure])
+
+    sent = s3_upload.upload_local_file(fake, "b", "k", str(local_file), skip_unchanged=False)
+
+    assert sent is True
+    assert fake.uploads == [(str(local_file), "b", "k", None)]
+
+
+def test_incomplete_body_retries_are_bounded(sleeps, local_file):
+    fake = FakeS3(failures=[_client_error("IncompleteBody")] * 10)
+    with pytest.raises(ClientError):
+        s3_upload.upload_local_file(fake, "b", "k", str(local_file), skip_unchanged=False)
+    assert len(fake.failures) == 10 - s3_upload.INCOMPLETE_BODY_ATTEMPTS
+    assert fake.uploads == []
 
 
 def _s3cfg(tmp_path):

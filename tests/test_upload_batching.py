@@ -35,16 +35,29 @@ class _Notify:
         return self.ok
 
 
-def test_batches_flush_at_size_and_final_uses_blocking():
+def test_batches_flush_at_size_and_every_flush_uses_blocking():
+    """Review U1: mid-upload batches were always non-blocking, so --blocking
+    waited only for the last remainder (and not at all for a multiple of the
+    batch size), and a busy server timed the upload out after 8 s."""
     notify = _Notify()
     notifier = BatchedNotifier(_DataMQ(), notify, batch_size=3)
     with notifier.flushing(blocking=True):
         for i in range(7):
             notifier.notify_s3(f"s3://b/{i}")
-    assert notify.calls == [(3, False), (3, False), (1, True)]
+    assert notify.calls == [(3, True), (3, True), (1, True)]
     assert notifier.total == 7
     assert notifier.pending == 0
     assert notifier.ok is True
+
+
+@pytest.mark.parametrize("blocking", [True, False])
+def test_an_exact_multiple_of_the_batch_size_honours_blocking(blocking):
+    notify = _Notify()
+    notifier = BatchedNotifier(_DataMQ(), notify, batch_size=3)
+    with notifier.flushing(blocking=blocking):
+        for i in range(6):
+            notifier.notify_s3(f"s3://b/{i}")
+    assert notify.calls == [(3, blocking), (3, blocking)]
 
 
 def test_no_notify_when_nothing_queued():

@@ -122,7 +122,8 @@ def test_upload_dir_notifies_in_batches(upload_env, monkeypatch):
     rc, control = _run(upload_env, data_mq, blocking=True)
     assert rc == 0
     assert len(data_mq.sent) == 5
-    assert control.notified == [(2, False), (2, False), (1, True)]
+    # --blocking applies to every batch, not just the remainder (review U1).
+    assert control.notified == [(2, True), (2, True), (1, True)]
 
 
 def test_upload_dir_single_notify_below_batch_size(upload_env):
