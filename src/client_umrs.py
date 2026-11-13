@@ -46,6 +46,12 @@ from umrs.client.download_results import (
     parse_process_objects_readiness,
 )
 from umrs.client.metadata import check_and_build_metadata
+from umrs.client.upload_batching import (
+    BatchedNotifier,
+    collect_upload_files,
+    record_uploaded,
+    report_nothing_uploaded,
+)
 from umrs.client.warnings_cli import emit_cli_warning
 from umrs.core.TaskCmdStatus import TaskCmd
 from umrs.shared.auth import create_auth_context_from_request
@@ -6397,81 +6403,36 @@ def _action_s3_transfer(ctx):
             print(f"Error: {path} is not a valid directory.")
             return [], [], True
 
+        # Recursively walk *path* so deeply nested data (e.g. the opossum
+        # ``opossum_NNN_X/opossumX/Schedule/YYYYMMDD/HH/*.mp4`` hierarchy) is
+        # uploaded; each file's relative directory joins its S3 key prefix.
+        entries, nb_files_seen, broken_symlinks = collect_upload_files(path, subdir)
+        # The notifier counts each URI the data queue accepted and sends
+        # PROCESS_OBJECTS in batches, and still on abort (plan U1 A3).
+        notifier = BatchedNotifier(
+            data_mq,
+            lambda count, block: _notify_after_upload(username, count, blocking=block),
+        )
         s3_key_list = []
         file_list = []
-        nb_objects = 0
-        # Recursively walk *path* so deeply nested data (e.g. the
-        # opossum ``opossum_NNN_X/opossumX/Schedule/YYYYMMDD/HH/*.mp4``
-        # hierarchy) is uploaded. Each file's relative directory becomes
-        # part of the S3 key prefix, preserving the camera/Schedule date
-        # hierarchy expected by the workflow step.
-        norm_path = os.path.abspath(path)
-        nb_files_seen = 0
-        broken_symlinks = []
-        for root, _dirs, files in os.walk(norm_path):
-            for fname in files:
-                nb_files_seen += 1
-                file_path = os.path.join(root, fname)
-                if not os.path.isfile(file_path):
-                    if os.path.islink(file_path):
-                        broken_symlinks.append(
-                            f"{file_path} -> {os.readlink(file_path)}"
-                        )
-                    continue
-
-                rel_dir = os.path.relpath(root, norm_path)
-                if rel_dir in (".", ""):
-                    file_subdir = subdir
-                elif subdir:
-                    file_subdir = f"{subdir}/{rel_dir}"
-                else:
-                    file_subdir = rel_dir
-
+        with notifier.flushing(blocking=blocking):
+            for file_path, file_subdir in entries:
                 s3_key, nb_sent, _notify_ok = process_file(
                     s3,
                     full_bucket_name,
                     file_subdir,
                     file_path,
                     modality,
-                    data_mq,
+                    notifier,
                     metadata_args,
                     username,
                     notify_server=False,
                 )
-                if s3_key:
-                    if isinstance(s3_key, list):
-                        s3_key_list.extend(s3_key)
-                        assert len(s3_key) == nb_sent
-                        file_list.extend([file_path] * nb_sent)
-                    else:
-                        s3_key_list.append(s3_key)
-                        file_list.append(file_path)
-                    nb_objects += nb_sent
+                record_uploaded(s3_key, nb_sent, file_path, s3_key_list, file_list)
 
-        notify_ok = True
-        if nb_objects > 0:
-            notify_ok = _notify_after_upload(username, nb_objects, blocking=blocking)
-        elif nb_files_seen == 0:
-            print(f"Error: directory '{path}' contains no files to upload.")
-        elif broken_symlinks:
-            print(
-                f"Error: none of the {nb_files_seen} entries in '{path}' "
-                "could be uploaded because they are broken symlinks "
-                "(their targets do not exist):"
-            )
-            for link in broken_symlinks:
-                print(f"  - {link}")
-            print(
-                "Re-stage the input files so the symlinks point at existing "
-                "targets, then retry."
-            )
-        else:
-            print(
-                f"Error: found {nb_files_seen} file(s) in '{path}' but none "
-                f"were accepted for modality '{modality}'. Check that the "
-                "files match the expected type for this modality."
-            )
-        return s3_key_list, file_list, notify_ok
+        if notifier.total == 0:
+            report_nothing_uploaded(path, modality, nb_files_seen, broken_symlinks)
+        return s3_key_list, file_list, notifier.ok
 
     def download_results_fn(full_bucket_name, modality, subdir):
         effective_username = args.username
