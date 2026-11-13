@@ -33,6 +33,10 @@ class _MQ:
 
     def request_knn(self, client_id, n, s3_object, bucket, subdir=None):
         self.requests.append((client_id, n, s3_object, bucket, subdir))
+        if isinstance(self.reply, BaseException):
+            raise self.reply
+        if self.reply is None or isinstance(self.reply, str):
+            return self.reply  # raw, non-JSON server replies
         return json.dumps(self.reply)
 
     def close(self):
@@ -62,16 +66,74 @@ def image(tmp_path):
 @pytest.fixture
 def s3(monkeypatch):
     fake = _S3()
-    monkeypatch.setattr(client_umrs, "connect_to_s3", lambda *_a, **_k: (fake, None))
+    fake.connects = []
+
+    def _connect(*args, **kwargs):
+        fake.connects.append((args, kwargs))
+        return fake, None
+
+    monkeypatch.setattr(client_umrs, "connect_to_s3", _connect)
     return fake
 
 
-def _ctx(image, reply, alias="images", output="text", username=None):
+def _ctx(image, reply, alias="images", output="text", username=None, connection=None,
+         s3cfg="/nonexistent/s3cfg"):
     args = argparse.Namespace(n=2, image_path=str(image), bucket_alias=alias,
                               username=username, output=output, verbose=False)
-    entry = SimpleNamespace(path_to_bucket=BUCKET, s3_configuration_file="/nonexistent/s3cfg")
-    return SimpleNamespace(args=args, control_mq=_MQ(reply), connection=None,
+    entry = SimpleNamespace(path_to_bucket=BUCKET, s3_configuration_file=s3cfg)
+    return SimpleNamespace(args=args, control_mq=_MQ(reply), connection=connection,
                            user={"username": "alice"}, buckets_cfg=_Cfg({"images": entry}))
+
+
+# --- which s3cfg and endpoint the query upload uses ---------------------------------
+
+
+def test_the_bucket_s3cfg_is_used_with_no_endpoint_override(image, s3, tmp_path):
+    cfg = tmp_path / "bucket.s3cfg"
+    cfg.write_text("[default]\n", encoding="utf-8")
+    assert client_umrs._action_knn(_ctx(image, _OK, s3cfg=str(cfg))) == 0
+    assert s3.connects == [((str(cfg),), {"endpoint_url_override": None})]
+
+
+def test_a_missing_s3cfg_falls_back_to_the_container_default(image, s3, tmp_path, monkeypatch):
+    default = tmp_path / "docker.s3cfg"
+    default.write_text("[default]\n", encoding="utf-8")
+    monkeypatch.setattr(client_umrs, "get_default_docker_s3cfg", lambda: str(default))
+    assert client_umrs._action_knn(_ctx(image, _OK)) == 0
+    assert s3.connects == [((str(default),), {"endpoint_url_override": None})]
+
+
+def test_a_profile_overrides_the_endpoint(image, s3):
+    profile = SimpleNamespace(profile_name="front", minio_url="http://front:9000")
+    assert client_umrs._action_knn(_ctx(image, _OK, connection=profile)) == 0
+    assert s3.connects[0][1] == {"endpoint_url_override": "http://front:9000"}
+
+
+def test_a_connection_without_profile_keeps_the_s3cfg_endpoint(image, s3):
+    unnamed = SimpleNamespace(profile_name=None, minio_url="http://front:9000")
+    assert client_umrs._action_knn(_ctx(image, _OK, connection=unnamed)) == 0
+    assert s3.connects[0][1] == {"endpoint_url_override": None}
+
+
+# --- replies that are not a JSON object ------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("reply", "message"),
+    [("SERVER_OVERLOADED", "Server overloaded"),
+     ("UNAUTHORIZED:KNN", "Not authorized"),
+     (TimeoutError("Timeout waiting for KNN reply"), "Timeout waiting for KNN reply"),
+     (None, "No reply")],
+)
+def test_non_json_replies_are_clear_error_lines(image, s3, capsys, reply, message):
+    """Review U1: a timeout surfaced as 'the JSON object must be str ... not
+    NoneType' and SERVER_OVERLOADED as 'Expecting value: line 1 column 1'."""
+    ctx = _ctx(image, reply, output="json")
+    assert client_umrs._action_knn(ctx) == 1
+    out = json.loads(capsys.readouterr().out)
+    assert out["status"] == "error"
+    assert message in out["message"]
+    assert ctx.control_mq.closed
 
 
 def test_subdir_alias_uploads_under_it_and_scopes_the_search(image, s3, capsys):

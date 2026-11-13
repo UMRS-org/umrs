@@ -1864,11 +1864,11 @@ class MessageQueue:
         self.socket.setsockopt(zmq.RCVTIMEO, 120_000)
         self.send_string(request_str)
         try:
-            _, reply = self.recv_string()
-        except zmq.Again:
-            raise TimeoutError("Timeout waiting for KNN reply") from None
+            _, reply = self.recv_string()  # (None, None) on timeout, never zmq.Again
         finally:
             self.socket.setsockopt(zmq.RCVTIMEO, old_rcv)
+        if reply is None:
+            raise TimeoutError("Timeout waiting for KNN reply")
         return reply
 
     def wait_for_new_data(self, client_id, full_bucket_name, timeout=60):

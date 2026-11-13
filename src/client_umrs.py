@@ -6187,7 +6187,12 @@ def _client_s3cfg_path(s3_configuration_file):
 
 
 def _profile_minio_override(ctx):
-    """The profile's minio_url when a profile file was given (-c), else None."""
+    """The profile's minio_url when a profile file was given (-c), else None.
+
+    A remote client cannot reach the localhost endpoint a server-generated
+    s3cfg may name. Only an explicit profile overrides it, so use_https=True
+    in the .s3cfg is not replaced by an http:// URL from a default profile.
+    """
     connection = getattr(ctx, "connection", None)
     if connection is None or getattr(connection, "profile_name", None) is None:
         return None
@@ -6230,6 +6235,28 @@ def _knn_error(args, message):
     return 1
 
 
+# Plain-text control replies that KNN can get instead of a JSON object.
+_KNN_PLAIN_REPLIES = {
+    "SERVER_OVERLOADED": "Server overloaded: no worker free for KNN, retry later",
+    "UNAUTHORIZED:KNN": "Not authorized to run KNN",
+}
+
+
+def _knn_decode(raw):
+    """The server's KNN reply as a dict; a plain-text reply is a _KnnCliError."""
+    if raw is None:
+        raise _KnnCliError("No reply from the server for KNN")
+    if raw in _KNN_PLAIN_REPLIES:
+        raise _KnnCliError(_KNN_PLAIN_REPLIES[raw])
+    try:
+        reply = _json.loads(raw)
+    except ValueError:
+        raise _KnnCliError(f"Unexpected server reply for KNN: {raw[:200]!r}") from None
+    if not isinstance(reply, dict):
+        raise _KnnCliError(f"Unexpected server reply for KNN: {raw[:200]!r}")
+    return reply
+
+
 def _knn_print(args, bucket_alias, response):
     """The server's summary (text) or the whole reply (``--output json``)."""
     if response.get("status") != "ok":
@@ -6253,7 +6280,7 @@ def _action_knn(ctx):
         raw = ctx.control_mq.request_knn(
             username, args.n, s3_key, entry.path_to_bucket, subdir=subdir or None
         )
-        return _knn_print(args, bucket_alias, _json.loads(raw))
+        return _knn_print(args, bucket_alias, _knn_decode(raw))
     except _KnnCliError as exc:
         return _knn_error(args, str(exc))
     except Exception as exc:  # noqa: BLE001 — every failure is one error line
@@ -6341,25 +6368,9 @@ def _action_s3_transfer(ctx):
         ctx.control_mq.close()
         return 1
 
-    expanded_cfg = os.path.expanduser(s3_configuration_file)
-    default_docker_s3cfg = get_default_docker_s3cfg()
-    if not os.path.exists(expanded_cfg) and os.path.exists(default_docker_s3cfg):
-        expanded_cfg = default_docker_s3cfg
-
-    # Use the profile's minio_url to override the s3cfg host_base when the
-    # client is connecting remotely (the server-generated s3cfg may contain a
-    # localhost address that is unreachable from the client machine).
-    # Only apply when a profile file was explicitly given (-c flag), so we
-    # don't override use_https=True in .s3cfg with http:// from the profile.
-    endpoint_override = None
-    if hasattr(ctx, "connection") and ctx.connection is not None:
-        if getattr(ctx.connection, "profile_name", None) is not None:
-            profile_minio = getattr(ctx.connection, "minio_url", None)
-            if profile_minio:
-                endpoint_override = profile_minio
-
     s3, bucket_location = connect_to_s3(
-        expanded_cfg, endpoint_url_override=endpoint_override
+        _client_s3cfg_path(s3_configuration_file),
+        endpoint_url_override=_profile_minio_override(ctx),
     )
 
     if args.action == "download_results":

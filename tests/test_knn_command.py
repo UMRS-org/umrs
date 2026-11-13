@@ -544,6 +544,35 @@ def test_request_knn_wire_format():
     mq.socket.setsockopt.assert_called_with(__import__("zmq").RCVTIMEO, 8000)
 
 
+def _knn_client_mq(recv):
+    mq = MagicMock()
+    mq.role = "client"
+    mq.socket.getsockopt.return_value = 8000
+    mq.send_string = lambda _request: None
+    mq.recv_string = recv
+    return mq
+
+
+def test_request_knn_timeout_is_a_timeout_error():
+    """Review U1: recv_string returns (None, None) on zmq.Again, so the old
+    ``except zmq.Again`` never fired and the CLI tried to JSON-decode None."""
+    from umrs.core.MessageQueue import MessageQueue
+
+    mq = _knn_client_mq(MagicMock(return_value=(None, None)))
+    with pytest.raises(TimeoutError, match="KNN reply"):
+        MessageQueue.request_knn(mq, "alice", 4, "q.png", ALICE_BUCKET)
+    assert mq.socket.setsockopt.call_args_list[-1].args == (__import__("zmq").RCVTIMEO, 8000)
+
+
+def test_request_knn_restores_the_timeout_when_receive_fails():
+    from umrs.core.MessageQueue import MessageQueue
+
+    mq = _knn_client_mq(MagicMock(side_effect=RuntimeError("socket closed")))
+    with pytest.raises(RuntimeError):
+        MessageQueue.request_knn(mq, "alice", 4, "q.png", ALICE_BUCKET)
+    assert mq.socket.setsockopt.call_args_list[-1].args == (__import__("zmq").RCVTIMEO, 8000)
+
+
 def test_request_knn_is_client_only():
     from umrs.core.MessageQueue import MessageQueue
 
