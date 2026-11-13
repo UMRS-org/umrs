@@ -50,8 +50,12 @@ class _Registry:
     def __init__(self, entries):
         self.entries = entries
 
-    def get(self, name, filter=None, fields=None):
-        return self.entries.get(name)
+    def get(self, name, fields=None, filter=None):
+        entry = self.entries.get(name)
+        fields = fields or filter
+        if entry is None or fields is None:
+            return entry
+        return tuple(getattr(entry, f) for f in fields)
 
     def find_by_output_path(self, _output):
         return None, None
@@ -296,11 +300,43 @@ def test_an_overloaded_pool_replies_server_overloaded(buckets):
     mq = _MQ()
     ctx = _ctx(mq, buckets)
     ctx.task_manager.active_threads.launch_knn.side_effect = ServerOverloadedError("full")
-    statuses = []
-    ctx.task_manager.update_task_status.side_effect = lambda *a, **_k: statuses.append(a)
     _dispatch(ctx, {"n": 3, "object": "q.png", "bucket": ALICE_BUCKET})
 
     assert mq.sent == [("SERVER_OVERLOADED", SENDER)]
+    ctx.task_manager.tasks_status.update_status.assert_called_with(41, TaskStatus.ERROR)
+
+
+def test_end_to_end_through_the_real_thread_pool(buckets, tmp_path, monkeypatch):
+    """Registry -> KnnHandler -> UMRSThreads.launch_knn -> worker -> reply."""
+    from diskcache import Cache
+
+    from umrs.core.UMRSThreads import UMRSThreads
+
+    monkeypatch.setenv("UMRS_SERVICE_LIFECYCLE", "manual")
+    seen = []
+
+    def _search(entry, request):
+        seen.append((entry, request))
+        return knn_worker.KnnOutcome(results=[], cached=False, n_indexed=0)
+
+    monkeypatch.setattr(knn_worker, "search", _search)
+    threads = UMRSThreads(Cache(str(tmp_path / "status")), Cache(str(tmp_path / "threads")))
+    mq = _MQ()
+    ctx = _ctx(mq, buckets)
+    ctx.task_manager.active_threads = threads
+    try:
+        _dispatch(ctx, {"n": 3, "object": "q.png", "bucket": ALICE_BUCKET})
+        threads.waitall()
+    finally:
+        threads.close()
+
+    assert seen == [(buckets.entries[ALICE_BUCKET],
+                     KnnRequest(n=3, s3_object="q.png", bucket=ALICE_BUCKET))]
+    (reply,) = _replies(mq)
+    assert reply["status"] == "ok"
+    statuses = [c.args[1] for c in ctx.task_manager.tasks_status.update_status.call_args_list]
+    assert statuses[0] == TaskStatus.LAUNCHED
+    assert statuses[-1] == TaskStatus.COMPLETED
 
 
 # --- worker bookkeeping -------------------------------------------------------------
