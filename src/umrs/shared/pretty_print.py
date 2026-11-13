@@ -59,12 +59,21 @@ def _render_last_update(info):
     return utc_to_local(info.get("updated_at", "-"))
 
 
+def _render_nb_objects(work):
+    """Submitted count, plus how many were already indexed (plan U1 A5)."""
+    nb_objects = work.get("nb_objects", "N/A")
+    skipped = work.get("nb_skipped_indexed")
+    if not skipped:
+        return nb_objects
+    return f"{nb_objects} ({skipped} already indexed)"
+
+
 def _build_thread_status_row(work, thread_id, status, updated_at, running_only):
     row = [
         thread_id,
         work.get("work_type", "N/A"),
         work.get("user", "N/A"),
-        work.get("nb_objects", "N/A"),
+        _render_nb_objects(work),
         work.get("modality_name", "N/A"),
         work.get("bucket", "N/A"),
         f"{work.get('data_base', 'N/A')}/{work.get('table_name', 'N/A')}",

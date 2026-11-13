@@ -20,6 +20,17 @@ class ThreadStatus:
     DONE = "Done"
 
 
+def _annotate_works(works, field_name, per_bucket) -> list[str]:
+    """Set ``work[field_name]`` on works for the given buckets; their users."""
+    users = set()
+    for work in works:
+        bucket = work.get("bucket")
+        if bucket in per_bucket:
+            work[field_name] = per_bucket[bucket]
+            users.add(work.get("user"))
+    return sorted(user for user in users if user)
+
+
 class UMRSThreads:
     """
     Manages background tasks submitted by the server command handlers.
@@ -160,6 +171,7 @@ class UMRSThreads:
         embedding_backend,
         key,
         client_callbacks=None,
+        skipped_indexed=None,
     ):
         """Submit one pool thread per model group across all client entries.
 
@@ -167,8 +179,15 @@ class UMRSThreads:
         model synchronously (before pool submission), so each submitted thread
         is independent and can run in parallel — Rivault nodes on different
         GPUs, or simply different local models.
+
+        ``skipped_indexed`` (``{bucket: n}``) is what the indexed pre-filter
+        removed; each thread adds it back to its STATUS ``nb_objects``.
         """
-        from umrs.server.processing import prepare_model_groups, process_model_group
+        from umrs.server.processing import (
+            prepare_model_groups,
+            process_model_group,
+            stamp_skipped_indexed,
+        )
 
         if client_callbacks:
             for cb in client_callbacks.values():
@@ -177,6 +196,7 @@ class UMRSThreads:
         groups = prepare_model_groups(
             self, client_entries, buckets_cfg, device, key, client_callbacks,
         )
+        stamp_skipped_indexed(groups, skipped_indexed)
 
         logger.info(
             "[PROCESS] %d model group(s) to process for key='%s'",
@@ -447,6 +467,33 @@ class UMRSThreads:
         users = sorted({work["user"] for work in array_of_works if work.get("user")})
         if users:
             self.record_status_for_users_by_key(users, key)
+
+    def annotate_works(self, field_name, per_bucket, key) -> list[str]:
+        """Add ``field_name`` to the calling thread's works, re-record status.
+
+        Used for ``nb_skipped_indexed`` (plan U1 A5): STATUS then shows the
+        submitted count in ``nb_objects`` and how many of those the indexed
+        pre-filter skipped. Returns the users whose status was re-recorded.
+        """
+        ident = threading.current_thread().ident
+        with self.lock:
+            entry = self.thread_dict.get(ident)
+            if entry is None or not per_bucket:
+                return []
+            users = _annotate_works(entry.get("work", []), field_name, per_bucket)
+            self.thread_dict[ident] = entry  # diskcache stores a copy
+        self.record_status_for_users_by_key(users, key)
+        return users
+
+    def record_skipped_work(self, buckets_cfg, skipped_per_bucket, key) -> None:
+        """A finished STATUS entry for buckets whose every object was skipped
+        as already indexed (no pool thread runs for them)."""
+        if not skipped_per_bucket:
+            return
+        self.update_thread_dict(buckets_cfg, dict(skipped_per_bucket), key)
+        users = self.annotate_works("nb_skipped_indexed", skipped_per_bucket, key)
+        self.update_status_to_done()
+        self.record_status_for_users_by_key(users, key)
 
     def is_worker_thread(self):
         current_thread = threading.current_thread()

@@ -411,6 +411,7 @@ Each Mini-Rivault instance provides:
 ### Local inference tuning (server environment)
 
 - `UMRS_INFERENCE_BATCH_SIZE` (default `0` = one forward pass per batch): cap on objects per local embedding forward pass; when set, the S3 load of the next chunk overlaps the compute of the current one. Lower it (e.g. 64) on CPU/GPU OOM. Invalid values fall back to `0` with a warning.
+- `UMRS_PREFILTER_INDEXED` (default `1`): PROCESS_OBJECTS skips objects whose bucket table already holds them with the same S3 ETag (and model); STATUS keeps the submitted count and adds `nb_skipped_indexed`. Set `0` to re-embed every upload.
 
 ## Monitoring and Troubleshooting
 
