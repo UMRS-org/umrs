@@ -262,14 +262,17 @@ def test_exit_drains_an_item_put_after_the_first_drain():
     assert prefetch._queue.empty()
 
 
-def test_timing_is_logged_at_debug(monkeypatch, loader, caplog):
+def test_timing_is_logged_at_info(monkeypatch, loader, caplog):
+    """Per-batch timing shows at the server's default INFO level, as
+    upstream 5894c924/e7b09f59/30ad54f4 log it (review U1)."""
     monkeypatch.setenv("UMRS_INFERENCE_BATCH_SIZE", "2")
     model = _FakeModel()
-    with caplog.at_level(logging.DEBUG, logger=embeddings.logger.name):
+    with caplog.at_level(logging.INFO, logger=embeddings.logger.name):
         embeddings.compute_and_store_embedding_batch([_item("a", 3, model)], store_fn=_Store())
     timing = [r for r in caplog.records if hasattr(r, "umrs_embed_timing")]
     assert len(timing) == 1
-    assert timing[0].levelno == logging.DEBUG
+    assert timing[0].levelno == logging.INFO
+    assert "[embed] n=3" in timing[0].getMessage()
     assert timing[0].umrs_embed_timing["n_objects"] == 3
     assert timing[0].umrs_embed_timing["batch_size"] == 2
 

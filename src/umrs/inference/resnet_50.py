@@ -1,6 +1,11 @@
+import logging
+import time
+
 import torch
 from torchvision import models, transforms
 from torchvision.models import ResNet50_Weights
+
+logger = logging.getLogger(__name__)
 
 ################################ ResNet-50 ###########################
 
@@ -74,12 +79,22 @@ def compute_embeddings_batch(model, image_batch_tensor, device="cpu"):
 
 
 def compute_embeddings_resnet_50(self, images):
-    # Preprocess all images into a single batch tensor
+    """Embed *images*; logs preprocess and forward time at INFO (port of
+    upstream 30ad54f4), ``umrs_resnet_timing`` carries the same numbers."""
+    t0 = time.perf_counter()
     image_batch_tensor = preprocess_images_batch(images)
+    t_preprocess = time.perf_counter() - t0
 
-    # Compute embeddings for the entire batch
+    t0 = time.perf_counter()
     embeddings = compute_embeddings_batch(
         self.model, image_batch_tensor, device=self.device
     )
+    t_forward = time.perf_counter() - t0
 
+    logger.info(
+        "[resnet50] n=%d pil=%.3fs forward=%.3fs", len(images), t_preprocess, t_forward,
+        extra={"umrs_resnet_timing": {
+            "n_images": len(images), "preprocess_s": t_preprocess, "forward_s": t_forward,
+        }},
+    )
     return embeddings

@@ -303,8 +303,10 @@ def compute_and_store_embedding_batch(items, store_fn=None):
 
 
 def _log_embed_timing(model, n_objects, batch_size, t_wall, t_io, t_compute):
-    """DEBUG timing line; ``umrs_embed_timing`` carries the same numbers."""
-    logger.debug(
+    """INFO timing line per batch, as upstream logs it (the timing is what
+    UMRS_INFERENCE_BATCH_SIZE is tuned by); ``umrs_embed_timing`` carries
+    the same numbers."""
+    logger.info(
         "[embed] n=%d wall=%.3fs io=%.3fs compute=%.3fs model=%s batch_size=%d",
         n_objects, t_wall, t_io, t_compute,
         getattr(model, "model_name", "?"), batch_size,

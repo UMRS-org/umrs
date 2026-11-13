@@ -412,7 +412,7 @@ Each Mini-Rivault instance provides:
 
 Integer knobs below that are not an integer, or fall outside their bounds, keep their default and log one warning naming the knob; on/off knobs read `0`, `false`, `no`, `off` as off (`umrs.shared.env_knobs`).
 
-- `UMRS_INFERENCE_BATCH_SIZE` (default `0` = one forward pass per batch): cap on objects per local embedding forward pass; when set, the S3 load of the next chunk overlaps the compute of the current one. Lower it (e.g. 64) on CPU/GPU OOM. Bounds: `>= 0`.
+- `UMRS_INFERENCE_BATCH_SIZE` (default `0` = one forward pass per batch): cap on objects per local embedding forward pass; when set, the S3 load of the next chunk overlaps the compute of the current one. Lower it (e.g. 64) on CPU/GPU OOM; each batch logs an INFO `[embed] n= wall= io= compute=` line (ResNet-50 also `[resnet50] n= pil= forward=`) to tune it by. Bounds: `>= 0`.
 - `UMRS_PREFILTER_INDEXED` (default `1`): PROCESS_OBJECTS skips objects whose bucket table already holds them with the same S3 ETag (and model); STATUS keeps the submitted count and adds `nb_skipped_indexed`. Set `0` to re-embed every upload.
 - `UMRS_PREFILTER_HEAD_BUDGET_S` (default `30`, bounds `1..3600`): wall-clock bound of the pre-filter's S3 HEADs for one bucket (only keys the table already holds are HEADed); past it, or after 20 failed HEADs, the bucket skips nothing and indexes every object.
 - `UMRS_KNN_MAX_K` (default `100`, bounds `>= 1`): upper bound on `k` for the KNN command (`umrs knn`); larger requests are capped, `k <= 0` is refused. KNN searches a bucket the caller owns or whose ADR-080 access list admits them (and only its current model). pgvector caps `hnsw.ef_search` at 1000, so a `k` above 1000 is answered by the exact pass (bounded by the next knob).
