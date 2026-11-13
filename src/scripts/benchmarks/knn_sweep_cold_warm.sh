@@ -8,6 +8,9 @@
 #   UMRS_BENCH_CONFIG_DIR  user1_<i>.json configs    (default: ~/.config/umrs/n_users/users)
 #   UMRS_BENCH_LOG_DIR     output directory          (default: <this dir>/log)
 # Needs the KNN client command (client_umrs.py knn).
+# The server caps k at UMRS_KNN_MAX_K (default 100); upstream's k=200 leg ran
+# as k=100 under that cap, so the sweep stops at 100. Set UMRS_KNN_MAX_K on the
+# server before adding a larger k here.
 
 BENCHMARK_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$BENCHMARK_DIR/../../.." && pwd)"
@@ -19,24 +22,26 @@ LOG_DIR="${UMRS_BENCH_LOG_DIR:-$BENCHMARK_DIR/log}"
 LOG_FILE="$LOG_DIR/knn_cold_warm_redo.log"
 
 CLIENTS=(user1_7 user1_8 user1_9 user1_10 user1_11 user1_12 user1_13 user1_14)
-K_VALUES=(5 20 200)
+K_VALUES=(5 20 100)
 BUCKET="bucket-3"
 REPEATS=100
 
 mkdir -p "$LOG_DIR"
-> "$LOG_FILE"
+: > "$LOG_FILE"
 
 for k in "${K_VALUES[@]}"; do
-    for rep in $(seq 1 $REPEATS); do
+    for rep in $(seq 1 "$REPEATS"); do
         for user in "${CLIENTS[@]}"; do
             for call in cold hot; do
-                echo "=== rep=$rep user=$user k=$k call=$call ===" >> "$LOG_FILE"
-                { time python "$CLIENT" \
-                    -c "$CONFIG_DIR/${user}.json" \
-                    --output text \
-                    knn $k "$IMAGE" $BUCKET ; } 2>&1 | \
-                    grep -E "KNN results|^real" >> "$LOG_FILE"
-                echo "" >> "$LOG_FILE"
+                {
+                    echo "=== rep=$rep user=$user k=$k call=$call ==="
+                    { time python "$CLIENT" \
+                        -c "$CONFIG_DIR/${user}.json" \
+                        --output text \
+                        knn "$k" "$IMAGE" "$BUCKET" ; } 2>&1 | \
+                        grep -E "KNN results|^real"
+                    echo ""
+                } >> "$LOG_FILE"
             done
         done
     done

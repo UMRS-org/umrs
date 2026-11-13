@@ -23,18 +23,19 @@ from __future__ import annotations
 
 import argparse
 import contextlib
-import csv
-import os
-import statistics
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-# Make sure the src/ directory is on the path when running from scripts/benchmarks/
-_SRC = Path(__file__).resolve().parents[2]
-if str(_SRC) not in sys.path:
-    sys.path.insert(0, str(_SRC))
+# Make sure src/ (umrs) and this directory (_bench_common) are importable.
+_BENCH = Path(__file__).resolve().parent
+_SRC = _BENCH.parents[1]
+for _path in (_SRC, _BENCH):
+    if str(_path) not in sys.path:
+        sys.path.insert(0, str(_path))
+
+from _bench_common import append_csv, client_id_prefix, fmt_ms, stats
 
 from umrs.client.control_api import UMRSControlAPI
 from umrs.shared.connection_profiles import resolve_connection
@@ -95,34 +96,6 @@ def _worker(
     return latencies
 
 
-# --- stats helpers -----------------------------------------------------------
-
-def _fmt_ms(stats: dict, key: str) -> str:
-    return f"{stats.get(key, float('nan')):.1f}"
-
-
-def _percentile(data: list[float], p: float) -> float:
-    if not data:
-        return float("nan")
-    data_sorted = sorted(data)
-    idx = max(0, int(len(data_sorted) * p / 100) - 1)
-    return data_sorted[min(idx, len(data_sorted) - 1)]
-
-
-def _stats(latencies_ms: list[float]) -> dict:
-    if not latencies_ms:
-        return {}
-    return {
-        "n": len(latencies_ms),
-        "mean_ms": statistics.mean(latencies_ms),
-        "p50_ms": statistics.median(latencies_ms),
-        "p95_ms": _percentile(latencies_ms, 95),
-        "p99_ms": _percentile(latencies_ms, 99),
-        "min_ms": min(latencies_ms),
-        "max_ms": max(latencies_ms),
-    }
-
-
 # --- main benchmark run ------------------------------------------------------
 
 def run_bench(
@@ -171,7 +144,7 @@ def run_bench(
     throughput = total_req / wall_elapsed if wall_elapsed > 0 else 0.0
 
     ms = [x * 1000 for x in all_latencies]
-    s = _stats(ms)
+    s = stats(ms)
     s["N"] = N
     s["K"] = K
     s["errors"] = errors
@@ -208,13 +181,9 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _client_id_prefix(explicit: str | None) -> str:
-    return explicit or os.environ.get("UMRS_CLIENT_ID") or os.environ.get("USER", "bench_user")
-
-
 def _print_row(s: dict) -> None:
     def ms(key):
-        return _fmt_ms(s, key)
+        return fmt_ms(s, key)
 
     print(
         f"{s['N']:>4}  {ms('mean_ms'):>8}  {ms('p50_ms'):>8}  "
@@ -224,19 +193,9 @@ def _print_row(s: dict) -> None:
     )
 
 
-def _append_csv(path: str, rows: list[dict]) -> None:
-    file_exists = os.path.isfile(path)
-    with open(path, "a", newline="") as fh:
-        writer = csv.DictWriter(fh, fieldnames=list(rows[0].keys()))
-        if not file_exists:
-            writer.writeheader()
-        writer.writerows(rows)
-    print(f"\nResults {'appended to' if file_exists else 'saved to'} {path}")
-
-
 def _run_sweep(args, connection, label: str) -> list[dict]:
     n_values = [int(x) for x in args.sweep.split(",")] if args.sweep else [args.concurrency]
-    client_id_prefix = _client_id_prefix(args.client_id)
+    prefix = client_id_prefix(args.client_id)
     rows = []
     for N in n_values:
         s = run_bench(
@@ -247,7 +206,7 @@ def _run_sweep(args, connection, label: str) -> list[dict]:
             tunnel_mode=connection.tunnel_mode,
             cmd=args.cmd,
             target=args.target,
-            client_id_prefix=client_id_prefix,
+            client_id_prefix=prefix,
             warmup=args.warmup,
         )
         _print_row(s)
@@ -277,7 +236,7 @@ def main():
 
     rows = _run_sweep(args, connection, label)
     if args.csv:
-        _append_csv(args.csv, rows)
+        append_csv(args.csv, rows)
 
 
 if __name__ == "__main__":

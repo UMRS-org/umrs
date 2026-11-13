@@ -124,7 +124,7 @@ def test_populate_defaults_match_upstream_sweep(tmp_path):
     args = populate.parse_args(["--log-dir", str(tmp_path)])
     assert args.users == [{"z": 14, "target": 20_000}]
     assert args.state_file == str(tmp_path / "populate_state.json")
-    assert args.verify_tls is False
+    assert args.insecure is False
     assert populate.rounds_needed(20_000) == 4
     assert list(populate.all_prefixes())[:2] == ["5000aa", "5000ab"]
     args = populate.parse_args(["--user", "7:10000", "--user", "9:50000"])
@@ -141,3 +141,155 @@ def test_populate_buckets_resumes_after_done_rounds(tmp_path, monkeypatch):
     mod.populate_user(args.users[0], state, args)
     assert calls == [("ab", 2), ("ac", 3)]
     assert state == {"10": 3}
+
+
+# --- populate: TLS verification and one retry layer (review U1) -----------------------
+
+
+def _populate_s3cfg(tmp_path, extra=""):
+    path = tmp_path / "s3cfg"
+    path.write_text(
+        "[default]\nhost_base = store:9000\nuse_https = True\naccess_key = a\n"
+        f"secret_key = s\n{extra}",
+        encoding="utf-8",
+    )
+    return str(path)
+
+
+@pytest.fixture
+def populate_clients(monkeypatch):
+    pytest.importorskip("boto3")
+    pytest.importorskip("tqdm")
+    populate = _load("populate")
+    built = []
+    monkeypatch.setattr(populate.boto3, "client", lambda *_a, **kw: built.append(kw) or kw)
+    monkeypatch.delenv("UMRS_S3_MAX_ATTEMPTS", raising=False)
+    return populate, built
+
+
+@pytest.mark.parametrize(
+    ("extra", "insecure", "verify"),
+    [("", False, True),
+     ("check_ssl_certificate = True\n", False, True),
+     ("check_ssl_certificate = False\n", False, False),
+     ("", True, False)],
+)
+def test_populate_verifies_tls_unless_told_not_to(populate_clients, tmp_path, extra,
+                                                  insecure, verify):
+    populate, built = populate_clients
+    populate.make_client(_populate_s3cfg(tmp_path, extra), insecure=insecure)
+    (kwargs,) = built
+    assert kwargs["verify"] is verify
+    assert kwargs["endpoint_url"] == "https://store:9000"
+
+
+def test_populate_retries_in_botocore_only(populate_clients, tmp_path):
+    populate, built = populate_clients
+    populate.make_client(_populate_s3cfg(tmp_path))
+    (kwargs,) = built
+    assert kwargs["config"].retries == {"total_max_attempts": 5, "mode": "standard"}
+    assert not hasattr(populate, "_with_retry")
+
+
+def test_populate_insecure_flag():
+    pytest.importorskip("boto3")
+    pytest.importorskip("tqdm")
+    populate = _load("populate")
+    assert populate.parse_args(["--insecure"]).insecure is True
+
+
+# --- bench_knn: only successful replies are timed (review U1) -------------------------
+
+
+class _KnnMQ:
+    def __init__(self, replies):
+        self.replies = list(replies)
+        self.calls = []
+
+    def request_knn(self, username, k, s3_key, bucket):
+        self.calls.append((username, k, s3_key, bucket))
+        reply = self.replies.pop(0)
+        if isinstance(reply, BaseException):
+            raise reply
+        return reply
+
+    def close(self):
+        pass
+
+
+def test_bench_knn_counts_error_replies_instead_of_timing_them(monkeypatch):
+    bench_knn = _load("bench_knn")
+    replies = ['{"status": "ok", "results": []}', '{"status": "error", "message": "no"}',
+               "SERVER_OVERLOADED", "UNAUTHORIZED:KNN", TimeoutError("slow"),
+               '{"status": "ok", "results": []}']
+    mq = _KnnMQ(replies)
+    monkeypatch.setattr(bench_knn, "_make_mq", lambda *_a: mq)
+
+    stats = bench_knn.run_bench(N=1, K=6, server_ip="h", control_port=1, tunnel_mode=False,
+                                warmup=0, username="u", k=3, s3_key="q.png", bucket="b")
+
+    assert stats["n"] == 2
+    assert stats["errors"] == 4
+    assert mq.calls[0] == ("u", 3, "q.png", "b")
+
+
+def test_bench_knn_warm_up_stops_on_an_error_reply(monkeypatch):
+    bench_knn = _load("bench_knn")
+    mq = _KnnMQ(['{"status": "error", "message": "No bucket entry found for path: b"}'])
+    monkeypatch.setattr(bench_knn, "_make_mq", lambda *_a: mq)
+    connection = type("C", (), {"server_host": "h", "control_port": 1, "tunnel_mode": False})
+    args = type("A", (), {"username": "u", "k": 3, "bucket": "b"})
+    with pytest.raises(SystemExit, match="No bucket entry"):
+        bench_knn._warm_cache(connection, args, "q.png")
+
+
+def test_bench_knn_has_no_client_id_flag():
+    bench_knn = _load("bench_knn")
+    with pytest.raises(SystemExit):
+        bench_knn._build_parser().parse_args(
+            ["--image", "i", "--bucket", "b", "--username", "u", "--s3cfg", "c",
+             "--client-id", "x"])
+
+
+# --- shared helpers --------------------------------------------------------------------
+
+
+def test_bench_scripts_share_one_stats_module():
+    common = _load("_bench_common")
+    for name in ("bench_knn", "bench_latency"):
+        module = _load(name)
+        for helper in ("_stats", "_percentile", "_fmt_ms", "_append_csv"):
+            assert not hasattr(module, helper), f"{name}.{helper} is a copy"
+    stats = common.stats([10.0, 20.0, 30.0, 40.0])
+    assert (stats["n"], stats["min_ms"], stats["max_ms"], stats["p50_ms"]) == (4, 10.0, 40.0, 25.0)
+    assert common.fmt_ms({}, "mean_ms") == "nan"
+
+
+def test_append_csv_creates_the_directory(tmp_path):
+    common = _load("_bench_common")
+    path = tmp_path / "log" / "out.csv"
+    common.append_csv(str(path), [{"a": 1}])
+    common.append_csv(str(path), [{"a": 2}])
+    assert path.read_text().splitlines() == ["a", "1", "2"]
+
+
+# --- knn_sweep_cold_warm.sh --------------------------------------------------------------
+
+
+def test_knn_sweep_stays_within_the_server_k_cap():
+    from umrs.server.knn_worker import DEFAULT_MAX_K
+
+    script = (BENCH_DIR / "knn_sweep_cold_warm.sh").read_text(encoding="utf-8")
+    (line,) = [ln for ln in script.splitlines() if ln.startswith("K_VALUES=")]
+    values = [int(v) for v in line.split("(", 1)[1].rstrip(")").split()]
+    assert max(values) <= DEFAULT_MAX_K
+
+
+def test_knn_sweep_passes_shellcheck():
+    import shutil
+
+    if shutil.which("shellcheck") is None:
+        pytest.skip("shellcheck not installed")
+    result = subprocess.run(["shellcheck", str(BENCH_DIR / "knn_sweep_cold_warm.sh")],
+                            capture_output=True, text=True, timeout=60, check=False)
+    assert result.returncode == 0, result.stdout

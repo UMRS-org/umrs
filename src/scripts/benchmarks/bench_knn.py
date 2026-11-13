@@ -4,7 +4,9 @@
 Each virtual user gets its own ZMQ socket. The query image is uploaded to S3
 once (setup phase) and the embedding cache is warmed before timing starts, so
 the benchmark measures the retrieval path only (DB kNN query + network round-
-trip), not model inference time.
+trip), not model inference time. Every request is sent as ``--username``.
+Only ``{"status": "ok"}`` replies are timed; error, overloaded, unauthorized
+and timed-out requests are counted in ``errors``.
 
 Usage
 -----
@@ -19,7 +21,7 @@ python bench_knn.py --image ../data/img_test/cat.jpeg \\
     --username user1_1 --s3cfg ~/.s3cfg_user1_1 \\
     --sweep 1,5,10,25
 
-# Sweep k values (number of neighbours)
+# Sweep k values (number of neighbours; the server caps k at UMRS_KNN_MAX_K)
 python bench_knn.py --image ../data/img_test/cat.jpeg \\
     --bucket user1-1.images-and-texts.bucket-3 \\
     --username user1_1 --s3cfg ~/.s3cfg_user1_1 \\
@@ -33,17 +35,20 @@ from __future__ import annotations
 
 import argparse
 import contextlib
-import csv
+import json
 import os
-import statistics
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-_SRC = Path(__file__).resolve().parents[2]
-if str(_SRC) not in sys.path:
-    sys.path.insert(0, str(_SRC))
+_BENCH = Path(__file__).resolve().parent
+_SRC = _BENCH.parents[1]
+for _path in (_SRC, _BENCH):
+    if str(_path) not in sys.path:
+        sys.path.insert(0, str(_path))
+
+from _bench_common import append_csv, fmt_ms, stats
 
 from umrs.shared.connection_profiles import resolve_connection
 
@@ -69,9 +74,32 @@ def _make_mq(server_ip: str, control_port: int, tunnel_mode: bool):
     )
 
 
+def _knn_error(raw) -> str | None:
+    """None for an ``{"status": "ok"}`` reply, else why it is not one
+    (error JSON, or a plain SERVER_OVERLOADED / UNAUTHORIZED reply)."""
+    try:
+        reply = json.loads(raw)
+    except (TypeError, ValueError):
+        return str(raw)
+    if not isinstance(reply, dict):
+        return str(raw)
+    if reply.get("status") == "ok":
+        return None
+    return str(reply.get("message", raw))
+
+
+def _timed_request(mq, username: str, k: int, s3_key: str, bucket: str) -> float | None:
+    """Seconds one KNN request took, or None when it did not succeed."""
+    t0 = time.perf_counter()
+    try:
+        raw = mq.request_knn(username, k, s3_key, bucket)
+    except (TimeoutError, RuntimeError):
+        return None
+    elapsed = time.perf_counter() - t0
+    return None if _knn_error(raw) is not None else elapsed
+
+
 def _worker(
-    worker_id: int,
-    client_id: str,
     server_ip: str,
     control_port: int,
     tunnel_mode: bool,
@@ -81,46 +109,24 @@ def _worker(
     k: int,
     s3_key: str,
     bucket: str,
-) -> list[float]:
+) -> tuple[list[float], int]:
+    """``(latencies of successful timed requests, failed timed requests)``."""
     mq = _make_mq(server_ip, control_port, tunnel_mode)
     latencies: list[float] = []
+    errors = 0
     try:
         for i in range(warmup + n_requests):
-            t0 = time.perf_counter()
-            mq.request_knn(username, k, s3_key, bucket)
-            elapsed = time.perf_counter() - t0
-            if i >= warmup:
+            elapsed = _timed_request(mq, username, k, s3_key, bucket)
+            if i < warmup:
+                continue
+            if elapsed is None:
+                errors += 1
+            else:
                 latencies.append(elapsed)
     finally:
         with contextlib.suppress(Exception):
             mq.close()
-    return latencies
-
-
-def _fmt_ms(stats: dict, key: str) -> str:
-    return f"{stats.get(key, float('nan')):.1f}"
-
-
-def _percentile(data: list[float], p: float) -> float:
-    if not data:
-        return float("nan")
-    data_sorted = sorted(data)
-    idx = max(0, int(len(data_sorted) * p / 100) - 1)
-    return data_sorted[min(idx, len(data_sorted) - 1)]
-
-
-def _stats(latencies_ms: list[float]) -> dict:
-    if not latencies_ms:
-        return {}
-    return {
-        "n": len(latencies_ms),
-        "mean_ms": statistics.mean(latencies_ms),
-        "p50_ms": statistics.median(latencies_ms),
-        "p95_ms": _percentile(latencies_ms, 95),
-        "p99_ms": _percentile(latencies_ms, 99),
-        "min_ms": min(latencies_ms),
-        "max_ms": max(latencies_ms),
-    }
+    return latencies, errors
 
 
 def run_bench(
@@ -134,36 +140,30 @@ def run_bench(
     k: int,
     s3_key: str,
     bucket: str,
-    client_id_prefix: str,
 ) -> dict:
-    futures_map: dict = {}
     wall_start = time.perf_counter()
+    all_latencies: list[float] = []
+    errors = 0
     with ThreadPoolExecutor(max_workers=N) as pool:
-        for i in range(N):
-            cid = f"{client_id_prefix}_{i + 1}" if N > 1 else client_id_prefix
-            f = pool.submit(
-                _worker,
-                i, cid,
-                server_ip, control_port, tunnel_mode,
-                K, warmup,
-                username, k, s3_key, bucket,
-            )
-            futures_map[f] = cid
-
-        all_latencies: list[float] = []
-        errors = 0
-        for f in as_completed(futures_map):
+        futures = [
+            pool.submit(_worker, server_ip, control_port, tunnel_mode,
+                        K, warmup, username, k, s3_key, bucket)
+            for _ in range(N)
+        ]
+        for f in as_completed(futures):
             try:
-                all_latencies.extend(f.result())
+                latencies, failed = f.result()
             except Exception as e:  # noqa: BLE001 — a failed worker is counted, not fatal
-                errors += 1
+                errors += K
                 print(f"  [worker error] {e}", file=sys.stderr)
+                continue
+            all_latencies.extend(latencies)
+            errors += failed
 
     wall_elapsed = time.perf_counter() - wall_start
     total_req = len(all_latencies)
     throughput = total_req / wall_elapsed if wall_elapsed > 0 else 0.0
-    ms = [x * 1000 for x in all_latencies]
-    s = _stats(ms)
+    s = stats([x * 1000 for x in all_latencies])
     s.update({"N": N, "K": K, "k": k, "errors": errors,
                "throughput_rps": throughput, "wall_s": wall_elapsed})
     return s
@@ -173,7 +173,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="UMRS KNN latency benchmark")
     parser.add_argument("--image", "-i", required=True, help="Local query image path")
     parser.add_argument("--bucket", required=True, help="S3 path_to_bucket (full name)")
-    parser.add_argument("--username", required=True, help="UMRS username")
+    parser.add_argument("--username", required=True,
+                        help="UMRS username every request is sent as")
     parser.add_argument("--s3cfg", required=True, help="Path to .s3cfg file")
     parser.add_argument("-N", "--concurrency", type=int, default=1,
                         help="Number of concurrent virtual users")
@@ -190,14 +191,9 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--control-port", type=int, default=None)
     parser.add_argument("--endpoint", type=str, default=None,
                         help="Override S3 endpoint URL")
-    parser.add_argument("--client-id", type=str, default=None)
     parser.add_argument("--label", type=str, default=None)
     parser.add_argument("--csv", type=str, default=None)
     return parser
-
-
-def _client_id_prefix(explicit: str | None) -> str:
-    return explicit or os.environ.get("UMRS_CLIENT_ID") or os.environ.get("USER", "bench_user")
 
 
 def _sweep_values(args) -> tuple[list[int], list[int]]:
@@ -209,18 +205,22 @@ def _sweep_values(args) -> tuple[list[int], list[int]]:
 
 
 def _warm_cache(connection, args, s3_key: str) -> None:
+    """One KNN call; exits when it does not answer ``ok`` (nothing to time)."""
     print("Warming up embedding cache (1 KNN call)...")
     mq = _make_mq(connection.server_host, connection.control_port, connection.tunnel_mode)
     try:
-        mq.request_knn(args.username, args.k, s3_key, args.bucket)
+        raw = mq.request_knn(args.username, args.k, s3_key, args.bucket)
     finally:
         mq.close()
+    error = _knn_error(raw)
+    if error is not None:
+        raise SystemExit(f"KNN warm-up failed, nothing to benchmark: {error}")
     print("  Cache warmed.")
 
 
 def _print_row(s: dict) -> None:
     def ms(key):
-        return _fmt_ms(s, key)
+        return fmt_ms(s, key)
 
     print(
         f"{s['N']:>4}  {s['k']:>4}  {ms('mean_ms'):>8}  {ms('p50_ms'):>8}  "
@@ -230,20 +230,8 @@ def _print_row(s: dict) -> None:
     )
 
 
-def _append_csv(path: str, rows: list[dict]) -> None:
-    file_exists = os.path.isfile(path)
-    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    with open(path, "a", newline="") as fh:
-        writer = csv.DictWriter(fh, fieldnames=list(rows[0].keys()))
-        if not file_exists:
-            writer.writeheader()
-        writer.writerows(rows)
-    print(f"\nResults {'appended to' if file_exists else 'saved to'} {path}")
-
-
 def _run_sweep(args, connection, s3_key: str, label: str) -> list[dict]:
     n_values, k_values = _sweep_values(args)
-    client_id_prefix = _client_id_prefix(args.client_id)
     rows = []
     for N in n_values:
         for k in k_values:
@@ -254,7 +242,6 @@ def _run_sweep(args, connection, s3_key: str, label: str) -> list[dict]:
                 tunnel_mode=connection.tunnel_mode,
                 warmup=args.warmup,
                 username=args.username, k=k, s3_key=s3_key, bucket=args.bucket,
-                client_id_prefix=client_id_prefix,
             )
             _print_row(s)
             if label:
@@ -290,7 +277,7 @@ def main():
 
     rows = _run_sweep(args, connection, s3_key, label)
     if args.csv:
-        _append_csv(args.csv, rows)
+        append_csv(args.csv, rows)
 
 
 if __name__ == "__main__":
