@@ -32,8 +32,21 @@ echo "  current_connection_profile (${PROFILE_NAME})"
 
 # Install umrs package in editable mode
 SRC_DIR="${SCRIPT_DIR}/../../src"
+# umrs-protocol (this checkout's protocol/) and r4-contracts (the superproject
+# sibling) are unpublished: install both from local paths first, so resolving
+# umrs never fetches either name from a package index (dependency confusion).
+PROTOCOL_DIR="${SCRIPT_DIR}/../../protocol"
+R4_CONTRACTS_DIR="${R4_CONTRACTS_DIR:-${SCRIPT_DIR}/../../../r4-contracts}"
 if [ -f "${SRC_DIR}/pyproject.toml" ]; then
+    for local_pkg in "${PROTOCOL_DIR}" "${R4_CONTRACTS_DIR}"; do
+        if [ ! -f "${local_pkg}/pyproject.toml" ]; then
+            echo "ERROR: ${local_pkg}/pyproject.toml not found (set R4_CONTRACTS_DIR for r4-contracts)." >&2
+            exit 1
+        fi
+    done
     echo ""
+    echo "Installing umrs-protocol and r4-contracts from local paths ..."
+    uv pip install -e "${PROTOCOL_DIR}" -e "${R4_CONTRACTS_DIR}"
     echo "Installing umrs package from ${SRC_DIR} ..."
     uv pip install -e "${SRC_DIR}"
     echo "umrs package installed."

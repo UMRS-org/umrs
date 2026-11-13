@@ -47,6 +47,10 @@ testpaths = ["tests"]
 [tool.ruff]
 target-version = "py310"
 line-length = 100
+# Honour the excludes below for paths named on the command line too
+# (ci-lint-local.sh, ci.yaml and pre-commit pass explicit file lists), so a
+# plain `ruff format <gate path>` cannot rewrite the gate bytes.
+force-exclude = true
 
 [tool.ruff.format]
 # hpc_gate.py bytes are the gate release (gate_sha256, tests/golden/gate.json):
