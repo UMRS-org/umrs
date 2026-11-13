@@ -108,6 +108,23 @@ def test_parse_server_log_matches_upstream_output(extra, expected, tmp_path):
     assert result.stdout == expected
 
 
+MULTI_CLIENT_LOG = """\
+2026-10-01 10:00:01,500 INFO umrs.core.MessageQueue: [PROCESS] Batch assembled: 3 client request(s) — [('alice', 5), ('bob', 2), ('alice', 4)]
+2026-10-01 10:00:02,000 INFO umrs.server.commands.process_objects: [PROCESS] Tasks created: [('alice', 1), ('bob', 2), ('alice', 3)]
+2026-10-01 10:00:02,100 INFO umrs.server.indexed_prefilter: [PROCESS] skipping 9 already-indexed object(s): {'a': 9} per client: [('alice', 9)]
+2026-10-01 10:00:02,200 INFO umrs.server.commands.process_objects: [PROCESS] S3 events ready — launching threads for 1 client(s): [('bob', 2)]
+"""
+
+
+def test_parse_server_log_matches_batch_counts_by_position():
+    """A client sending twice in one batch keeps each request's own count;
+    the per-client skip goes to that client's first task (review U1)."""
+    tasks = _load("parse_server_log").parse_lines(MULTI_CLIENT_LOG.splitlines())
+
+    rows = {tid: t.summary_row()[1:5] for tid, t in tasks.items()}
+    assert rows == {"1": ["alice", 5, 9, 0], "2": ["bob", 2, 0, 2], "3": ["alice", 4, 0, 0]}
+
+
 def _load(name):
     spec = importlib.util.spec_from_file_location(f"bench_{name}", BENCH_DIR / f"{name}.py")
     module = importlib.util.module_from_spec(spec)

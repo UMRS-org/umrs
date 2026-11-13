@@ -302,6 +302,46 @@ def test_parse_server_log_reads_the_lines_this_handler_writes(stack, caplog):
     assert task.t_completed is not None
 
 
+def _parsed_handler_log(stack, caplog, *batches):
+    from umrs.server.structured_logging import TEXT_LOG_FORMAT
+
+    with caplog.at_level(logging.INFO):
+        for batch in batches:
+            _run(stack, batch)
+    formatter = logging.Formatter(TEXT_LOG_FORMAT)
+    lines = [formatter.format(record) for record in caplog.records]
+    return _parse_server_log_module().parse_lines(lines)
+
+
+def _task_counts(tasks):
+    return {tid: (t.user, t.n_skipped, t.summary_row()[4])
+            for tid, t in tasks.items()}
+
+
+def test_parse_server_log_keeps_every_client_of_a_batch(stack, caplog):
+    """The Tasks/S3-ready patterns matched only the last (client, n) tuple:
+    a two-client batch lost alice's row (review U1)."""
+    tasks = _parsed_handler_log(stack, caplog, {
+        "alice": [f"s3://a/k{i}" for i in range(5)],  # k0..k2 indexed
+        "bob": [f"s3://b/k{i}" for i in range(2)],
+    })
+
+    assert _task_counts(tasks) == {"1": ("alice", 3, 2), "2": ("bob", 0, 2)}
+    assert all(t.t_running and t.t_completed for t in tasks.values())
+
+
+def test_parse_server_log_gives_a_full_skip_to_its_own_task(stack, caplog):
+    """A fully skipped batch logs no S3-ready line, so its skip count used
+    to wait for, and land on, the next batch's task (review U1)."""
+    tasks = _parsed_handler_log(
+        stack, caplog,
+        {"alice": [f"s3://a/k{i}" for i in range(3)]},  # all indexed
+        {"alice": ["s3://a/k3", "s3://a/k4"]},
+    )
+
+    assert _task_counts(tasks) == {"1": ("alice", 3, 0), "2": ("alice", 0, 2)}
+
+
 # --- no phantom Running entry when a STATUS write fails (review U1) -------------------
 
 

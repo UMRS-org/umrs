@@ -63,6 +63,7 @@ class PrefilterResult:
     submitted: dict[str, int] = field(default_factory=dict)
     skipped: dict[str, int] = field(default_factory=dict)
     done_clients: list[str] = field(default_factory=list)
+    skipped_by_client: list[tuple[str, int]] = field(default_factory=list)
 
     def fully_skipped(self) -> dict[str, int]:
         """Buckets whose every submitted object was already indexed."""
@@ -85,8 +86,8 @@ def filter_already_indexed(buckets_cfg, client_entries) -> PrefilterResult:
     result = _split_entries(client_entries, refused, skip)
     result.submitted = {bucket: len(keys) for bucket, keys in candidates.items()}
     if skip:
-        logger.info("[PROCESS] skipping %d already-indexed object(s): %s",
-                    len(skip), result.skipped)
+        logger.info("[PROCESS] skipping %d already-indexed object(s): %s per client: %s",
+                    len(skip), result.skipped, result.skipped_by_client)
     return result
 
 
@@ -113,6 +114,8 @@ def _split_entries(client_entries, refused, skip) -> PrefilterResult:
             result.entries.append((client_id, objects))
             continue
         kept = [obj for obj in objects if _split_s3_object(obj) not in skip]
+        if len(kept) < len(objects):  # parse_server_log.py reads this per client
+            result.skipped_by_client.append((client_id, len(objects) - len(kept)))
         if kept:
             result.entries.append((client_id, kept))
         else:
