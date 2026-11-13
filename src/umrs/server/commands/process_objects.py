@@ -16,10 +16,78 @@ from typing import Any
 
 from umrs.core.TaskCmdStatus import TaskCmd, TaskStatus
 from umrs.core.thread_pool import ServerOverloadedError
+from umrs.server.indexed_prefilter import filter_already_indexed, prefilter_enabled
 
 from .base import CommandHandler, HandlerContext
 
 logger = logging.getLogger(__name__)
+
+_KEY = "process_objects"
+
+
+def _dispatch_entries(ctx: HandlerContext, client_entries, client_callbacks) -> None:
+    """Drop already-indexed objects, then submit the rest to the pool."""
+    client_entries, skipped = _apply_prefilter(ctx, client_entries, client_callbacks)
+    if not client_entries:
+        logger.info("[PROCESS] All objects already indexed, nothing to do.")
+        return
+    active_callbacks = {
+        cid: client_callbacks[cid] for cid, _ in client_entries if cid in client_callbacks
+    }
+    _launch_batch_threads(ctx, client_entries, active_callbacks, skipped)
+
+
+def _apply_prefilter(ctx: HandlerContext, client_entries, client_callbacks):
+    """``(entries still to process, {bucket: skipped})`` (plan U1 A5).
+
+    Fails open: on any error every object is indexed, nothing is skipped.
+    """
+    if not prefilter_enabled():
+        return client_entries, {}
+    try:
+        result = filter_already_indexed(ctx.buckets_cfg, client_entries)
+    except Exception:  # never lose a batch to the optimisation
+        logger.warning("[PROCESS] indexed pre-filter failed; indexing all", exc_info=True)
+        return client_entries, {}
+    _report_fully_skipped(ctx, result, client_callbacks)
+    return result.entries, result.skipped
+
+
+def _report_fully_skipped(ctx: HandlerContext, result, client_callbacks) -> None:
+    """STATUS entry for buckets with nothing left (8f9fe001: it shows the
+    submitted count); clients with nothing left finish like a normal run."""
+    ctx.task_manager.active_threads.record_skipped_work(
+        ctx.buckets_cfg, result.fully_skipped(), _KEY,
+    )
+    for cid in result.done_clients:
+        cb = client_callbacks.get(cid)
+        if cb:
+            cb(TaskStatus.RUNNING)
+            cb(TaskStatus.COMPLETED)
+
+
+def _launch_batch_threads(ctx: HandlerContext, client_entries, active_callbacks,
+                          skipped=None) -> None:
+    """Pool submission honoring ServerOverloadedError (callbacks → ERROR)."""
+    logger.info(
+        "[PROCESS] S3 events ready — launching threads for %d client(s): %s",
+        len(client_entries),
+        [(cid, len(objs)) for cid, objs in client_entries],
+    )
+    try:
+        ctx.task_manager.active_threads.launch_s3_threads_batch(
+            client_entries,
+            ctx.buckets_cfg,
+            ctx.device,
+            ctx.embedding_backend,
+            _KEY,
+            client_callbacks=active_callbacks,
+            skipped_indexed=skipped,
+        )
+    except ServerOverloadedError as exc:
+        logger.warning("Rejecting PROCESS_OBJECTS_BATCH: %s", exc)
+        for cb in active_callbacks.values():
+            cb(TaskStatus.ERROR)
 
 
 class ProcessObjectsBatchHandler(CommandHandler):
@@ -105,27 +173,6 @@ class ProcessObjectsBatchHandler(CommandHandler):
                         client_entries.append((client_id, objects))
             return client_entries, failed
 
-        def _launch_batch_threads(client_entries, active_callbacks) -> None:
-            """Pool submission honoring ServerOverloadedError (callbacks → ERROR)."""
-            logger.info(
-                "[PROCESS] S3 events ready — launching threads for %d client(s): %s",
-                len(client_entries),
-                [(cid, len(objs)) for cid, objs in client_entries],
-            )
-            try:
-                ctx.task_manager.active_threads.launch_s3_threads_batch(
-                    client_entries,
-                    ctx.buckets_cfg,
-                    ctx.device,
-                    ctx.embedding_backend,
-                    "process_objects",
-                    client_callbacks=active_callbacks,
-                )
-            except ServerOverloadedError as exc:
-                logger.warning("Rejecting PROCESS_OBJECTS_BATCH: %s", exc)
-                for cb in active_callbacks.values():
-                    cb(TaskStatus.ERROR)
-
         def _collect_and_process() -> None:
             # Collect S3 events for all clients in parallel so the pool thread
             # starts as soon as the LAST client responds, not sum(all waits).
@@ -139,12 +186,7 @@ class ProcessObjectsBatchHandler(CommandHandler):
             if not client_entries:
                 return
 
-            active_callbacks = {
-                cid: client_callbacks[cid]
-                for cid, _ in client_entries
-                if cid in client_callbacks
-            }
-            _launch_batch_threads(client_entries, active_callbacks)
+            _dispatch_entries(ctx, client_entries, client_callbacks)
 
         thread = threading.Thread(
             target=_collect_and_process,

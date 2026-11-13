@@ -59,12 +59,21 @@ def _render_last_update(info):
     return utc_to_local(info.get("updated_at", "-"))
 
 
+def _render_nb_objects(work):
+    """Submitted count, plus how many were already indexed (plan U1 A5)."""
+    nb_objects = work.get("nb_objects", "N/A")
+    skipped = work.get("nb_skipped_indexed")
+    if not skipped:
+        return nb_objects
+    return f"{nb_objects} ({skipped} already indexed)"
+
+
 def _build_thread_status_row(work, thread_id, status, updated_at, running_only):
     row = [
         thread_id,
         work.get("work_type", "N/A"),
         work.get("user", "N/A"),
-        work.get("nb_objects", "N/A"),
+        _render_nb_objects(work),
         work.get("modality_name", "N/A"),
         work.get("bucket", "N/A"),
         f"{work.get('data_base', 'N/A')}/{work.get('table_name', 'N/A')}",
@@ -329,3 +338,27 @@ def pretty_print_check(check_dict, print_output=True):
     if print_output:
         print(message)
     return message
+
+
+def _score_bar(score, width=10):
+    """``█``/``░`` bar for a cosine score, clamped to [0, 1]."""
+    filled = max(0, min(width, int(score * width)))
+    return "█" * filled + "░" * (width - filled)
+
+
+def pretty_print_knn(query, bucket_name, n, results, duration_s, cached, n_indexed=0):
+    """KNN reply summary (port of upstream bd0e6bc1 / 8912c150): a header with
+    ``k/n`` (requested vs. indexed in the searched scope) and one row per hit."""
+    emb_note = "(embedding cached)" if cached else "(embedding recomputed)"
+    kn = f"{n}/{n_indexed}" if n_indexed else str(n)
+    header = (
+        f"KNN results  |  query: {query}  |  bucket: {bucket_name}"
+        f"  |  k/n: {kn}  |  server time: {duration_s:.3f}s  {emb_note}"
+    )
+    rows = [
+        [f"#{i}", f"{hit['score']:.4f}", _score_bar(hit["score"]),
+         hit["object"].rsplit("/", 1)[-1]]
+        for i, hit in enumerate(results, 1)
+    ]
+    table = format_table("", ["#", "Score", "", "Object"], rows, empty_message="No results.")
+    return f"{header}\n\n{table}"

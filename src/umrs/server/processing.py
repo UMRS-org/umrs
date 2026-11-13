@@ -246,10 +246,36 @@ def _pop_locks_and_clients(items):
     """Pop reentrant_lock/_clients/_user from each item; returns (locks, client_sets)."""
     reentrant_locks = [item.pop("reentrant_lock") for item in items]
     client_sets = [item.pop("_clients") for item in items]
-    # _user already used during prepare; pop to keep items clean for backend
+    # _user/_skipped_indexed already used; pop to keep items clean for backend
     for item in items:
         item.pop("_user", None)
+        item.pop("_skipped_indexed", None)
     return reentrant_locks, client_sets
+
+
+def stamp_skipped_indexed(groups, skipped_per_bucket) -> None:
+    """Record on each group item how many of its bucket's objects the
+    indexed pre-filter skipped (plan U1 A5), for the thread's STATUS."""
+    if not skipped_per_bucket:
+        return
+    for items, _callbacks, _users in groups:
+        for item in items:
+            item["_skipped_indexed"] = skipped_per_bucket.get(item["path_to_bucket"], 0)
+
+
+def _submitted_counts(items) -> dict[str, int]:
+    """STATUS ``nb_objects`` per bucket: what was submitted, skipped included."""
+    return {
+        item["path_to_bucket"]: len(item["s3_keys"]) + item.get("_skipped_indexed", 0)
+        for item in items
+    }
+
+
+def _skipped_counts(items) -> dict[str, int]:
+    return {
+        item["path_to_bucket"]: item["_skipped_indexed"]
+        for item in items if item.get("_skipped_indexed")
+    }
 
 
 def _compute_group_batch(embedding_backend, items, reentrant_locks):
@@ -339,8 +365,8 @@ def process_model_group(
     """
     # Register this thread in thread_dict so update_status_to_done() can locate it.
     # Must happen before any items are popped (s3_keys and path_to_bucket are still present).
-    keys_per_bucket = {item["path_to_bucket"]: item["s3_keys"] for item in items}
-    active_threads.update_thread_dict(buckets_cfg, keys_per_bucket, key)
+    active_threads.update_thread_dict(buckets_cfg, _submitted_counts(items), key)
+    active_threads.annotate_works("nb_skipped_indexed", _skipped_counts(items), key)
 
     model_name = getattr(items[0].get("model"), "model_name", str(items[0].get("model")))
     logger.info(
