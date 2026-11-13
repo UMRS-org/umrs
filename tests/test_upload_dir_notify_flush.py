@@ -104,14 +104,17 @@ def _run(data_dir, data_mq, blocking=False):
     return rc, control
 
 
-def test_abort_on_full_data_queue_still_notifies_queued_objects(upload_env):
+@pytest.mark.parametrize("blocking", [False, True])
+def test_abort_on_full_data_queue_still_notifies_queued_objects(upload_env, blocking):
     data_mq = FakeDataMQ(fail_after=3)
-    rc, control = _run(upload_env, data_mq)
+    rc, control = _run(upload_env, data_mq, blocking=blocking)
     assert rc == 1
     assert len(data_mq.sent) == 3
     # The three URIs already in the data queue must be announced, or the
     # server never reads them and the objects stay unindexed.
     assert sum(count for count, _ in control.notified) == 3
+    # The abort's flush never blocks, --blocking or not (review U1).
+    assert all(not flag for _, flag in control.notified)
 
 
 def test_upload_dir_notifies_in_batches(upload_env, monkeypatch):

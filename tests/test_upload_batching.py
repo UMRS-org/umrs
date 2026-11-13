@@ -90,6 +90,20 @@ def test_abort_flush_failure_does_not_mask_original_error():
     assert notifier.ok is False
 
 
+def test_abort_flush_never_blocks_even_with_blocking_on():
+    """Review U1: only the flush after an aborted upload ignores --blocking,
+    so the abort's own error surfaces instead of a blocking wait."""
+    notify = _Notify()
+    notifier = BatchedNotifier(_DataMQ(fail_after=1), notify)
+    with (
+        pytest.raises(RuntimeError, match="Timeout while sending"),
+        notifier.flushing(blocking=True),
+    ):
+        notifier.notify_s3("s3://b/0")
+        notifier.notify_s3("s3://b/1")
+    assert notify.calls == [(1, False)]
+
+
 def test_rejected_batch_marks_not_ok_but_keeps_going():
     notify = _Notify(ok=False)
     notifier = BatchedNotifier(_DataMQ(), notify, batch_size=2)

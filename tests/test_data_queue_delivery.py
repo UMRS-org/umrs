@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import importlib
 import logging
+import re
 import socket
 import threading
 import time
@@ -259,4 +260,7 @@ def test_a_full_data_queue_names_itself_and_the_dropped_uri(monkeypatch, caplog)
     assert "SNDHWM=4" in message
     assert "notify_s3 failed for s3://b/k" in caplog.text
     assert "object will NOT be indexed" in caplog.text
-    assert "message(s) sent in total" in caplog.text
+    # Review U1: the total counts only accepted sends, not the failed one.
+    failed = int(re.search(r"notify_s3 failed for s3://b/k(\d+)", caplog.text).group(1))
+    total = int(re.search(r"(\d+) message\(s\) sent in total", caplog.text).group(1))
+    assert total == failed

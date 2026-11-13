@@ -2171,22 +2171,23 @@ class MessageQueue:
         if self.role != "client":
             raise PermissionError("notify_s3 can only be used by the client.")
 
-        self._notify_s3_count = getattr(self, "_notify_s3_count", 0) + 1
+        attempt = getattr(self, "_notify_s3_sent", 0) + 1
         try:
             self.send_string(s3_object)
         except RuntimeError as exc:
             logger.error(
                 "notify_s3 failed for %s (message #%d): %s; object will NOT be indexed",
-                s3_object, self._notify_s3_count, exc,
+                s3_object, attempt, exc,
             )
             raise
+        self._notify_s3_sent = attempt
 
     def _log_notify_total(self) -> None:
         """At close, how many notify_s3 messages this client data queue sent."""
         if self.role == "client" and self.type == "data":
             logger.info(
                 "notify_s3: closing data queue, %d message(s) sent in total on port %s",
-                getattr(self, "_notify_s3_count", 0), self.port,
+                getattr(self, "_notify_s3_sent", 0), self.port,
             )
 
     def request_model_command(
