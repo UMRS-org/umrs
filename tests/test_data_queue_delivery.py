@@ -119,33 +119,51 @@ def test_inactivity_timeout_returns_what_arrived(monkeypatch, server):
     assert server.wait_for_s3_events(5, timeout_s=3) == ["s3://b/a", "s3://b/b"]
 
 
-def test_concurrent_collectors_read_one_after_the_other(server):
-    """Two PROCESS_OBJECTS batches of one client never recv on the socket at once."""
-    active, peak = [0], [0]
-    guard = threading.Lock()
-    counter = iter(range(10_000))
+class _ConcurrencyProbe:
+    """recv_string stand-in: records how many callers are inside it at once."""
 
-    def _recv():
-        with guard:
-            active[0] += 1
-            peak[0] = max(peak[0], active[0])
+    def __init__(self):
+        self.active = 0
+        self.peak = 0
+        self._guard = threading.Lock()
+        self._counter = iter(range(10_000))
+
+    def __call__(self):
+        with self._guard:
+            self.active += 1
+            self.peak = max(self.peak, self.active)
         time.sleep(0.02)
-        with guard:
-            active[0] -= 1
-        return None, f"s3://b/k{next(counter)}"
+        with self._guard:
+            self.active -= 1
+        return None, f"s3://b/k{next(self._counter)}"
 
-    server.recv_string = _recv
+
+def _collect_concurrently(queue, n_collectors, nb_objects):
     results: list[list[str]] = []
-    threads = [threading.Thread(target=lambda: results.append(server.wait_for_s3_events(5)))
-               for _ in range(2)]
+    threads = [
+        threading.Thread(target=lambda: results.append(queue.wait_for_s3_events(nb_objects)))
+        for _ in range(n_collectors)
+    ]
     for thread in threads:
         thread.start()
     for thread in threads:
         thread.join(timeout=10)
+    return results
 
-    assert peak[0] == 1
+
+def _is_contiguous(batch):
+    numbers = [int(uri.rsplit("k", 1)[1]) for uri in batch]
+    return numbers == list(range(numbers[0], numbers[0] + len(numbers)))
+
+
+def test_concurrent_collectors_read_one_after_the_other(server):
+    """Two PROCESS_OBJECTS batches of one client never recv on the socket at once."""
+    probe = _ConcurrencyProbe()
+    server.recv_string = probe
+
+    results = _collect_concurrently(server, 2, 5)
+
+    assert probe.peak == 1
     assert sorted(len(batch) for batch in results) == [5, 5]
     # Each collector got a contiguous run: batches stay in arrival order.
-    for batch in results:
-        numbers = [int(uri.rsplit("k", 1)[1]) for uri in batch]
-        assert numbers == list(range(numbers[0], numbers[0] + 5))
+    assert all(_is_contiguous(batch) for batch in results)
