@@ -169,7 +169,7 @@ def run_bench(
     return s
 
 
-def main():
+def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="UMRS KNN latency benchmark")
     parser.add_argument("--image", "-i", required=True, help="Local query image path")
     parser.add_argument("--bucket", required=True, help="S3 path_to_bucket (full name)")
@@ -193,46 +193,93 @@ def main():
     parser.add_argument("--client-id", type=str, default=None)
     parser.add_argument("--label", type=str, default=None)
     parser.add_argument("--csv", type=str, default=None)
-    args = parser.parse_args()
+    return parser
 
-    connection = resolve_connection(
-        explicit_server_ip=args.server_ip,
-        explicit_control_port=args.control_port,
-    )
-    server_ip = connection.server_host
-    control_port = connection.control_port
-    tunnel_mode = connection.tunnel_mode
 
-    print(f"Uploading query image '{args.image}' to S3 bucket '{args.bucket}'...")
-    s3_key = _upload_query_image(args.s3cfg, args.bucket, args.image, args.endpoint)
-    print(f"  s3_key = {s3_key}")
+def _client_id_prefix(explicit: str | None) -> str:
+    return explicit or os.environ.get("UMRS_CLIENT_ID") or os.environ.get("USER", "bench_user")
 
+
+def _sweep_values(args) -> tuple[list[int], list[int]]:
+    """Return (N_values, k_values): sweep either N or k, not both."""
+    if args.sweep_k:
+        return [args.concurrency], [int(x) for x in args.sweep_k.split(",")]
+    n_values = [int(x) for x in args.sweep.split(",")] if args.sweep else [args.concurrency]
+    return n_values, [args.k]
+
+
+def _warm_cache(connection, args, s3_key: str) -> None:
     print("Warming up embedding cache (1 KNN call)...")
-    mq = _make_mq(server_ip, control_port, tunnel_mode)
+    mq = _make_mq(connection.server_host, connection.control_port, connection.tunnel_mode)
     try:
         mq.request_knn(args.username, args.k, s3_key, args.bucket)
     finally:
         mq.close()
     print("  Cache warmed.")
 
-    client_id_prefix = (
-        args.client_id
-        or os.environ.get("UMRS_CLIENT_ID")
-        or os.environ.get("USER", "bench_user")
-    )
-    label = args.label or ""
 
-    # Build sweep list: either N or k, not both simultaneously
-    if args.sweep_k:
-        k_values = [int(x) for x in args.sweep_k.split(",")]
-        N_values = [args.concurrency]
-    else:
-        k_values = [args.k]
-        N_values = [int(x) for x in args.sweep.split(",")] if args.sweep else [args.concurrency]
+def _print_row(s: dict) -> None:
+    def ms(key):
+        return _fmt_ms(s, key)
 
     print(
+        f"{s['N']:>4}  {s['k']:>4}  {ms('mean_ms'):>8}  {ms('p50_ms'):>8}  "
+        f"{ms('p95_ms'):>8}  {ms('p99_ms'):>8}  "
+        f"{ms('min_ms'):>8}  {ms('max_ms'):>8}  "
+        f"{s['throughput_rps']:>8.1f}  {s['errors']:>4}"
+    )
+
+
+def _append_csv(path: str, rows: list[dict]) -> None:
+    file_exists = os.path.isfile(path)
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with open(path, "a", newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=list(rows[0].keys()))
+        if not file_exists:
+            writer.writeheader()
+        writer.writerows(rows)
+    print(f"\nResults {'appended to' if file_exists else 'saved to'} {path}")
+
+
+def _run_sweep(args, connection, s3_key: str, label: str) -> list[dict]:
+    n_values, k_values = _sweep_values(args)
+    client_id_prefix = _client_id_prefix(args.client_id)
+    rows = []
+    for N in n_values:
+        for k in k_values:
+            s = run_bench(
+                N=N, K=args.requests,
+                server_ip=connection.server_host,
+                control_port=connection.control_port,
+                tunnel_mode=connection.tunnel_mode,
+                warmup=args.warmup,
+                username=args.username, k=k, s3_key=s3_key, bucket=args.bucket,
+                client_id_prefix=client_id_prefix,
+            )
+            _print_row(s)
+            if label:
+                s["label"] = label
+            s["query"] = s3_key
+            rows.append(s)
+    return rows
+
+
+def main():
+    args = _build_parser().parse_args()
+    connection = resolve_connection(
+        explicit_server_ip=args.server_ip,
+        explicit_control_port=args.control_port,
+    )
+
+    print(f"Uploading query image '{args.image}' to S3 bucket '{args.bucket}'...")
+    s3_key = _upload_query_image(args.s3cfg, args.bucket, args.image, args.endpoint)
+    print(f"  s3_key = {s3_key}")
+    _warm_cache(connection, args, s3_key)
+
+    label = args.label or ""
+    print(
         f"\nUMRS KNN latency benchmark"
-        f"  server={server_ip}:{control_port}"
+        f"  server={connection.server_host}:{connection.control_port}"
         f"  query={s3_key}  bucket={args.bucket}"
         f"  K={args.requests}  warmup={args.warmup}"
         + (f"  label={label}" if label else "")
@@ -241,39 +288,9 @@ def main():
     print(header)
     print("-" * len(header))
 
-    rows = []
-    for N in N_values:
-        for k in k_values:
-            s = run_bench(
-                N=N, K=args.requests,
-                server_ip=server_ip, control_port=control_port, tunnel_mode=tunnel_mode,
-                warmup=args.warmup,
-                username=args.username, k=k, s3_key=s3_key, bucket=args.bucket,
-                client_id_prefix=client_id_prefix,
-            )
-            def ms(key, s=s):
-                return _fmt_ms(s, key)
-            print(
-                f"{s['N']:>4}  {s['k']:>4}  {ms('mean_ms'):>8}  {ms('p50_ms'):>8}  "
-                f"{ms('p95_ms'):>8}  {ms('p99_ms'):>8}  "
-                f"{ms('min_ms'):>8}  {ms('max_ms'):>8}  "
-                f"{s['throughput_rps']:>8.1f}  {s['errors']:>4}"
-            )
-            if label:
-                s["label"] = label
-            s["query"] = s3_key
-            rows.append(s)
-
+    rows = _run_sweep(args, connection, s3_key, label)
     if args.csv:
-        fieldnames = list(rows[0].keys())
-        file_exists = os.path.isfile(args.csv)
-        os.makedirs(os.path.dirname(args.csv) or ".", exist_ok=True)
-        with open(args.csv, "a", newline="") as fh:
-            writer = csv.DictWriter(fh, fieldnames=fieldnames)
-            if not file_exists:
-                writer.writeheader()
-            writer.writerows(rows)
-        print(f"\nResults {'appended to' if file_exists else 'saved to'} {args.csv}")
+        _append_csv(args.csv, rows)
 
 
 if __name__ == "__main__":

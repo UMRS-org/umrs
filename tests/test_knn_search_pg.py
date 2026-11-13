@@ -13,7 +13,6 @@ import uuid
 from types import SimpleNamespace
 
 import pytest
-
 from umrs.core.TaskCmdStatus import TaskStatus
 from umrs.server import knn_worker
 from umrs.server.knn_worker import KnnRequest
@@ -62,7 +61,6 @@ def pg_table():
     if not _PG:
         pytest.skip("POSTGRES_HOST unset")
     from psycopg2 import pool as pg_pool
-
     from umrs.server.sql import DataBase
 
     db_pool = pg_pool.SimpleConnectionPool(

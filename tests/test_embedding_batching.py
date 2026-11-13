@@ -103,12 +103,22 @@ def test_batch_size_caps_each_forward_pass(monkeypatch, loader):
     assert len(model.calls) == math.ceil(10 / 4)
     assert [len(call) for call in model.calls] == [4, 4, 2]
     # Each item is stored once, its embeddings in key order.
-    assert [c["bucket"] for c in store.calls] == ["a", "b", "c"]
-    for call, item in zip(store.calls, items, strict=True):
-        expected = [f"emb:{item['path_to_bucket']}/{k}" for k in item["s3_keys"]]
-        assert call["embeddings"] == expected
-        assert call["checksums"] == [f"etag-{k}" for k in item["s3_keys"]]
-        assert call["saved"] == [None] * len(item["s3_keys"])
+    assert [_stored(c) for c in store.calls] == [_expected_store(i) for i in items]
+
+
+def _stored(call):
+    return (call["bucket"], call["embeddings"], call["checksums"], call["saved"])
+
+
+def _expected_store(item):
+    keys = item["s3_keys"]
+    bucket = item["path_to_bucket"]
+    return (
+        bucket,
+        [f"emb:{bucket}/{k}" for k in keys],
+        [f"etag-{k}" for k in keys],
+        [None] * len(keys),
+    )
 
 
 def test_unset_knob_keeps_one_forward_pass(monkeypatch, loader):

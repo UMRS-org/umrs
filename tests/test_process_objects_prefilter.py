@@ -163,18 +163,18 @@ def _status_works(stack, user):
     return [work for info in data for work in info["work"]]
 
 
+def _work_counts(works):
+    return [(status, w["nb_objects"], w["nb_skipped_indexed"]) for status, w in works]
+
+
 def test_status_reports_submitted_count_when_some_are_indexed(stack):
     objects = [f"s3://a/k{i}" for i in range(5)]  # k0..k2 already indexed
 
     _run(stack, {"alice": objects})
 
     assert [item["s3_keys"] for item in stack.backend.items] == [["k3", "k4"]]
-    works = _works(stack, "a")
-    assert len(works) == 1
-    status, work = works[0]
-    assert status == ThreadStatus.DONE
-    assert work["nb_objects"] == 5  # submitted, not the 2 that ran
-    assert work["nb_skipped_indexed"] == 3
+    # nb_objects is the submitted count, not the 2 that ran.
+    assert _work_counts(_works(stack, "a")) == [(ThreadStatus.DONE, 5, 3)]
     assert _status_works(stack, "alice")[0]["nb_objects"] == 5
     summary = stack.threads.status_store["alice"][_KEY]["summary"]
     assert "5 (3 already indexed)" in summary

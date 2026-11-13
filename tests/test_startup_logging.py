@@ -13,7 +13,6 @@ import logging
 import types
 
 import pytest
-
 from umrs.orchestrator.site_config import (
     load_site_config,
     reset_site_config,
@@ -106,9 +105,8 @@ def curve_env(monkeypatch):
 
 
 class TestStartupLogLines:
-    def test_bind_line_has_host_port_range_and_auth_type(
-        self, server_umrs, curve_env, caplog
-    ):
+    @pytest.mark.usefixtures("curve_env")
+    def test_bind_line_has_host_port_range_and_auth_type(self, server_umrs, caplog):
         mq = types.SimpleNamespace(tunnel_mode=False, port=5555)
         with caplog.at_level(logging.INFO, logger="server_umrs"):
             server_umrs._log_zmq_bind(mq)

@@ -12,7 +12,6 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
-
 from umrs.core.TaskCmdStatus import TaskCmd, TaskStatus
 from umrs.core.thread_pool import ServerOverloadedError
 from umrs.server import knn_worker
@@ -309,7 +308,6 @@ def test_an_overloaded_pool_replies_server_overloaded(buckets):
 def test_end_to_end_through_the_real_thread_pool(buckets, tmp_path, monkeypatch):
     """Registry -> KnnHandler -> UMRSThreads.launch_knn -> worker -> reply."""
     from diskcache import Cache
-
     from umrs.core.UMRSThreads import UMRSThreads
 
     monkeypatch.setenv("UMRS_SERVICE_LIFECYCLE", "manual")

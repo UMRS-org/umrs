@@ -43,7 +43,7 @@ class _Cfg:
     def __init__(self, entries):
         self.entries = entries
 
-    def get(self, alias, filter=None):
+    def get(self, alias, **_kwargs):
         return self.entries.get(alias)
 
 

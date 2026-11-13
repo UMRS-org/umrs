@@ -11,7 +11,7 @@ torch = pytest.importorskip("torch")
 pytest.importorskip("torchvision")
 Image = pytest.importorskip("PIL.Image")
 
-from umrs.inference.resnet_50 import preprocess_images_batch
+from umrs.inference.resnet_50 import preprocess_images_batch  # noqa: E402
 
 
 @pytest.mark.parametrize("mode", ["L", "RGBA", "RGB", "P", "LA"])

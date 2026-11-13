@@ -3,7 +3,6 @@
 import os
 
 import pytest
-
 from umrs.client.upload_batching import (
     BatchedNotifier,
     collect_upload_files,

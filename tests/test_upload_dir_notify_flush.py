@@ -34,10 +34,10 @@ class FakeControlMQ:
         self.data_mq = data_mq
         self.notified = []
 
-    def get_data_queue(self, username, admin_token=None):
+    def get_data_queue(self, _username, **_kwargs):
         return self.data_mq
 
-    def notify_server(self, username, cmd, count, blocking=False):
+    def notify_server(self, _username, _cmd, count, blocking=False):
         self.notified.append((count, blocking))
         return True
 
@@ -46,14 +46,14 @@ class FakeControlMQ:
 
 
 class FakeBuckets:
-    def get(self, alias, filter=None):
+    def get(self, _alias, **_kwargs):
         return ("alice", "xp", "text-mod", "/nonexistent/s3cfg", {}, "bucket-x")
 
     def keys(self):
         return ["alice-text"]
 
 
-def _store_text_file(s3, bucket, subdir, in_path, mq, metadata_args):
+def _store_text_file(_s3, bucket, subdir, in_path, mq, _metadata_args):
     key = os.path.basename(in_path)
     if subdir:
         key = f"{subdir}/{key}"
@@ -63,12 +63,12 @@ def _store_text_file(s3, bucket, subdir, in_path, mq, metadata_args):
 
 @pytest.fixture
 def upload_env(monkeypatch, tmp_path):
-    monkeypatch.setattr(client_umrs, "connect_to_s3", lambda *a, **k: (object(), None))
+    monkeypatch.setattr(client_umrs, "connect_to_s3", lambda *_a, **_k: (object(), None))
     monkeypatch.setattr(
-        client_umrs, "check_bucket_name", lambda *a, **k: ("bucket-x", True)
+        client_umrs, "check_bucket_name", lambda *_a, **_k: ("bucket-x", True)
     )
     monkeypatch.setattr(
-        client_umrs, "check_and_build_metadata", lambda *a: {"Metadata": {}}
+        client_umrs, "check_and_build_metadata", lambda *_a: {"Metadata": {}}
     )
     monkeypatch.setattr(client_umrs, "modality_category", lambda _m: "text_file")
     monkeypatch.setattr(client_umrs, "s3_store_text_file", _store_text_file)

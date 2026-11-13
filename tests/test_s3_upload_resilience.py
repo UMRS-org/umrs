@@ -14,7 +14,6 @@ from botocore.exceptions import (
     ReadTimeoutError,
     SSLError,
 )
-
 from umrs.shared.storage import s3 as s3_mod
 from umrs.shared.storage import s3_upload
 
@@ -48,7 +47,7 @@ class FakeS3:
         self.uploads = []
         self.heads = 0
 
-    def head_object(self, Bucket, Key):
+    def head_object(self, **_params):
         self.heads += 1
         if self.head_error is not None:
             raise self.head_error

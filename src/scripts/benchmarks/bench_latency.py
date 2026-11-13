@@ -182,7 +182,7 @@ def run_bench(
 
 # --- CLI ---------------------------------------------------------------------
 
-def main():
+def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="UMRS ZMQ latency benchmark")
     parser.add_argument("-N", "--concurrency", type=int, default=1,
                         help="Number of concurrent virtual users")
@@ -205,32 +205,69 @@ def main():
                         help="Annotation written into CSV (e.g. 'cache=on' or 'cache=off')")
     parser.add_argument("--csv", type=str, default=None,
                         help="Save results to a CSV file (appends if exists)")
-    args = parser.parse_args()
+    return parser
 
+
+def _client_id_prefix(explicit: str | None) -> str:
+    return explicit or os.environ.get("UMRS_CLIENT_ID") or os.environ.get("USER", "bench_user")
+
+
+def _print_row(s: dict) -> None:
+    def ms(key):
+        return _fmt_ms(s, key)
+
+    print(
+        f"{s['N']:>4}  {ms('mean_ms'):>8}  {ms('p50_ms'):>8}  "
+        f"{ms('p95_ms'):>8}  {ms('p99_ms'):>8}  "
+        f"{ms('min_ms'):>8}  {ms('max_ms'):>8}  "
+        f"{s['throughput_rps']:>8.1f}  {s['errors']:>4}"
+    )
+
+
+def _append_csv(path: str, rows: list[dict]) -> None:
+    file_exists = os.path.isfile(path)
+    with open(path, "a", newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=list(rows[0].keys()))
+        if not file_exists:
+            writer.writeheader()
+        writer.writerows(rows)
+    print(f"\nResults {'appended to' if file_exists else 'saved to'} {path}")
+
+
+def _run_sweep(args, connection, label: str) -> list[dict]:
+    n_values = [int(x) for x in args.sweep.split(",")] if args.sweep else [args.concurrency]
+    client_id_prefix = _client_id_prefix(args.client_id)
+    rows = []
+    for N in n_values:
+        s = run_bench(
+            N=N,
+            K=args.requests,
+            server_ip=connection.server_host,
+            control_port=connection.control_port,
+            tunnel_mode=connection.tunnel_mode,
+            cmd=args.cmd,
+            target=args.target,
+            client_id_prefix=client_id_prefix,
+            warmup=args.warmup,
+        )
+        _print_row(s)
+        if label:
+            s["label"] = label
+        rows.append(s)
+    return rows
+
+
+def main():
+    args = _build_parser().parse_args()
     connection = resolve_connection(
         explicit_server_ip=args.server_ip,
         explicit_control_port=args.control_port,
-    )
-    server_ip = connection.server_host
-    control_port = connection.control_port
-    tunnel_mode = connection.tunnel_mode
-
-    client_id_prefix = (
-        args.client_id
-        or os.environ.get("UMRS_CLIENT_ID")
-        or os.environ.get("USER", "bench_user")
-    )
-
-    Ns = (
-        [int(x) for x in args.sweep.split(",")]
-        if args.sweep
-        else [args.concurrency]
     )
 
     label = args.label or ""
     print(
         f"UMRS latency benchmark  cmd={args.cmd}"
-        f"  server={server_ip}:{control_port}"
+        f"  server={connection.server_host}:{connection.control_port}"
         f"  K={args.requests}  warmup={args.warmup}"
         + (f"  label={label}" if label else "")
     )
@@ -238,41 +275,9 @@ def main():
           f"{'min':>8}  {'max':>8}  {'rps':>8}  {'err':>4}")
     print("-" * 78)
 
-    rows = []
-    for N in Ns:
-        s = run_bench(
-            N=N,
-            K=args.requests,
-            server_ip=server_ip,
-            control_port=control_port,
-            tunnel_mode=tunnel_mode,
-            cmd=args.cmd,
-            target=args.target,
-            client_id_prefix=client_id_prefix,
-            warmup=args.warmup,
-        )
-        def ms(key, s=s):
-            return _fmt_ms(s, key)
-
-        print(
-            f"{s['N']:>4}  {ms('mean_ms'):>8}  {ms('p50_ms'):>8}  "
-            f"{ms('p95_ms'):>8}  {ms('p99_ms'):>8}  "
-            f"{ms('min_ms'):>8}  {ms('max_ms'):>8}  "
-            f"{s['throughput_rps']:>8.1f}  {s['errors']:>4}"
-        )
-        if label:
-            s["label"] = label
-        rows.append(s)
-
+    rows = _run_sweep(args, connection, label)
     if args.csv:
-        fieldnames = list(rows[0].keys())
-        file_exists = os.path.isfile(args.csv)
-        with open(args.csv, "a", newline="") as fh:
-            writer = csv.DictWriter(fh, fieldnames=fieldnames)
-            if not file_exists:
-                writer.writeheader()
-            writer.writerows(rows)
-        print(f"\nResults {'appended to' if file_exists else 'saved to'} {args.csv}")
+        _append_csv(args.csv, rows)
 
 
 if __name__ == "__main__":

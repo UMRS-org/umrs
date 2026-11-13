@@ -136,7 +136,7 @@ def test_populate_buckets_resumes_after_done_rounds(tmp_path, monkeypatch):
     args = mod.parse_args(["--log-dir", str(tmp_path), "--sleep", "0", "--user", "10:21000"])
     assert args.state_file == str(tmp_path / "mass_upload_state.json")
     calls = []
-    monkeypatch.setattr(mod, "run_upload", lambda z, prefix, idx, total, a: calls.append((prefix, idx)))
+    monkeypatch.setattr(mod, "run_upload", lambda _z, prefix, idx, _total, _a: calls.append((prefix, idx)))
     state = {"10": 1}
     mod.populate_user(args.users[0], state, args)
     assert calls == [("ab", 2), ("ac", 3)]
