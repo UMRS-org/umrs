@@ -19,7 +19,14 @@ share goes to its oldest waiting task that has none yet, and "S3 events
 ready" resolves each listed client's oldest waiting task. A task whose skip
 share covers every object its client submitted is resolved there (no S3
 line follows); "All objects already indexed" resolves what the latest skip
-line assigned. Every (client, n) tuple is read. A skip line without the
+line assigned when the submitted count is unknown (no "Batch assembled").
+A collector that gets no S3 event logs "Received 0/N S3 events for
+client=X" or "No data queue for client=X" and no skip or S3 line: that
+resolves X's oldest waiting task. Any "[TASK] client=X task_id=N → status"
+line (Running, Completed, Error, ...) resolves task N, which the collector
+is done with; without that a failed or fully skipped batch stayed open and
+took the client's next batch's lines (review U1 r4). Every (client, n)
+tuple is read. A skip line without the
 per-client part (older servers) is attributed only when exactly one task
 waits for a skip, or kept for the next S3 line when no task waits at all
 (upstream logs). The server logs no batch id, so two batches of the same
@@ -45,13 +52,14 @@ P_TASKS       = re.compile(TS + r".*Tasks created:(.*)")
 P_SKIP        = re.compile(TS + r".*(?:\[PROCESS\]|filter_already_indexed:) skipping (\d+)(.*)")
 P_ALL_INDEXED = re.compile(TS + r".*All objects already indexed")
 P_S3_READY    = re.compile(TS + r".*S3 events ready(.*)")
-P_RUNNING     = re.compile(TS + r".*\[TASK\] client=(\S+) task_id=(\d+) → Running")
-P_COMPLETED   = re.compile(TS + r".*\[TASK\] client=(\S+) task_id=(\d+) → Completed")
+P_NO_EVENTS   = re.compile(TS + r".*(?:Received 0/\d+ S3 events|No data queue) for client=(\S+)")
+P_STATUS      = re.compile(TS + r".*\[TASK\] client=(\S+) task_id=(\d+) → (\S+)")
 P_PAIR        = re.compile(r"\('([^']+)',\s*(\d+)\)")
 
 HEADER = ["task_id", "user", "n_batch", "n_skipped", "n_processed",
           "upload_s3(s)", "s3_check(s)", "server_exec(s)", "end_to_end(s)"]
 TABLE_COL_WIDTHS = [10, 12, 9, 10, 12, 14, 12, 16, 14]
+STATUS_TIMES = {"Running": "t_running", "Completed": "t_completed"}
 
 
 def parse_ts(s):
@@ -135,8 +143,8 @@ class LogParser:
             (P_SKIP, self._on_skip),
             (P_ALL_INDEXED, self._on_all_indexed),
             (P_S3_READY, self._on_s3_ready),
-            (P_RUNNING, self._on_running),
-            (P_COMPLETED, self._on_completed),
+            (P_NO_EVENTS, self._on_no_events),
+            (P_STATUS, self._on_status),
         ]
 
     def feed(self, line):
@@ -228,8 +236,12 @@ class LogParser:
         return tid
 
     def _on_all_indexed(self, _m):
+        """Resolve only skips whose share could not be checked against the
+        submitted count: a known partial share is another collector's task
+        still waiting for its S3 line (review U1 r4)."""
         for user, tid in self.last_skip:
-            self._resolve(user, tid)
+            if self.submitted.get(tid) is None:
+                self._resolve(user, tid)
         self.last_skip = []
         self.pending_skip = None
 
@@ -259,15 +271,21 @@ class LogParser:
                 task.n_skipped, self.pending_skip = self.pending_skip, None
         self.pending_skip = None
 
-    def _on_running(self, m):
-        task = self.tasks.get(m.group(3))
-        if task is not None:
-            task.t_running = parse_ts(m.group(1))
+    def _on_no_events(self, m):
+        """The collector gave up on this client: no skip or S3 line follows."""
+        waiting = self.open_tasks.get(m.group(2))
+        if waiting:
+            self._resolve(m.group(2), waiting[0])
 
-    def _on_completed(self, m):
+    def _on_status(self, m):
+        """A status line means the collector is done with that task."""
         task = self.tasks.get(m.group(3))
-        if task is not None:
-            task.t_completed = parse_ts(m.group(1))
+        if task is None:
+            return
+        self._resolve(task.user, task.task_id)
+        attr = STATUS_TIMES.get(m.group(4))
+        if attr:
+            setattr(task, attr, parse_ts(m.group(1)))
 
 
 def parse_lines(lines):

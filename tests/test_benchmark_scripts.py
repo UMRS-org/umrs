@@ -173,6 +173,87 @@ def test_parse_server_log_an_s3_line_resolves_only_its_clients_task():
     assert _skips(lines) == {"1": ("alice", 0, 5), "2": ("bob", 1, 6), "3": ("alice", 2, 1)}
 
 
+_L = "2026-10-01 10:00:{:02d},000 INFO umrs.{}: {}"
+
+
+def _batch(sec, user, n, tid):
+    return [
+        _L.format(sec, "core.MessageQueue",
+                  f"[PROCESS] Batch assembled: 1 client request(s) — [('{user}', {n})]"),
+        _L.format(sec, "server.commands.process_objects",
+                  f"[PROCESS] Tasks created: [('{user}', {tid})]"),
+    ]
+
+
+def _skip(sec, user, n):
+    return _L.format(sec, "server.indexed_prefilter",
+                     f"[PROCESS] skipping {n} already-indexed object(s): {{'b': {n}}} "
+                     f"per client: [('{user}', {n})]")
+
+
+def _s3(sec, user, n):
+    return _L.format(sec, "server.commands.process_objects",
+                     f"[PROCESS] S3 events ready — launching threads for 1 client(s): "
+                     f"[('{user}', {n})]")
+
+
+def _status(sec, user, tid, status):
+    return _L.format(sec, "server.commands.base",
+                     f"[TASK] client={user} task_id={tid} → {status}")
+
+
+_RECEIVED_NONE = _L.format(2, "server.commands.process_objects",
+                           "Received 0/5 S3 events for client=alice (timeout)")
+_NO_QUEUE = _L.format(2, "server.commands.process_objects",
+                      "No data queue for client=alice in batch")
+
+
+@pytest.mark.parametrize("failure", [
+    [_RECEIVED_NONE],
+    [_NO_QUEUE],
+    [_status(2, "alice", 1, "Error")],
+    # A partial collection whose objects were all indexed already: the
+    # client finishes from the pre-filter, with no S3 line of its own.
+    [_skip(2, "alice", 3), _status(2, "alice", 1, "Running"),
+     _status(2, "alice", 1, "Completed")],
+])
+def test_parse_server_log_a_batch_without_s3_line_keeps_later_batches_aligned(failure):
+    """Review U1 r4: a collection that failed (or was skipped whole while
+    short of the submitted count) logs no S3 line; its task stayed open and
+    every later batch of that client took the previous batch's lines."""
+    lines = [
+        *_batch(1, "alice", 5, 1),
+        *failure,
+        *_batch(3, "alice", 5, 2), _skip(4, "alice", 2), _s3(4, "alice", 3),
+        *_batch(5, "alice", 4, 3), _skip(6, "alice", 1), _s3(6, "alice", 3),
+    ]
+    skips = _skips(lines)
+    assert skips["2"] == ("alice", 2, 3)
+    assert skips["3"] == ("alice", 1, 3)
+    assert skips["1"][2] is None
+
+
+def test_parse_server_log_all_indexed_keeps_another_collectors_partial_skip():
+    """Review U1 r4: alice's collector skips her whole batch (resolved by
+    count), bob's collector logs a partial skip, then alice's collector logs
+    "All objects already indexed": bob's task must keep waiting for its S3
+    line instead of handing it to his next batch."""
+    lines = [
+        *_batch(1, "alice", 3, 1),
+        *_batch(2, "bob", 5, 2),
+        *_batch(3, "bob", 4, 3),
+        _skip(4, "alice", 3),
+        _skip(5, "bob", 2),
+        _L.format(6, "server.commands.process_objects",
+                  "[PROCESS] All objects already indexed, nothing to do."),
+        _s3(7, "bob", 3),
+        _s3(8, "bob", 4),
+    ]
+    assert _skips(lines) == {
+        "1": ("alice", 3, None), "2": ("bob", 2, 3), "3": ("bob", 0, 4),
+    }
+
+
 def _load(name):
     spec = importlib.util.spec_from_file_location(f"bench_{name}", BENCH_DIR / f"{name}.py")
     module = importlib.util.module_from_spec(spec)
