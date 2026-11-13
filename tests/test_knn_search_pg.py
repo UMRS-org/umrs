@@ -244,6 +244,37 @@ def test_a_cached_vector_is_never_taken_from_another_tenant(pg_table):
     assert model.calls == 1
 
 
+def test_an_identical_copy_at_another_key_answers_the_cache(pg_table):
+    """a30136cb: the cache matches the ETag anywhere in the bucket, so a
+    query uploaded at ``q.png`` reuses the vector of ``pets/cat.png``."""
+    data_base, table = pg_table
+    _insert(data_base, table, [
+        (f"{ALICE}/pets/cat.png", "eq", [0, 1, 0], "clip"),
+        (f"{ALICE}/pets/dog.png", "e1", [0, 1, 0.1], "clip"),
+    ])
+    model = _Model(vector=(1, 0, 0))
+    outcome = _search(_entry(data_base, table, model=model), n=1, subdir="pets")
+
+    assert outcome.cached is True
+    assert model.calls == 0
+
+
+def test_exact_duplicates_of_the_query_are_not_neighbours(pg_table):
+    """a30136cb: the query object (and byte-identical copies, same ETag) is
+    not its own nearest neighbour."""
+    data_base, table = pg_table
+    _insert(data_base, table, [
+        (f"{ALICE}/q.png", "eq", [1, 0, 0], "clip"),
+        (f"{ALICE}/copies/q-copy.png", "eq", [1, 0, 0], "clip"),
+        (f"{ALICE}/near.png", "e1", [1, 0.1, 0], "clip"),
+        (f"{ALICE}/far.png", "e2", [0, 1, 0], "clip"),
+    ])
+    outcome = _search(_entry(data_base, table), n=2)
+
+    assert _objects(outcome) == [f"{ALICE}/near.png", f"{ALICE}/far.png"]
+    assert outcome.cached is True
+
+
 # --- connection hygiene ---------------------------------------------------------------
 
 

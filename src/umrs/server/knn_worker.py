@@ -1,9 +1,11 @@
 """KNN: cosine nearest neighbours of one object in its bucket's embedding table.
 
 Port of upstream 1798ac05 / e04b3d4e / b7d5821a / bd0e6bc1 / 8912c150 /
-ef8b7037 (plan U1 A6). The query object is read from S3; its embedding is
-reused from the table when a row of the same bucket (and model) carries the
-object's ETag, else computed with the bucket's model. Scope rules:
+ef8b7037 / a30136cb (plan U1 A6). The query object is read from S3; its
+embedding is reused from the table when any row of the same bucket (and
+model) carries the object's ETag, else computed with the bucket's model.
+Rows with that ETag (the query itself, byte-identical copies) are never
+returned as neighbours. Scope rules:
 
 * the caller must own the bucket (``bucket_owned_by``, the rule
   PROCESS_OBJECTS, EXPORT_EMBEDDINGS and WAIT_OUTPUT share); another user's
@@ -60,10 +62,6 @@ class KnnRequest:
         if self.subdir:
             return f"{self.bucket}/{self.subdir}/"
         return f"{self.bucket}/"
-
-    def db_key(self) -> str:
-        """The query object as the table stores it (b7d5821a)."""
-        return f"{self.bucket}/{self.s3_object}"
 
 
 @dataclass
@@ -212,34 +210,39 @@ def _vector_literal(embedding) -> str:
     return "[" + ",".join(repr(float(v)) for v in values) + "]"
 
 
-def _cached_embedding(cur, scope: _Scope, request: KnnRequest, etag: str):
+def _cached_embedding(cur, scope: _Scope, etag: str):
+    """A stored vector with the query's ETag anywhere in the caller's bucket
+    (a30136cb: the copy may live at another key; never another bucket)."""
     model_sql, model_params = scope.model_filter()
     query = sql.SQL(
-        "SELECT embedding::text FROM {} WHERE s3_object = %s AND checksum = %s"
-        " AND embedding IS NOT NULL{} LIMIT 1"
+        "SELECT embedding::text FROM {} WHERE checksum = %s"
+        " AND starts_with(s3_object, %s) AND embedding IS NOT NULL{} LIMIT 1"
     ).format(sql.Identifier(scope.table), model_sql)
-    cur.execute(query, [request.db_key(), etag, *model_params])
+    cur.execute(query, [etag, scope.bucket_prefix, *model_params])
     row = cur.fetchone()
     return row[0] if row else None
 
 
-def _query_vector(cur, scope, request, etag, obj, model) -> tuple[str, bool]:
+def _query_vector(cur, scope, etag, obj, model) -> tuple[str, bool]:
     """``(vector literal, cached)`` for the query object."""
-    cached = _cached_embedding(cur, scope, request, etag)
+    cached = _cached_embedding(cur, scope, etag)
     if cached is not None:
         return cached, True
     embeddings = model.compute_embeddings([obj])
     return _vector_literal(embeddings[0]), False
 
 
-def _nearest(cur, scope: _Scope, vector: str, k: int) -> list[dict]:
+def _nearest(cur, scope: _Scope, vector: str, etag: str, k: int) -> list[dict]:
+    """The *k* closest rows in scope, minus exact copies of the query
+    (same ETag, a30136cb)."""
     model_sql, model_params = scope.model_filter()
     query = sql.SQL(
         "SELECT s3_object, 1.0 - (embedding <=> %s::vector) AS score FROM {}"
-        " WHERE starts_with(s3_object, %s) AND embedding IS NOT NULL{}"
+        " WHERE starts_with(s3_object, %s) AND checksum IS DISTINCT FROM %s"
+        " AND embedding IS NOT NULL{}"
         " ORDER BY embedding <=> %s::vector LIMIT %s"
     ).format(sql.Identifier(scope.table), model_sql)
-    cur.execute(query, [vector, scope.prefix, *model_params, vector, k])
+    cur.execute(query, [vector, scope.prefix, etag, *model_params, vector, k])
     return [{"object": row[0], "score": float(row[1])} for row in cur.fetchall()]
 
 
@@ -276,8 +279,8 @@ def search(entry, request: KnnRequest) -> KnnOutcome:
     conn = data_base.get_conn()
     try:
         with conn.cursor() as cur:
-            vector, cached = _query_vector(cur, scope, request, etag, obj, entry.model)
-            results = _nearest(cur, scope, vector, request.n)
+            vector, cached = _query_vector(cur, scope, etag, obj, entry.model)
+            results = _nearest(cur, scope, vector, etag, request.n)
             n_indexed = _count_indexed(cur, scope)
     finally:
         with contextlib.suppress(Exception):
