@@ -1,19 +1,14 @@
 """S3 upload retry and skip-unchanged (port of upstream 6632dfb0 + b951866f; plan U1 A2).
 
+Retries are botocore's alone (standard mode, ``UMRS_S3_MAX_ATTEMPTS`` set in
+``connect_to_s3``); ``s3_upload`` adds no loop of its own.
 Hermetic: a fake client stands in for boto3, no network and no real store.
 """
 
 import hashlib
 
 import pytest
-from boto3.exceptions import S3UploadFailedError
-from botocore.exceptions import (
-    ClientError,
-    EndpointConnectionError,
-    NoCredentialsError,
-    ReadTimeoutError,
-    SSLError,
-)
+from botocore.exceptions import ClientError
 from umrs.shared.storage import s3 as s3_mod
 from umrs.shared.storage import s3_upload
 
@@ -26,17 +21,6 @@ def _client_error(code, status=400, op="PutObject"):
         },
         op,
     )
-
-
-def _wrapped_upload_error(inner):
-    """Mimic boto3: S3UploadFailedError raised while handling a ClientError."""
-    try:
-        raise inner
-    except ClientError as exc:
-        try:
-            raise S3UploadFailedError(f"Failed to upload x to b/k: {exc}")
-        except S3UploadFailedError as wrapped:
-            return wrapped
 
 
 class FakeS3:
@@ -63,14 +47,11 @@ class FakeS3:
 
 @pytest.fixture
 def sleeps(monkeypatch):
+    """Records any sleep, so a test can assert that no hand-written backoff ran."""
     calls = []
-    monkeypatch.setattr(s3_upload, "_sleep", calls.append)
-    for name in (
-        s3_upload.ATTEMPTS_ENV,
-        s3_upload.BACKOFF_ENV,
-        s3_upload.SKIP_UNCHANGED_ENV,
-    ):
-        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr("time.sleep", calls.append)
+    monkeypatch.delenv(s3_upload.SKIP_UNCHANGED_ENV, raising=False)
+    monkeypatch.delenv("UMRS_S3_MAX_ATTEMPTS", raising=False)
     return calls
 
 
@@ -92,93 +73,65 @@ def _head_for(path, metadata=None, etag=None, **extra):
     return head
 
 
-# --- classification -------------------------------------------------------
+# --- one retry layer: botocore's -------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "exc",
-    [
-        _client_error("SlowDown", 503),
-        _client_error("RequestTimeout", 400),
-        _client_error("IncompleteBody", 400),
-        _client_error("InternalError", 500),
-        _client_error("Whatever", 502),
-        _client_error("TooManyRequests", 429),
-        _wrapped_upload_error(_client_error("ServiceUnavailable", 503)),
-        S3UploadFailedError(
-            "Failed to upload: An error occurred (SlowDown) when calling"
-        ),
-        EndpointConnectionError(endpoint_url="http://store:8333"),
-        ReadTimeoutError(endpoint_url="http://store:8333"),
-    ],
-)
-def test_transient_errors_are_retryable(exc):
-    assert s3_upload.is_transient_upload_error(exc)
-
-
-@pytest.mark.parametrize(
-    "exc",
-    [
-        _client_error("AccessDenied", 403),
-        _client_error("InvalidAccessKeyId", 403),
-        _client_error("SignatureDoesNotMatch", 403),
-        _client_error("NoSuchBucket", 404),
-        _client_error("NotImplemented", 501),
-        _wrapped_upload_error(_client_error("AccessDenied", 403)),
-        S3UploadFailedError("Failed to upload: An error occurred (AccessDenied)"),
-        NoCredentialsError(),
-        SSLError(endpoint_url="https://store", error="bad cert"),
-    ],
-)
-def test_auth_and_client_errors_are_not_retryable(exc):
-    assert not s3_upload.is_transient_upload_error(exc)
-
-
-# --- retry ----------------------------------------------------------------
-
-
-def test_retry_recovers_from_transient_failures(sleeps, local_file):
-    fake = FakeS3(
-        failures=[
-            _client_error("SlowDown", 503),
-            EndpointConnectionError(endpoint_url="u"),
-        ]
-    )
-    s3_upload.upload_with_retry(fake, str(local_file), "b", "k", {"Metadata": {}})
-    assert len(fake.uploads) == 1
-    assert sleeps == [1.0, 2.0]
-
-
-def test_retry_is_bounded_and_reraises(sleeps, local_file, monkeypatch):
-    monkeypatch.setenv(s3_upload.ATTEMPTS_ENV, "2")
-    monkeypatch.setenv(s3_upload.BACKOFF_ENV, "0.5")
-    errors = [_client_error("SlowDown", 503) for _ in range(5)]
-    fake = FakeS3(failures=errors)
+def test_a_failed_upload_is_not_retried_on_top_of_botocore(sleeps, local_file):
+    """Review U1: a hand-written loop stacked on botocore's own retries turned
+    one file into (loop attempts x botocore attempts) requests."""
+    fake = FakeS3(failures=[_client_error("SlowDown", 503)])
     with pytest.raises(ClientError):
-        s3_upload.upload_with_retry(fake, str(local_file), "b", "k")
-    assert sleeps == [0.5]
-    assert len(fake.failures) == 3  # exactly two attempts consumed
-
-
-def test_auth_error_is_not_retried(sleeps, local_file):
-    fake = FakeS3(failures=[_wrapped_upload_error(_client_error("AccessDenied", 403))])
-    with pytest.raises(S3UploadFailedError):
-        s3_upload.upload_with_retry(fake, str(local_file), "b", "k")
-    assert sleeps == []
+        s3_upload.upload_local_file(fake, "b", "k", str(local_file), skip_unchanged=False)
     assert fake.uploads == []
+    assert fake.failures == []  # exactly one upload_file call
+    assert sleeps == []
 
 
-@pytest.mark.parametrize(
-    ("raw", "expected"), [("", 3), ("1", 1), ("0", 1), ("99", 10), ("junk", 3)]
-)
-def test_attempts_env_is_bounded(monkeypatch, raw, expected):
-    monkeypatch.setenv(s3_upload.ATTEMPTS_ENV, raw)
-    assert s3_upload.upload_attempts() == expected
+def _s3cfg(tmp_path):
+    path = tmp_path / "s3cfg"
+    path.write_text(
+        "[default]\nhost_base = store:8333\naccess_key = a\nsecret_key = s\n"
+        "bucket_location = us-east-1\n",
+        encoding="utf-8",
+    )
+    return str(path)
 
 
-def test_backoff_doubles_and_caps():
-    delays = [s3_upload.retry_delay_s(n, 1.0) for n in range(1, 8)]
-    assert delays == [1.0, 2.0, 4.0, 8.0, 16.0, 30.0, 30.0]
+@pytest.fixture
+def boto_clients(monkeypatch):
+    built = []
+
+    class _Client:
+        def list_buckets(self):
+            return {}
+
+    def _client(*_args, **kwargs):
+        built.append(kwargs)
+        return _Client()
+
+    monkeypatch.setattr(s3_mod.boto3, "client", _client)
+    return built
+
+
+@pytest.mark.parametrize(("raw", "expected"), [(None, 5), ("2", 2), ("10", 10)])
+def test_connect_to_s3_retries_in_botocore_standard_mode(
+    tmp_path, boto_clients, monkeypatch, raw, expected
+):
+    if raw is None:
+        monkeypatch.delenv(s3_upload.MAX_ATTEMPTS_ENV, raising=False)
+    else:
+        monkeypatch.setenv(s3_upload.MAX_ATTEMPTS_ENV, raw)
+    s3_mod.connect_to_s3(_s3cfg(tmp_path))
+    (kwargs,) = boto_clients
+    assert kwargs["config"].retries == {"total_max_attempts": expected, "mode": "standard"}
+
+
+@pytest.mark.parametrize("raw", ["0", "11", "junk", "2.5"])
+def test_attempts_knob_out_of_bounds_keeps_the_default(monkeypatch, caplog, raw):
+    monkeypatch.setenv(s3_upload.MAX_ATTEMPTS_ENV, raw)
+    with caplog.at_level("WARNING"):
+        assert s3_upload.s3_max_attempts() == s3_upload.DEFAULT_MAX_ATTEMPTS == 5
+    assert any(s3_upload.MAX_ATTEMPTS_ENV in r.getMessage() for r in caplog.records)
 
 
 # --- skip unchanged -------------------------------------------------------
@@ -255,13 +208,3 @@ def test_store_text_file_skips_unchanged_but_still_notifies(sleeps, local_file):
     assert key == "sub/doc.txt"
     assert fake.uploads == []
     assert mq.notified == ["s3://bucket/sub/doc.txt"]
-
-
-def test_store_text_file_retries_transient_upload(sleeps, local_file):
-    fake = FakeS3(failures=[_wrapped_upload_error(_client_error("SlowDown", 503))])
-    mq = _RecordingMQ()
-    s3_mod.s3_store_text_file(
-        fake, "bucket", None, str(local_file), mq, {"Metadata": {}}
-    )
-    assert [u[2] for u in fake.uploads] == ["doc.txt"]
-    assert sleeps == [1.0]

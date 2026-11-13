@@ -14,7 +14,7 @@ from botocore.exceptions import ClientError
 from charset_normalizer import from_bytes, from_path
 from PIL import Image
 
-from umrs.shared.storage.s3_upload import upload_local_file
+from umrs.shared.storage.s3_upload import s3_client_config, upload_local_file
 from umrs.shared.utils import compute_md5, md5_of_file
 
 # Suppress only SSL warnings from urllib3
@@ -195,6 +195,8 @@ def connect_to_s3(config_file, *, endpoint_url_override: str | None = None):
         aws_access_key_id=access_key,
         aws_secret_access_key=secret_key,
         verify=verify_ssl,  # Disables SSL verification if False
+        # The only retry layer for S3 calls (UMRS_S3_MAX_ATTEMPTS, review U1).
+        config=s3_client_config(),
     )
 
     # Test connection
