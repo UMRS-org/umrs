@@ -4,6 +4,7 @@ import argparse
 import json
 import logging
 import os
+import socket
 import sys
 
 import diskcache
@@ -23,11 +24,13 @@ from umrs.admin.daemon_signal import (
     remove_pid_file,
     write_pid_file,
 )
-from umrs.core.MessageQueue import MessageQueue
+from umrs.core.MessageQueue import DATA_PORT_RANGE, MessageQueue
 from umrs.core.TaskCmdStatus import TaskCmd, TaskStatus
 from umrs.core.TaskManager import TaskManager
 from umrs.core.thread_pool import PoolConfig, ThreadPoolManager
+from umrs.core.zmq_security import ZMQSecurityConfig
 from umrs.inference.embedding_backend import LocalEmbeddingBackend
+from umrs.orchestrator.site_config import resolve_site_config_path
 from umrs.server.commands import HandlerContext, build_registry
 from umrs.server.commands.base import make_status_callback
 from umrs.server.config import ENABLE_PRETTY_PRINT
@@ -131,6 +134,33 @@ def _init_session_curve_provider():
         raise
 
 
+def _log_zmq_bind(control_mq):
+    """Log where the control socket listens and which auth TYPE guards it.
+
+    Only the auth type is logged; CURVE keys and session secrets never are.
+    The bind host mirrors ``MessageQueue._initialize_control_queue``.
+    """
+    bind_host = "127.0.0.1" if control_mq.tunnel_mode else "*"
+    auth_type = ZMQSecurityConfig.from_env().auth_type or "none"
+    logger.info(
+        "Subscribed to zeroMQ message queue on %s %s:%s (data ports %s, auth=%s)",
+        socket.gethostname(),
+        bind_host,
+        control_mq.port,
+        DATA_PORT_RANGE.label,
+        auth_type,
+    )
+
+
+def _log_site_config_path():
+    """Log which site.yaml this server resolves at startup (if any)."""
+    path = resolve_site_config_path()
+    logger.info(
+        "Site config file: %s",
+        path or "none found (environment variables only)",
+    )
+
+
 def perform_initial_config(configure_file, status_store, skip_create_users=False):
     if not os.path.exists(configure_file):
         sys.exit(f"Configuration file '{configure_file}' not found.")
@@ -175,7 +205,7 @@ def perform_initial_config(configure_file, status_store, skip_create_users=False
     except Exception as e:  # noqa: BLE001 — server loop must survive per-command failures
         # Debug flag is optional; log but do not raise
         print(f"Warning: failed to set debug mode on control queue: {e}")
-    print("Subscribed to zeroMQ message queue")
+    _log_zmq_bind(control_mq)
 
     if not skip_create_users:
         for user in users:
@@ -701,6 +731,7 @@ def main():
     _server_config.ENABLE_PRETTY_PRINT = args.pretty_print
 
     print(f"Starting UMRS server with configuration file: {configure_file}")
+    _log_site_config_path()
     status_store = diskcache.Cache(
         f"{get_default_tmp_subdir()}/status_store", size_limit=500 * 1024 * 1024
     )
