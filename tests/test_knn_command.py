@@ -702,12 +702,20 @@ def test_pretty_print_without_results():
 # --- review U1 round 3 ------------------------------------------------------------------
 
 
-class _ParamCursor:
-    """Records (statement, params); the index pass answers *rows* rows."""
+# One substring per statement of _scoped_nearest (their repr holds the SQL text).
+_NEAREST_SQL = "ORDER BY embedding"
+_COUNT_SQL = "COUNT(DISTINCT"
+_CHECK_SQL = "SELECT 1 FROM"
 
-    def __init__(self, rows=0, cancel_on=None):
+
+class _ParamCursor:
+    """Records (statement, params); the index pass answers *rows* rows, the
+    count *rows*, the candidate check *candidates* (default *rows*)."""
+
+    def __init__(self, rows=0, cancel_on=None, candidates=None):
         self.calls: list[tuple[str, object]] = []
         self.rows = rows
+        self.candidates = rows if candidates is None else candidates
         self.cancel_on = cancel_on
 
     def execute(self, query, params=None):
@@ -719,6 +727,8 @@ class _ParamCursor:
             raise psycopg2.errors.QueryCanceled("canceling statement due to statement timeout")
 
     def fetchone(self):
+        if _CHECK_SQL in self.calls[-1][0]:
+            return (self.candidates,)
         return (self.rows, self.rows)
 
     def fetchall(self):
@@ -750,13 +760,46 @@ def test_the_count_runs_under_the_statement_timeout():
     assert first_timeout < first_count
 
 
-def test_a_timed_out_count_keeps_the_index_answer():
-    cur = _ParamCursor(rows=2, cancel_on="COUNT")
+def _ran_exact_pass(cur):
+    return any("enable_indexscan" in text for text, _p in cur.calls)
+
+
+def test_a_timed_out_count_still_runs_the_exact_pass():
+    """Review U1: 'COUNT' matched the candidate check too, so this never
+    tested a count timeout on its own. Only the count is cut off here: the
+    check still finds more rows, so the exact pass still runs."""
+    cur = _ParamCursor(rows=2, candidates=4, cancel_on=_COUNT_SQL)
+    _results, n_indexed = knn_worker._scoped_nearest(cur, _alice_scope(), "[1,0]", "etag", 5)
+    assert n_indexed is None
+    assert _ran_exact_pass(cur)
+
+
+def test_a_timed_out_check_keeps_the_index_answer():
+    cur = _ParamCursor(rows=2, candidates=4, cancel_on=_CHECK_SQL)
     results, n_indexed = knn_worker._scoped_nearest(cur, _alice_scope(), "[1,0]", "etag", 5)
     assert [hit["object"] for hit in results] == [f"{ALICE_BUCKET}/a0.png",
                                                   f"{ALICE_BUCKET}/a1.png"]
-    assert n_indexed is None
-    assert not any("enable_indexscan" in text for text, _p in cur.calls)
+    assert n_indexed == 2
+    assert not _ran_exact_pass(cur)
+
+
+def test_the_first_pass_runs_under_the_statement_timeout():
+    """Review U1: the first pass ran before any statement_timeout. Without
+    the HNSW index (best effort; none above 2000 dimensions) it scans and
+    sorts the whole shared table, unbounded."""
+    cur = _ParamCursor(rows=3)
+    knn_worker._scoped_nearest(cur, _alice_scope(), "[1,0]", "etag", 3)
+    texts = [text for text, _p in cur.calls]
+    first_pass = next(i for i, t in enumerate(texts) if _NEAREST_SQL in t)
+    first_timeout = next(i for i, t in enumerate(texts) if "statement_timeout" in t)
+    assert first_timeout < first_pass
+
+
+def test_a_timed_out_first_pass_answers_a_timeout_error():
+    cur = _ParamCursor(rows=3, cancel_on=_NEAREST_SQL)
+    with pytest.raises(knn_worker.KnnTimeoutError, match="timed out"):
+        knn_worker._scoped_nearest(cur, _alice_scope(), "[1,0]", "etag", 3)
+    assert not any(_COUNT_SQL in text for text, _p in cur.calls)
 
 
 def test_the_reply_names_the_users_query_not_the_upload_key(monkeypatch):

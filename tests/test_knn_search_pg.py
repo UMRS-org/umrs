@@ -432,34 +432,73 @@ def test_a_failed_query_returns_the_connection(pg_table):
     assert len(data_base.db_pool._used) == baseline
 
 
-class _SlowCount(_Recorder):
-    """The scope count takes 2 s (a shared table of millions of rows)."""
+class _Slow(_Recorder):
+    """The statement holding *marker* takes 2 s (a shared table of millions
+    of rows) and then answers *stand_in*'s valid rows."""
+
+    def __init__(self, cur, marker, stand_in):
+        super().__init__(cur)
+        self.marker, self.stand_in = marker, stand_in
 
     def execute(self, query, params=None):
         text = query if isinstance(query, str) else query.as_string(self._cur)
-        if "COUNT(DISTINCT" in text:
+        if self.marker in text:
             self.statements.append(text)
-            return self._cur.execute("SELECT pg_sleep(2), 1")
+            return self._cur.execute(self.stand_in)
         return super().execute(query, params)
+
+
+def _timed_scoped(data_base, table, slow):
+    """``(outcome or the exception, seconds)`` of a k=3 search through *slow*."""
+    import time
+
+    request = KnnRequest(n=3, s3_object="q.png", bucket=ALICE)
+    scope = knn_worker._Scope.of(_entry(data_base, table), request)
+    t0 = time.monotonic()
+    try:
+        outcome = knn_worker._with_cursor(
+            data_base, lambda cur: knn_worker._scoped_nearest(slow(cur), scope, "[1,0,0]",
+                                                              "eq", 3))
+    except knn_worker.KnnError as exc:
+        outcome = exc
+    return outcome, time.monotonic() - t0
 
 
 def test_the_scope_count_is_bounded_by_the_statement_timeout(pg_table, monkeypatch):
     """Review U1: the COUNT(DISTINCT) over the shared table ran with no
     statement_timeout, holding one of the 5 pooled connections for as long
-    as the scan took; now it is cut off and n_indexed is unknown."""
+    as the scan took; now it is cut off and n_indexed is unknown. The stand-in
+    answers a valid count (7), so an unbounded run cannot pass as a cut-off."""
     data_base, table = pg_table
     _insert(data_base, table,
             [(f"{ALICE}/a{i}.png", f"a{i}", [1, 0.1 * i, 0], "clip") for i in range(3)])
     monkeypatch.setenv("UMRS_KNN_EXACT_TIMEOUT_MS", "200")
-    request = KnnRequest(n=3, s3_object="q.png", bucket=ALICE)
-    scope = knn_worker._Scope.of(_entry(data_base, table), request)
 
-    results, n_indexed = knn_worker._with_cursor(
-        data_base, lambda cur: knn_worker._scoped_nearest(_SlowCount(cur), scope, "[1,0,0]",
-                                                          "eq", 3))
+    (results, n_indexed), seconds = _timed_scoped(
+        data_base, table, lambda cur: _Slow(cur, "COUNT(DISTINCT", "SELECT 7 FROM pg_sleep(2)"))
 
     assert n_indexed is None
     assert len(results) == 3
+    assert seconds < 1.5
+
+
+def test_the_first_pass_is_bounded_without_an_hnsw_index(pg_table, monkeypatch):
+    """Review U1: the first pass ran before any statement_timeout. pg_table
+    has no HNSW index (creating one is best effort; pgvector refuses it above
+    2000 dimensions), so that pass is a full scan and sort of the shared
+    table: cut off, the search answers a timeout and frees its connection."""
+    data_base, table = pg_table
+    _insert(data_base, table, [(f"{ALICE}/a0.png", "a0", [1, 0, 0], "clip")])
+    monkeypatch.setenv("UMRS_KNN_EXACT_TIMEOUT_MS", "200")
+    baseline = len(data_base.db_pool._used)
+
+    outcome, seconds = _timed_scoped(
+        data_base, table,
+        lambda cur: _Slow(cur, "ORDER BY embedding", "SELECT 'x', 1.0 FROM pg_sleep(2)"))
+
+    assert isinstance(outcome, knn_worker.KnnTimeoutError)
+    assert seconds < 1.5
+    assert len(data_base.db_pool._used) == baseline
 
 
 def test_k_above_pgvectors_ef_search_bound_still_answers(pg_hnsw_table):

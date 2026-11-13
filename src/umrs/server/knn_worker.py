@@ -72,6 +72,12 @@ class KnnStorageError(KnnError):
     code = "KNN_S3_UNAVAILABLE"
 
 
+class KnnTimeoutError(KnnError):
+    """The search hit UMRS_KNN_EXACT_TIMEOUT_MS before any answer."""
+
+    code = "KNN_TIMEOUT"
+
+
 @dataclass(frozen=True)
 class KnnRequest:
     """One validated KNN request."""
@@ -331,6 +337,22 @@ def exact_timeout_ms() -> int:
     return env_int("UMRS_KNN_EXACT_TIMEOUT_MS", DEFAULT_EXACT_TIMEOUT_MS, lo=100, hi=600_000)
 
 
+def _index_pass(cur, scope: _Scope, vector: str, etag: str, k: int) -> list[dict]:
+    """The first pass, under :func:`exact_timeout_ms` like every later one.
+
+    It is an index pass only when the table has its HNSW index; creating it
+    is best effort (pgvector indexes at most 2000 dimensions), and without it
+    this is a full scan and sort of the shared table (review U1). Cut off,
+    it answers :class:`KnnTimeoutError`.
+    """
+    cur.execute("SELECT set_config('hnsw.ef_search', %s, true)", [str(_ef_search(k))])
+    cur.execute("SELECT set_config('statement_timeout', %s, true)", [str(exact_timeout_ms())])
+    results = _bounded(cur, "knn_index", lambda: _nearest(cur, scope, vector, etag, k), None)
+    if results is None:
+        raise KnnTimeoutError("KNN search timed out")
+    return results
+
+
 def _scoped_nearest(cur, scope: _Scope, vector: str, etag: str, k: int):
     """``(results, n_indexed)``, exact within the caller's scope.
 
@@ -338,18 +360,17 @@ def _scoped_nearest(cur, scope: _Scope, vector: str, etag: str, k: int):
     ``hnsw.ef_search`` candidates from the whole table before the scope filter.
     ef_search is raised to k for this transaction (within pgvector's 1..1000),
     so a k above pgvector's default (40) no longer falls short on its own
-    (review U1). Every scan after the index pass (the scope count, the
-    candidate check, the exact pass) runs under :func:`exact_timeout_ms`:
-    these read the shared table, other tenants' rows included, and hold a
-    pooled connection. When the index answers fewer than k rows and the
+    (review U1). Every scan (the first pass, the scope count, the candidate
+    check, the exact pass) runs under :func:`exact_timeout_ms`: these read
+    the shared table, other tenants' rows included, and hold a pooled
+    connection. When the first pass answers fewer than k rows and the
     scope has more (another tenant's crowd of near-duplicates took the
-    candidates), the query runs again as an exact scan. A timed-out count
+    candidates), the query runs again as an exact scan. A timed-out first
+    pass fails the search (:class:`KnnTimeoutError`); a timed-out count
     reports ``n_indexed`` as None; a timed-out check or exact pass keeps the
-    index's answer.
+    first pass's answer.
     """
-    cur.execute("SELECT set_config('hnsw.ef_search', %s, true)", [str(_ef_search(k))])
-    results = _nearest(cur, scope, vector, etag, k)
-    cur.execute("SELECT set_config('statement_timeout', %s, true)", [str(exact_timeout_ms())])
+    results = _index_pass(cur, scope, vector, etag, k)
     n_indexed = _bounded(cur, "knn_count", lambda: _count_indexed(cur, scope), None)
     if len(results) < k and _bounded(
         cur, "knn_candidates", lambda: _has_more_candidates(cur, scope, etag, len(results)),
