@@ -69,6 +69,27 @@ def test_the_alias_jump_and_port_apply_when_the_site_names_none() -> None:
     assert argv[argv.index("-p") + 1] == "2200" and not any("HostKeyAlias" in a for a in argv)
 
 
+def test_the_alias_port_wins_over_the_sites_default_port() -> None:
+    """bdrt (2026-11-14): the site keeps ``ssh_port: 22`` for the service
+    lane, whose ssh passes no ``-p`` at 22, so the platform alias routes the
+    login through a reverse tunnel. The gate call must follow the alias too."""
+    resolved = {"hostname": "127.0.0.1", "port": "2202"}
+    argv = gc.gate_argv(_site(ssh_port=22), "a", _KEY, "probe", resolved)
+    assert argv[argv.index("-p") + 1] == "2202"
+    assert "HostName=127.0.0.1" in argv
+
+
+def test_an_ssh_failure_names_its_reason_in_the_server_log(caplog) -> None:
+    async def runner(argv, stdin, timeout):
+        return 255, b"", b"ssh: connect to host 127.0.0.1 port 22: Connection refused\n"
+
+    with caplog.at_level("WARNING", logger="umrs.hpc_accounts.gate_client"):
+        answer = asyncio.run(gc.run_verb(_site(), "alice", _KEY, "probe", runner=runner))
+    assert answer.error == gc.UNREACHABLE
+    assert "gate probe at bdrt-front for alice: ssh failed" in caplog.text
+    assert "Connection refused" in caplog.text
+
+
 @pytest.mark.parametrize("jump", ["-oProxyCommand=x", "a;id", "a b", "$(id)", "[::1]"])
 def test_a_jump_a_shell_could_read_is_refused(jump) -> None:
     with pytest.raises(ValueError, match="jump"):

@@ -45,12 +45,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 GATE_PROBE_REFUSAL = "gate_probe_refusal"
 EXIT_REFUSED = 4
@@ -184,8 +187,16 @@ def _jump(site: Any, resolved: dict[str, str]) -> str:
 
 
 def _port(site: Any, resolved: dict[str, str]) -> int:
+    """A non-default ``extra.ssh_port`` wins; at the default (22) the alias's
+    own ``Port`` from ``ssh -G`` applies, as for the service lane's ssh, which
+    passes ``-p`` only for a port other than 22 (2026-11-14: bdrt's
+    ``nimbus-0`` alias routes through the reverse tunnel at 127.0.0.1:2202,
+    and a forced ``-p 22`` left every gate call unreachable)."""
     extra = getattr(site, "extra", None) or {}
-    return int(extra.get("ssh_port") or resolved.get("port") or 22)
+    configured = int(extra.get("ssh_port") or 22)
+    if configured != 22:
+        return configured
+    return int(resolved.get("port") or 22)
 
 
 def proxy_command(jump: str) -> str:
@@ -382,7 +393,15 @@ async def run_verb(
     code, out, err = await (runner or subprocess_runner)(
         argv, encode_body(body), timeout
     )
-    return parse_answer(verb, code, out, err)
+    answer = parse_answer(verb, code, out, err)
+    if isinstance(answer, GateRefusal) and answer.exit_code == SSH_FAILED:
+        # The caller's typed error names only "unreachable"; ssh's own reason
+        # (refused, timed out, host key) is in the operator's log (2026-11-14).
+        logger.warning(
+            "gate %s at %s for %s: ssh failed: %s",
+            verb, getattr(site, "name", "?"), login, answer.detail[-300:],
+        )
+    return answer
 
 
 __all__ = [
