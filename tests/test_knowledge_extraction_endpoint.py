@@ -145,3 +145,105 @@ def test_extract_timeout_is_configurable(monkeypatch, raw, expected):
     else:
         monkeypatch.setenv("UMRS_KNOWLEDGE_EXTRACT_TIMEOUT", raw)
     assert ka._extract_timeout() == expected
+
+
+# ── 2026-11-14: rccs picked its vision model, a reasoning model whose reply
+# never fitted the token cap; extraction now ranks endpoints by ADR-106 role
+# and switches thinking off.
+
+
+def _roles(monkeypatch, served):
+    """Pretend the site roster serves ``served`` = {alias: [models]}."""
+    monkeypatch.setattr(
+        "umrs.orchestrator.provision_roster.role_alias_models",
+        lambda alias: list(served.get(alias, [])),
+    )
+
+
+def test_a_fast_model_is_chosen_over_a_vision_model_listed_first(monkeypatch):
+    _use(
+        monkeypatch,
+        [
+            _ep("p", "Qwen3.6-35B-A3B", url="http://vision:1"),
+            _ep("p", "Qwen3.8-27B", url="http://fast:1"),
+        ],
+    )
+    _roles(monkeypatch, {"svc-fast": ["Qwen3.8-27B"], "svc-vision": ["Qwen3.6-35B-A3B"]})
+    assert ka._extract_chat_endpoint("p") == ("http://fast:1", "Qwen3.8-27B")
+
+
+def test_a_vision_model_is_the_last_resort(monkeypatch):
+    _use(
+        monkeypatch,
+        [_ep("p", "vis", url="http://vision:1"), _ep("p", "plain", url="http://plain:1")],
+    )
+    _roles(monkeypatch, {"svc-vision": ["vis"]})
+    assert ka._extract_chat_endpoint("p") == ("http://plain:1", "plain")
+    _use(monkeypatch, [_ep("p", "vis", url="http://vision:1")])
+    assert ka._extract_chat_endpoint("p") == ("http://vision:1", "vis")
+
+
+def test_an_unreadable_roster_keeps_the_registry_order(monkeypatch):
+    _use(monkeypatch, [_ep("p", "a", url="http://a:1"), _ep("p", "b", url="http://b:1")])
+
+    def broken(alias):
+        raise RuntimeError("no roster")
+
+    monkeypatch.setattr("umrs.orchestrator.provision_roster.role_alias_models", broken)
+    assert ka._extract_chat_endpoint("p") == ("http://a:1", "a")
+
+
+def _record_chat(monkeypatch):
+    calls = []
+
+    def fake(messages, **kw):
+        calls.append(kw)
+        return "{}"
+
+    monkeypatch.setattr("umrs.knowledge.agent_executor._default_litellm_chat", fake)
+    return calls
+
+
+def test_the_json_mode_call_switches_thinking_off(monkeypatch):
+    monkeypatch.delenv("UMRS_KNOWLEDGE_EXTRACT_THINKING", raising=False)
+    calls = _record_chat(monkeypatch)
+    ka._extract_chat([], response_format={"type": "json_object"}, model="m")
+    ka._extract_chat([], response_format=None, model="m")
+    assert calls[0]["extra_body"] == {"chat_template_kwargs": {"enable_thinking": False}}
+    assert calls[1]["extra_body"] is None  # the plain retry sends neither field
+
+
+def test_thinking_can_be_left_on(monkeypatch):
+    monkeypatch.setenv("UMRS_KNOWLEDGE_EXTRACT_THINKING", "on")
+    calls = _record_chat(monkeypatch)
+    ka._extract_chat([], response_format={"type": "json_object"}, model="m")
+    assert calls[0]["extra_body"] is None
+
+
+def test_the_chat_call_sends_extra_body_fields(monkeypatch):
+    from umrs.knowledge import agent_executor
+
+    sent = {}
+
+    class _Resp:
+        status_code = 200
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"choices": [{"message": {"content": "{}"}}]}
+
+    def fake_post(url, headers=None, json=None, **_kw):
+        sent.update(json)
+        return _Resp()
+
+    monkeypatch.setattr("httpx.post", fake_post)
+    agent_executor._default_litellm_chat(
+        [],
+        model="m",
+        base_url="http://x",
+        api_key="k",
+        extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+    )
+    assert sent["chat_template_kwargs"] == {"enable_thinking": False}

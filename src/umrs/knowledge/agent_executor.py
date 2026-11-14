@@ -94,6 +94,7 @@ def _default_litellm_chat(
     temperature: float = 0.3,
     response_format: dict[str, Any] | None = None,
     reasoning_fallback: bool = False,
+    extra_body: dict[str, Any] | None = None,
 ) -> str:
     """Chat via the site LiteLLM upstream (same auth as api/llm.py).
 
@@ -106,7 +107,9 @@ def _default_litellm_chat(
     ``{"type": "json_object"}``; None sends no field. ``reasoning_fallback``
     returns the message's ``reasoning_content`` (or ``reasoning``) when a
     reasoning model left ``content`` empty; without it the reply text is
-    ``str(content)`` as before.
+    ``str(content)`` as before. ``extra_body`` adds request fields as given
+    (knowledge extraction sends ``chat_template_kwargs`` to switch a Qwen3
+    model's thinking off, 2026-11-14); None adds nothing.
     """
     key = api_key or _resolve_litellm_service_key()
     if not base_url:
@@ -126,6 +129,8 @@ def _default_litellm_chat(
         body["max_tokens"] = max_tokens
     if response_format is not None:
         body["response_format"] = response_format
+    if extra_body:
+        body.update(extra_body)
     resp = httpx.post(
         f"{base_url.rstrip('/')}/v1/chat/completions",
         headers=headers,

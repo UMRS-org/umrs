@@ -3192,7 +3192,73 @@ def _extract_chat_endpoint(project_id: str) -> tuple[str, str] | None:
         ]
     if not candidates:
         return None
-    return candidates[0].litellm_url, _served_model_name(candidates[0])
+    best = _ranked_candidates(candidates)[0]
+    return best.litellm_url, _served_model_name(best)
+
+
+# Extraction prefers these ADR-106 roles, in order, and takes a vision or OCR
+# model only when nothing else serves chat: on rccs the first registry row
+# was svc-vision (Qwen3.6-35B-A3B), whose reply never fitted the token cap
+# (2026-11-14, every window of a 10-window paper unparsed).
+_EXTRACT_ROLE_ORDER = ("svc-fast", "svc-chat")
+_EXTRACT_AVOID_ROLES = ("svc-vision", "svc-vision2", "svc-ocr")
+
+
+def _role_models(alias: str) -> set[str]:
+    """The models an ADR-106 role alias serves on this site (empty when the
+    roster cannot be read)."""
+    try:
+        from umrs.orchestrator.provision_roster import role_alias_models
+
+        return set(role_alias_models(alias))
+    except Exception as exc:  # noqa: BLE001 — ranking falls back to registry order
+        logger.debug("role alias %s unresolved: %s", alias, exc)
+        return set()
+
+
+def _candidate_rank(ep: Any, preferred: list[set[str]], avoid: set[str]) -> int:
+    names = {ep.model, _served_model_name(ep)}
+    for rank, models in enumerate(preferred):
+        if names & models:
+            return rank
+    return len(preferred) + (1 if names & avoid else 0)
+
+
+def _ranked_candidates(candidates: list[Any]) -> list[Any]:
+    """Candidates in the order extraction should try them (stable)."""
+    preferred = [_role_models(alias) for alias in _EXTRACT_ROLE_ORDER]
+    avoid = set().union(*(_role_models(alias) for alias in _EXTRACT_AVOID_ROLES))
+    return sorted(candidates, key=lambda ep: _candidate_rank(ep, preferred, avoid))
+
+
+#: Request fields that switch a reasoning model's thinking off. Qwen3-family
+#: models on rccs (svc-fast, svc-vision) otherwise spend the whole reply
+#: budget reasoning and return an empty answer; measured through the gateway
+#: on 2026-11-14 (svc-fast: 0 entities with thinking, 13 without).
+_THINKING_OFF = {"chat_template_kwargs": {"enable_thinking": False}}
+
+
+def _extract_thinking_off() -> bool:
+    """``UMRS_KNOWLEDGE_EXTRACT_THINKING``: off (default) unless ``on``/``1``/``true``."""
+    value = os.environ.get("UMRS_KNOWLEDGE_EXTRACT_THINKING", "").strip().lower()
+    return value not in {"on", "1", "true", "yes"}
+
+
+def _extract_chat(
+    messages: list[dict[str, Any]],
+    *,
+    response_format: dict[str, Any] | None = None,
+    **kw: Any,
+) -> str:
+    """One extraction call. The JSON-mode attempt also switches thinking off;
+    the plain retry ``llm_extract`` makes after a 4xx sends neither field, so
+    a server that refuses ``chat_template_kwargs`` still gets an answer."""
+    from umrs.knowledge.agent_executor import _default_litellm_chat
+
+    extra = _THINKING_OFF if response_format is not None and _extract_thinking_off() else None
+    return _default_litellm_chat(
+        messages, response_format=response_format, extra_body=extra, **kw
+    )
 
 
 # The slowest decode rate the default call timeout allows for (tok/s per
@@ -3265,13 +3331,12 @@ def _windowed_extract(
     import functools
 
     from umrs.knowledge import llm_extract, pretag
-    from umrs.knowledge.agent_executor import _default_litellm_chat
 
     base_url, model = target
     settings = llm_extract.ExtractSettings.from_env()
     vocab = kw.get("vocab") or llm_extract.default_vocabulary()
     chat = functools.partial(
-        _default_litellm_chat,
+        _extract_chat,
         model=model,
         base_url=base_url,
         api_key=None,
