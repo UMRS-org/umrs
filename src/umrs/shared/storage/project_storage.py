@@ -748,6 +748,33 @@ def project_s3_config(
     return ProjectS3Config(locator)
 
 
+def resolve_bucket_store(
+    bucket: str | None,
+    project_id: str | None,
+    *,
+    default: S3Config | None,
+    resolver: ProjectStorageResolver | None = None,
+) -> S3Config | None:
+    """The object store that holds *bucket* for a caller in *project_id*.
+
+    ADR-115 D-3: the one bucket→store rule. The files routes, the buckets
+    API and the workflow runner all call it, so they cannot disagree about
+    where a bound project's data lives. A project with an ADR-077 binding
+    reads and writes every bucket in its bound store (the runner's rule
+    since ADR-077); any other project gets *default*.
+
+    Raises:
+        ProjectStorageUnavailable: the binding registry is unreadable for a
+            never-resolved project. Callers refuse (503, failed run); they
+            never fall back to *default* with a bound project's data.
+    """
+    bound = project_s3_config(project_id, resolver=resolver) if project_id else None
+    if bound is None:
+        return default
+    logger.debug("bucket %s of project %s resolves to its bound store", bucket, project_id)
+    return bound
+
+
 # -- probes ----------------------------------------------------------------------------
 
 
@@ -914,6 +941,7 @@ __all__ = [
     "probe_postgres",
     "probe_s3",
     "project_s3_config",
+    "resolve_bucket_store",
     "s3_client_for",
     "seal",
     "set_project_storage_resolver",

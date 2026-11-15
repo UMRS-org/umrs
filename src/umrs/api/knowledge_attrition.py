@@ -44,6 +44,8 @@ logger = logging.getLogger(__name__)
 
 # One row per stored vector of the project's corpus (chunk nodes carry the
 # artifact they cut; another node's vector counts as its own document).
+# Entity-resolution label vectors (model ``<embedder>#label``, ADR-116 D-7)
+# are not corpus vectors and are left out.
 _CORPUS_VECTORS_SQL = """
     SELECT kne.node_id AS id,
            COALESCE(kn.content->>'artifact_id', kn.node_id) AS document_id,
@@ -52,6 +54,7 @@ _CORPUS_VECTORS_SQL = """
     FROM knowledge_node_embeddings kne
     JOIN knowledge_nodes kn ON kn.node_id = kne.node_id
     WHERE kn.project_id = $1
+      AND kne.model_name NOT LIKE '%#label'
 """
 _CORPUS_SOURCE = "knowledge_node_embeddings"
 

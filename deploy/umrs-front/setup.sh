@@ -34,6 +34,19 @@ log "Activating venv..."
 # shellcheck disable=SC1091
 source "${VENV_DIR}/bin/activate"
 
+# umrs-protocol (this checkout's protocol/) and r4-contracts (the superproject
+# sibling) are unpublished: install both from local paths in one command before
+# umrs, so resolving umrs never fetches either name from a package index
+# (dependency confusion).
+PROTOCOL_DIR="${REPO_ROOT}/protocol"
+R4_CONTRACTS_DIR="${R4_CONTRACTS_DIR:-${REPO_ROOT}/../r4-contracts}"
+[[ -f "${PROTOCOL_DIR}/pyproject.toml" ]] \
+    || die "umrs-protocol not found at ${PROTOCOL_DIR} (incomplete umrs checkout)."
+[[ -f "${R4_CONTRACTS_DIR}/pyproject.toml" ]] \
+    || die "r4-contracts not found at ${R4_CONTRACTS_DIR}; set R4_CONTRACTS_DIR to the superproject's r4-contracts."
+log "Installing umrs-protocol and r4-contracts from local paths..."
+uv pip install -e "${PROTOCOL_DIR}" -e "${R4_CONTRACTS_DIR}"
+
 # Install UMRS dependencies
 log "Installing UMRS server dependencies..."
 uv pip install -e "${SRC_DIR}[all]"

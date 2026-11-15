@@ -16,6 +16,47 @@ from umrs.client.control_commands import (
 from umrs.core.TaskCmdStatus import TaskCmd
 from umrs.core.zmq_correlation import dumps_with_correlation_id
 
+KNN_TIMEOUT_MS = 120_000
+
+# Plain-text control replies that stand for an error object.
+_PLAIN_ERROR_REPLIES = {
+    "SERVER_OVERLOADED": "Server overloaded: no worker free, retry later",
+}
+
+
+class ControlReplyError(RuntimeError, ValueError):
+    """A control reply that is neither JSON nor a known plain-text answer.
+
+    A ValueError too, so callers that caught the JSON decode error still do.
+    """
+
+
+def decode_control_reply(task_cmd: str, raw: str | None) -> dict[str, Any]:
+    """One decoder for every JSON control reply (KNN included, review U1):
+    ``UNAUTHORIZED:*`` and ``SERVER_OVERLOADED`` become error objects, a JSON
+    list becomes ``{"status": "ok", "items": [...]}``."""
+    if raw is None:
+        raise ControlReplyError(f"No reply from the server for {task_cmd}")
+    if raw.startswith("UNAUTHORIZED:"):
+        return {
+            "status": "error",
+            "message": f"Authorization denied for {task_cmd}",
+            "code": "UNAUTHORIZED",
+        }
+    if raw in _PLAIN_ERROR_REPLIES:
+        return {"status": "error", "message": _PLAIN_ERROR_REPLIES[raw], "code": raw}
+    try:
+        parsed = json.loads(raw)
+    except ValueError:
+        raise ControlReplyError(
+            f"Unexpected server reply for {task_cmd}: {raw[:200]!r}"
+        ) from None
+    if isinstance(parsed, list):
+        return {"status": "ok", "items": parsed}
+    if not isinstance(parsed, dict):
+        raise ControlReplyError(f"Invalid response for {task_cmd}")
+    return parsed
+
 
 class UMRSControlAPI:
     """Reusable control-plane client operations backed by MessageQueue."""
@@ -347,6 +388,27 @@ class UMRSControlAPI:
         payload = json.dumps({"execution_id": execution_id, "tail": tail})
         return self._request_json(TaskCmd.WORKFLOW_LOGS, payload)
 
+    def knn(
+        self,
+        n: int,
+        s3_object: str,
+        bucket: str,
+        *,
+        subdir: str | None = None,
+        query_name: str | None = None,
+        timeout_ms: int = KNN_TIMEOUT_MS,
+    ) -> dict[str, Any]:
+        """KNN of *s3_object* in *bucket*: the server's reply object.
+
+        Raises TimeoutError when no reply comes within *timeout_ms* and
+        :class:`ControlReplyError` for a reply that is not JSON.
+        """
+        raw = self._mq.request_knn(
+            self._client_id, n, s3_object, bucket,
+            subdir=subdir, query_name=query_name, timeout_ms=timeout_ms,
+        )
+        return decode_control_reply(TaskCmd.KNN, raw)
+
     def maintenance(
         self, action: str, config_path: str | None = None
     ) -> dict[str, Any]:
@@ -545,18 +607,7 @@ class UMRSControlAPI:
         raw = self._mq.request_model_command(
             self._client_id, task_cmd, payload, timeout_ms=60_000
         )
-        if raw.startswith("UNAUTHORIZED:"):
-            return {
-                "status": "error",
-                "message": f"Authorization denied for {task_cmd}",
-                "code": "UNAUTHORIZED",
-            }
-        parsed = json.loads(raw)
-        if isinstance(parsed, list):
-            return {"status": "ok", "items": parsed}
-        if not isinstance(parsed, dict):
-            raise RuntimeError(f"Invalid response for {task_cmd}")
-        return parsed
+        return decode_control_reply(task_cmd, raw)
 
     def _upload_reload_config(self, config_path: str | None) -> None:
         if not config_path or not os.path.isfile(config_path):

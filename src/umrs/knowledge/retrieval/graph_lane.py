@@ -28,11 +28,12 @@ When on, after the cut (never displacing a kept passage):
 
 1. **link** — the query's content terms, under the lexical lane's rules
    (``to_tsvector('english', ...)``: its stemming and stop words), against
-   the labels (and ``content.aliases`` when present) of the semantic nodes in
-   the spec's scope (the dense lane's graph predicate, exclusions and ADR-050
-   visibility). An entity is one label (its stemmed terms) over every
-   document; the statement groups the nodes by label BEFORE its limit, so a
-   label a thousand documents mention is one row, never the whole budget.
+   the labels (and ``content.aliases`` / ``content.aliases_reviewed`` when
+   present) of the semantic nodes in the spec's scope (the dense lane's graph
+   predicate, exclusions and ADR-050 visibility). An entity is one label (its
+   stemmed terms) over every document; the statement groups the nodes by
+   label BEFORE its limit, so a label a thousand documents mention is one
+   row, never the whole budget.
    Its score is the share of its label's terms the query holds, at least
    ``LINK_MIN_FRACTION``; at most ``MAX_ENTITIES`` are kept.
 2. **route** — label variants of one named concept are one entity (a label
@@ -124,9 +125,20 @@ _SCOPE_SQL = (
 )
 # The label's lexemes: the expression LABEL_INDEX holds.
 _LABEL_TSV = "to_tsvector('english', coalesce(n.label, ''))"
-_ALIAS_VALUES = (
-    "jsonb_array_elements_text(CASE WHEN jsonb_typeof(n.content->'aliases') = "
-    "'array' THEN n.content->'aliases' ELSE '[]'::jsonb END) AS a(v)"
+# A node's aliases: ``content.aliases`` (written by extraction) and
+# ``content.aliases_reviewed`` (a partner's label, written when a person
+# establishes a same_as edge; ADR-116 D-7).
+ALIAS_KEYS = ("aliases", "aliases_reviewed")
+_ALIAS_ARRAYS = " || ".join(
+    f"CASE WHEN jsonb_typeof(n.content->'{key}') = 'array' "
+    f"THEN n.content->'{key}' ELSE '[]'::jsonb END"
+    for key in ALIAS_KEYS
+)
+_ALIAS_VALUES = f"jsonb_array_elements_text({_ALIAS_ARRAYS}) AS a(v)"
+_HAS_ALIASES = (
+    "("
+    + " OR ".join(f"jsonb_typeof(n.content->'{key}') = 'array'" for key in ALIAS_KEYS)
+    + ")"
 )
 _ALIASES = (
     "ARRAY(SELECT array_to_string(tsvector_to_array(to_tsvector('english', a.v)), ' ') "
@@ -134,7 +146,7 @@ _ALIASES = (
 )
 _TSQ = "(SELECT q.tsq FROM q)"
 _ALIAS_HIT = (
-    "jsonb_typeof(n.content->'aliases') = 'array' AND EXISTS (SELECT 1 FROM "
+    f"{_HAS_ALIASES} AND EXISTS (SELECT 1 FROM "
     f"{_ALIAS_VALUES} WHERE to_tsvector('english', a.v) @@ {_TSQ})"
 )
 _NODE_COLUMNS = (

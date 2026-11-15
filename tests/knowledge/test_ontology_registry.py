@@ -84,7 +84,9 @@ class _FakeConn:
         pass
 
     def _insert(self, params):
-        # Real INSERT carries ('active', NULL) inline → params hold 11 slots.
+        # Real INSERT carries ('active', NULL) inline → the 0091 columns fill
+        # the first 11 slots; the 0139 spec/source slots follow and this
+        # fixture keeps reading the 0091 columns only.
         (
             record_id,
             ontology_id,
@@ -97,11 +99,14 @@ class _FakeConn:
             project_id,
             created_at,
             updated_at,
-        ) = params
+        ) = params[:11]
         import json as _json
 
         live = any(
-            r["ontology_id"] == ontology_id and r["version"] == version and r["retired_at"] is None
+            r["ontology_id"] == ontology_id
+            and r["version"] == version
+            and r["project_id"] == project_id
+            and r["retired_at"] is None
             for r in self.rows.values()
         )
         assert not live, "partial-live-index premise violated in fixture"
@@ -141,11 +146,23 @@ class _FakeConn:
         return None
 
     def _handle_all(self, sql, params):
-        rows = [r for r in self.rows.values() if r["retired_at"] is None]
+        active = _where_terms(sql, params)
+        rows = [r for r in self.rows.values() if all(r[column] == want for column, want in active)]
         return [tuple(r[c[0]] for c in _FakeCursor(self).description) for r in rows]
 
     def handle_patch(self, record_id, retired_at, updated_at):
         self._update(retired_at, updated_at, record_id)
+
+
+def _where_terms(sql, params) -> list[tuple[str, object]]:
+    """(column, wanted value) for each WHERE term the store's SQL uses."""
+    padded = (*params, None, None)
+    terms = [
+        ("retired_at IS NULL", "retired_at", None),
+        ("ontology_id = %s", "ontology_id", padded[0]),
+        ("version = %s", "version", padded[1]),
+    ]
+    return [(column, want) for fragment, column, want in terms if fragment in sql]
 
 
 def _conn() -> _FakeConn:
@@ -158,7 +175,7 @@ class TestRegistryLifecycle:
         onto = _onto()
         rec = store.register(onto, owner_id="alice", project_id="proj-a")
         assert rec.status == "active"
-        found = store.live_coordinate("lab-onto", "1")
+        found = store.live_coordinate("lab-onto", "1", "proj-a")
         assert found is not None
         assert found.ontology.transitive_relations == frozenset({"cites"})
         assert found.owner_id == "alice"
@@ -191,6 +208,92 @@ class TestRegistryLifecycle:
         # (fixture list filter is thin; preserved rows protected by tuple rows)
         listed = store.list()
         assert len(listed) == 1
+
+
+class TestReviewFixes:
+    def test_register_writes_the_full_spec_and_the_source(self) -> None:
+        """The PG round trip runs only with a database; this pins the INSERT
+        (0091 register() dropped subtype_of / extraction_fields)."""
+        import hashlib
+        import json
+
+        conn = _conn()
+        seen: list[tuple] = []
+        insert = conn._insert
+        conn._insert = lambda params: (seen.append(params), insert(params))
+        onto = Ontology(
+            ontology_id="lab",
+            version="1",
+            entity_types=frozenset({"alloy", "thing"}),
+            relation_types=frozenset({"cites"}),
+            subtype_of=(("alloy", "thing"),),
+            extraction_fields=(("citations", "cites"),),
+        )
+        OntologyRegistryStore(conn).register(
+            onto, owner_id="a", source_format="linkml", source_text="name: lab"
+        )
+        spec, source_format, source_text, sha = seen[0][11:]
+        assert json.loads(spec) == onto.to_dict()
+        assert dict(json.loads(spec)["subtype_of"]) == {"alloy": "thing"}
+        assert (source_format, source_text) == ("linkml", "name: lab")
+        assert sha == hashlib.sha256(b"name: lab").hexdigest()
+
+    def test_each_scope_has_its_own_coordinate_namespace(self) -> None:
+        """One global id@version namespace gave project B a 409 for a
+        coordinate only project A could see or retire."""
+        store = OntologyRegistryStore(_conn())
+        store.register(_onto(), owner_id="a", project_id="proj-a")
+        store.register(_onto(), owner_id="b", project_id="proj-b")
+        store.register(_onto(), owner_id="root")
+        with pytest.raises(OntologyCoordinateConflict) as caught:
+            store.register(_onto(), owner_id="b2", project_id="proj-b")
+        assert "project 'proj-b'" in str(caught.value)
+        assert "proj-a" not in str(caught.value)
+
+    def test_lookups_read_the_project_record_before_the_global_one(self) -> None:
+        store = OntologyRegistryStore(_conn())
+        store.register(_onto(), owner_id="root")
+        store.register(_onto(), owner_id="a", project_id="proj-a")
+        assert store.live_coordinate("lab-onto", "1", "proj-a").owner_id == "a"
+        assert store.live_coordinate("lab-onto", "1", "proj-b").owner_id == "root"
+        assert store.live_coordinate("lab-onto", "1").owner_id == "root"
+        store.retire("lab-onto", "1", "proj-a")  # retires the project's own
+        assert store.live_coordinate("lab-onto", "1", "proj-a").owner_id == "root"
+        assert store.latest_live_version("lab-onto") == "1"
+
+    def test_none_reads_global_records_only(self) -> None:
+        store = OntologyRegistryStore(_conn())
+        store.register(_onto(), owner_id="a", project_id="proj-a")
+        assert store.live_coordinate("lab-onto", "1") is None
+        assert store.latest_live_version("lab-onto") is None
+        assert store.latest_live_version("lab-onto", "proj-a") == "1"
+
+    def test_a_retired_version_keeps_resolving_for_bound_graphs(self) -> None:
+        """Retiring switched pinned graphs to r4-science with only a job note;
+        it now blocks new bindings (live_coordinate) only."""
+        store = OntologyRegistryStore(_conn())
+        store.register(_onto(), owner_id="a", project_id="proj-a")
+        store.retire("lab-onto", "1", "proj-a")
+        assert store.live_coordinate("lab-onto", "1", "proj-a") is None
+        graph = {"ontology_id": "lab-onto", "ontology_version": "1", "project_id": "proj-a"}
+        assert ontology_for_graph(graph, registry=store).ontology_id == "lab-onto"
+        with pytest.raises(ValueError, match="unknown ontology"):
+            ontology_for_graph({**graph, "project_id": "proj-b"}, registry=store)
+
+    def test_a_live_version_wins_over_a_retired_one(self) -> None:
+        store = OntologyRegistryStore(_conn())
+        store.register(_onto(), owner_id="old", project_id="proj-a")
+        store.retire("lab-onto", "1", "proj-a")
+        store.register(_onto(), owner_id="new", project_id="proj-a")
+        assert store.resolve_coordinate("lab-onto", "1", "proj-a").owner_id == "new"
+
+    def test_another_projects_record_never_resolves_for_a_graph(self) -> None:
+        store = OntologyRegistryStore(_conn())
+        store.register(_onto(), owner_id="a", project_id="proj-a")
+        mine = {"ontology_id": "lab-onto", "ontology_version": "1", "project_id": "proj-a"}
+        assert ontology_for_graph(mine, registry=store).ontology_id == "lab-onto"
+        with pytest.raises(ValueError, match="unknown ontology"):
+            ontology_for_graph({**mine, "project_id": "proj-b"}, registry=store)
 
 
 class TestResolutionOrder:

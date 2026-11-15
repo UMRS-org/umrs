@@ -20,6 +20,38 @@ class ThreadStatus:
     DONE = "Done"
 
 
+def _annotate_works(works, field_name, per_bucket) -> list[str]:
+    """Set ``work[field_name]`` on works for the given buckets; their users."""
+    users = set()
+    for work in works:
+        bucket = work.get("bucket")
+        if bucket in per_bucket:
+            work[field_name] = per_bucket[bucket]
+            users.add(work.get("user"))
+    return sorted(user for user in users if user)
+
+
+def _nb_objects(s3_keys):
+    """A work's object count: the count itself, len of the keys, or N/A."""
+    if isinstance(s3_keys, int):
+        return s3_keys
+    return len(s3_keys) if s3_keys is not None else "N/A"
+
+
+def _work_entry(bucket_fields, path_to_bucket, s3_keys, key) -> dict:
+    """One STATUS work for a bucket, its user the bucket owner."""
+    owner, table_name, modality_name, db_name = bucket_fields
+    return {
+        "user": owner,
+        "data_base": db_name,
+        "table_name": table_name,
+        "modality_name": modality_name,
+        "bucket": path_to_bucket,
+        "work_type": key,
+        "nb_objects": _nb_objects(s3_keys),
+    }
+
+
 class UMRSThreads:
     """
     Manages background tasks submitted by the server command handlers.
@@ -160,6 +192,7 @@ class UMRSThreads:
         embedding_backend,
         key,
         client_callbacks=None,
+        skipped_indexed=None,
     ):
         """Submit one pool thread per model group across all client entries.
 
@@ -167,8 +200,15 @@ class UMRSThreads:
         model synchronously (before pool submission), so each submitted thread
         is independent and can run in parallel — Rivault nodes on different
         GPUs, or simply different local models.
+
+        ``skipped_indexed`` (``{bucket: n}``) is what the indexed pre-filter
+        removed; each thread adds it back to its STATUS ``nb_objects``.
         """
-        from umrs.server.processing import prepare_model_groups, process_model_group
+        from umrs.server.processing import (
+            prepare_model_groups,
+            process_model_group,
+            stamp_skipped_indexed,
+        )
 
         if client_callbacks:
             for cb in client_callbacks.values():
@@ -177,6 +217,7 @@ class UMRSThreads:
         groups = prepare_model_groups(
             self, client_entries, buckets_cfg, device, key, client_callbacks,
         )
+        stamp_skipped_indexed(groups, skipped_indexed)
 
         logger.info(
             "[PROCESS] %d model group(s) to process for key='%s'",
@@ -240,6 +281,35 @@ class UMRSThreads:
 
         self.update_thread_dict(
             buckets_cfg, keys_per_bucket, key, thread_ident=thread_ident
+        )
+        return thread_ident
+
+    def launch_knn(
+        self,
+        user,
+        request,
+        entry,
+        buckets_cfg,
+        control_mq,
+        zmq_sender_id,
+        key,
+        update_status_callback=None,
+    ):
+        """Run one KNN search (``knn_worker.KnnRequest``) on the pool; *entry*
+        is the bucket's server entry, already checked against *user*.
+
+        The worker registers its own STATUS entry before searching: doing it
+        here, after submission, raced a fast search and left a phantom
+        Running entry (review U1).
+        """
+        from umrs.server.knn_worker import knn_search_worker
+
+        thread_ident, _future = self._submit_to_pool(
+            knn_search_worker,
+            (self, user, request, entry, control_mq, zmq_sender_id, key,
+             update_status_callback, buckets_cfg),
+            key,
+            update_status_callback=update_status_callback,
         )
         return thread_ident
 
@@ -402,8 +472,13 @@ class UMRSThreads:
         return thread_ident
 
     def update_thread_dict(
-        self, buckets_cfg, keys_per_bucket, key, thread_ident="self"
+        self, buckets_cfg, keys_per_bucket, key, thread_ident="self", *, user=None
     ):
+        """Register the thread's works (one per bucket) as Running.
+
+        A work's user is the bucket owner, unless *user* names who runs it
+        (KNN by an ADR-080 shared-bucket member: their STATUS, not the owner's).
+        """
         array_of_works = []
         for path_to_bucket in keys_per_bucket:
             selected_fields = ["s3_username", "table_name", "modality_name", "db_name"]
@@ -413,19 +488,9 @@ class UMRSThreads:
                     f"WARNING: No bucket config for '{path_to_bucket}', skipping"
                 )
                 continue
-            user, table_name, modality_name, db_name = result
-            s3_keys = keys_per_bucket[path_to_bucket]
-            work = {
-                "user": user,
-                "data_base": db_name,
-                "table_name": table_name,
-                "modality_name": modality_name,
-                "bucket": path_to_bucket,
-                "work_type": key,
-                "nb_objects": s3_keys
-                if isinstance(s3_keys, int)
-                else (len(s3_keys) if s3_keys is not None else "N/A"),
-            }
+            work = _work_entry(result, path_to_bucket, keys_per_bucket[path_to_bucket], key)
+            if user:
+                work["user"] = user
             array_of_works.append(work)
         with self.lock:
             thread_id = self.thread_id
@@ -445,6 +510,46 @@ class UMRSThreads:
 
         # print(f"{thread_ident=}\n\t{thread_id=}\n\t{ThreadStatus.RUNNING}" )
         users = sorted({work["user"] for work in array_of_works if work.get("user")})
+        if users:
+            self.record_status_for_users_by_key(users, key)
+
+    def annotate_works(self, field_name, per_bucket, key) -> list[str]:
+        """Add ``field_name`` to the calling thread's works, re-record status.
+
+        Used for ``nb_skipped_indexed`` (plan U1 A5): STATUS then shows the
+        submitted count in ``nb_objects`` and how many of those the indexed
+        pre-filter skipped. Returns the users whose status was re-recorded.
+        """
+        ident = threading.current_thread().ident
+        with self.lock:
+            entry = self.thread_dict.get(ident)
+            if entry is None or not per_bucket:
+                return []
+            users = _annotate_works(entry.get("work", []), field_name, per_bucket)
+            self.thread_dict[ident] = entry  # diskcache stores a copy
+        self.record_status_for_users_by_key(users, key)
+        return users
+
+    def record_skipped_work(self, buckets_cfg, skipped_per_bucket, key) -> None:
+        """A finished STATUS entry for buckets whose every object was skipped
+        as already indexed (no pool thread runs for them).
+
+        The entry is closed whatever fails after it was registered (review
+        U1): the collector thread exits, so nothing else would mark it Done.
+        """
+        if not skipped_per_bucket:
+            return
+        try:
+            self.update_thread_dict(buckets_cfg, dict(skipped_per_bucket), key)
+            self.annotate_works("nb_skipped_indexed", skipped_per_bucket, key)
+        finally:
+            self._finish_own_entry(key)
+
+    def _finish_own_entry(self, key) -> None:
+        """Mark the calling thread's entry Done and re-record its users' STATUS."""
+        done_key = self.update_status_to_done()
+        entry = self.thread_dict.get(done_key) if done_key else None
+        users = sorted({w["user"] for w in (entry or {}).get("work", []) if w.get("user")})
         if users:
             self.record_status_for_users_by_key(users, key)
 
@@ -472,6 +577,7 @@ class UMRSThreads:
                 logger.info(
                     f"Error: cannot find '{thread_ident}' entry for {self.thread_dict=}"
                 )
+        return new_key
 
     def clean_finished_threads(self):
         from umrs.server.config import ENABLE_PRETTY_PRINT
@@ -483,7 +589,7 @@ class UMRSThreads:
                 if item.done():
                     exc = item.exception()
                     if exc is not None:
-                        logger.error("Pool task raised: %s", exc)
+                        logger.error("Pool task raised: %s", exc, exc_info=exc)
                     finished_idents.append(id(item))
                 else:
                     running.append(item)

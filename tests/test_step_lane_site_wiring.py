@@ -13,6 +13,14 @@ since 2026-11-09 only spring-8 charges rkp00101, all other projects rkp00043.
 All four refuse uploaded code in-process by name, and
 each umrs-front server reads only its own cluster's UMRS_<C>_STEP_* from the
 converge's .env.
+
+2026-11-12 (ADR-112 B2): bdrt is the gated-run test lane. It declares
+remote_enabled, the archive dir, helper and venue paths and image_digests, but
+no workdir_root: with the converge's verified image only the gated path opens
+(a person's own account, through their gate); the service-account helper lane
+stays unavailable, the reaper is the gated-only one (no helper sweep), and
+service-account user work stays admins only. rccs, ai4s and bdrt read the
+converge-written digests file.
 """
 
 from __future__ import annotations
@@ -42,7 +50,8 @@ UMRS_ROOT = Path(__file__).resolve().parents[1]
 DEPLOY = UMRS_ROOT / "deploy"
 FRONTS = ("rccs-front", "ai4s-front", "bdrt-front", "octopus-front")
 #: rccs opened its lane 2026-10-02 (maintainer, after R2); the rest stay closed.
-CLOSED_FRONTS = ("bdrt-front", "octopus-front")
+#: bdrt left this list 2026-11-12 (ADR-112 B2 gated test lane).
+CLOSED_FRONTS = ("octopus-front",)
 RCCS_CHECKOUT = "/lvs0/rccs-dmp/masaru.nagaso/ai4s-platform"
 HELPER_REL = "umrs/deploy/_common/umrs_step_helper.py"
 VENUE_REL = "umrs/src/umrs/mini-rivault-llm/venue.sh"
@@ -296,7 +305,7 @@ def test_bdrt_lane_knobs_size_spark_double_jobs_with_no_image():
 LANE_PATHS = ("workdir_root", "image_archive_dir", "helper_path", "venue_script")
 
 
-@pytest.mark.parametrize("front", ["bdrt-front", "octopus-front"])
+@pytest.mark.parametrize("front", ["octopus-front"])
 def test_a_site_not_yet_onboarded_declares_no_lane_paths_and_gets_no_reaper(monkeypatch, front):
     # Per-site wiring review 2026-09-27: a declared helper + workdir root
     # starts the reaper, whose hourly helper sweep SSHes to the cluster with
@@ -347,6 +356,182 @@ def test_bdrt_step_jobs_go_to_spark_double_without_mem_gres_or_account(monkeypat
     assert "#SBATCH --partition=spark-double" in script
     for part in ("#SBATCH --mem", "#SBATCH --gres", "#SBATCH --account"):
         assert part not in script
+
+
+# ── bdrt: the ADR-112 B2 gated test lane (2026-11-12) ────────────────────────
+
+BDRT_CHECKOUT = "/home/mnagaso/ai4s-platform"
+BDRT_ARCHIVES = "/home/mnagaso/umrs_models/images"
+DIGESTS_IN_SERVER = "/etc/umrs/step-digests/image-digests.json"
+STEP_IMAGE = "localhost/umrs-step:0123456789ab"
+#: What the converge writes into .env for bdrt once its image verified
+#: (umrs-front.yaml "Step lane — write or remove ..."; the compose maps them).
+BDRT_CONVERGE_ENV = {
+    "UMRS_STEP_IMAGE": STEP_IMAGE,
+    "UMRS_STEP_IMAGE_ARCHIVE_DIR": BDRT_ARCHIVES,
+    "UMRS_STEP_HELPER": f"{BDRT_CHECKOUT}/{HELPER_REL}",
+    "UMRS_STEP_VENUE_SCRIPT": f"{BDRT_CHECKOUT}/{VENUE_REL}",
+}
+
+
+def test_bdrt_declares_the_gated_lane_without_a_workdir_root():
+    raw = yaml.safe_load((DEPLOY / "bdrt-front" / "site.yaml").read_text())["step_executor"]
+    assert (raw["remote_enabled"], raw["uploaded_code"]) == (True, "refuse")
+    assert "workdir_root" not in raw  # no service helper lane, no helper sweep
+    step = _step("bdrt-front")
+    assert step.image_archive_dir == BDRT_ARCHIVES
+    assert step.image_digests == DIGESTS_IN_SERVER
+    assert step.helper_path == BDRT_CONVERGE_ENV["UMRS_STEP_HELPER"]
+    assert step.venue_script == BDRT_CONVERGE_ENV["UMRS_STEP_VENUE_SCRIPT"]
+
+
+def test_bdrt_opens_only_the_gated_path_with_the_converge_image(site_env):
+    from umrs.server.step_trust import gated_lane_available
+
+    site_env("bdrt-front")  # before the converge verified an image: all closed
+    assert (gated_lane_available(), hpc_lane_available()) == (False, False)
+    assert uploaded_code_lane("in_process") is None
+    site_env("bdrt-front", **BDRT_CONVERGE_ENV)
+    assert gated_lane_available() is True
+    assert hpc_lane_available() is False  # no workdir root: no service helper lane
+    assert uploaded_code_lane("in_process") == "slurm"
+
+
+def test_bdrt_gets_only_the_gated_reaper_with_the_converge_env(monkeypatch):
+    # No workdir root: the reaper is the gated-only one (gate verbs; plan §5
+    # B2.0 §10.5), whose helper sweep never SSHes under the platform login.
+    for key in [k for k in os.environ if k.startswith(("UMRS_SLURM_", "UMRS_STEP_"))]:
+        monkeypatch.delenv(key)
+    for key, value in BDRT_CONVERGE_ENV.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setenv("UMRS_SITE_CONFIG", str(DEPLOY / "bdrt-front" / "site.yaml"))
+    reset_site_config()
+    step_reaper.set_step_lane_reaper(None)
+    try:
+        reaper = step_reaper.step_lane_reaper()
+        assert (reaper.helper_path, reaper.workdir_root) == ("", "")
+        assert reaper.sweep_workdirs() == {"removed": []}
+    finally:
+        step_reaper.set_step_lane_reaper(None)
+        reset_site_config()
+
+
+def _verified_alice(tables: dict) -> None:
+    from umrs.hpc_accounts.store import InMemorySiteAccountStore
+
+    store = InMemorySiteAccountStore("bdrt-front", tables)
+    store.issue_key("alice", "tk-000000000001", "SHA256:x")
+    store.record_verified(
+        "alice",
+        "tk-000000000001",
+        {
+            "site_login": "alice_hpc",
+            "verified_login": "alice_hpc",
+            "verified_assocs": [{"account": "grp-a"}],
+            "gate_version": "2",
+            "gate_sha256": "0" * 64,
+            "signer_fingerprints": [],
+            "uv_required": False,
+        },
+    )
+    store.upsert_link("alice", "bdr-opossum", "grp-a")
+
+
+@pytest.fixture
+def bdrt_open(site_env, monkeypatch):
+    """bdrt as its server sees it after the converge: alice enrolled, root admin."""
+    from umrs.hpc_accounts.store import InMemorySiteAccountStore
+    from umrs.shared import hpc_user_work_access as access
+
+    site_env("bdrt-front", **BDRT_CONVERGE_ENV)
+    site = load_site_config(str(DEPLOY / "bdrt-front" / "site.yaml"))
+    tables: dict = {"accounts": {}, "links": {}}
+    _verified_alice(tables)
+    monkeypatch.setattr(access, "current_site", lambda: site)
+    monkeypatch.setattr(access, "user_is_admin", lambda user: user == "root")
+    monkeypatch.setattr(access, "_store_factory", lambda v: InMemorySiteAccountStore(v, tables))
+    return access
+
+
+def _uploaded(tmp_path: Path) -> tuple[dict, list, str]:
+    (tmp_path / "pkg").mkdir()
+    steps = [{"name": "s1", "entrypoint": "pkg.step:Step"}]
+    return {"steps": steps}, steps, str(tmp_path)
+
+
+def test_bdrt_service_account_user_work_stays_admins_only_with_the_lane_open(bdrt_open):
+    from umrs.orchestrator.hpc_identity import HpcAccessRefused
+
+    with pytest.raises(HpcAccessRefused) as refused:
+        bdrt_open.resolve_user_work(user_id="bob", project_id="bdr-opossum", gated=True)
+    assert refused.value.reason == "project_not_allowed"
+    admin = bdrt_open.resolve_user_work(user_id="root", project_id="bdr-opossum", gated=True)
+    assert (admin.mode, admin.login) == ("service_account", "mnagaso")
+    person = bdrt_open.resolve_user_work(user_id="alice", project_id="bdr-opossum", gated=True)
+    assert (person.mode, person.login, person.slurm_account) == (
+        "user_account",
+        "alice_hpc",
+        "grp-a",
+    )
+
+
+def test_bdrt_runs_uploaded_code_only_under_a_persons_own_account(bdrt_open, tmp_path):
+    from umrs.server import workflow_runner as wr
+
+    wf, steps, src = _uploaded(tmp_path)
+
+    def lane(user: str, intent: bool) -> tuple:
+        return wr._workflow_executor_name(
+            wf, steps, src, injected=False, run_identity=(user, "bdr-opossum", intent)
+        )
+
+    assert lane("alice", True) == ("slurm", "")
+    name, refusal = lane("bob", False)  # a non-admin on the service account
+    assert name is None and "project_not_allowed" in refusal
+    assert lane("root", False) == (None, wr._NO_HPC_LANE)  # admin: no helper lane here
+
+
+def test_bdrt_publishes_a_gate_profile_naming_its_archive_dir():
+    from umrs.hpc_accounts.site_profile import build_site_profile
+
+    profile = build_site_profile(_site("bdrt-front"))
+    assert profile["image_archive_dir"] == BDRT_ARCHIVES
+    assert {p["arch"] for p in profile["partitions"].values()} == {"aarch64"}
+
+
+@pytest.mark.parametrize("front", FRONTS)
+def test_staging_fronts_read_the_converge_written_digests_file(front):
+    # The umrs-front converge writes it for rccs, ai4s and bdrt (they stage);
+    # octopus stages nothing, so it names none (no_image_digests).
+    want = "" if front == "octopus-front" else DIGESTS_IN_SERVER
+    assert _step(front).image_digests == want
+    if front != "bdrt-front":  # user_account needs the operator's consent there
+        assert "user_account" not in _site(front).scheduler.hpc_access.modes_allowed
+
+
+#: Exactly what the converge writes (deploy/ansible/scripts/
+#: test-role-expressions.yaml "Gated-run digests file content" pins it).
+CONVERGE_DIGESTS = (
+    '{\n  "localhost/umrs-step:0123456789ab": {\n    "aarch64": {\n'
+    f'      "archive_sha256": "{"b" * 64}",\n      "image_id": "{"a" * 64}"\n'
+    "    }\n  }\n}\n"
+)
+
+
+def test_the_converge_digests_file_is_what_a_bdrt_proposal_pins(monkeypatch, tmp_path):
+    from umrs.hpc_accounts.grant_service import site_images
+    from umrs.hpc_accounts.site_profile import build_site_profile
+    from umrs.server.intent_proposal import _image, load_image_digests, platform_image
+
+    path = tmp_path / "image-digests.json"
+    path.write_text(CONVERGE_DIGESTS)
+    site = _site("bdrt-front")
+    site.step_executor.image_digests = str(path)
+    monkeypatch.setenv("UMRS_STEP_IMAGE", STEP_IMAGE)
+    arch = build_site_profile(site)["partitions"][site.step_executor.partition]["arch"]
+    image = _image(load_image_digests(site), platform_image(site), arch)
+    assert image == {"ref": STEP_IMAGE, "image_id": "a" * 64, "archive_sha256": "b" * 64}
+    assert site_images(site) == frozenset({(STEP_IMAGE, "a" * 64, "b" * 64)})
 
 
 def _strings(node):

@@ -408,6 +408,18 @@ Each Mini-Rivault instance provides:
 - S3 credentials are per-user (separate `.s3cfg` files)
 - Admin should set appropriate Slurm partitions and resource limits per user/group
 
+### Local inference tuning (server environment)
+
+Integer knobs below that are not an integer, or fall outside their bounds, keep their default and log one warning naming the knob; on/off knobs read `0`, `false`, `no`, `off` as off (`umrs.shared.env_knobs`).
+
+- `UMRS_INFERENCE_BATCH_SIZE` (default `0` = one forward pass per batch): cap on objects per local embedding forward pass; when set, the S3 load of the next chunk overlaps the compute of the current one. Lower it (e.g. 64) on CPU/GPU OOM; each batch logs an INFO `[embed] n= wall= io= compute=` line (ResNet-50 also `[resnet50] n= pil= forward=`) to tune it by. Bounds: `>= 0`.
+- `UMRS_PREFILTER_INDEXED` (default `1`): PROCESS_OBJECTS skips objects whose bucket table already holds them with the same S3 ETag (and model); STATUS keeps the submitted count and adds `nb_skipped_indexed`. Set `0` to re-embed every upload.
+- `UMRS_PREFILTER_HEAD_BUDGET_S` (default `30`, bounds `1..3600`): wall-clock bound of the pre-filter's S3 HEADs for one bucket (only keys the table already holds are HEADed); past it, or after 20 failed HEADs, the bucket skips nothing and indexes every object.
+- `UMRS_KNN_MAX_K` (default `100`, bounds `>= 1`): upper bound on `k` for the KNN command (`umrs knn`); larger requests are capped, `k <= 0` is refused. KNN searches a bucket the caller owns or whose ADR-080 access list admits them (and only its current model). pgvector caps `hnsw.ef_search` at 1000, so a `k` above 1000 is answered by the exact pass (bounded by the next knob).
+- `UMRS_KNN_EXACT_TIMEOUT_MS` (default `10000`, bounds `100..600000`): `statement_timeout` of every KNN scan: the first (HNSW index) pass, the scope count, the candidate check, and the exact-scan pass run when the first pass answers too few rows in the caller's scope. A timed-out first pass fails the search with `KNN_TIMEOUT` (without the HNSW index, which pgvector cannot build above 2000 dimensions, that pass scans the whole shared table); after it, a timed-out check or exact pass returns the first pass's rows and a timed-out count reports `n_indexed` as null.
+- `UMRS_S3_EVENTS_MAX_WAIT_S` (default `300`, bounds `1..86400`): longest a PROCESS_OBJECTS collector reads one client's data queue (and waits for that queue's previous collector), whatever the stream does. A PROCESS_OBJECTS count above 40960 is refused with `CMD_ERROR`.
+- `UMRS_S3_MAX_ATTEMPTS` (default `5`, bounds `1..10`): total attempts per S3 request (botocore standard-mode retries) for every S3 client built by `connect_to_s3`, so the server's PROCESS_OBJECTS and KNN loads as well as client uploads. The server and each client read it separately.
+
 ## Monitoring and Troubleshooting
 
 ### Expected Launch Log Summary

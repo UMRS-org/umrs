@@ -35,12 +35,29 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
-_UPSERT_NODE_SQL = """INSERT INTO knowledge_nodes
+# ADR-116 D-8 (KG-06, the part that would undo a review): a re-upsert keeps
+# the stored row's ``review`` (written by establish_*) and ``aliases_reviewed``
+# (written when a same_as edge is established) unless the new content sets
+# them. Done in the statement, so the merge is atomic with the write. Only an
+# object content is merged; any other JSON value replaces the stored one as
+# before.
+_KEPT_CONTENT_KEYS = ("review", "aliases_reviewed")
+_MERGED_CONTENT_SQL = (
+    "CASE WHEN jsonb_typeof(EXCLUDED.content) = 'object'"
+    " AND jsonb_typeof(knowledge_nodes.content) = 'object'"
+    " THEN EXCLUDED.content || (SELECT coalesce(jsonb_object_agg(k.key,"
+    " knowledge_nodes.content -> k.key), '{}'::jsonb)"
+    " FROM unnest(ARRAY[" + ", ".join(f"'{key}'" for key in _KEPT_CONTENT_KEYS) + "])"
+    " AS k(key) WHERE knowledge_nodes.content ? k.key AND NOT EXCLUDED.content ? k.key)"
+    " ELSE EXCLUDED.content END"
+)
+
+_UPSERT_NODE_SQL = f"""INSERT INTO knowledge_nodes
    (node_id, project_id, label, node_type, content, content_hash,
     source_ir, created_at, updated_at, graph_id, status, confidence)
    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
    ON CONFLICT (node_id) DO UPDATE
-   SET content = $5, content_hash = $6, source_ir = $7, updated_at = $9"""
+   SET content = {_MERGED_CONTENT_SQL}, content_hash = $6, source_ir = $7, updated_at = $9"""
 
 # ADR-093 D-6 (0120): a chunk's search_text is the new text when one is
 # given; without one the stored text survives only while the content it was
@@ -48,12 +65,12 @@ _UPSERT_NODE_SQL = """INSERT INTO knowledge_nodes
 # the column contract is md5(search_text[header_chars:]) = chunk_md5, and a
 # re-chunk under the same node id must not leave the lexical lanes ranking
 # words the chunk no longer holds (review finding data-deploy-5, 2026-10-10).
-_UPSERT_NODE_TEXT_SQL = """INSERT INTO knowledge_nodes
+_UPSERT_NODE_TEXT_SQL = f"""INSERT INTO knowledge_nodes
    (node_id, project_id, label, node_type, content, content_hash,
     source_ir, created_at, updated_at, graph_id, status, confidence, search_text)
    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
    ON CONFLICT (node_id) DO UPDATE
-   SET content = $5, content_hash = $6, source_ir = $7, updated_at = $9,
+   SET content = {_MERGED_CONTENT_SQL}, content_hash = $6, source_ir = $7, updated_at = $9,
        search_text = CASE
            WHEN $13::text IS NOT NULL THEN $13::text
            WHEN knowledge_nodes.content->'chunk_md5' IS NOT DISTINCT FROM EXCLUDED.content->'chunk_md5'
@@ -203,6 +220,141 @@ class KnowledgeEdge:
     graph_id: str = ""
 
 
+# ── D-35 promotion helpers ────────────────────────────────────────────────────
+
+#: Relation of an entity-resolution edge (ADR-116 D-7).
+SAME_AS_RELATION = "same_as"
+#: Most partner labels one node keeps in ``content.aliases_reviewed``.
+ALIASES_REVIEWED_MAX = 50
+
+_EDGE_FOR_PROMOTION_SQL = (
+    "SELECT status, content, relation_type, source_id, target_id, project_id "
+    "FROM knowledge_edges WHERE edge_id = $1 FOR UPDATE"
+)
+# The row lock a node promotion holds until its UPDATE commits: a re-ingest
+# upsert of the same node waits, then merges its content over the review
+# (D-8), instead of being overwritten by the content read before it.
+_NODE_FOR_PROMOTION_SQL = (
+    "SELECT status FROM knowledge_nodes WHERE node_id = $1 FOR UPDATE"
+)
+_REVIEWED_ARRAY = (
+    "CASE WHEN jsonb_typeof(n.content->'aliases_reviewed') = 'array' "
+    "THEN n.content->'aliases_reviewed' ELSE '[]'::jsonb END"
+)
+# Each endpoint of an established same_as edge gets the other's label in
+# ``content.aliases_reviewed``: appended once (an exact duplicate or the
+# node's own label is skipped), at most ALIASES_REVIEWED_MAX entries. One
+# statement over both directions; a non-object content is left alone. Both
+# nodes must be in the edge's project ($3): an imported edge may name any
+# node id, and this must never write into, or read a label from, another
+# project.
+_COPY_REVIEWED_ALIASES_SQL = (
+    "UPDATE knowledge_nodes n SET content = jsonb_set(n.content, '{aliases_reviewed}', "
+    f"{_REVIEWED_ARRAY} || to_jsonb(p.label)), updated_at = now() "
+    "FROM (VALUES ($1::text, $2::text), ($2::text, $1::text)) AS pair(me, partner) "
+    "JOIN knowledge_nodes p ON p.node_id = pair.partner AND p.project_id = $3 "
+    "WHERE n.node_id = pair.me AND n.project_id = $3 "
+    "AND jsonb_typeof(n.content) = 'object' "
+    "AND p.label <> '' AND lower(p.label) <> lower(n.label) "
+    f"AND NOT ({_REVIEWED_ARRAY} ? p.label) "
+    f"AND jsonb_array_length({_REVIEWED_ARRAY}) < {ALIASES_REVIEWED_MAX}"
+)
+
+
+def _promotion_is_noop(
+    row: Any, evidence_refs: list[str] | None, confidence: float | None
+) -> bool:
+    """An established row promoted again with nothing new to record."""
+    return row["status"] == "established" and not evidence_refs and confidence is None
+
+
+def _reviewed_content(
+    content: Any, established_by: str, evidence_refs: list[str] | None
+) -> dict[str, Any]:
+    """``content`` (the row's fetched value, stamped in place) with
+    ``review`` set: the reviewer and the merged, deduplicated evidence refs."""
+    merged = content if isinstance(content, dict) else {}
+    review = merged.setdefault("review", {})
+    review["established_by"] = established_by
+    if evidence_refs:
+        prior = list(review.get("evidence_refs") or [])
+        review["evidence_refs"] = sorted(set(prior) | set(evidence_refs))
+    return merged
+
+
+def _promotion_sets(
+    merged: dict[str, Any], confidence: float | None
+) -> tuple[str, list[Any]]:
+    """The ``SET`` list of a promotion and its parameters (``$2`` onward)."""
+    updates = ["status='established'", "content = $2"]
+    params: list[Any] = [merged]
+    if confidence is not None:
+        updates.append("confidence = $3")
+        params.append(max(0.0, min(1.0, float(confidence))))
+    return ", ".join(updates), params
+
+
+# ── entity-resolution reads (ADR-116 D-7) ─────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class SemanticNodeRow:
+    """What entity resolution reads of one extracted semantic node."""
+
+    node_id: str
+    label: str
+    artifact_id: str
+    semantic_type: str
+    aliases: tuple[str, ...] = ()
+
+
+def _alias_array(key: str) -> str:
+    return (
+        f"CASE WHEN jsonb_typeof(content->'{key}') = 'array' "
+        f"THEN content->'{key}' ELSE '[]'::jsonb END"
+    )
+
+
+_SEMANTIC_NODES_SQL = (
+    "SELECT node_id, label, coalesce(content->>'artifact_id', '') AS artifact_id, "
+    "content->>'semantic_type' AS semantic_type, "
+    "ARRAY(SELECT jsonb_array_elements_text("
+    f"{_alias_array('aliases')} || {_alias_array('aliases_reviewed')})) AS aliases "
+    "FROM knowledge_nodes WHERE project_id = $1 AND graph_id = ANY($2::text[]) "
+    "AND node_id LIKE 'node-sem-%' AND jsonb_typeof(content) = 'object' "
+    "AND content ? 'semantic_type' AND content->>'kind' IS DISTINCT FROM 'chunk' "
+    "AND ($3::text[] IS NULL OR node_id = ANY($3::text[])) "
+    "ORDER BY node_id LIMIT $4"
+)
+_SAME_AS_PAIRS_SQL = (
+    "SELECT source_id, target_id FROM knowledge_edges "
+    "WHERE relation_type = 'same_as' "
+    "AND (source_id = ANY($1::text[]) OR target_id = ANY($1::text[]))"
+)
+
+
+def graph_members(project_id: str, graph_id: str) -> list[str]:
+    """The ``graph_id`` values a graph's rows carry: a named graph its id;
+    the project's default graph its id and the legacy ``''``."""
+    if not graph_id or graph_id == default_graph_id(project_id):
+        return ["", default_graph_id(project_id)]
+    return [graph_id]
+
+
+def _sorted_pair(a: str, b: str) -> tuple[str, str]:
+    return (a, b) if a <= b else (b, a)
+
+
+def _semantic_row(row: Any) -> SemanticNodeRow:
+    return SemanticNodeRow(
+        node_id=str(row["node_id"]),
+        label=str(row["label"] or ""),
+        artifact_id=str(row["artifact_id"] or ""),
+        semantic_type=str(row["semantic_type"] or ""),
+        aliases=tuple(str(a) for a in row["aliases"] or () if a),
+    )
+
+
 #: Postgres SQLSTATE of a unique violation (asyncpg ``UniqueViolationError``).
 _UNIQUE_VIOLATION = "23505"
 
@@ -244,7 +396,9 @@ class KnowledgeStore:
         """Initialize store with an asyncpg connection pool."""
         self._pool = pool
 
-    async def active_artifact_for(self, content_hash: str, project_id: str) -> str | None:
+    async def active_artifact_for(
+        self, content_hash: str, project_id: str
+    ) -> str | None:
         """The project's active artifact holding these bytes (per-project dedup)."""
         async with self._pool.acquire() as conn:
             return await conn.fetchval(
@@ -458,35 +612,22 @@ class KnowledgeStore:
         established row is an idempotent no-op returning True. The
         promotion records the human's evidence refs (merged, deduped) and
         optionally the settled confidence (only when provided — an absent
-        value keeps the extraction confidence, never invented).
+        value keeps the extraction confidence, never invented). The row is
+        locked from the read to the write (one transaction), so a concurrent
+        re-ingest is not overwritten with the content read before it.
         """
-        async with self._pool.acquire() as conn:
-            row = await conn.fetchrow(
-                "SELECT status FROM knowledge_nodes WHERE node_id = $1", node_id
-            )
+        async with self._pool.acquire() as conn, conn.transaction():
+            row = await conn.fetchrow(_NODE_FOR_PROMOTION_SQL, node_id)
             if row is None:
                 return False
+            if _promotion_is_noop(row, evidence_refs, confidence):
+                return True  # idempotent no-op, review untouched
             content = await conn.fetchval(
                 "SELECT content FROM knowledge_nodes WHERE node_id = $1", node_id
             )
-            merged = content if isinstance(content, dict) else {}
-            review = merged.setdefault("review", {})
-            review["established_by"] = established_by
-            if evidence_refs:
-                prior = list(review.get("evidence_refs") or [])
-                review["evidence_refs"] = sorted(set(prior) | set(evidence_refs))
-            if (
-                row["status"] == "established"
-                and not evidence_refs
-                and confidence is None
-            ):
-                return True  # idempotent no-op, review untouched
-            updates = ["content = $2"]
-            params: list[Any] = [merged]
-            if confidence is not None:
-                updates.append("confidence = $3")
-                params.append(max(0.0, min(1.0, float(confidence))))
-            sets = ", ".join(["status='established'"] + updates + ["updated_at=now()"])
+            merged = _reviewed_content(content, established_by, evidence_refs)
+            sets, params = _promotion_sets(merged, confidence)
+            sets += ", updated_at=now()"
             await conn.execute(
                 f"UPDATE knowledge_nodes SET {sets} WHERE node_id=$1",
                 node_id,
@@ -502,39 +643,37 @@ class KnowledgeStore:
         evidence_refs: list[str] | None = None,
         confidence: float | None = None,
     ) -> bool:
-        """D-35 promotion for edges (same semantics as establish_node)."""
-        async with self._pool.acquire() as conn:
-            row = await conn.fetchrow(
-                "SELECT status FROM knowledge_edges WHERE edge_id = $1", edge_id
-            )
+        """D-35 promotion for edges (same semantics as establish_node).
+
+        ``knowledge_edges`` has no ``updated_at`` column (0055), so the
+        promotion writes none (ADR-116 D-8: writing it failed every edge
+        promotion on Postgres with UndefinedColumn). Promoting a ``same_as``
+        edge also appends each endpoint's label to the other node's
+        ``content.aliases_reviewed`` in the same transaction (ADR-116 D-7),
+        which the graph retrieval lane matches beside ``content.aliases``.
+        """
+        async with self._pool.acquire() as conn, conn.transaction():
+            row = await conn.fetchrow(_EDGE_FOR_PROMOTION_SQL, edge_id)
             if row is None:
                 return False
-            content = await conn.fetchval(
-                "SELECT content FROM knowledge_edges WHERE edge_id = $1", edge_id
-            )
-            merged = content if isinstance(content, dict) else {}
-            review = merged.setdefault("review", {})
-            review["established_by"] = established_by
-            if evidence_refs:
-                prior = list(review.get("evidence_refs") or [])
-                review["evidence_refs"] = sorted(set(prior) | set(evidence_refs))
-            if (
-                row["status"] == "established"
-                and not evidence_refs
-                and confidence is None
-            ):
+            if _promotion_is_noop(row, evidence_refs, confidence):
                 return True  # idempotent no-op, review untouched
-            updates = ["content = $2"]
-            params: list[Any] = [merged]
-            if confidence is not None:
-                updates.append("confidence = $3")
-                params.append(max(0.0, min(1.0, float(confidence))))
-            sets = ", ".join(["status='established'"] + updates + ["updated_at=now()"])
+            merged = _reviewed_content(
+                row.get("content"), established_by, evidence_refs
+            )
+            sets, params = _promotion_sets(merged, confidence)
             await conn.execute(
                 f"UPDATE knowledge_edges SET {sets} WHERE edge_id=$1",
                 edge_id,
                 *params,
             )
+            if row.get("relation_type") == SAME_AS_RELATION:
+                await conn.execute(
+                    _COPY_REVIEWED_ALIASES_SQL,
+                    row.get("source_id"),
+                    row.get("target_id"),
+                    row.get("project_id"),
+                )
             return True
 
     async def truncate_nodes(
@@ -838,37 +977,34 @@ class KnowledgeStore:
         self,
         project_id: str,
         ir_type: str | None = None,
+        *,
+        status: str | None = "current",
     ) -> list[KnowledgeIRRow]:
-        """Return all IRs for a project.
+        """Return a project's IRs, oldest first; optional ``ir_type``.
 
-        Optional filter by ir_type.
+        ``status`` defaults to ``current``: a re-extraction marks the
+        artifact's earlier IRs ``superseded`` (ADR-116) and drops the rows
+        they wrote, so the bundle export, the dashboard and the verifiers
+        read only the IR each artifact stands on. ``status=None`` returns
+        every IR, whatever its status (the behaviour before 2026-11-12).
         """
+        params: list[Any] = [project_id]
+        clauses = ""
+        if ir_type:
+            params.append(ir_type)
+            clauses += f" AND ir_type = ${len(params)}"
+        if status is not None:
+            params.append(status)
+            clauses += f" AND COALESCE(status, 'current') = ${len(params)}"
         async with self._pool.acquire() as conn:
-            if ir_type:
-                rows = await conn.fetch(
-                    """SELECT ir_id, artifact_id, version, ir_type,
-                              content, content_hash, status, created_at
-                       FROM knowledge_ir
-                       WHERE artifact_id IN (
-                           SELECT artifact_id FROM knowledge_artifacts
-                           WHERE project_id = $1
-                       ) AND ir_type = $2
-                       ORDER BY created_at""",
-                    project_id,
-                    ir_type,
-                )
-            else:
-                rows = await conn.fetch(
-                    """SELECT ir_id, artifact_id, version, ir_type,
-                              content, content_hash, status, created_at
-                       FROM knowledge_ir
-                       WHERE artifact_id IN (
-                           SELECT artifact_id FROM knowledge_artifacts
-                           WHERE project_id = $1
-                       )
-                       ORDER BY created_at""",
-                    project_id,
-                )
+            rows = await conn.fetch(
+                "SELECT ir_id, artifact_id, version, ir_type, "
+                "content, content_hash, status, created_at "
+                "FROM knowledge_ir WHERE artifact_id IN ("
+                "SELECT artifact_id FROM knowledge_artifacts WHERE project_id = $1)"
+                f"{clauses} ORDER BY created_at",
+                *params,
+            )
             return [KnowledgeIRRow(**dict(r)) for r in rows]
 
     async def list_nodes(
@@ -1252,8 +1388,12 @@ class KnowledgeStore:
         project_id: str,
         model_name: str,
         limit: int = 20,
+        graph_id: str | None = None,
     ) -> list[tuple[str, float]]:
         """Cosine-nearest canonical nodes (project + model scoped).
+
+        ``graph_id`` (optional) keeps the nodes of that graph only; the
+        project's default graph also holds its legacy ``graph_id = ''`` rows.
 
         Exact scan ORDER BY ``embedding <=> :v`` — no ANN index on the
         untyped-dimension column (requires fixed dim). Expected table size at
@@ -1266,9 +1406,11 @@ class KnowledgeStore:
               JOIN knowledge_nodes n ON n.node_id = e.node_id
              WHERE e.model_name = $1
                AND n.project_id = $2
+               AND ($5::text[] IS NULL OR n.graph_id = ANY($5::text[]))
              ORDER BY distance ASC
              LIMIT $3
             """
+        graphs = None if graph_id is None else graph_members(project_id, graph_id)
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 sql,
@@ -1276,8 +1418,90 @@ class KnowledgeStore:
                 project_id,
                 limit,
                 self._vector_literal(embedding),
+                graphs,
             )
             return [(str(r["node_id"]), float(r["distance"])) for r in rows]
+
+    async def nearest_label_neighbours(
+        self,
+        queries: list[tuple[str, str, list[float]]],
+        *,
+        project_id: str,
+        model_name: str,
+        limit: int,
+        graph_id: str | None = None,
+    ) -> dict[str, list[tuple[str, float]]]:
+        """Entity resolution's neighbour search (ADR-116 D-7): for each
+        ``(node_id, artifact_id, vector)`` query, the ``limit`` nearest
+        vectors of ``model_name`` in the project (and graph), leaving out the
+        node itself and the nodes of its own artifact BEFORE the limit, so
+        close nodes of the same document cannot crowd out a cross-document
+        match. One statement for all queries (a LATERAL scan each)."""
+        if not queries:
+            return {}
+        sql = """
+            SELECT q.node_id AS query_id, m.node_id, m.distance
+              FROM unnest($1::text[], $2::text[], $3::text[]) AS q(node_id, artifact_id, vec)
+             CROSS JOIN LATERAL (
+                SELECT e.node_id, e.embedding <=> q.vec::vector AS distance
+                  FROM knowledge_node_embeddings e
+                  JOIN knowledge_nodes n ON n.node_id = e.node_id
+                 WHERE e.model_name = $4
+                   AND n.project_id = $5
+                   AND ($6::text[] IS NULL OR n.graph_id = ANY($6::text[]))
+                   AND n.node_id <> q.node_id
+                   AND (n.content->>'artifact_id') IS DISTINCT FROM q.artifact_id
+                 ORDER BY distance ASC
+                 LIMIT $7
+             ) m
+            """
+        graphs = None if graph_id is None else graph_members(project_id, graph_id)
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                sql,
+                [q[0] for q in queries],
+                [q[1] for q in queries],
+                [self._vector_literal(q[2]) for q in queries],
+                model_name,
+                project_id,
+                graphs,
+                limit,
+            )
+        found: dict[str, list[tuple[str, float]]] = {q[0]: [] for q in queries}
+        for r in rows:
+            found[str(r["query_id"])].append((str(r["node_id"]), float(r["distance"])))
+        return found
+
+    # ── Entity resolution reads (ADR-116 D-7) ────────────────────────────
+
+    async def list_semantic_nodes(
+        self,
+        project_id: str,
+        *,
+        graph_id: str,
+        node_ids: list[str] | None = None,
+        limit: int = 50_000,
+    ) -> list[SemanticNodeRow]:
+        """The extracted semantic nodes (``node-sem-*`` with
+        ``content.semantic_type``, never a chunk) of one project and graph,
+        ``node_ids`` only when given, at most ``limit`` in node-id order.
+        Aliases are ``content.aliases`` and ``content.aliases_reviewed``."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                _SEMANTIC_NODES_SQL,
+                project_id,
+                graph_members(project_id, graph_id),
+                node_ids,
+                limit,
+            )
+        return [_semantic_row(r) for r in rows]
+
+    async def same_as_pairs(self, node_ids: list[str]) -> set[tuple[str, str]]:
+        """Sorted ``(a, b)`` node pairs already linked by a ``same_as`` edge
+        (either tier), for pairs touching any of ``node_ids``."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(_SAME_AS_PAIRS_SQL, node_ids)
+        return {_sorted_pair(str(r["source_id"]), str(r["target_id"])) for r in rows}
 
     # ── Knowledge↔A2L Links ──────────────────────────────────────────────
 

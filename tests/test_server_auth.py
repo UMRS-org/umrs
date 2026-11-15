@@ -275,6 +275,7 @@ class TestCommandCoverage:
         "FILE",
         "WAIT_OUTPUT",
         "EXPORT_EMBEDDINGS",
+        "KNN",
         "MODEL_REGISTER",
         "MODEL_LIST",
         "MODEL_DOWNLOAD",

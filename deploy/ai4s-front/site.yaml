@@ -133,6 +133,13 @@ step_executor:
   nproc_limit: 8192                           # RLIMIT_NPROC counts every thread of rku00126 on a shared node
   workdir_root: /data1/rkp00101/rku00126/umrs_steps
   image_archive_dir: /data1/rkp00101/rku00126/umrs_models/images
+  # ADR-112 B2 (2026-11-12): the gated-run digests the converge writes for this
+  # server (mounted read-only from umrs_front_step_image_digests_dir/ai4s).
+  # Only the platform step image is listed; the allow-listed images above are
+  # not (no gated digests), so a gated proposal naming one refuses by name.
+  # user_account is not in modes_allowed here (that needs operator consent),
+  # so nothing proposes gated runs on this site yet.
+  image_digests: /etc/umrs/step-digests/image-digests.json
   helper_path: /data1/rkp00043/rku00126/ai4s-platform/umrs/deploy/_common/umrs_step_helper.py
   venue_script: /data1/rkp00043/rku00126/ai4s-platform/umrs/src/umrs/mini-rivault-llm/venue.sh
   # Same admin-curated images as rccs-front (ADR-074 D-7); archives + .id

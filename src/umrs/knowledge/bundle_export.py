@@ -1109,16 +1109,24 @@ class KnowledgeExportEngine:
         return pin if pin is not None else _pending_pin()
 
     async def _pin_from_node_embeddings(self, project_id: str) -> dict[str, Any] | None:
-        """Pin by aggregating knowledge_node_embeddings (0075) of this project's nodes."""
+        """Pin by aggregating knowledge_node_embeddings (0075) of this project's nodes.
+
+        Entity-resolution label vectors (model ``<embedder>#label``, ADR-116
+        D-7) are not a dense retrieval space and never become the pin, even
+        where they outnumber the chunk vectors.
+        """
+        from .entity_resolution import LABEL_MODEL_SUFFIX
+
         try:
             row = await self._store._pool.fetchrow(  # type: ignore[union-attr]
                 "SELECT kne.model_name, kne.dimension, COUNT(*) AS n "
                 "FROM knowledge_node_embeddings kne "
                 "JOIN knowledge_nodes kn ON kn.node_id = kne.node_id "
-                "WHERE kn.project_id = $1 "
+                "WHERE kn.project_id = $1 AND kne.model_name NOT LIKE '%' || $2 "
                 "GROUP BY kne.model_name, kne.dimension "
                 "ORDER BY n DESC LIMIT 1",
                 project_id,
+                LABEL_MODEL_SUFFIX,
             )
             if row is None:
                 return None

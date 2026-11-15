@@ -47,6 +47,9 @@ done
 echo "  Stopping RAG container..."
 podman stop umrs-rag 2>/dev/null || true
 podman rm -f umrs-rag 2>/dev/null || true
+# Knowledge ingest model service (ADR-116 amendment): no data of its own.
+podman stop umrs-docmodels 2>/dev/null || true
+podman rm -f umrs-docmodels 2>/dev/null || true
 
 # Stop legacy native RAG (PID-managed, from before containerization)
 if [[ -f "rag-service.pid" ]]; then

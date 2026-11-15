@@ -1,0 +1,754 @@
+{
+  "_about": "Golden wire vectors generated once from r4_contracts at ai4s-platform cd8d3c84 (U2.0 P0, before the move). Never regenerate from umrs_protocol: a changed vector is a wire change, reviewed as one.",
+  "handshake_hmac": {
+    "ENV_VAR": "UMRS_HANDSHAKE_HMAC_SECRET",
+    "MEMBERSHIPS_DOMAIN": "memberships-v1|",
+    "headers": {
+      "HEADER_HMAC": "X-Verified-HMAC",
+      "HEADER_IS_ADMIN": "X-Verified-Is-Admin",
+      "HEADER_MEMBERSHIPS_HMAC": "X-Verified-Memberships-HMAC",
+      "HEADER_PROJECT_ID": "X-Verified-Project-ID",
+      "HEADER_PROJECT_MEMBERSHIPS": "X-Verified-Project-Memberships",
+      "HEADER_USER_ID": "X-User-ID",
+      "HEADER_WORKFLOW_AUTHOR": "X-Verified-Workflow-Author",
+      "HEADER_WORKFLOW_AUTHOR_HMAC": "X-Verified-Workflow-Author-HMAC"
+    },
+    "sign_claims": [
+      {
+        "secret": "golden-secret-one",
+        "user_id": "alice",
+        "project_id": "proj-alpha",
+        "is_admin": true,
+        "hmac": "fbaf72c0877217099ede6dbd6e7470ef76524132f114387fa3a7d08bff619fea"
+      },
+      {
+        "secret": "golden-secret-one",
+        "user_id": "bob",
+        "project_id": "proj-beta",
+        "is_admin": false,
+        "hmac": "895122435e0b254a54d15ad90cf2b87031721055bee932822461f7dd05b5cbc5"
+      },
+      {
+        "secret": "golden-secret-one",
+        "user_id": "ユーザー",
+        "project_id": "proj-γ",
+        "is_admin": false,
+        "hmac": "4caef021c5bad8decd7f6cc685fd4f2f8db38fb5a57797228b38fbbe570f1f45"
+      },
+      {
+        "secret": "s3cr3t-with-ünïcode",
+        "user_id": "alice",
+        "project_id": "proj-alpha",
+        "is_admin": true,
+        "hmac": "2ba6f2c5aa6ff0ae96c6b792da22d5a5cc9d0da7d3fb58c715bdabc497353e01"
+      },
+      {
+        "secret": "s3cr3t-with-ünïcode",
+        "user_id": "bob",
+        "project_id": "proj-beta",
+        "is_admin": false,
+        "hmac": "a85bcf160716682fbbeec6b2e2954ea09f172b68b8afa0c63923f36132e9db04"
+      },
+      {
+        "secret": "s3cr3t-with-ünïcode",
+        "user_id": "ユーザー",
+        "project_id": "proj-γ",
+        "is_admin": false,
+        "hmac": "0a67170c01e8b3509bb648aa6821c570e2cd45c98aed3b99239f79b4b6c5c886"
+      }
+    ],
+    "sign_workflow_author_claim": [
+      {
+        "secret": "golden-secret-one",
+        "user_id": "alice",
+        "project_id": "proj-alpha",
+        "author": true,
+        "hmac": "a478b0fcc750330ffe17f1bdb89766dd9a11f1ec5f28035a4d910bb99dedaad9"
+      },
+      {
+        "secret": "golden-secret-one",
+        "user_id": "alice",
+        "project_id": "proj-alpha",
+        "author": false,
+        "hmac": "f45766ca566c4933c8b9d25e26e9d519ef552db82c780b290b81c60de7545c02"
+      },
+      {
+        "secret": "golden-secret-one",
+        "user_id": "bob",
+        "project_id": "proj-beta",
+        "author": true,
+        "hmac": "ea316f9ec1b2441b7e3ab39916a6277b747398947bbb20cc2c6de809a2043637"
+      },
+      {
+        "secret": "golden-secret-one",
+        "user_id": "bob",
+        "project_id": "proj-beta",
+        "author": false,
+        "hmac": "3fc56b34c2eb709f9e89595d9c4cf74f0a1f250734cf5bd08458cef4f65fa00e"
+      },
+      {
+        "secret": "golden-secret-one",
+        "user_id": "ユーザー",
+        "project_id": "proj-γ",
+        "author": true,
+        "hmac": "e826a6855eac737ce3e60c90f241fc5bae3a15229d18eaa7430855685a20f58d"
+      },
+      {
+        "secret": "golden-secret-one",
+        "user_id": "ユーザー",
+        "project_id": "proj-γ",
+        "author": false,
+        "hmac": "0eaaa3dc78389d15a5ee0836fb6dc566aff779c1b812b9f080a1efd6f792cfa3"
+      },
+      {
+        "secret": "s3cr3t-with-ünïcode",
+        "user_id": "alice",
+        "project_id": "proj-alpha",
+        "author": true,
+        "hmac": "6c82cebf53e0f73ee1b8149d7d8936eea9a5c8eb46adb9a2a9917d26eadc6a35"
+      },
+      {
+        "secret": "s3cr3t-with-ünïcode",
+        "user_id": "alice",
+        "project_id": "proj-alpha",
+        "author": false,
+        "hmac": "fc29473970dac596f551c02e440addca8d76f4304e0435d789610b8e891c7c94"
+      },
+      {
+        "secret": "s3cr3t-with-ünïcode",
+        "user_id": "bob",
+        "project_id": "proj-beta",
+        "author": true,
+        "hmac": "00607bbb387b9853e9eddcdc112135c11ffd7f377d3181445470a78a48e0d121"
+      },
+      {
+        "secret": "s3cr3t-with-ünïcode",
+        "user_id": "bob",
+        "project_id": "proj-beta",
+        "author": false,
+        "hmac": "76e7f7c29c74c22ca7a73f077c132b7ba6ecea9826d4e3d7c86d8c29c6ff7ebb"
+      },
+      {
+        "secret": "s3cr3t-with-ünïcode",
+        "user_id": "ユーザー",
+        "project_id": "proj-γ",
+        "author": true,
+        "hmac": "f0e9d09d4513757dbf736425596b1b12dc51136e4bee11b336ccb71769d5ab62"
+      },
+      {
+        "secret": "s3cr3t-with-ünïcode",
+        "user_id": "ユーザー",
+        "project_id": "proj-γ",
+        "author": false,
+        "hmac": "0633b3bba0eadfa0b8a3b90960c641808819e0620d4e4093e9310ed82e5ce124"
+      }
+    ],
+    "sign_memberships": [
+      {
+        "secret": "golden-secret-one",
+        "user_id": "alice",
+        "project_id": "proj-alpha",
+        "is_admin": true,
+        "memberships": [],
+        "hmac": "c581b51c5f58da3420282317e05883bd86639769887116e79dd2cb727c07905a"
+      },
+      {
+        "secret": "golden-secret-one",
+        "user_id": "alice",
+        "project_id": "proj-alpha",
+        "is_admin": true,
+        "memberships": [
+          "proj-alpha"
+        ],
+        "hmac": "0ef6a2a61fb0cb18e7c07c9647c8c35c7af4e999a4157bd4bb5161dc2b58bc21"
+      },
+      {
+        "secret": "golden-secret-one",
+        "user_id": "alice",
+        "project_id": "proj-alpha",
+        "is_admin": true,
+        "memberships": [
+          "proj-b",
+          "proj-a",
+          "proj-b",
+          " proj-c ",
+          ""
+        ],
+        "hmac": "6b718087730c49bb75f7f7af9e4f4bd038e5d38ed2acc7e284f1784ed3ec7e99"
+      },
+      {
+        "secret": "golden-secret-one",
+        "user_id": "alice",
+        "project_id": "proj-alpha",
+        "is_admin": true,
+        "memberships": "proj-b, proj-a ,proj-b",
+        "hmac": "a1b4aa4a041069e750d6611517346717444b3d9510f216045f4d7a52b23259ce"
+      },
+      {
+        "secret": "golden-secret-one",
+        "user_id": "bob",
+        "project_id": "proj-beta",
+        "is_admin": false,
+        "memberships": [],
+        "hmac": "f07c15004d930533687cde6ef6ed6fd9208b1ecc881c00ce14cbddbd9fcdc84f"
+      },
+      {
+        "secret": "golden-secret-one",
+        "user_id": "bob",
+        "project_id": "proj-beta",
+        "is_admin": false,
+        "memberships": [
+          "proj-alpha"
+        ],
+        "hmac": "f3047196636cc9c67d579d24d450876aed9c3b6fd7b4e1cd4edae008dbb07ff8"
+      },
+      {
+        "secret": "golden-secret-one",
+        "user_id": "bob",
+        "project_id": "proj-beta",
+        "is_admin": false,
+        "memberships": [
+          "proj-b",
+          "proj-a",
+          "proj-b",
+          " proj-c ",
+          ""
+        ],
+        "hmac": "70ab5fd9272edc2272d5ad7db1448f06d4c876a999b754a5324726b1d6bc8cd9"
+      },
+      {
+        "secret": "golden-secret-one",
+        "user_id": "bob",
+        "project_id": "proj-beta",
+        "is_admin": false,
+        "memberships": "proj-b, proj-a ,proj-b",
+        "hmac": "c4e3906c371ac3b3b4564f29480d381e958be592a43277884b960de1898a1c8a"
+      }
+    ],
+    "canonical_memberships": [
+      {
+        "input": null,
+        "output": ""
+      },
+      {
+        "input": "",
+        "output": ""
+      },
+      {
+        "input": [],
+        "output": ""
+      },
+      {
+        "input": [
+          "a"
+        ],
+        "output": "a"
+      },
+      {
+        "input": [
+          "b",
+          "a",
+          "b"
+        ],
+        "output": "a,b"
+      },
+      {
+        "input": "b, a ,,b",
+        "output": "a,b"
+      },
+      {
+        "input": [
+          "x,y",
+          " z "
+        ],
+        "output": "x,y,z"
+      }
+    ]
+  },
+  "protocol": {
+    "PROTOCOL_VERSION": "1.0",
+    "handshake_reply": [
+      {
+        "args": [],
+        "output": "READY!:v1.0"
+      },
+      {
+        "args": [
+          "1.2"
+        ],
+        "output": "READY!:v1.2"
+      }
+    ],
+    "parse_handshake_reply": [
+      {
+        "input": "READY!",
+        "output": [
+          true,
+          ""
+        ]
+      },
+      {
+        "input": "READY!:v1.0",
+        "output": [
+          true,
+          "1.0"
+        ]
+      },
+      {
+        "input": "READY!:v2.3",
+        "output": [
+          true,
+          "2.3"
+        ]
+      },
+      {
+        "input": "junk",
+        "output": [
+          false,
+          ""
+        ]
+      },
+      {
+        "input": "",
+        "output": [
+          false,
+          ""
+        ]
+      },
+      {
+        "input": "ready!",
+        "output": [
+          false,
+          ""
+        ]
+      },
+      {
+        "input": "READY!:1.0",
+        "output": [
+          false,
+          ""
+        ]
+      }
+    ],
+    "is_protocol_compatible": [
+      {
+        "server": "",
+        "client": null,
+        "output": true
+      },
+      {
+        "server": "1.0",
+        "client": null,
+        "output": true
+      },
+      {
+        "server": "1.7",
+        "client": null,
+        "output": true
+      },
+      {
+        "server": "2.0",
+        "client": null,
+        "output": false
+      },
+      {
+        "server": "0.9",
+        "client": null,
+        "output": false
+      },
+      {
+        "server": "2.1",
+        "client": "2.0",
+        "output": true
+      },
+      {
+        "server": "1.0",
+        "client": "2.0",
+        "output": false
+      }
+    ]
+  },
+  "errors": {
+    "ERROR_CODE_HEADER": "x-platform-error-code",
+    "known_error_codes": {
+      "a2l.bad_request": 400,
+      "a2l.conflict": 409,
+      "a2l.forbidden": 403,
+      "a2l.not_found": 404,
+      "adaptive.not_found": 404,
+      "artifacts.bad_request": 400,
+      "artifacts.not_found": 404,
+      "artifacts.unavailable": 503,
+      "asyncpgpool.unavailable": 503,
+      "auth.admin_required": 403,
+      "auth.bad_scheme": 401,
+      "auth.bad_token": 401,
+      "auth.caller_identity_required": 401,
+      "auth.gateway_identity_required": 401,
+      "auth.gateway_signature_rejected": 401,
+      "auth.missing_header": 401,
+      "auth.project_required": 401,
+      "auth.verified_project_mismatch": 401,
+      "auth.verified_project_required": 401,
+      "bundle.bad_request": 400,
+      "bundle.forbidden": 403,
+      "catalog.forbidden": 403,
+      "catalog.not_found": 404,
+      "catalog.unavailable": 503,
+      "catalog.unprocessable": 422,
+      "chatapi.bad_gateway": 502,
+      "chatapi.unavailable": 503,
+      "checkpoints.not_found": 404,
+      "companion.conflict": 409,
+      "companion.forbidden": 403,
+      "companion.gone": 410,
+      "companion.not_found": 404,
+      "companion.unauthorized": 401,
+      "companion.unavailable": 503,
+      "companion.unprocessable": 422,
+      "companionsessions.bad_request": 400,
+      "companionsessions.conflict": 409,
+      "companionsessions.identity_mismatch": 409,
+      "companionsessions.inbox_full": 409,
+      "companionsessions.invalid_action": 400,
+      "companionsessions.invalid_decision": 400,
+      "companionsessions.invalid_recipient": 409,
+      "companionsessions.invalid_reply": 400,
+      "companionsessions.invalid_value": 400,
+      "companionsessions.not_found": 404,
+      "companionsessions.receiver_refused": 409,
+      "companionsessions.replay_conflict": 409,
+      "companionsessions.unauthorized": 401,
+      "companionsessions.unavailable": 503,
+      "companionvenue.already_running": 409,
+      "companionvenue.bad_request": 400,
+      "companionvenue.conflict": 409,
+      "companionvenue.forbidden": 403,
+      "companionvenue.not_found": 404,
+      "companionvenue.provision_failed": 502,
+      "companionvenue.question_closed": 409,
+      "companionvenue.source_class_refused": 403,
+      "companionvenue.source_not_pushed": 409,
+      "companionvenue.unauthorized": 401,
+      "companionvenue.unavailable": 503,
+      "contextapi.not_found": 404,
+      "curve.disabled": 404,
+      "curve.key_unconfigured": 500,
+      "dashboard.not_found": 404,
+      "database.unavailable": 503,
+      "endpoints.bad_gateway": 502,
+      "endpoints.bad_request": 400,
+      "endpoints.cancellation_unachieved": 409,
+      "endpoints.conflict": 409,
+      "endpoints.failure": 500,
+      "endpoints.forbidden": 403,
+      "endpoints.not_found": 404,
+      "endpoints.not_implemented": 501,
+      "endpoints.provision_capped": 429,
+      "endpoints.unavailable": 503,
+      "evidence.not_found": 404,
+      "evidence.unavailable": 503,
+      "experiments.bad_request": 400,
+      "experiments.not_found": 404,
+      "experiments.unavailable": 503,
+      "files.auth_unavailable": 503,
+      "files.bucket_create_failed": 500,
+      "files.bucket_denied": 403,
+      "files.bucket_name_invalid": 400,
+      "files.bucket_registry_unavailable": 503,
+      "files.bucket_taken": 409,
+      "files.bucket_unreachable": 500,
+      "files.delete_failed": 500,
+      "files.download_failed": 500,
+      "files.filename_required": 400,
+      "files.job_not_found": 404,
+      "files.list_failed": 500,
+      "files.metadata_failed": 500,
+      "files.not_found": 404,
+      "files.presign_failed": 500,
+      "files.traversal": 400,
+      "files.upload_failed": 500,
+      "grants.bad_request": 400,
+      "grants.conflict": 409,
+      "grants.not_found": 404,
+      "grants.unauthorized": 401,
+      "grants.unavailable": 503,
+      "hpcaccess.allocation_not_at_site": 403,
+      "hpcaccess.allocation_not_linked": 403,
+      "hpcaccess.budget_exceeded": 403,
+      "hpcaccess.gate_refused": 403,
+      "hpcaccess.gate_version": 409,
+      "hpcaccess.grant_invalid": 422,
+      "hpcaccess.grant_not_found": 404,
+      "hpcaccess.intent_invalid": 422,
+      "hpcaccess.intent_used": 409,
+      "hpcaccess.lane_not_gated": 403,
+      "hpcaccess.ledger_unavailable": 503,
+      "hpcaccess.mode_undeclared": 403,
+      "hpcaccess.not_enrolled": 403,
+      "hpcaccess.person_required": 403,
+      "hpcaccess.project_not_allowed": 403,
+      "hpcaccess.signature_required": 428,
+      "intake.bad_request": 400,
+      "intake.conflict": 409,
+      "intake.forbidden": 403,
+      "intake.not_found": 404,
+      "jobs.attempt_not_found": 404,
+      "jobs.bad_request": 400,
+      "jobs.conflict": 409,
+      "jobs.forbidden": 403,
+      "jobs.manifest_missing": 404,
+      "jobs.not_found": 404,
+      "jobs.unavailable": 503,
+      "jobs.unprocessable": 422,
+      "knowledge.bad_request": 400,
+      "knowledge.failure": 500,
+      "knowledge.not_found": 404,
+      "knowledge.project_mismatch": 409,
+      "knowledge.raw_forbidden": 403,
+      "knowledge.raw_licence_required": 409,
+      "knowledge.raw_unacknowledged": 409,
+      "knowledge.unavailable": 503,
+      "knowledge2.bad_request": 400,
+      "knowledge2.failure": 500,
+      "knowledge2.graph_not_active": 400,
+      "knowledge2.source_kind_refused": 400,
+      "knowledge2.unavailable": 503,
+      "knowledge2.unknown_graph": 400,
+      "knowledge2.upload_too_large": 413,
+      "knowledge_guard.conflict": 409,
+      "knowledge_guard.forbidden": 403,
+      "knowledge_guard.not_found": 404,
+      "knowledge_guard.unavailable": 503,
+      "knowledgegraphs.bad_request": 400,
+      "knowledgegraphs.forbidden": 403,
+      "knowledgegraphs.not_found": 404,
+      "knowledgegraphs.unavailable": 503,
+      "knowledgemodel.bad_request": 400,
+      "knowledgemodel.not_found": 404,
+      "knowledgemodel.unavailable": 503,
+      "knowledgequery.bad_request": 400,
+      "knowledgequery.unavailable": 503,
+      "llm.bad_gateway": 502,
+      "llm.bad_request": 400,
+      "llm.gateway_timeout": 504,
+      "llm.unavailable": 503,
+      "loops.bad_request": 400,
+      "loops.conflict": 409,
+      "loops.forbidden": 403,
+      "loops.not_found": 404,
+      "loops.unavailable": 503,
+      "loops.unprocessable": 422,
+      "mcp.bad_request": 400,
+      "mcp.not_found": 404,
+      "mcp.trust_class_denied": 403,
+      "mcp.unavailable": 503,
+      "mcp.unprocessable": 422,
+      "models.bad_request": 400,
+      "models.conflict": 409,
+      "models.failure": 500,
+      "models.forbidden": 403,
+      "models.not_found": 404,
+      "models.unavailable": 503,
+      "models.version_not_found": 404,
+      "namespaces.not_found": 404,
+      "namespaces.unavailable": 503,
+      "ontology.conflict": 409,
+      "ontology.forbidden": 403,
+      "ontology.invalid": 400,
+      "ontology.not_found": 404,
+      "ops.bad_request": 400,
+      "ops.governance_unavailable": 503,
+      "ops.not_found": 404,
+      "ops.reload_unavailable": 503,
+      "ops.unprocessable": 422,
+      "pipelines.bad_spec": 400,
+      "pipelines.conflict": 409,
+      "pipelines.forbidden": 403,
+      "pipelines.not_found": 404,
+      "pipelines.rag_profile_not_found": 404,
+      "presign.expired": 403,
+      "presign.not_minted": 409,
+      "presign.out_of_scope": 403,
+      "proposals.conflict": 409,
+      "proposals.forbidden": 403,
+      "proposals.not_found": 404,
+      "proposals.unavailable": 503,
+      "provenance.bad_request": 400,
+      "provenance.forbidden": 403,
+      "provenance.not_found": 404,
+      "provider.unavailable": 503,
+      "rag.bad_request": 400,
+      "rag.forbidden": 403,
+      "rag.not_found": 404,
+      "rag.unavailable": 503,
+      "ragservice.bad_request": 400,
+      "ragservice.failure": 500,
+      "ragservice.not_found": 404,
+      "ragservice.unavailable": 500,
+      "recovery.not_found": 404,
+      "recovery.unavailable": 503,
+      "reflective.bad_request": 400,
+      "reflective.not_found": 404,
+      "routing.not_found": 404,
+      "scimem.bad_request": 400,
+      "scimem.not_found": 404,
+      "scimem.unavailable": 503,
+      "scopeidentity.unauthorized": 401,
+      "scopes.bad_request": 400,
+      "scopes.forbidden": 403,
+      "scopes.grant_missing": 403,
+      "scopes.invalid": 401,
+      "scopes.revoked": 401,
+      "scopes.unavailable": 503,
+      "secretbroker.bad_request": 400,
+      "secretbroker.forbidden": 403,
+      "secretbroker.not_found": 404,
+      "secretbroker.unauthorized": 401,
+      "session.archive_cascade_failed": 500,
+      "session.expired": 410,
+      "session.expired_or_not_found": 404,
+      "session.forbidden": 403,
+      "session.not_found": 404,
+      "session.store_unavailable": 503,
+      "sessionpolicy.forbidden": 403,
+      "sessionpolicy.invalid": 400,
+      "sessionpolicy.not_found": 404,
+      "sessionpolicy.unavailable": 503,
+      "sessionpolicy.web_choice_required": 400,
+      "sessionpolicy.widening_refused": 403,
+      "skills.bad_request": 400,
+      "skills.conflict": 409,
+      "skills.forbidden": 403,
+      "skills.merge_not_green": 403,
+      "skills.not_found": 404,
+      "skills.unavailable": 503,
+      "sourcegrants.bad_request": 400,
+      "sourcegrants.conflict": 409,
+      "sourcegrants.not_found": 404,
+      "sourcegrants.unauthorized": 401,
+      "sourcegrants.unavailable": 503,
+      "toolcache.bad_request": 400,
+      "toolcache.forbidden": 403,
+      "toolcache.not_found": 404,
+      "toolcache.unavailable": 503,
+      "traces.forbidden": 403,
+      "traces.not_found": 404,
+      "usage.unavailable": 503,
+      "usersources.bad_request": 400,
+      "usersources.failure": 500,
+      "usersources.not_found": 404,
+      "usersources.unauthorized": 401,
+      "usersources.unavailable": 503,
+      "vectors.not_found": 404,
+      "vectors.unavailable": 503,
+      "verification.bad_request": 400,
+      "verification.forbidden": 403,
+      "verification.unavailable": 503,
+      "verified.bad_request": 400,
+      "verified.forbidden": 403,
+      "verified.not_found": 404,
+      "verified.unauthorized": 401,
+      "vision.bad_request": 400,
+      "vision.not_found": 404,
+      "workflowauth.forbidden": 403,
+      "workflowauth.not_found": 404,
+      "workflowfork.bad_request": 400,
+      "workflowfork.not_found": 404,
+      "workflowfork.unavailable": 503,
+      "workflows.auto_commit_refused": 403,
+      "workflows.bad_gateway": 502,
+      "workflows.bad_request": 400,
+      "workflows.commit_unavailable": 503,
+      "workflows.conflict": 409,
+      "workflows.failure": 500,
+      "workflows.forbidden": 403,
+      "workflows.lane_unavailable": 409,
+      "workflows.not_found": 404,
+      "workflows.plan_expired": 409,
+      "workflows.plan_invalid": 403,
+      "workflows.plan_mismatch": 403,
+      "workflows.plan_required": 403,
+      "workflows.plan_stale": 409,
+      "workflows.policy_unavailable": 503,
+      "workflows.upload_too_large": 413,
+      "workflows2.bad_request": 400,
+      "workloadidentity.bad_request": 400,
+      "workloadidentity.not_found": 404,
+      "workloadidentity.unauthorized": 401,
+      "workloadidentity.unavailable": 503
+    },
+    "factories": [
+      {
+        "factory": "session",
+        "name": "not_found",
+        "message": "Session not found",
+        "detail": {
+          "session_id": "s-1"
+        },
+        "to_dict": {
+          "code": "session.not_found",
+          "message": "Session not found",
+          "http_status": 404,
+          "detail": {
+            "session_id": "s-1"
+          }
+        },
+        "to_http_parts": {
+          "status_code": 404,
+          "detail": "Session not found",
+          "headers": {
+            "x-platform-error-code": "session.not_found"
+          }
+        }
+      },
+      {
+        "factory": "auth",
+        "name": "missing_header",
+        "message": "Missing X-User-ID header",
+        "detail": {},
+        "to_dict": {
+          "code": "auth.missing_header",
+          "message": "Missing X-User-ID header",
+          "http_status": 401,
+          "detail": {}
+        },
+        "to_http_parts": {
+          "status_code": 401,
+          "detail": "Missing X-User-ID header",
+          "headers": {
+            "x-platform-error-code": "auth.missing_header"
+          }
+        }
+      },
+      {
+        "factory": "jobs",
+        "name": "conflict",
+        "message": "Job already exists",
+        "detail": {
+          "job_id": "j-9",
+          "attempt": 2
+        },
+        "to_dict": {
+          "code": "jobs.conflict",
+          "message": "Job already exists",
+          "http_status": 409,
+          "detail": {
+            "job_id": "j-9",
+            "attempt": 2
+          }
+        },
+        "to_http_parts": {
+          "status_code": 409,
+          "detail": "Job already exists",
+          "headers": {
+            "x-platform-error-code": "jobs.conflict"
+          }
+        }
+      }
+    ]
+  },
+  "hpc_gate": {
+    "GATE_SCRIPT": "umrs_gate.py"
+  }
+}

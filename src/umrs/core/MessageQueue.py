@@ -7,6 +7,7 @@ import random
 import shutil
 import socket
 import tempfile
+import threading
 import time
 
 from umrs.core.TaskCmdStatus import TaskCmd
@@ -44,6 +45,53 @@ def _resolve_default_data_port_range() -> DataPortRange:
 DATA_PORT_RANGE = _resolve_default_data_port_range()
 DATA_BASE_PORT = DATA_PORT_RANGE.base_port
 DEFAULT_NB_MSG = 10240
+
+# Client data PUSH socket: how long close() keeps flushing queued S3 URIs to
+# the server (upstream 8f9fe001). LINGER 0 dropped them, so an upload that
+# notified PROCESS_OBJECTS and closed at once lost the tail of its batch.
+DATA_LINGER_ENV = "UMRS_DATA_LINGER_MS"
+DEFAULT_DATA_LINGER_MS = 30_000
+
+
+def _data_linger_ms() -> int:
+    from umrs.shared.env_knobs import env_int
+
+    return env_int(DATA_LINGER_ENV, DEFAULT_DATA_LINGER_MS, lo=0, hi=600_000)
+
+
+# Server S3-event collection limits (review U1). A collector stops after this
+# many seconds whatever the stream does, and a PROCESS_OBJECTS count above
+# MAX_PROCESS_OBJECTS is refused: clients notify in batches of 8000
+# (umrs.client.upload_batching) and one stream cannot queue more than two
+# high-water marks anyway.
+S3_EVENTS_MAX_WAIT_ENV = "UMRS_S3_EVENTS_MAX_WAIT_S"
+DEFAULT_S3_EVENTS_MAX_WAIT_S = 300
+MAX_PROCESS_OBJECTS = 4 * DEFAULT_NB_MSG
+
+
+def s3_events_max_wait_s() -> int:
+    from umrs.shared.env_knobs import env_int
+
+    return env_int(S3_EVENTS_MAX_WAIT_ENV, DEFAULT_S3_EVENTS_MAX_WAIT_S, lo=1, hi=86_400)
+
+
+def _collect_stop_reason(last_received, timeout_s, deadline) -> str | None:
+    """Why an S3-event collector stops now, or None to keep reading."""
+    now = time.monotonic()
+    if timeout_s and now - last_received > timeout_s:
+        return f"no message for {timeout_s} s"
+    if now > deadline:
+        return f"{S3_EVENTS_MAX_WAIT_ENV} reached"
+    return None
+
+
+def _bounded_object_count(count: int) -> int:
+    """A PROCESS_OBJECTS count within 0..MAX_PROCESS_OBJECTS, else CMD_ERROR."""
+    if not 0 <= count <= MAX_PROCESS_OBJECTS:
+        raise MessageQueue._CmdError(
+            f"PROCESS_OBJECTS count {count} outside 0..{MAX_PROCESS_OBJECTS}"
+        )
+    return count
 
 # Sentinel for the control-loop dispatcher: continue the loop (never a parser result).
 _CONTINUE = object()
@@ -406,6 +454,9 @@ class MessageQueue:
         # Retained so close() can stop their background threads. Empty unless
         # UMRS_ZMQ_AUTH_TYPE is curve/session.
         self._zmq_authenticators: list = []
+        # Server data queues: one PROCESS_OBJECTS collector reads at a time
+        # (wait_for_s3_events); a ZMQ socket is not thread-safe.
+        self._s3_events_lock = threading.Lock()
 
         # Task 11: ZMQ file-transfer /tmp space guard
         self._check_tmp_disk_space()
@@ -490,21 +541,24 @@ class MessageQueue:
             self._zmq_authenticators.append(authenticator)
 
     def _initialize_data_queue(self):
+        # HWMs only apply to pipes created after they are set: set them before
+        # bind/connect (upstream 8f9fe001), else libzmq keeps its default 1000.
         if self.role == "server":
             # Server uses PULL socket to receive pushed data
             self.socket = self.context.socket(zmq.PULL)
+            self.socket.setsockopt(zmq.RCVHWM, self.max_msg)
             self._apply_socket_security(self.socket, server=True)
             bind_host = "127.0.0.1" if self.tunnel_mode else "*"
             self.socket.bind(f"tcp://{bind_host}:{self.port}")  # Data channel bind
-            self.socket.setsockopt(zmq.RCVHWM, self.max_msg)  # e.g. max queued messages
             self.set_timeouts(self.timeout, self.timeout)
         else:  # client
-            # Client uses PUSH socket to send data
+            # Client uses PUSH socket to send data; close() flushes queued URIs
+            # for up to UMRS_DATA_LINGER_MS.
             self.socket = self.context.socket(zmq.PUSH)
-            self.socket.setsockopt(zmq.LINGER, 0)  # Don't block on close/term
+            self.socket.setsockopt(zmq.LINGER, _data_linger_ms())
+            self.socket.setsockopt(zmq.SNDHWM, self.max_msg)
             self._apply_socket_security(self.socket, server=False)
             self.socket.connect(f"tcp://{self.server_ip}:{self.port}")
-            self.socket.setsockopt(zmq.SNDHWM, self.max_msg)  # e.g. max queued messages
             self.set_timeouts(self.timeout, self.timeout)
 
     def _initialize_control_queue(self):
@@ -582,6 +636,19 @@ class MessageQueue:
         except zmq.ZMQError as e:
             raise RuntimeError(f"ZMQ error while sending: {e}") from e
 
+    def _send_timeout_error(self) -> RuntimeError:
+        """The error for a send that hit SNDTIMEO (upstream 8f9fe001): on a
+        client data queue it names the port and SNDHWM, since a full server
+        data queue is the usual cause."""
+        if self.type != "data" or self.role != "client":
+            return RuntimeError("Timeout while sending message")
+        sndtimeo = self.socket.getsockopt(zmq.SNDTIMEO)
+        sndhwm = self.socket.getsockopt(zmq.SNDHWM)
+        return RuntimeError(
+            f"Data send timeout after {sndtimeo}ms on port {self.port} "
+            f"(SNDHWM={sndhwm}): the server data queue may be full or unreachable"
+        )
+
     def send_string(self, string, client_id=None):
         if self.debug:
             if self.type == "control":
@@ -629,7 +696,7 @@ class MessageQueue:
                 raise RuntimeError(f"Unknown queue type: {self.type}")
 
         except zmq.Again:
-            raise RuntimeError("Timeout while sending message") from None
+            raise self._send_timeout_error() from None
 
         except zmq.ZMQError as e:
             raise RuntimeError(f"ZMQ error while sending: {e}") from e
@@ -807,6 +874,8 @@ class MessageQueue:
                 except Exception as e:
                     logger.warning("Failed to close data socket: %s", e)
 
+        self._log_notify_total()
+
         # Close main socket
         try:
             self.socket.close()
@@ -939,7 +1008,9 @@ class MessageQueue:
         except ValueError:
             raise self._CmdError(f"{cmd} invalid count: {splited_msg[2]}")
         if cmd == TaskCmd.PROCESS_OBJECTS:
-            return self._process_object_cmd(client_id, count, zmq_sender_id)
+            return self._process_object_cmd(
+                client_id, _bounded_object_count(count), zmq_sender_id
+            )
         if cmd == TaskCmd.ENROLL_USER:
             self._refresh_auth_session(client_id, cmd)
         return self._process_file_cmd(
@@ -1050,6 +1121,7 @@ class MessageQueue:
         TaskCmd.UPLOAD_WORKFLOW: "_parse_upload_workflow",
         TaskCmd.WAIT_OUTPUT: "_parse_wait_output",
         TaskCmd.EXPORT_EMBEDDINGS: "_parse_simple_payload",
+        TaskCmd.KNN: "_parse_json_payload",
         TaskCmd.RECOMPUTE: "_parse_maintenance",
         TaskCmd.UPDATE: "_parse_maintenance",
         TaskCmd.CHECK: "_parse_maintenance",
@@ -1338,36 +1410,62 @@ class MessageQueue:
             extra.append(result[1])
 
     def wait_for_s3_events(self, nb_objects, debug=False, timeout_s=60):
-        """Block until new messages arrive, then read all available messages.
+        """Collect *nb_objects* S3 event messages from this data queue.
 
         Args:
             nb_objects: Number of S3 event messages to collect.
             debug: Enable debug printing.
-            timeout_s: Maximum wall-clock seconds to wait before returning
-                       with whatever messages have been collected so far.
-                       Default 60s.  Set to 0 or None for no limit.
+            timeout_s: Inactivity timeout (upstream 8f9fe001): seconds with
+                       no message before giving up. Each message resets it,
+                       so a slow but steady stream is not cut off early. Set
+                       to 0 or None for no inactivity limit.
+
+        Whatever the stream does, a collector stops after
+        ``UMRS_S3_EVENTS_MAX_WAIT_S`` (review U1): with the inactivity timeout
+        alone, a client pushing one URI per interval kept its collector, and
+        every client batched with it, open with no limit.
+
+        Concurrent callers (several PROCESS_OBJECTS batches of one client)
+        read one after the other, each a contiguous run of the stream; a
+        caller that waits longer than the same cap for its turn gets ``[]``.
 
         Returns:
             List of received message strings (may be shorter than nb_objects
-            if the timeout fires).
+            if a timeout fires).
         """
         if self.role != "server":
             raise PermissionError("Only server can call 'wait_for_s3_events'.")
 
-        messages = []
         logger.debug(
-            "Listening for %s new messages (timeout=%s)",
+            "Listening for %s new messages (inactivity_timeout=%s)",
             nb_objects,
             timeout_s,
         )
-        nb_received = 0
-        start = time.time()
-        while nb_received < nb_objects:
-            if timeout_s and (time.time() - start) > timeout_s:
+        max_wait_s = s3_events_max_wait_s()
+        if not self._s3_events_lock.acquire(timeout=max_wait_s):
+            logger.warning(
+                "wait_for_s3_events: data queue port %s busy for %s s, giving up",
+                self.port, max_wait_s,
+            )
+            return []
+        try:
+            return self._collect_s3_events(
+                nb_objects, timeout_s, time.monotonic() + max_wait_s
+            )
+        finally:
+            self._s3_events_lock.release()
+
+    def _collect_s3_events(self, nb_objects, timeout_s, deadline):
+        messages = []
+        last_received = time.monotonic()
+        while len(messages) < nb_objects:
+            stop = _collect_stop_reason(last_received, timeout_s, deadline)
+            if stop:
+                messages.extend(self._drain_buffered(nb_objects - len(messages)))
                 logger.warning(
-                    "wait_for_s3_events timed out after %s seconds (%s/%s received)",
-                    timeout_s,
-                    nb_received,
+                    "wait_for_s3_events: %s, %s/%s received",
+                    stop,
+                    len(messages),
                     nb_objects,
                 )
                 break
@@ -1377,9 +1475,23 @@ class MessageQueue:
                     "Received S3 event payload_bytes=%s", len(message.encode("utf-8"))
                 )
                 messages.append(message)
-                nb_received += 1
-
+                last_received = time.monotonic()
         return messages
+
+    def _drain_buffered(self, remaining):
+        """Up to *remaining* messages already buffered, without blocking."""
+        drained = []
+        old_recv = self.socket.RCVTIMEO
+        self.socket.RCVTIMEO = 0
+        try:
+            while len(drained) < remaining:
+                _, message = self.recv_string()
+                if not message:
+                    break
+                drained.append(message)
+        finally:
+            self.socket.RCVTIMEO = old_recv
+        return drained
 
     def _check_tmp_disk_space(self) -> None:
         """Guard against ZMQ file-transfer space exhaustion.
@@ -1802,6 +1914,26 @@ class MessageQueue:
 
         return reply
 
+    def request_knn(self, client_id, n, s3_object, bucket, subdir=None, *,
+                    query_name=None, timeout_ms=120_000):
+        """Send a KNN request and return the raw JSON reply (client role only).
+
+        *bucket* is the server's ``path_to_bucket``; *s3_object* the query
+        object's key in it; *subdir* (optional) limits the search to keys
+        under ``subdir/``; *query_name* (optional) is the name the reply
+        shows for the query. Raises TimeoutError after *timeout_ms*.
+        """
+        if self.role != "client":
+            raise PermissionError("Only client can call 'request_knn'")
+        body = {"n": n, "object": s3_object, "bucket": bucket}
+        if subdir:
+            body["subdir"] = subdir
+        if query_name:
+            body["query_name"] = query_name
+        return self.request_model_command(
+            client_id, TaskCmd.KNN, json.dumps(body), timeout_ms=timeout_ms
+        )
+
     def wait_for_new_data(self, client_id, full_bucket_name, timeout=60):
         if self.role != "client":
             raise PermissionError("Only client can call 'request_status'")
@@ -2024,12 +2156,32 @@ class MessageQueue:
         return reply
 
     def notify_s3(self, s3_object):
-        """Notify the server about a new S3 event."""
+        """Notify the server about a new S3 event.
+
+        Counts the messages (upstream 8f9fe001): a failed send logs which
+        URI, and which message of the stream, will not be indexed.
+        """
         if self.role != "client":
             raise PermissionError("notify_s3 can only be used by the client.")
 
-        # print(f"sending data to port: {self.port}")
-        self.send_string(s3_object)
+        attempt = getattr(self, "_notify_s3_sent", 0) + 1
+        try:
+            self.send_string(s3_object)
+        except RuntimeError as exc:
+            logger.error(
+                "notify_s3 failed for %s (message #%d): %s; object will NOT be indexed",
+                s3_object, attempt, exc,
+            )
+            raise
+        self._notify_s3_sent = attempt
+
+    def _log_notify_total(self) -> None:
+        """At close, how many notify_s3 messages this client data queue sent."""
+        if self.role == "client" and self.type == "data":
+            logger.info(
+                "notify_s3: closing data queue, %d message(s) sent in total on port %s",
+                getattr(self, "_notify_s3_sent", 0), self.port,
+            )
 
     def request_model_command(
         self, client_id, model_cmd, payload_json="", timeout_ms=300_000

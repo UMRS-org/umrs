@@ -47,6 +47,7 @@ from umrs.shared.warnings import (
     check_download_ready,
 )
 
+from ._ranged_download import DownloadAsk, stream_object
 from .typed_errors import PlatformError, raise_typed
 
 logger = logging.getLogger(__name__)
@@ -286,16 +287,26 @@ def get_project_s3_config(
     A project whose binding cannot be read is refused (503) rather than
     served from the default store — its data must not land in the wrong one.
     """
+    return bucket_store(None, project_id, default)
+
+
+def bucket_store(bucket: str | None, project_id: str | None, default: S3Config) -> S3Config:
+    """The store that holds *bucket* for the caller's project (ADR-115 D-3).
+
+    ``resolve_bucket_store`` is the one rule the runner uses too: a bound
+    project reads and writes its bound store, any other project *default*.
+    An unreadable binding answers 503 and never falls back.
+    """
     from umrs.shared.storage.project_storage import (
         ProjectStorageUnavailable,
-        project_s3_config,
+        resolve_bucket_store,
     )
 
     try:
-        bound = project_s3_config(project_id)
+        store = resolve_bucket_store(bucket, project_id, default=default)
     except ProjectStorageUnavailable as exc:
         raise_typed(PlatformError.projects("unavailable", str(exc)), cause=exc)
-    return bound if bound is not None else default
+    return store if store is not None else default
 
 
 def validate_key(key: str, project_id: str, *, warn_on_rename: bool = False) -> str:
@@ -871,8 +882,7 @@ async def _upload_to_owned_bucket(
     _require_owned_bucket(bucket, x_user_id)
     object_key = _raw_key(key or _safe_filename(file.filename or ""))
     content_type = file.content_type or "application/octet-stream"
-    config = get_s3_config()
-    s3_client = config.get_client()
+    s3_client = bucket_store(bucket, project_id, get_s3_config()).get_client()
     reader = _HashingReader(file.file)
     try:
         await asyncio.to_thread(
@@ -960,52 +970,34 @@ def _resolve_download_key(
     return key
 
 
-def _iter_body(obj, chunk_size: int = 8 * 1024 * 1024):
-    """Stream S3 body chunks; close when done."""
-    stream = obj["Body"]
-    try:
-        while chunk := stream.read(chunk_size):
-            yield chunk
-    finally:
-        stream.close()
+def _request_method(request: Request) -> str:
+    return request.method
 
 
-def _stream_object(s3_client, bucket_name: str, key: str):
-    """Fetch object header + body; map S3 errors to HTTP codes."""
-    from fastapi.responses import StreamingResponse
-
-    try:
-        try:
-            head = s3_client.head_object(Bucket=bucket_name, Key=key)
-        except ClientError as e:
-            raise_typed(
-                PlatformError.files("not_found", f"File not found: {key}"), cause=e
-            )
-        obj = s3_client.get_object(Bucket=bucket_name, Key=key)
-    except HTTPException:
-        raise
-    except ClientError as e:
-        logger.error(f"S3 error downloading file: {e}")
-        raise_typed(
-            PlatformError.files("download_failed", "Failed to download file"), cause=e
-        )
-
-    content_type = head.get("ContentType") or "application/octet-stream"
-    size = head.get("ContentLength")
-    filename = key.rsplit("/", 1)[-1] if "/" in key else key
-    headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
-    if size is not None:
-        headers["Content-Length"] = str(size)
-    return StreamingResponse(_iter_body(obj), media_type=content_type, headers=headers)
+def _download_ask(
+    method: Any, range_header: Any, if_range: Any, disposition: Any
+) -> DownloadAsk:
+    """The read options; non-string values (direct calls) mean "absent"."""
+    return DownloadAsk(
+        range_header=_header_str(range_header),
+        if_range=_header_str(if_range),
+        disposition=_header_str(disposition),
+        head_only=_header_str(method) == "HEAD",
+    )
 
 
-@router.get(
+@router.api_route(
     "/download/{path:path}",
+    methods=["GET", "HEAD"],
     summary="Stream a file from project storage (Phase-2l: no presigned URL exposure)",
     description=(
         "Stream the contents of an S3 object to the caller. The platform "
         "performs the S3 request internally (Phase 2l); never exposes "
-        "presigned URLs to external clients."
+        "presigned URLs to external clients. ADR-115 D-1: one byte range "
+        "(`Range: bytes=a-b | a- | -n`) answers 206, an unsatisfiable one "
+        "416; `If-Range` with another validator, several ranges or a "
+        "malformed one answer the full 200; `HEAD` answers the headers; "
+        "`?disposition=inline` applies to the media allowlist only."
     ),
 )
 async def download_file_stream(
@@ -1013,17 +1005,27 @@ async def download_file_stream(
     bucket: str | None = Query(
         None, description="Bucket name (defaults to configured bucket)"
     ),
+    disposition: str | None = Query(
+        None, description="`inline` for allowlisted media types; else attachment"
+    ),
     project_id: str = Depends(get_project_id),
     config: S3Config = Depends(get_project_s3_config),
     x_user_id: str | None = Header(None),
+    range_header: str | None = Header(None, alias="Range"),
+    if_range: str | None = Header(None, alias="If-Range"),
+    method: str = Depends(_request_method),
 ):
     """Stream an S3 object stored in the caller's project namespace, or from a
-    bucket the caller owns (ADR-079: personal/provisioned + ``-output``)."""
+    bucket the caller owns (ADR-079: personal/provisioned + ``-output``).
+
+    Authorization (allowlist, ``_require_owned_bucket``) runs before any S3
+    call; a ranged request never reaches the store before it passes."""
+    ask = _download_ask(method, range_header, if_range, disposition)
     bucket_name = bucket or config.bucket
     if bucket and bucket_name not in _cross_bucket_allowlist(config):
         _require_owned_bucket(bucket_name, x_user_id)
-        default = get_s3_config()
-        return _stream_object(default.get_client(), bucket_name, _raw_key(path))
+        store = bucket_store(bucket_name, project_id, get_s3_config())
+        return stream_object(store.get_client(), bucket_name, _raw_key(path), ask)
     if bucket_name not in _cross_bucket_allowlist(config):
         raise_typed(
             PlatformError.files(
@@ -1031,7 +1033,7 @@ async def download_file_stream(
             )
         )
     key = _resolve_download_key(path, bucket_name, project_id, config)
-    return _stream_object(config.get_client(), bucket_name, key)
+    return stream_object(config.get_client(), bucket_name, key, ask)
 
 
 @router.get(
@@ -1048,14 +1050,15 @@ async def list_owned_objects(
     x_user_id: str | None = Header(None),
 ) -> ListObjectsResponse:
     """Keys and sizes under *prefix*; the server lists, the caller never gets
-    a credential or a presigned URL."""
-    del project_id  # verifies the gateway identity tuple (strict mode)
+    a credential or a presigned URL. The store is the one the runner writes
+    the bucket in (ADR-115 D-3)."""
     _require_owned_bucket(bucket, x_user_id)
+    s3_client = bucket_store(bucket, project_id, get_s3_config()).get_client()
     kwargs: dict[str, Any] = {"Bucket": bucket, "Prefix": prefix.lstrip("/"), "MaxKeys": limit}
     if token:
         kwargs["ContinuationToken"] = token
     try:
-        page = await asyncio.to_thread(get_s3_config().get_client().list_objects_v2, **kwargs)
+        page = await asyncio.to_thread(s3_client.list_objects_v2, **kwargs)
     except ClientError as e:
         raise_typed(PlatformError.files("list_failed", f"Failed to list {bucket}"), cause=e)
     objects = [

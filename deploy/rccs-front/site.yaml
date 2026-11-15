@@ -170,6 +170,13 @@ step_executor:
   remote_enabled: true
   uploaded_code: refuse
   image_archive_dir: /lvs0/rccs-dmp/masaru.nagaso/umrs_models/images
+  # ADR-112 B2 (2026-11-12): the gated-run digests the converge writes for this
+  # server (mounted read-only from umrs_front_step_image_digests_dir/rccs).
+  # Only the platform step image is listed; the allow-listed images below are
+  # not (no gated digests), so a gated proposal naming one refuses by name.
+  # user_account is not in modes_allowed here (that needs operator consent),
+  # so nothing proposes gated runs on this site yet.
+  image_digests: /etc/umrs/step-digests/image-digests.json
   # D-7 allow-list (admin-curated, 2026-10-02): images a step may name in
   # routing_hints.image besides the platform image. Each must sit in
   # image_archive_dir as <name>-<tag>-aarch64.tar + .id (nodes never pull).

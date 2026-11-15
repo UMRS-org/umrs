@@ -75,6 +75,8 @@ from fastapi.routing import APIRoute
 from pydantic import BaseModel
 from test_surface_characterization import _iter_api_routes
 
+from r4_contracts import handshake_hmac
+
 # ── vocabulary ─────────────────────────────────────────────────────────────
 # Guards and resolvers are matched by the referenced object's
 # ``module.qualname``, never by bare name: a same-named helper elsewhere (a
@@ -210,8 +212,13 @@ UNSIGNED_HEADERS = frozenset({MEMBERSHIPS_HEADER, "x-user-role", "x-project-id"}
 # verifier-module callable whose own helpers reach one of these reads the list
 # signed; anywhere else a raw read stays a finding, because reaching the check
 # does not prove the verified value is the one used (a fallback branch).
+# Keyed from the function object (the ``_qualified`` formula, inlined: this
+# table precedes it), not a string: ADR-117 D-2 aliases the r4_contracts
+# modules to umrs_protocol, which changes ``__module__`` (U2.0 spec §3.1).
 MEMBERSHIP_VERIFIERS: dict[str, str] = {
-    "r4_contracts.handshake_hmac.verify_memberships": "memberships HMAC bound to the signed tuple",
+    f"{handshake_hmac.verify_memberships.__module__}.{handshake_hmac.verify_memberships.__qualname__}": (
+        "memberships HMAC bound to the signed tuple"
+    ),
 }
 
 # Dependencies whose project-named inputs are identity, not a requested
@@ -1061,6 +1068,17 @@ def test_vocabulary_names_real_functions():
     ]
     missing = [key for key in keys if key != HMAC_KEYWORD and not _importable(key)]
     assert not missing, f"no such function: {missing}"
+
+
+def test_membership_verifier_keys_are_their_functions_qualified_names():
+    """``_helper_refs`` matches a key only as the function's own
+    ``module.qualname``. A module alias (r4_contracts -> umrs_protocol,
+    ADR-117 D-2) changes ``__module__``, so a hand-written string key would
+    stop matching while it still imports."""
+    module, _, name = next(iter(MEMBERSHIP_VERIFIERS)).rpartition(".")
+    fn = getattr(importlib.import_module(module), name)
+    assert set(MEMBERSHIP_VERIFIERS) == {_qualified(handshake_hmac.verify_memberships)}
+    assert _qualified(fn) in MEMBERSHIP_VERIFIERS
 
 
 def _importable(qualname: str) -> bool:

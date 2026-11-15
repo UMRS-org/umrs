@@ -248,6 +248,17 @@ def bucket_owned_by(bucket: str, owner: str) -> bool:
     return registry is not None and _registered_owner(registry, bucket) == owner
 
 
+def accessible_bucket_entry(buckets_cfg, bucket: str, user: str):
+    """The bucket's server entry when *user* may read it — their own bucket
+    or one whose ADR-080 access list admits them — else None, so another
+    user's bucket reads exactly like a missing one. EXPORT_EMBEDDINGS and KNN
+    share this rule (review 2026-10-04; review U1)."""
+    entry = buckets_cfg.get(bucket)
+    if entry is None or not bucket_owned_by(bucket, user):
+        return None
+    return entry
+
+
 def bucket_purgeable_by(bucket: str, owner: str) -> bool:
     """Whether *owner* may purge *bucket*: the exact provisioned shape
     ``<owner>.<xp>.<alias>[-output]`` (a prefix alone let user ``first``

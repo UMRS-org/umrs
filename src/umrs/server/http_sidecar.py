@@ -941,6 +941,7 @@ def _create_app():
     from umrs.api.knowledge_attrition import router as knowledge_attrition_router
     from umrs.api.knowledge_graphs import router as knowledge_graphs_router
     from umrs.api.knowledge_lineage import router as knowledge_lineage_router
+    from umrs.api.knowledge_ontologies import router as knowledge_ontologies_router
     from umrs.api.knowledge_proposals import router as knowledge_proposals_router
     from umrs.api.knowledge_query import router as knowledge_query_router
     from umrs.api.knowledge_upload import router as knowledge_upload_router
@@ -1083,6 +1084,7 @@ def _create_app():
     app.include_router(jobs_router)
     app.include_router(knowledge_router)
     app.include_router(knowledge_graphs_router)
+    app.include_router(knowledge_ontologies_router)  # ADR-116 D-5
     app.include_router(knowledge_lineage_router)
     app.include_router(knowledge_proposals_router)
     app.include_router(knowledge_query_router)

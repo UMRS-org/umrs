@@ -6,8 +6,9 @@
 # wheel (worker, reply codec, pipeline SDK) and the hash-pinned core CPU tier
 # in step-requirements.txt (numpy, pandas, pyyaml, pillow,
 # opencv-python-headless 4.x, jsonschema). The worker's import closure is the
-# standard library plus umrs, so neither r4-contracts nor boto3 is here: a
-# staged step reads /work/in and writes /work/out, and holds no credential.
+# standard library plus umrs, so neither r4-contracts, umrs-protocol
+# (protocol/, ADR-117 D-2) nor boto3 is here: a staged step reads /work/in and
+# writes /work/out, and holds no credential.
 #
 # COPY-only on purpose: no RUN, so a cross-arch build needs no emulation and
 # the only thing that reaches the image is the prepared site-packages dir.

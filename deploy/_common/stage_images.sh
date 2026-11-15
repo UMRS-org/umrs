@@ -17,7 +17,8 @@
 #                          else the login node's)
 #     --build-context DIR  (default: <repo>/.. — the ai4s-platform checkout root;
 #                          the r4-mcp Dockerfile installs the unpublished
-#                          r4-contracts sibling from there)
+#                          r4-contracts sibling and umrs/protocol
+#                          (umrs-protocol) from there)
 #     --dockerfile FILE    (default: <build-context>/mcp-servers/Dockerfile)
 #     --if-missing         exit 0 without building when the archive already exists
 #     --print-path         print the archive path and exit

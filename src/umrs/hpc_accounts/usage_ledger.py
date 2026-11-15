@@ -278,6 +278,18 @@ def accepts(current: dict[str, Any] | None, new: dict[str, Any]) -> bool:
     return after > before or (after == before == 3)
 
 
+def _refuse_pending_over_final(unit: LedgerUnit, current: dict[str, Any] | None) -> None:
+    """A pending write over an attempt whose row is already final (settled,
+    ``not_submitted`` or ``unsettled``) would submit a job no row records and
+    no budget check sees, so it refuses and nothing is sent (review closure
+    2026-11-12). A pending after ``submitted`` is still dropped (K13a)."""
+    if current is not None and _rank(str(current.get("state"))) > _rank(SUBMITTED):
+        raise LedgerUnavailable(
+            f"the usage ledger cannot record attempt {unit.attempt_id}: it already "
+            f"ended ({current.get('state')}); a new submit needs a new attempt"
+        )
+
+
 def _with_amounts(
     row: dict[str, Any], cpus: int, gpus: int, elapsed: int
 ) -> dict[str, Any]:
@@ -495,6 +507,7 @@ class UsageLedger:
         project = unit.project_id
         with self._locked(unit, budget=bool(project)) as tx:
             current = self._current(tx, unit)
+            _refuse_pending_over_final(unit, current)
             row = _pending_row(unit, current, estimate)
             if not accepts(current, row):
                 return
@@ -901,7 +914,7 @@ class PgUsageLedger(UsageLedger):
         reaches the cluster (``hpcaccess.ledger_unavailable``)."""
         try:
             super().pending(unit, estimate, estimate_complete=estimate_complete)
-        except BudgetExceeded:
+        except (BudgetExceeded, LedgerUnavailable):
             raise
         except Exception as exc:
             raise LedgerUnavailable(

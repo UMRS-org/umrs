@@ -16,7 +16,7 @@ compared them. Consolidation surfaced five real defects:
 | Model root pointed at RCCS's `/lvs0/dne1/rccs-dmp` (no such path there) | octopus |
 | `harness_probe.sh` probed bdrt's partitions `spark`/`spark-double` | octopus |
 | `health_check_server.sh` asserted `cfg.name == "rccs-cloud"`, so the site-config check could never pass | bdrt, octopus |
-| Missing r4-contracts install in `setup_server.sh` | bdrt, octopus |
+| Missing r4-contracts install in `setup_server.sh` (2026-11-13: it now installs `protocol/` (umrs-protocol) first, both from local paths only, and fails when either is missing instead of falling back to a package index) | bdrt, octopus |
 
 See [ADR-019](../../../docs/adr/019-deployment-tree-consolidation.md).
 

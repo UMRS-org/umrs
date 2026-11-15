@@ -14,25 +14,73 @@ Exit 0 and one line per check on success; the first failure raises.
 
 from __future__ import annotations
 
+import hashlib
 import importlib
 import sys
 import time
+from pathlib import Path
 
 # Import names of the libraries the server process and its modality loaders
 # import. A missing or ABI-broken wheel fails here, not at the first request.
 LIBRARIES = (
-    "zmq", "boto3", "PIL", "psycopg2", "asyncpg", "pandas", "tabulate",
-    "diskcache", "jsonschema", "httpx", "requests", "yaml", "fastapi",
-    "uvicorn", "multipart", "jose", "torch", "torchvision", "transformers",
-    "sentence_transformers", "sklearn", "spacy", "langchain",
-    "langchain_community", "langchain_openai", "bentoml", "cv2", "sysv_ipc",
-    "pypdf", "pptx", "rich",
+    "zmq",
+    "boto3",
+    "PIL",
+    "psycopg2",
+    "asyncpg",
+    "pandas",
+    "tabulate",
+    "diskcache",
+    "jsonschema",
+    "httpx",
+    "requests",
+    "yaml",
+    "fastapi",
+    "uvicorn",
+    "multipart",
+    "jose",
+    "torch",
+    "torchvision",
+    "transformers",
+    "sentence_transformers",
+    "sklearn",
+    "spacy",
+    "langchain",
+    "langchain_community",
+    "langchain_openai",
+    "bentoml",
+    "cv2",
+    "sysv_ipc",
+    "pypdf",
+    "pptx",
+    "rich",
+    # ADR-116 D-9 (umrs[kg-ingest]): Docling's converter and PDF pipeline
+    # options, and GLiNER. Both run on CPU torch, so the CPU variant imports
+    # them too. Their weights are bundled at build time (2026-11-13; see
+    # check_bundled_ingest_models) unless UMRS_BUNDLE_INGEST_MODELS=0.
+    "docling",
+    "docling.document_converter",
+    "docling.datamodel.pipeline_options",
+    "gliner",
+    # GLiNER staging converts the DeBERTa-v3 spm.model tokenizer, which needs
+    # protobuf; without it `ingest_models stage gliner` fails in the image.
+    "google.protobuf",
 )
 
 # umrs modules on the server's boot path and the embedding modality loader.
-UMRS_MODULES = ("umrs.inference.loading", "umrs.server.main", "umrs.knowledge.text_embedder")
+UMRS_MODULES = (
+    "umrs.inference.loading",
+    "umrs.server.main",
+    "umrs.knowledge.text_embedder",
+    "umrs.knowledge.ingest_models",
+)
 
 SPACY_MODEL = "en_core_web_sm"
+
+# Dockerfile.server's ingest-models stage writes the notice only when it
+# bundled the models (UMRS_BUNDLE_INGEST_MODELS=1).
+BUNDLED_MODELS = "/opt/umrs/models"
+INGEST_NOTICE = "NOTICE-ingest-models.txt"
 
 
 def _timed(label: str, func) -> None:
@@ -59,10 +107,34 @@ def check_spacy_model() -> None:
     assert len(sentences) == 2, f"expected 2 sentences, got {len(sentences)}"
 
 
+def check_bundled_ingest_models(root: str = BUNDLED_MODELS) -> str:
+    """With the ingest bundle built in, both directories pass the staged check
+    the understand stage uses (``ingest_models.bundle_status``); a bundle that
+    would always fall back fails the build instead."""
+    from umrs.knowledge import ingest_models
+
+    return ingest_models.bundle_status(root)
+
+
+def check_protocol_alias() -> str:
+    """One gate ships (ADR-117 D-2, U2.0b): ``r4_contracts.hpc_gate`` IS the
+    ``umrs_protocol`` module, and ``gate_sha256()`` hashes that module's file,
+    so the sha UMRS stores per HPC account is the bytes this image runs."""
+    import r4_contracts.hpc_gate as alias
+    import umrs_protocol.hpc_gate as gate
+
+    assert alias is gate, f"r4_contracts.hpc_gate is {alias.__name__}, not umrs_protocol's"
+    digest = hashlib.sha256(Path(gate.__file__).read_bytes()).hexdigest()
+    assert gate.gate_sha256() == digest, "gate_sha256() does not hash umrs_protocol/hpc_gate.py"
+    return digest
+
+
 def main() -> int:
     check_imports(LIBRARIES)
     check_imports(UMRS_MODULES)
+    print(f"ok  umrs_protocol gate alias (sha256 {check_protocol_alias()})", flush=True)
     _timed(f"spacy.load({SPACY_MODEL!r}) + sentencizer", check_spacy_model)
+    print(f"ok  ingest models: {check_bundled_ingest_models()}", flush=True)
     print("server image smoke: PASS", flush=True)
     return 0
 

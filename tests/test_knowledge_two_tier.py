@@ -24,6 +24,9 @@ class _FakeConn:
     async def execute(self, sql, *_params):
         self.last_sql = sql
 
+    def transaction(self):  # asyncpg's Connection.transaction(): an async context
+        return self
+
     async def __aenter__(self):
         return self
 

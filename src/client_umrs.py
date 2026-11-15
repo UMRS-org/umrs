@@ -17,6 +17,7 @@ from umrs.cli.completion import (
     print_completion_script,
     uninstall_completion,
 )
+from umrs.client import knn as knn_client
 from umrs.client.control_api import UMRSControlAPI
 from umrs.client.control_commands import (
     MODEL_SCOPE_CHOICES,
@@ -46,6 +47,12 @@ from umrs.client.download_results import (
     parse_process_objects_readiness,
 )
 from umrs.client.metadata import check_and_build_metadata
+from umrs.client.upload_batching import (
+    BatchedNotifier,
+    collect_upload_files,
+    record_uploaded,
+    report_nothing_uploaded,
+)
 from umrs.client.warnings_cli import emit_cli_warning
 from umrs.core.TaskCmdStatus import TaskCmd
 from umrs.shared.auth import create_auth_context_from_request
@@ -416,6 +423,7 @@ def _handle_info(args):
         "update",
         "check",
         "export_embeddings",
+        "knn",
         "job *",
         "endpoint *",
         "workflow *",
@@ -6166,6 +6174,127 @@ def _action_export_embeddings(ctx):
     return 0
 
 
+class _KnnCliError(Exception):
+    """A ``knn`` invocation that cannot be sent (message printed as an error)."""
+
+
+def _client_s3cfg_path(s3_configuration_file):
+    """The bucket's s3cfg, or the container default when it is absent."""
+    expanded = os.path.expanduser(s3_configuration_file)
+    default_docker_s3cfg = get_default_docker_s3cfg()
+    if not os.path.exists(expanded) and os.path.exists(default_docker_s3cfg):
+        return default_docker_s3cfg
+    return expanded
+
+
+def _profile_minio_override(ctx):
+    """The profile's minio_url when a profile file was given (-c), else None.
+
+    A remote client cannot reach the localhost endpoint a server-generated
+    s3cfg may name. Only an explicit profile overrides it, so use_https=True
+    in the .s3cfg is not replaced by an http:// URL from a default profile.
+    """
+    connection = getattr(ctx, "connection", None)
+    if connection is None or getattr(connection, "profile_name", None) is None:
+        return None
+    return getattr(connection, "minio_url", None) or None
+
+
+def _knn_target(ctx):
+    """``(bucket_alias, subdir, entry, username, file_path)`` for ``knn``."""
+    args = ctx.args
+    bucket_alias, subdir = decompose_bucket_alias_arg(args.bucket_alias)
+    entry = ctx.buckets_cfg.get(bucket_alias)
+    if entry is None:
+        raise _KnnCliError(f"Bucket alias not found: {bucket_alias}")
+    username = getattr(args, "username", None) or (
+        ctx.user.get("username") if isinstance(ctx.user, dict) else None
+    )
+    if not username:
+        raise _KnnCliError("No username provided and none found in config")
+    file_path = os.path.abspath(args.image_path)
+    if not os.path.isfile(file_path):
+        raise _KnnCliError(f"File not found: {file_path}")
+    return bucket_alias, subdir, entry, username, file_path
+
+
+def _knn_s3(ctx, entry):
+    """The S3 client the query image goes up with (the bucket's s3cfg)."""
+    s3, _ = connect_to_s3(
+        _client_s3cfg_path(entry.s3_configuration_file),
+        endpoint_url_override=_profile_minio_override(ctx),
+    )
+    return s3
+
+
+def _knn_error(args, message):
+    print(api_json(status="error", action="knn", message=message, output_format=args.output))
+    return 1
+
+
+def _knn_print(args, bucket_alias, response):
+    """The server's summary (text) or the whole reply (``--output json``)."""
+    if response.get("status") != "ok":
+        return _knn_error(args, response.get("message", "Server error"))
+    if args.output != "json":
+        print(response.get("summary", ""))
+        return 0
+    payload = {k: v for k, v in response.items() if k != "status"}
+    payload["path_to_bucket"] = payload.pop("bucket", None)
+    print(api_json(action="knn", bucket=bucket_alias, output_format="json", **payload))
+    return 0
+
+
+def _action_knn(ctx):
+    """Upload a local image, then ask the server for its k nearest neighbours
+    in the bucket (port of upstream 487e3efb / e04b3d4e / bd0e6bc1).
+
+    The query goes up under a reserved unique key and is removed after the
+    reply (``umrs.client.knn``); the reply names it as the user did.
+    """
+    args = ctx.args
+    try:
+        bucket_alias, subdir, entry, username, file_path = _knn_target(ctx)
+        bucket = entry.path_to_bucket
+        with knn_client.uploaded_query(_knn_s3(ctx, entry), bucket, file_path,
+                                       subdir) as s3_key:
+            response = UMRSControlAPI(ctx.control_mq, username).knn(
+                args.n, s3_key, bucket, subdir=subdir or None,
+                query_name=knn_client.query_name(file_path, subdir),
+            )
+        return _knn_print(args, bucket_alias, response)
+    except _KnnCliError as exc:
+        return _knn_error(args, str(exc))
+    except Exception as exc:  # noqa: BLE001 — every failure is one error line
+        if args.verbose:
+            traceback.print_exc()
+        return _knn_error(args, str(exc))
+    finally:
+        ctx.control_mq.close()
+
+
+def _add_knn_parser(subparsers):
+    """``umrs knn <n> <image_path> <bucket_alias[/subdir]> [username]``."""
+    knn_p = subparsers.add_parser(
+        "knn",
+        help="Find the n nearest neighbours of a local image in a bucket's embeddings",
+    )
+    knn_p.add_argument("n", type=int, help="Number of nearest neighbours to return")
+    knn_p.add_argument("image_path", help="Local image to use as the query")
+    knn_p.add_argument(
+        "bucket_alias",
+        help=(
+            "Bucket alias from the client configuration; 'alias/subdir' uploads the "
+            "query under subdir/ and searches only objects under it"
+        ),
+    )
+    knn_p.add_argument(
+        "username",
+        nargs="?",
+        help="Configured username owning the bucket (defaults to config if omitted)",
+    )
+
+
 def _action_s3_transfer(ctx):
     """Handle upload_file, upload_dir, and download_results actions."""
     args = ctx.args
@@ -6221,25 +6350,9 @@ def _action_s3_transfer(ctx):
         ctx.control_mq.close()
         return 1
 
-    expanded_cfg = os.path.expanduser(s3_configuration_file)
-    default_docker_s3cfg = get_default_docker_s3cfg()
-    if not os.path.exists(expanded_cfg) and os.path.exists(default_docker_s3cfg):
-        expanded_cfg = default_docker_s3cfg
-
-    # Use the profile's minio_url to override the s3cfg host_base when the
-    # client is connecting remotely (the server-generated s3cfg may contain a
-    # localhost address that is unreachable from the client machine).
-    # Only apply when a profile file was explicitly given (-c flag), so we
-    # don't override use_https=True in .s3cfg with http:// from the profile.
-    endpoint_override = None
-    if hasattr(ctx, "connection") and ctx.connection is not None:
-        if getattr(ctx.connection, "profile_name", None) is not None:
-            profile_minio = getattr(ctx.connection, "minio_url", None)
-            if profile_minio:
-                endpoint_override = profile_minio
-
     s3, bucket_location = connect_to_s3(
-        expanded_cfg, endpoint_url_override=endpoint_override
+        _client_s3cfg_path(s3_configuration_file),
+        endpoint_url_override=_profile_minio_override(ctx),
     )
 
     if args.action == "download_results":
@@ -6397,81 +6510,36 @@ def _action_s3_transfer(ctx):
             print(f"Error: {path} is not a valid directory.")
             return [], [], True
 
+        # Recursively walk *path* so deeply nested data (e.g. the opossum
+        # ``opossum_NNN_X/opossumX/Schedule/YYYYMMDD/HH/*.mp4`` hierarchy) is
+        # uploaded; each file's relative directory joins its S3 key prefix.
+        entries, nb_files_seen, broken_symlinks = collect_upload_files(path, subdir)
+        # The notifier counts each URI the data queue accepted and sends
+        # PROCESS_OBJECTS in batches, and still on abort (plan U1 A3).
+        notifier = BatchedNotifier(
+            data_mq,
+            lambda count, block: _notify_after_upload(username, count, blocking=block),
+        )
         s3_key_list = []
         file_list = []
-        nb_objects = 0
-        # Recursively walk *path* so deeply nested data (e.g. the
-        # opossum ``opossum_NNN_X/opossumX/Schedule/YYYYMMDD/HH/*.mp4``
-        # hierarchy) is uploaded. Each file's relative directory becomes
-        # part of the S3 key prefix, preserving the camera/Schedule date
-        # hierarchy expected by the workflow step.
-        norm_path = os.path.abspath(path)
-        nb_files_seen = 0
-        broken_symlinks = []
-        for root, _dirs, files in os.walk(norm_path):
-            for fname in files:
-                nb_files_seen += 1
-                file_path = os.path.join(root, fname)
-                if not os.path.isfile(file_path):
-                    if os.path.islink(file_path):
-                        broken_symlinks.append(
-                            f"{file_path} -> {os.readlink(file_path)}"
-                        )
-                    continue
-
-                rel_dir = os.path.relpath(root, norm_path)
-                if rel_dir in (".", ""):
-                    file_subdir = subdir
-                elif subdir:
-                    file_subdir = f"{subdir}/{rel_dir}"
-                else:
-                    file_subdir = rel_dir
-
+        with notifier.flushing(blocking=blocking):
+            for file_path, file_subdir in entries:
                 s3_key, nb_sent, _notify_ok = process_file(
                     s3,
                     full_bucket_name,
                     file_subdir,
                     file_path,
                     modality,
-                    data_mq,
+                    notifier,
                     metadata_args,
                     username,
                     notify_server=False,
                 )
-                if s3_key:
-                    if isinstance(s3_key, list):
-                        s3_key_list.extend(s3_key)
-                        assert len(s3_key) == nb_sent
-                        file_list.extend([file_path] * nb_sent)
-                    else:
-                        s3_key_list.append(s3_key)
-                        file_list.append(file_path)
-                    nb_objects += nb_sent
+                record_uploaded(s3_key, nb_sent, file_path, s3_key_list, file_list)
 
-        notify_ok = True
-        if nb_objects > 0:
-            notify_ok = _notify_after_upload(username, nb_objects, blocking=blocking)
-        elif nb_files_seen == 0:
-            print(f"Error: directory '{path}' contains no files to upload.")
-        elif broken_symlinks:
-            print(
-                f"Error: none of the {nb_files_seen} entries in '{path}' "
-                "could be uploaded because they are broken symlinks "
-                "(their targets do not exist):"
-            )
-            for link in broken_symlinks:
-                print(f"  - {link}")
-            print(
-                "Re-stage the input files so the symlinks point at existing "
-                "targets, then retry."
-            )
-        else:
-            print(
-                f"Error: found {nb_files_seen} file(s) in '{path}' but none "
-                f"were accepted for modality '{modality}'. Check that the "
-                "files match the expected type for this modality."
-            )
-        return s3_key_list, file_list, notify_ok
+        if notifier.total == 0:
+            report_nothing_uploaded(path, modality, nb_files_seen, broken_symlinks)
+        return s3_key_list, file_list, notifier.ok
 
     def download_results_fn(full_bucket_name, modality, subdir):
         effective_username = args.username
@@ -6928,6 +6996,7 @@ _ACTION_HANDLERS = {
     "check": _action_maintenance,
     "reload": _action_maintenance,
     "export_embeddings": _action_export_embeddings,
+    "knn": _action_knn,
 }
 
 
@@ -7551,6 +7620,9 @@ def main():
         nargs="?",
         help="Configured username owning the bucket (defaults to config if omitted)",
     )
+
+    # === k nearest neighbours of a local image (server-side pgvector) ===
+    _add_knn_parser(subparsers)
 
     # --- Model registry commands ---
     model_p = subparsers.add_parser(
@@ -8342,6 +8414,7 @@ def main():
             "update",
             "reload",
             "export_embeddings",
+            "knn",
         }
         or workflow_bucket_needs_config
         or status_needs_config

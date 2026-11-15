@@ -12,11 +12,17 @@ requires-python = ">=3.10"
 # (``umrs[client]``) stays small. Heavy transport/storage/server dependencies
 # live in the extras below. ``jsonschema`` is required at import time by the
 # shared config loaders used by both client and server.
-# ``r4-contracts`` is stdlib-only shared DTOs; foundation modules (skills,
-# recipes, security, jobs/provenance) import it at module load. From a source
-# checkout install it editable alongside umrs: ``pip install -e ../r4-contracts``.
+# ``umrs-protocol`` (this repo's ``protocol/``) is the stdlib-only wire
+# protocol, handshake signing, error codes and HPC gate (ADR-117 D-2).
+# ``r4-contracts`` is now an alias layer over it for those modules
+# (``r4_contracts.<m> is umrs_protocol.<m>``) plus the stdlib-only DTOs umrs
+# still imports by that name until U3 S5; foundation modules (skills, recipes,
+# security, jobs/provenance) import it at module load. Neither is published
+# (PyPI holds only 0.0.0 name reservations): from a source checkout install
+# both editable alongside umrs: ``pip install -e ../protocol -e ../../r4-contracts``.
 dependencies = [
     "jsonschema>=4.18",  # referencing (ADR-105 S1 validation imports it)
+    "umrs-protocol>=0.2.0rc4",
     "r4-contracts>=0.1.0",
 ]
 
@@ -85,6 +91,20 @@ server = [
     "sysv_ipc",
     "pypdf>=4.0",
     "python-pptx>=1.0",
+    # ADR-116 D-9: Docling and GLiNER for the knowledge understand stage.
+    "umrs[kg-ingest]",
+]
+# Knowledge ingest v2 (ADR-116 D-1/D-3): layout-aware PDF parsing (Docling)
+# and zero-shot entity tagging (GLiNER). Imports are lazy; the weights are
+# staged by `python -m umrs.knowledge.ingest_models stage docling|gliner`,
+# never downloaded at runtime and never bundled into the image.
+kg-ingest = [
+    "docling>=2.150",
+    "gliner>=0.2.30",
+    # GLiNER's DeBERTa-v3 backbone ships only spm.model: transformers converts
+    # it to a fast tokenizer through SentencePieceExtractor, which needs
+    # protobuf (without it, staging fails with "Error parsing line" in spm.model).
+    "protobuf>=4.25",
 ]
 all = [
     "umrs[server]",
@@ -108,7 +128,10 @@ umrs-server = "umrs.server.main:main"
 # >= 3.11 so it can carry pillow 13 (CRITICAL CVE-2026-112403; 13.0.0 needs
 # 3.11). requires-python stays >=3.10 so `pip install -e src[client]` keeps
 # working for the r4 client on 3.10 (ADR-096, 2026-10-21).
-environments = ["python_version >= '3.11'"]
+# 2026-11-13: narrowed to >= 3.11.5 the same way. soupsieve 2.10 (HIGH
+# CVE-2026-126190; fixed in 4.0, which needs >= 3.11.5) was locked only for
+# 3.11.0-3.11.4.
+environments = ["python_full_version >= '3.11.5'"]
 
 [tool.setuptools.packages.find]
 where = ["."]

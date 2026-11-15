@@ -68,6 +68,13 @@ scheduler:
       from_address: ""      # empty = no from= option on the authorized_keys line
       uv_required: false
       gate_min_version: 1
+      # ADR-112 B2 (2026-11-12, bdrt test lane): the gate site profile this
+      # server publishes names the archive dir a person's gate reads
+      # <archive_sha256>.tar from (the converge places that name next to the
+      # staged umrs-step-<sha12>-aarch64.tar). Every other profile key is the
+      # default built from step_executor and the partition profiles.
+      profile:
+        image_archive_dir: /home/mnagaso/umrs_models/images
 
 runtime:
   kind: podman-compose
@@ -117,12 +124,14 @@ vllm:
 # (refuse = refused by name). The umrs-front converge sets the image
 # (UMRS_BDRT_STEP_*) only after it staged and verified the aarch64 step image
 # archive on nimbus-0, so image stays "" here.
-# - remote_enabled: false until the bdrt receipts (maintainer flips it).
+# - remote_enabled: false until the bdrt receipts (maintainer flips it;
+#   flipped 2026-11-12 for the gated test lane, see below).
 # - partition: spark-double, off edge-double (which carries serving).
 # - gpu: false — plain-podman CDI on GB10 is unproven here as on rccs;
 #   gpu_form cdi is the form a smoke job would prove.
 # - The lane paths are declared only when bdrt is onboarded (2026-09-27
-#   review): with helper_path + workdir_root set, the server starts the step
+#   review; since 2026-11-12 all but workdir_root are, see below): with
+#   helper_path + workdir_root set, the server starts the step
 #   reaper, which SSHes to nimbus-0 hourly (helper sweep) with the lane off.
 #   The survey's paths (2026-09-26), for then:
 #     workdir_root: /home/mnagaso/umrs_steps (nimbus-0 home, outside the
@@ -132,6 +141,22 @@ vllm:
 #     venue_script: /home/mnagaso/ai4s-platform/umrs/src/umrs/mini-rivault-llm/venue.sh
 #   (helper and venue in the pinned checkout hpc-code-sync keeps,
 #   umrs_front_bdrt_hpc_repo_dir).
+#
+# 2026-11-12 — bdrt is the ADR-112 B2 test lane for gated runs (jobs under a
+# person's own HPC account, through their gate; plan §5 B2.0 §2 and §10.5):
+# - the converge stages the aarch64 platform step image here
+#   (umrs_front_bdrt_step_image_stage_enabled), places its
+#   <archive_sha256>.tar name, and writes this server's image_digests;
+# - remote_enabled: true, so with the converge's verified image the gated path
+#   is open (step_trust.gated_lane_available: SSH submit, remote_enabled, the
+#   image, user_account in hpc_access.modes_allowed);
+# - image_archive_dir, helper_path and venue_script are declared (the values
+#   the converge writes into .env); workdir_root is NOT, so the service-account
+#   helper lane stays unavailable and the step reaper is the gated-only one
+#   (gate verbs; no hourly helper sweep under the platform login). A
+#   service-account run of uploaded code says "no HPC lane"; a person's own
+#   account runs through the gate, which needs none of them. Service-account
+#   user work stays admins only (allowed_projects: []).
 step_executor:
   kind: inproc
   partition: spark-double
@@ -143,8 +168,14 @@ step_executor:
   image: ""            # composed by the converge after the archive verifies (see above)
   gpu: false
   gpu_form: cdi
-  remote_enabled: false
+  remote_enabled: true
   uploaded_code: refuse
+  image_archive_dir: /home/mnagaso/umrs_models/images
+  # The gated-run digests the converge writes for this server (mounted
+  # read-only from umrs_front_step_image_digests_dir/bdrt).
+  image_digests: /etc/umrs/step-digests/image-digests.json
+  helper_path: /home/mnagaso/ai4s-platform/umrs/deploy/_common/umrs_step_helper.py
+  venue_script: /home/mnagaso/ai4s-platform/umrs/src/umrs/mini-rivault-llm/venue.sh
   # Posture: the defaults (cgroups enabled, pids_limit 512, no nproc_limit)
   # until the maintainer's R2 probe job on a spark-double node (podman 4.9.3 +
   # runc). The rccs failure mode is expected (Slurm cgroup v2 grants the job

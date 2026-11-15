@@ -97,8 +97,8 @@ class PgGraphSink:
         """Initialize with a Postgres-backed KnowledgeStore."""
         self._store = store
 
-    def _ontology_registry(self) -> Any | None:
-        """Live ontology registry store when a SYNC pool is resolvable.
+    def _ontology_pool(self) -> Any | None:
+        """The SYNC pool the ontology registry reads ride (None without PG).
 
         The async KnowledgeStore owns the asyncpg pool; the registry reads
         ride the satellite sync pool (shared pattern). None when Postgres is
@@ -109,12 +109,35 @@ class PgGraphSink:
 
             if not pg_configured_from_env():
                 return None
-            from .ontology_registry import OntologyRegistryStore
-
-            pool = get_default_sync_pool()
-            return OntologyRegistryStore(pool) if pool is not None else None
+            return get_default_sync_pool()
         except Exception:  # noqa: BLE001 — registry unavailability degrades to legacy
             return None
+
+    def _resolve_ontology(
+        self, graph: Mapping[str, Any] | None, project_id: str | None = None
+    ) -> Ontology:
+        """ontology_for_graph with the live registry on a pooled connection.
+
+        The registry store needs a connection, not the pool: it was handed
+        the ThreadedConnectionPool itself, whose missing ``cursor()`` raised
+        AttributeError on every registry lookup. The connection is taken
+        with getconn and always returned with putconn (the pattern of
+        api/knowledge_query._ontology_registry_for). A graph mapping without
+        ``project_id`` is read in the project being generated, so a
+        project-scoped record of that project resolves (and no other's).
+        """
+        from .ontology_registry import OntologyRegistryStore
+
+        if graph is not None and not graph.get("project_id") and project_id:
+            graph = {**graph, "project_id": project_id}
+        pool = self._ontology_pool()
+        conn = _pool_conn(pool)
+        if conn is None:
+            return ontology_for_graph(graph)
+        try:
+            return ontology_for_graph(graph, registry=OntologyRegistryStore(conn))
+        finally:
+            _return_conn(pool, conn)
 
     async def generate(
         self,
@@ -149,8 +172,7 @@ class PgGraphSink:
         try:
             store = self._resolve_store(store, project_id, ir_ids)
             gid = graph_id or default_graph_id(project_id)
-            registry = self._ontology_registry()
-            ontology = ontology_for_graph(graph, registry=registry)
+            ontology = self._resolve_ontology(graph, project_id)
             nodes_written = await self._regenerate(
                 store, project_id, gid, ir_ids, ontology
             )
@@ -368,6 +390,24 @@ _EXTRACTION_RELATIONS: tuple[tuple[str, str], ...] = (
     ("citations", "cites"),
     ("algorithms", "implements"),
 )
+
+
+def _pool_conn(pool: Any) -> Any | None:
+    """A connection from a psycopg2-shaped pool; None when unavailable."""
+    if pool is None or not hasattr(pool, "getconn"):
+        return None
+    try:
+        return pool.getconn()
+    except Exception:  # registry unavailability degrades to the legacy path
+        logger.warning("ontology registry connection unavailable", exc_info=True)
+        return None
+
+
+def _return_conn(pool: Any, conn: Any) -> None:
+    try:
+        pool.putconn(conn)
+    except Exception:  # returning the conn must not mask the result
+        logger.warning("ontology registry connection not returned", exc_info=True)
 
 
 def _validate_against_ontology(ontology: Ontology, irs: list[KnowledgeIRRow]) -> None:

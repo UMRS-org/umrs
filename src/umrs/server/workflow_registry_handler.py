@@ -15,6 +15,7 @@ Catalog file: <resolved UMRS config dir>/workflow_catalog.json
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -1374,9 +1375,27 @@ def _stamp_intent(
     if not intent:
         return key
     spec["intent"] = dict(intent)
+    if key:
+        return key
     if intent.get("grant_id"):  # wave C: one durable job per grant run
-        return key or f"grant-run:{intent['grant_id']}:{spec.get('execution_id')}"
-    return key or f"intent:{intent['id']}"
+        return _durable_key(f"grant-run:{intent['grant_id']}:{spec.get('execution_id')}")
+    return _durable_key(f"intent:{intent['id']}")
+
+
+#: ``jobs.idempotency_key`` is VARCHAR(64) (jobs/schema.py).
+_IDEMPOTENCY_KEY_MAX = 64
+
+
+def _durable_key(raw: str) -> str:
+    """``raw`` when it fits the column, else a stable digest of it.
+
+    2026-11-14: ``intent:<64 hex>`` is 71 characters, so the first live
+    signed run (bdrt) failed its insert with ``value too long for type
+    character varying(64)``. The digest is deterministic, so a second
+    trigger of one intent still finds its durable job."""
+    if len(raw) <= _IDEMPOTENCY_KEY_MAX:
+        return raw
+    return "sha256:" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:57]
 
 
 def _gated_answer(gated: dict[str, str]) -> dict[str, str]:

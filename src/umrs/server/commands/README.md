@@ -39,6 +39,7 @@ commands/
 ├── maintenance.py          ← RECOMPUTE, UPDATE, CHECK, RELOAD
 ├── wait_output.py          ← WAIT_OUTPUT
 ├── export_embeddings.py    ← EXPORT_EMBEDDINGS
+├── knn.py                  ← KNN (search runs in umrs/server/knn_worker.py)
 ├── file_upload.py          ← FILE
 ├── enroll_user.py          ← ENROLL_USER
 ├── upload_workflow.py      ← UPLOAD_WORKFLOW
@@ -126,7 +127,7 @@ send a reply:
 | Shape | Example commands | Description |
 |-------|-----------------|-------------|
 | `str` | `RECOMPUTE`, `UPDATE`, `CHECK`, `RELOAD` | The payload **is** the `client_id`. |
-| `(client_id, data, zmq_sender_id)` | `MODEL_*`, `JOB_*`, `WAIT_OUTPUT`, `EXPORT_EMBEDDINGS` | Three-tuple; `zmq_sender_id` is used to route the ZeroMQ reply back to the right client. |
+| `(client_id, data, zmq_sender_id)` | `MODEL_*`, `JOB_*`, `WAIT_OUTPUT`, `EXPORT_EMBEDDINGS`, `KNN` | Three-tuple; `zmq_sender_id` is used to route the ZeroMQ reply back to the right client. |
 | `(client_id, files, ...)` | `FILE`, `ENROLL_USER`, `UPLOAD_WORKFLOW` | Tuple with a file list. |
 
 The `CommandRegistry` extracts `client_id` automatically for authorization.
