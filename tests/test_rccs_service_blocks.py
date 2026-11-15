@@ -68,18 +68,17 @@ def test_single_node_roles_prefer_ng_dgx_s_with_m_as_fallback():
 
 def test_deepseek_v41_chat_services_on_m_pairs_and_ai_pro6000():
     """Maintainer 2026-11-12: DeepSeek-V4.1-Flash-1017 as the always-on chat
-    service on an ng-dgx-m pair (TensorFold recipe) and on both ai-pro6000
-    nodes (SGLang, NVFP4). The m3 step lane is never a candidate, and the
-    older DeepSeek-V4-Flash no longer answers for svc-chat."""
+    service on ng-dgx-m pairs (TensorFold recipe). ai-pro6000 NVFP4 remains an
+    on-demand svc-chat entry (aliases kept) but its keep-alive service block is
+    disabled until external prerequisites are cleared. The m3 step lane is never
+    a candidate, and the older DeepSeek-V4-Flash no longer answers for svc-chat."""
     entries = {e["name"]: e for e in yaml.safe_load(POOL.read_text(encoding="utf-8"))["endpoints"]}
     policies = _policies()
     tf, sg = entries["deepseek-v4.1-flash-1017"], entries["deepseek-v4.1-flash-1017-nvfp4"]
     tf_env, sg_env = tf["env_vars"], sg["env_vars"]
     facts = {
-        "service": (
-            policies["DeepSeek-V4.1-Flash-1017"].service,
-            policies["DeepSeek-V4.1-Flash-1017-NVFP4"].service,
-        ),
+        "tf_service": policies["DeepSeek-V4.1-Flash-1017"].service,
+        "ai_pro6000_service": policies["DeepSeek-V4.1-Flash-1017-NVFP4"].service,
         "nodes": (tf["node_count"], sg["node_count"]),
         "tf_partitions": tf["partition"].split(","),
         "sg_partition": sg["partition"],
@@ -89,7 +88,8 @@ def test_deepseek_v41_chat_services_on_m_pairs_and_ai_pro6000():
         "chat_owners": sorted(n for n, e in entries.items() if "svc-chat" in e.get("aliases", [])),
     }
     assert facts == {
-        "service": (True, True),
+        "tf_service": True,
+        "ai_pro6000_service": False,
         "nodes": (2, 2),
         "tf_partitions": ["ng-dgx-m2", "ng-dgx-m0", "ng-dgx-m1"],
         "sg_partition": "ai-pro6000",
@@ -98,3 +98,15 @@ def test_deepseek_v41_chat_services_on_m_pairs_and_ai_pro6000():
         "tf_rendezvous": ("enP7s7", "step"),
         "chat_owners": ["deepseek-v4.1-flash-1017", "deepseek-v4.1-flash-1017-nvfp4"],
     }
+
+
+def test_ai_pro6000_deepseek_v41_nvfp4_not_service_kept():
+    """Regression: ai-pro6000 NVFP4 stays on-demand until external prereqs
+    (GPU reset/podman, receipt/logs) are cleared; m-pair TensorFold remains kept."""
+    policies = _policies()
+    assert policies["DeepSeek-V4.1-Flash-1017"].service is True
+    assert policies["DeepSeek-V4.1-Flash-1017-NVFP4"].service is False
+    entries = {e["name"]: e for e in yaml.safe_load(POOL.read_text(encoding="utf-8"))["endpoints"]}
+    sg = entries["deepseek-v4.1-flash-1017-nvfp4"]
+    assert "service" not in sg
+    assert "svc-chat" in sg.get("aliases", [])

@@ -343,9 +343,12 @@ endpoints:
   #  tables MXFP4 in host RAM, ~97 GiB a node), TP=4 across both nodes.
   #  Two nodes is the whole partition, so a roll's successor queues until the
   #  old job ends (gap = load time); max_surge 1 keeps it first in line.
+  #  2026-11-15: keep-alive service disabled until ai-pro6000 external prereqs
+  #  are cleared (GPU reset, podman/ops readiness, 468620 receipt/logs); entry
+  #  remains available on-demand via aliases.
   - name: deepseek-v4.1-flash-1017-nvfp4
     model: DeepSeek-V4.1-Flash-1017-NVFP4
-    service: {project_id: default, user: mnagaso, replicas: 1, max_surge: 1}
+    # service: {project_id: default, user: mnagaso, replicas: 1, max_surge: 1}
     aliases: [svc-chat, deepseek-v4.1-flash-nvfp4]
     partition: ai-pro6000
     node_count: 2
