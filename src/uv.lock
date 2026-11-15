@@ -5545,12 +5545,16 @@ wheels = [
 name = "r4-contracts"
 version = "0.2.0rc4"
 source = { editable = "../../r4-contracts" }
+dependencies = [
+    { name = "umrs-protocol", marker = "python_full_version >= '3.11.5'" },
+]
 
 [package.metadata]
 requires-dist = [
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.4" },
+    { name = "umrs-protocol", specifier = ">=0.2.0rc4" },
 ]
 provides-extras = ["dev"]
 
@@ -7627,6 +7631,7 @@ source = { editable = "." }
 dependencies = [
     { name = "jsonschema", marker = "python_full_version >= '3.11.5'" },
     { name = "r4-contracts", marker = "python_full_version >= '3.11.5'" },
+    { name = "umrs-protocol", marker = "python_full_version >= '3.11.5'" },
 ]
 
 [package.optional-dependencies]
@@ -7797,9 +7802,19 @@ requires-dist = [
     { name = "umrs", extras = ["client-full"], marker = "extra == 'server'" },
     { name = "umrs", extras = ["kg-ingest"], marker = "extra == 'server'" },
     { name = "umrs", extras = ["server"], marker = "extra == 'all'" },
+    { name = "umrs-protocol", editable = "../protocol" },
     { name = "uvicorn", extras = ["standard"], marker = "extra == 'server'" },
 ]
 provides-extras = ["client", "otel", "client-full", "server", "kg-ingest", "all", "api-test"]
+
+[[package]]
+name = "umrs-protocol"
+version = "0.2.0rc4"
+source = { editable = "../protocol" }
+
+[package.metadata]
+requires-dist = [{ name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0" }]
+provides-extras = ["dev"]
 
 [[package]]
 name = "urllib3"

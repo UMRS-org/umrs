@@ -12,11 +12,17 @@ requires-python = ">=3.10"
 # (``umrs[client]``) stays small. Heavy transport/storage/server dependencies
 # live in the extras below. ``jsonschema`` is required at import time by the
 # shared config loaders used by both client and server.
-# ``r4-contracts`` is stdlib-only shared DTOs; foundation modules (skills,
-# recipes, security, jobs/provenance) import it at module load. From a source
-# checkout install it editable alongside umrs: ``pip install -e ../r4-contracts``.
+# ``umrs-protocol`` (this repo's ``protocol/``) is the stdlib-only wire
+# protocol, handshake signing, error codes and HPC gate (ADR-117 D-2).
+# ``r4-contracts`` is now an alias layer over it for those modules
+# (``r4_contracts.<m> is umrs_protocol.<m>``) plus the stdlib-only DTOs umrs
+# still imports by that name until U3 S5; foundation modules (skills, recipes,
+# security, jobs/provenance) import it at module load. Neither is published
+# (PyPI holds only 0.0.0 name reservations): from a source checkout install
+# both editable alongside umrs: ``pip install -e ../protocol -e ../../r4-contracts``.
 dependencies = [
     "jsonschema>=4.18",  # referencing (ADR-105 S1 validation imports it)
+    "umrs-protocol>=0.2.0rc4",
     "r4-contracts>=0.1.0",
 ]
 

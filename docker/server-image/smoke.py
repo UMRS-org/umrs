@@ -14,9 +14,11 @@ Exit 0 and one line per check on success; the first failure raises.
 
 from __future__ import annotations
 
+import hashlib
 import importlib
 import sys
 import time
+from pathlib import Path
 
 # Import names of the libraries the server process and its modality loaders
 # import. A missing or ABI-broken wheel fails here, not at the first request.
@@ -114,9 +116,23 @@ def check_bundled_ingest_models(root: str = BUNDLED_MODELS) -> str:
     return ingest_models.bundle_status(root)
 
 
+def check_protocol_alias() -> str:
+    """One gate ships (ADR-117 D-2, U2.0b): ``r4_contracts.hpc_gate`` IS the
+    ``umrs_protocol`` module, and ``gate_sha256()`` hashes that module's file,
+    so the sha UMRS stores per HPC account is the bytes this image runs."""
+    import r4_contracts.hpc_gate as alias
+    import umrs_protocol.hpc_gate as gate
+
+    assert alias is gate, f"r4_contracts.hpc_gate is {alias.__name__}, not umrs_protocol's"
+    digest = hashlib.sha256(Path(gate.__file__).read_bytes()).hexdigest()
+    assert gate.gate_sha256() == digest, "gate_sha256() does not hash umrs_protocol/hpc_gate.py"
+    return digest
+
+
 def main() -> int:
     check_imports(LIBRARIES)
     check_imports(UMRS_MODULES)
+    print(f"ok  umrs_protocol gate alias (sha256 {check_protocol_alias()})", flush=True)
     _timed(f"spacy.load({SPACY_MODEL!r}) + sentencizer", check_spacy_model)
     print(f"ok  ingest models: {check_bundled_ingest_models()}", flush=True)
     print("server image smoke: PASS", flush=True)

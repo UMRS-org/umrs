@@ -125,13 +125,24 @@ RUN if [ "${UMRS_BUNDLE_TEXT_EMBEDDER}" = "1" ]; then \
 # directory empty). Before the source copy, like e5.
 COPY --from=ingest-models /opt/umrs/models/ /opt/umrs/models/
 
-# Copy source code
+# Copy source code. The build context is the ai4s-platform root (the
+# umrs-front compose file), so umrs-protocol comes from this repo's protocol/
+# through the pinned submodule and r4-contracts from its parent sibling.
+# None is published (ADR-117 D-2; PyPI holds only 0.0.0 name reservations),
+# so all three install from these copies.
+COPY ./umrs/protocol /app/umrs-protocol
 COPY ./r4-contracts /app/r4-contracts
 COPY ./umrs/src /app/umrs-src
 
-# Install packages in editable-like mode (source available at runtime)
-RUN pip install --no-cache-dir --no-deps -e /app/r4-contracts \
-    && pip install --no-cache-dir --no-deps -e /app/umrs-src
+# Install packages in editable-like mode (source available at runtime).
+# pip check proves the local edges umrs -> umrs-protocol, r4-contracts and
+# r4-contracts -> umrs-protocol resolve to these installs; the assertion
+# proves r4_contracts.hpc_gate is the umrs_protocol module (one gate, U2.0b).
+RUN pip install --no-cache-dir --no-deps -e /app/umrs-protocol \
+    && pip install --no-cache-dir --no-deps -e /app/r4-contracts \
+    && pip install --no-cache-dir --no-deps -e /app/umrs-src \
+    && pip check \
+    && python -c "import umrs_protocol, r4_contracts.hpc_gate as g, umrs_protocol.hpc_gate as p; assert g is p"
 
 # Smoke test (ADR-100): the key libraries import and en_core_web_sm loads the
 # way the embedding modality loads it; a broken dependency set fails the
