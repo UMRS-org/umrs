@@ -78,7 +78,7 @@ def test_deepseek_v41_chat_services_on_m_pairs_and_ai_pro6000():
     tf_env, sg_env = tf["env_vars"], sg["env_vars"]
     facts = {
         "tf_service": policies["DeepSeek-V4.1-Flash-1017"].service,
-        "ai_pro6000_service": policies["DeepSeek-V4.1-Flash-1017-NVFP4"].service,
+        "ai_pro6000_kept": "DeepSeek-V4.1-Flash-1017-NVFP4" in policies,
         "nodes": (tf["node_count"], sg["node_count"]),
         "tf_partitions": tf["partition"].split(","),
         "sg_partition": sg["partition"],
@@ -89,7 +89,7 @@ def test_deepseek_v41_chat_services_on_m_pairs_and_ai_pro6000():
     }
     assert facts == {
         "tf_service": True,
-        "ai_pro6000_service": False,
+        "ai_pro6000_kept": False,
         "nodes": (2, 2),
         "tf_partitions": ["ng-dgx-m2", "ng-dgx-m0", "ng-dgx-m1"],
         "sg_partition": "ai-pro6000",
@@ -105,7 +105,7 @@ def test_ai_pro6000_deepseek_v41_nvfp4_not_service_kept():
     (GPU reset/podman, receipt/logs) are cleared; m-pair TensorFold remains kept."""
     policies = _policies()
     assert policies["DeepSeek-V4.1-Flash-1017"].service is True
-    assert policies["DeepSeek-V4.1-Flash-1017-NVFP4"].service is False
+    assert "DeepSeek-V4.1-Flash-1017-NVFP4" not in policies
     entries = {e["name"]: e for e in yaml.safe_load(POOL.read_text(encoding="utf-8"))["endpoints"]}
     sg = entries["deepseek-v4.1-flash-1017-nvfp4"]
     assert "service" not in sg
