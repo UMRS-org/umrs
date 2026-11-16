@@ -643,13 +643,31 @@ def test_rccs_site_yaml_validates_against_the_schema(site):
     jsonschema.validate(yaml.safe_load((DEPLOY / site / "site.yaml").read_text()), schema)
 
 
+def _ai_pro6000_roster_entries(roster: Path) -> list[dict]:
+    endpoints = yaml.safe_load(roster.read_text()).get("endpoints", [])
+    return [
+        entry
+        for entry in endpoints
+        if "ai-pro6000" in pc.split_partitions(entry.get("partition", ""))
+    ]
+
+
+def _assert_only_on_demand_dsv41(roster: Path, matches: list[dict]) -> None:
+    if roster.name != "pool-rccs.yaml":
+        assert not matches, roster.name
+        return
+    assert [entry["name"] for entry in matches] == ["deepseek-v4.1-flash-1017-nvfp4"]
+    assert all("service" not in entry for entry in matches)
+
+
 @pytest.mark.parametrize("site", RCCS_SITES)
-def test_ai_pro6000_is_in_no_candidate_list_before_its_v2_receipts(site):
+def test_ai_pro6000_is_limited_to_the_on_demand_dsv41_roster_entry(site):
+    """Before V2 receipts, ai-pro6000 is DSV41 on-demand only, never a step/keep-alive lane."""
     cfg = _site(site)
     assert "ai-pro6000" not in pc.split_partitions(cfg.scheduler.partition)
     assert "ai-pro6000" not in pc.split_partitions(cfg.step_executor.partition)
     for roster in (DEPLOY / site).glob("pool-*.yaml"):
-        assert "ai-pro6000" not in roster.read_text(), roster.name
+        _assert_only_on_demand_dsv41(roster, _ai_pro6000_roster_entries(roster))
     if site == "rccs-front":
         assert cfg.step_executor.partition == "ng-dgx-m3"  # the live step lane
 
