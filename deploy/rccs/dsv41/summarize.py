@@ -17,7 +17,8 @@ def fmt(v, nd=1):
 
 
 for path in sys.argv[1:]:
-    d = json.load(open(path))
+    with open(path, encoding="utf-8") as handle:
+        d = json.load(handle)
     print(f"== {d['meta']['label']}  ({path.split('/')[-1]})")
     groups = defaultdict(list)
     for r in d["rows"]:

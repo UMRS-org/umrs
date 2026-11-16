@@ -31,12 +31,90 @@ import time
 import urllib.parse
 from pathlib import Path
 
-WORDS = (
-    "the of and to in is that for it as was with be by on not he this are or his from at which but have an they you "
-    "were her she there been one all we their has would when if so no will more can out other about time up only "
-    "model memory network latency bandwidth tensor parallel rank kernel cache token prefill decode stream batch "
-    "science protein lattice spectrum galaxy neutron enzyme climate ocean reactor plasma quantum orbit fossil"
-).split()
+WORDS = [
+    "the",
+    "of",
+    "and",
+    "to",
+    "in",
+    "is",
+    "that",
+    "for",
+    "it",
+    "as",
+    "was",
+    "with",
+    "be",
+    "by",
+    "on",
+    "not",
+    "he",
+    "this",
+    "are",
+    "or",
+    "his",
+    "from",
+    "at",
+    "which",
+    "but",
+    "have",
+    "an",
+    "they",
+    "you",
+    "were",
+    "her",
+    "she",
+    "there",
+    "been",
+    "one",
+    "all",
+    "we",
+    "their",
+    "has",
+    "would",
+    "when",
+    "if",
+    "so",
+    "no",
+    "will",
+    "more",
+    "can",
+    "out",
+    "other",
+    "about",
+    "time",
+    "up",
+    "only",
+    "model",
+    "memory",
+    "network",
+    "latency",
+    "bandwidth",
+    "tensor",
+    "parallel",
+    "rank",
+    "kernel",
+    "cache",
+    "token",
+    "prefill",
+    "decode",
+    "stream",
+    "batch",
+    "science",
+    "protein",
+    "lattice",
+    "spectrum",
+    "galaxy",
+    "neutron",
+    "enzyme",
+    "climate",
+    "ocean",
+    "reactor",
+    "plasma",
+    "quantum",
+    "orbit",
+    "fossil",
+]
 
 TASKS = {
     "prose": "Write a detailed, well-structured essay about the history of scientific computing. Keep writing.",
@@ -55,7 +133,9 @@ class Endpoint:
         self.host, self.port = u.hostname or "", u.port or 80
         self.model, self.key, self.timeout = model, key, timeout
 
-    def stream(self, messages: list[dict], max_tokens: int, thinking: bool, temperature: float) -> dict:
+    def stream(
+        self, messages: list[dict], max_tokens: int, thinking: bool, temperature: float
+    ) -> dict:
         body = {
             "model": self.model,
             "messages": messages,
@@ -81,7 +161,7 @@ class Endpoint:
                 rec["error"] = f"HTTP {resp.status}: {resp.read(300).decode(errors='replace')}"
                 return rec
             self._consume(resp, rec, t0)
-        except (OSError, socket.timeout, http.client.HTTPException) as exc:
+        except (OSError, http.client.HTTPException) as exc:
             rec["error"] = f"{type(exc).__name__}: {exc}"
         finally:
             conn.close()
@@ -101,10 +181,23 @@ class Endpoint:
             if obj.get("usage"):
                 rec["usage"] = obj["usage"]
             for ch in obj.get("choices") or []:
-                delta = ch.get("delta") or {}
-                if delta.get("content") or delta.get("reasoning_content") or delta.get("reasoning"):
-                    rec["token_times"].append(time.perf_counter() - t0)
-                    rec["chunks"] += 1
+                Endpoint._record_token(rec, ch.get("delta") or {}, t0)
+
+    @staticmethod
+    def _record_token(rec: dict, delta: dict, t0: float) -> None:
+        if delta.get("content") or delta.get("reasoning_content") or delta.get("reasoning"):
+            rec["token_times"].append(time.perf_counter() - t0)
+            rec["chunks"] += 1
+
+
+def _add_decode_summary(summary: dict, token_times: list[float], out_tokens: int) -> None:
+    if len(token_times) <= 1 or not out_tokens or out_tokens <= 1:
+        return
+    decode_time = token_times[-1] - token_times[0]
+    summary["decode_tok_s"] = (out_tokens - 1) / decode_time if decode_time > 0 else None
+    gaps = [b - a for a, b in zip(token_times, token_times[1:], strict=False)]
+    summary["itl_p50_ms"] = 1000 * statistics.median(gaps)
+    summary["itl_p95_ms"] = 1000 * sorted(gaps)[int(0.95 * (len(gaps) - 1))]
 
 
 def summarize_request(rec: dict) -> dict:
@@ -119,18 +212,15 @@ def summarize_request(rec: dict) -> dict:
         "total_s": rec.get("t_total"),
         "chunks": rec.get("chunks", 0),
     }
-    if len(tt) > 1 and out_tokens and out_tokens > 1:
-        decode_time = tt[-1] - tt[0]
-        s["decode_tok_s"] = (out_tokens - 1) / decode_time if decode_time > 0 else None
-        gaps = [b - a for a, b in zip(tt, tt[1:], strict=False)]
-        s["itl_p50_ms"] = 1000 * statistics.median(gaps)
-        s["itl_p95_ms"] = 1000 * sorted(gaps)[int(0.95 * (len(gaps) - 1))]
+    _add_decode_summary(s, tt, out_tokens)
     if s["ttft_s"] and s["prompt_tokens"]:
         s["prefill_tok_s"] = s["prompt_tokens"] / s["ttft_s"]
     return s
 
 
-def run_concurrent(ep: Endpoint, jobs: list[tuple[list[dict], int]], thinking: bool, temp: float) -> list[dict]:
+def run_concurrent(
+    ep: Endpoint, jobs: list[tuple[list[dict], int]], thinking: bool, temp: float
+) -> list[dict]:
     results: list[dict] = [{} for _ in jobs]
     start = threading.Barrier(len(jobs))
 
@@ -177,7 +267,10 @@ def phase_decode(ep: Endpoint, args, rng: random.Random) -> list[dict]:
         for task, text in TASKS.items():
             for rep in range(args.reps):
                 jobs = [
-                    ([{"role": "user", "content": f"[{rng.random():.12f}] {text}"}], args.decode_tokens)
+                    (
+                        [{"role": "user", "content": f"[{rng.random():.12f}] {text}"}],
+                        args.decode_tokens,
+                    )
                     for _ in range(conc)
                 ]
                 raw = run_concurrent(ep, jobs, args.thinking, args.temperature)
@@ -195,11 +288,19 @@ def phase_prefill(ep: Endpoint, args, rng: random.Random) -> list[dict]:
     rows = []
     for n in args.lengths:
         for rep in range(args.reps):
-            words = int(n * 0.75)  # ~1.33 tokens a word for this vocabulary; the server's count is what we report
+            words = int(
+                n * 0.75
+            )  # ~1.33 tokens a word for this vocabulary; the server's count is what we report
             msg = f"[{rng.random():.12f}] Summarize in one word: " + filler(words, rng)
             raw = ep.stream([{"role": "user", "content": msg}], 1, False, 0.0)
             req = summarize_request(raw)
-            row = {"phase": "prefill", "target_tokens": n, "rep": rep, **agg([req]), "requests": [req]}
+            row = {
+                "phase": "prefill",
+                "target_tokens": n,
+                "rep": rep,
+                **agg([req]),
+                "requests": [req],
+            }
             rows.append(row)
             print(json.dumps({k: v for k, v in row.items() if k != "requests"}), flush=True)
     return rows
@@ -260,7 +361,9 @@ def main() -> None:
     print("warmup", summarize_request(warm), flush=True)
     rows = []
     for ph in args.phases.split(","):
-        rows += {"decode": phase_decode, "prefill": phase_prefill, "mixed": phase_mixed}[ph](ep, args, rng)
+        rows += {"decode": phase_decode, "prefill": phase_prefill, "mixed": phase_mixed}[ph](
+            ep, args, rng
+        )
     meta = {
         "label": args.label,
         "url": args.url,

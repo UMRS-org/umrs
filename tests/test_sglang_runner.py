@@ -494,6 +494,18 @@ def _sif(env: dict[str, str], tmp_path: Path) -> Path:
     return sif
 
 
+def _rank_command(commands: list[str], rank: int) -> str:
+    return next((command for command in commands if f"--node-rank {rank}" in command), "")
+
+
+def _uses_singularity_image(commands: list[str], sif: Path) -> bool:
+    return all("--nv" in command and str(sif) in command for command in commands)
+
+
+def _has_node_rank_step(steps: list[str], node: str, rank: int) -> bool:
+    return any(f"--nodelist={node}" in step and f"--node-rank {rank}" in step for step in steps)
+
+
 def test_singularity_runtime_runs_every_rank_without_podman(
     env: dict[str, str], tmp_path: Path
 ) -> None:
@@ -502,13 +514,13 @@ def test_singularity_runtime_runs_every_rank_without_podman(
     res = _run(env, "start_sglang_mn && wait")
     calls = _calls(env)
     execs = [c for c in calls if c.startswith("singularity exec")]
-    r0 = next((c for c in execs if "--node-rank 0" in c), "")
-    r1 = next((c for c in execs if "--node-rank 1" in c), "")
+    r0 = _rank_command(execs, 0)
+    r1 = _rank_command(execs, 1)
     facts = {
         "rc": res.returncode,
         "podman_runs": [c for c in calls if c.startswith("podman")],
         "ranks": len(execs),
-        "nv_and_sif": all("--nv" in c and str(sif) in c for c in execs),
+        "nv_and_sif": _uses_singularity_image(execs, sif),
         "key_only_on_rank0": ("--config" in r0, "--config" in r1),
         "leaks": [c for c in calls if SECRET in c],
     }
@@ -547,8 +559,8 @@ def test_singularity_ranks_run_in_steps_that_request_the_gpus(
         "rc": res.returncode,
         "steps": len(steps),
         "all_request_gpus": all("--gres=gpu:2" in c for c in steps),
-        "head_step": any("--nodelist=node-a" in c and "--node-rank 0" in c for c in steps),
-        "worker_step": any("--nodelist=node-b" in c and "--node-rank 1" in c for c in steps),
+        "head_step": _has_node_rank_step(steps, "node-a", 0),
+        "worker_step": _has_node_rank_step(steps, "node-b", 1),
     }
     assert facts == {
         "rc": 0,
