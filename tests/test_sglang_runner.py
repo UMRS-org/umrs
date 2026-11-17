@@ -87,8 +87,8 @@ def env(tmp_path: Path) -> dict[str, str]:
         "SLURM_JOB_NUM_NODES": "2",
         "SLURM_JOB_NODELIST": "node-[a-b]",
         "SLURMD_NODENAME": "node-a",
-        "PROBE_A": f"10.30.0.1 mlx5_0 3 2 1 unlimited enp1s0np0 - {LIBS}",
-        "PROBE_B": f"10.30.0.2 mlx5_1 5 2 1 unlimited enp2s0np0 - {LIBS}",
+        "PROBE_A": f"10.30.0.1 mlx5_0 3 2 1 unlimited enp1s0np0 - {LIBS} 0",
+        "PROBE_B": f"10.30.0.2 mlx5_1 5 2 1 unlimited enp2s0np0 - {LIBS} 0",
     }
 
 
@@ -321,6 +321,20 @@ def test_gpu_shortfall_refused(env: dict[str, str]) -> None:
     assert not _runs(env)
 
 
+def test_reset_required_gpu_refused_before_key_or_rank_launch(
+    env: dict[str, str], tmp_path: Path
+) -> None:
+    """Two enumerated GPUs are insufficient when one reports reset-required."""
+    env["PROBE_A"] = f"10.30.0.1 mlx5_0 3 2 1 unlimited enp1s0np0 - {LIBS} 1"
+    res = _run(env, "start_sglang_mn")
+    assert res.returncode == 1
+    assert "node-a: GPU requires reset" in res.stderr
+    assert "RCCS ops" in res.stderr
+    assert "ordinal 0/1" in res.stderr
+    assert not _runs(env)
+    assert not (tmp_path / "wrapper" / "jobs" / "sg-api-key.4343.yaml").exists()
+
+
 def test_layout_mismatch_refused(env: dict[str, str]) -> None:
     env.update(SG_TP="4", SG_PP="2")
     res = _run(env, "start_sglang_mn")
@@ -419,15 +433,16 @@ def test_stop_removes_ranks_and_key(env: dict[str, str], tmp_path: Path) -> None
     assert facts == (0, True, True, False), res.stderr
 
 
-def test_probe_script_prints_nine_fields(env: dict[str, str]) -> None:
+def test_probe_script_prints_ten_fields_with_reset_state(env: dict[str, str]) -> None:
     res = _run(env, 'sg_defaults\nbash -c "$SG_PROBE_SCRIPT" _ lo /nonexistent')
     fields = res.stdout.split()
-    assert (res.returncode, len(fields), fields[0], fields[6], fields[8]) == (
+    assert (res.returncode, len(fields), fields[0], fields[6], fields[8], fields[9]) == (
         0,
-        9,
+        10,
         "127.0.0.1",
         "lo",
         "-",
+        "0",
     ), res.stderr
 
 
@@ -548,9 +563,10 @@ def test_singularity_image_needs_a_sha256_sidecar(
 def test_singularity_ranks_run_in_steps_that_request_the_gpus(
     env: dict[str, str], tmp_path: Path
 ) -> None:
-    """ai-pro6000 job 468620 (2026-11-12): the batch shell's device cgroup held one
-    of the node's two GPUs, so TP rank 1 on node 0 failed "invalid device ordinal".
-    Rank 0 now runs in its own srun step, and every rank's step asks for the GPUs."""
+    """The initial 468620 diagnosis exposed single-GPU batch visibility, so
+    every rank runs in its own GPU-requesting step. The same ordinal error also
+    occurred after a GPU reported reset-required; the independent probe guard
+    covers that hardware state without changing these GRES mappings."""
     _sif(env, tmp_path)
     env["SG_STEP_GRES"] = "gpu:2"
     res = _run(env, "start_sglang_mn && wait")

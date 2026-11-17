@@ -38,7 +38,12 @@ Current rollout facts (2026-11-18):
 - `ng-dgx-l` was UP with both ai-pro6000 nodes idle and no PENDING job at the check. This is capacity, not runtime
   health. Only the NVFP4 roster entry and its required direct-backend scheduler override candidate use the new name;
   TensorFold remains `ng-dgx-m2,ng-dgx-m0,ng-dgx-m1`, and the step lane remains `ng-dgx-m3`;
-- rank logs from both 468620 and 468760 show `CUDA error: invalid device ordinal` in the readiness phase. No NVFP4
-  benchmark results exist, the registration and aliases remain, and the `service:` block stays commented pending
-  on-demand Singularity preflight, provision and health. `dsv41-serving-bench.html` is updated source only; the live
-  Claude artifact has not been republished from this implementation.
+- rank logs from both 468620 and 468760 show `CUDA error: invalid device ordinal` in the readiness phase, with GPU 0
+  requiring reset. GRES and Singularity visibility mappings were not the fix; the runner now refuses a future
+  reset-required probe before key/rank launch;
+- diagnostic `501617 / nvfp4-gpu-preflight` completed with `PREFLIGHT_OK all four GPUs` on 2026-11-18: both nodes had
+  `[N/A]` MIG rows, both GPUs were visible through `singularity exec --nv`, and fresh CUDA init/allocation/
+  synchronization passed on local ordinals 0 and 1. Typed allocation plus per-step `--gres=gpu:2` was accepted. This
+  hardware/visibility preflight is not model loading, health, auth, network, storage or readiness evidence. No NVFP4
+  benchmark exists; registration/aliases remain and `service:` stays commented pending on-demand provision + health.
+  `dsv41-serving-bench.html` is updated source only; the live Claude artifact has not been republished.

@@ -346,7 +346,8 @@ endpoints:
   #  2026-11-18: the live partition is ng-dgx-l (ai-pro6000 hardware). Keep the
   #  service block disabled until on-demand runtime preflight + readiness prove
   #  the external prerequisites: both 468620 and the later 468760 failed with
-  #  CUDA invalid device ordinal. Registration and aliases remain available.
+  #  CUDA invalid device ordinal after GPU 0 reported reset-required. The runner
+  #  now rejects that future state before key/rank launch. Registration stays.
   - name: deepseek-v4.1-flash-1017-nvfp4
     model: DeepSeek-V4.1-Flash-1017-NVFP4
     # service: {project_id: default, user: mnagaso, replicas: 1, max_surge: 1}
@@ -363,7 +364,8 @@ endpoints:
       # files link into ../../blobs, so the repo dir is mounted.
       SG_MODEL_ROOT: "/home/users/masaru.nagaso/umrs_models_hs/hub/models--nvidia--DeepSeek-V4.1-Flash-1017-NVFP4"
       SG_GPUS_PER_NODE: "2"
-      # each rank's srun step requests the node's GPUs (job 468620: the batch shell held one)
+      # Each rank's step requests both GPUs for visibility (initial 468620 diagnosis);
+      # the independent reset-required probe covers the later hardware failure mode.
       SG_STEP_GRES: "gpu:2"
       SG_RUNTIME: "singularity"
       SG_IMAGE: "/home/users/masaru.nagaso/umrs_models_hs/images/sglang-314bce7c-arm64.sif"

@@ -4,9 +4,9 @@
 #
 # Why (2026-11-12): nvidia/DeepSeek-V4.1-Flash-1017-NVFP4 is served by
 # SGLang (NVIDIA's validated recipe: 4x GB300, TP=4, DSpark speculative
-# decoding, Engram tables in host RAM). On rccs it runs on two nodes of the
-# `ai-pro6000` partition (aarch64, 2x RTX PRO 6000 Blackwell 96 GB, sm_120,
-# rootless podman, no docker, no ssh between nodes): TP=4 across the pair.
+# decoding, Engram tables in host RAM). On rccs it runs on two ng-dgx-l nodes
+# (ai-pro6000 hardware: aarch64, 2x RTX PRO 6000 Blackwell 96 GB, sm_120, no
+# docker or ssh between nodes): TP=4 across the pair.
 # The multi-node vLLM path of serve-model.slurm runs Ray; SGLang needs none.
 # Every node runs one `python3 -m sglang.launch_server` with the same flags
 # and its own --node-rank; rank 0 serves the OpenAI API.
@@ -55,11 +55,12 @@
 #                     wrapper's compose stack still needs podman on the head,
 #                     so this mode serves the direct driver only
 #   SG_STEP_GRES      empty (default) or a --gres value (ai-pro6000: gpu:2) that
-#                     every singularity rank's srun step requests. On
-#                     ai-pro6000 the batch shell's device cgroup holds ONE of
-#                     the node's two GPUs (job 468620, 2026-11-12: TP rank 1
-#                     on node 0 failed "invalid device ordinal"), so rank 0
-#                     runs in its own step too. GB10 partitions reject --gres
+#                     every singularity rank's srun step requests. The initial
+#                     468620 diagnosis exposed single-GPU batch visibility, so
+#                     rank 0 runs in its own step too. The same ordinal error can
+#                     also follow a GPU reset-required state (468620/468760);
+#                     GRES mappings stay unchanged and the probe rejects that
+#                     hardware state before launch. GB10 partitions reject --gres
 #   SG_MODEL_ROOT     empty (default), or a host directory holding SG_MODEL_DIR
 #                     (a Hugging Face repo dir: models--<org>--<name>). It is
 #                     mounted at its own path and --model-path is SG_MODEL_DIR
@@ -193,9 +194,10 @@ sg_check_layout() {
 }
 
 # The node-side probe, run through srun on each node. Prints one line:
-#   <ipv4> <hca> <gid index> <gpus> <cdi 0|1> <memlock> <iface> <caps> <libs>
+#   <ipv4> <hca> <gid index> <gpus> <cdi 0|1> <memlock> <iface> <caps> <libs> <reset 0|1>
 # (caps: comma list of /dev/nvidia-caps/*, libs: comma list of the driver
-# libraries present in $2; "-" when empty). The RoCE v2 GID matching follows
+# libraries present in $2; "-" when empty). reset=1 means NVML explicitly says
+# GPU requires reset. The RoCE v2 GID matching follows
 # tensorfold_runner.sh TF_PROBE_SCRIPT; when the chosen link has no RDMA
 # device, the first ACTIVE HCA with an IPv4-mapped RoCE v2 GID is used.
 # shellcheck disable=SC2016  # expands on the node
@@ -243,6 +245,8 @@ if [ -z "$hca" ]; then
   done
 fi
 gpus=$(nvidia-smi -L 2>/dev/null | grep -c "^GPU")
+reset=0
+nvidia-smi --query-gpu=mig.mode.current --format=csv,noheader 2>/dev/null | grep -q "GPU requires reset" && reset=1
 cdi=0
 ls /etc/cdi/*nvidia* /var/run/cdi/*nvidia* >/dev/null 2>&1 && cdi=1
 caps=""
@@ -252,7 +256,7 @@ for f in "$libdir"/libcuda.so.1 "$libdir"/libnvidia-ml.so.1 "$libdir"/libnvidia-
          "$libdir"/libnvidia-nvvm.so.4 "$libdir"/libnvidia-gpucomp.so.*; do
   [ -e "$f" ] && libs="$libs${f##*/},"
 done
-echo "${ip:--} ${hca:--} ${gid:--} ${gpus:-0} ${cdi} $(ulimit -Hl) ${dev:--} ${caps:--} ${libs:--}"
+echo "${ip:--} ${hca:--} ${gid:--} ${gpus:-0} ${cdi} $(ulimit -Hl) ${dev:--} ${caps:--} ${libs:--} ${reset:-0}"
 '
 
 sg_probe_node() {
@@ -262,8 +266,8 @@ sg_probe_node() {
 
 # Parse one probe line into SG_NODE_*[rank].
 sg_record_probe() {
-    local rank="$1" line="$2" ip hca gid gpus cdi memlock dev caps libs
-    read -r ip hca gid gpus cdi memlock dev caps libs <<< "${line}"
+    local rank="$1" line="$2" ip hca gid gpus cdi memlock dev caps libs reset
+    read -r ip hca gid gpus cdi memlock dev caps libs reset <<< "${line}"
     SG_NODE_IP[rank]="${ip:--}"
     SG_NODE_IFACE[rank]="${dev:-${SG_FABRIC_IFACE}}"
     SG_NODE_HCA[rank]="${SG_IB_HCA:-${hca:--}}"
@@ -273,6 +277,7 @@ sg_record_probe() {
     SG_NODE_MEMLOCK[rank]="${memlock:-}"
     SG_NODE_CAPS[rank]="${caps:--}"
     SG_NODE_LIBS[rank]="${libs:--}"
+    SG_NODE_RESET_REQUIRED[rank]="${reset:-0}"
 }
 
 # rc 1 (and one FATAL line) when a probed node cannot run its rank.
@@ -284,6 +289,10 @@ sg_check_probe() {
     fi
     if (( SG_NODE_GPUS[rank] < SG_GPUS_PER_NODE )); then
         echo "[rivault] FATAL: ${node} has ${SG_NODE_GPUS[rank]} GPU(s), SG_GPUS_PER_NODE=${SG_GPUS_PER_NODE} (allocate with --gres=gpu:${SG_GPUS_PER_NODE})" >&2
+        return 1
+    fi
+    if (( SG_NODE_RESET_REQUIRED[rank] == 1 )); then
+        echo "[rivault] FATAL: ${node}: GPU requires reset; RCCS ops must reset it and verify fresh-process CUDA init/synchronize on local ordinal 0/1 before on-demand provision" >&2
         return 1
     fi
     sg_resolve_gpu_form "${rank}" "${node}"
@@ -695,6 +704,7 @@ sg_log_fabric() {
 start_sglang_mn() {
     declare -g -a SG_NODE_IP=() SG_NODE_IFACE=() SG_NODE_HCA=() SG_NODE_GID=() SG_NODE_GPUS=()
     declare -g -a SG_NODE_CDI=() SG_NODE_MEMLOCK=() SG_NODE_CAPS=() SG_NODE_LIBS=() SG_NODE_FORM=()
+    declare -g -a SG_NODE_RESET_REQUIRED=()
     declare -g -a RAY_NODES=() SG_WORKER_PIDS=()
     sg_defaults
     sg_preflight || return 1
