@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH -J dsv41-pro6000
-#SBATCH -p ai-pro6000
+#SBATCH -p ng-dgx-l
 #SBATCH -N 2
 #SBATCH --mem=0
 #SBATCH --gres=gpu:2

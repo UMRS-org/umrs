@@ -15,7 +15,7 @@ benchmark tools in `~/tmp/dsv41/bench/` on the rccs login node.
 | `tf_direct.sbatch` | launches the pair through `tensorfold_runner.sh`, runs `serve_bench.py` and the ablations (`TF_RDMA=0`, `TF_DRAFTS` flip), then serves; `KEEP=1` queues a singleton successor (stopgap keep-alive until the roster's service block is converged; stop it with `scancel -n dsv41-tf-direct`) |
 | `m_hw.sbatch` | GB10 pair microbenchmarks: raw RDMA (`ib_write_bw`/`ib_write_lat`, out-of-band over the mgmt NIC) and `hw_bench.py` over RoCE and over TCP |
 | `nvfp4_dl.sbatch` | the NVFP4 checkpoint into `~/umrs_models_hs` (home, `/hs/work0`) from a compute node |
-| `pro6000_hold.sbatch` → `pro6000_entry.sh` → `pro6000_stage2.sh` | the queued ai-pro6000 job: node probe, SGLang TP=4 launch, `serve_bench.py`, `hw_bench.py` (intra-node, inter-node IB and TCP), then serve; chains a singleton successor and stops the chain on a failure marker (`~/tmp/dsv41/run/pro6000.FAILED`) |
+| `pro6000_hold.sbatch` → `pro6000_entry.sh` → `pro6000_stage2.sh` | the historical direct driver on the partition now named `ng-dgx-l`: node probe, Singularity SGLang TP=4 launch, `serve_bench.py`, `hw_bench.py`, then serve; its chain stops on a failure marker. Jobs 468620 and 468760 failed readiness; do not requeue it as a substitute for managed preflight |
 | `serve_bench.py` | stdlib OpenAI streaming client: decode concurrency sweep, prefill length sweep, mixed long-prompt streams (TTFT, inter-token latency, tok/s) |
 | `hw_bench.py` | torch/NCCL: device copy, pinned host<->device copy, bf16 GEMM, all_reduce latency and bus bandwidth |
 | `summarize.py` | medians per phase from `serve_bench.py` JSON |
@@ -29,3 +29,16 @@ rccs facts these scripts encode (measured 2026-11-12):
 - the QSFP port accepts RoCE but firewalld rejects TCP on it: rendezvous and NCCL bootstrap use `enP7s7`;
 - a throwaway podman store's database pins the first job's runroot: drop `db.sql`, `libpod/` and
   `overlay-containers/` before reusing it in a new job.
+
+Current rollout facts (2026-11-18):
+
+- direct TensorFold `499019` is RUNNING on `ng-dgx-m0`; managed attempts failed because the batch shell lacked
+  `VLLM_API_KEY`. The wrapper exports one key before the env heredoc and TensorFold source, but managed health is not
+  proven until the reviewed rccs convergence and a new readiness receipt;
+- `ng-dgx-l` was UP with both ai-pro6000 nodes idle and no PENDING job at the check. This is capacity, not runtime
+  health. Only the NVFP4 roster entry and its required direct-backend scheduler override candidate use the new name;
+  TensorFold remains `ng-dgx-m2,ng-dgx-m0,ng-dgx-m1`, and the step lane remains `ng-dgx-m3`;
+- rank logs from both 468620 and 468760 show `CUDA error: invalid device ordinal` in the readiness phase. No NVFP4
+  benchmark results exist, the registration and aliases remain, and the `service:` block stays commented pending
+  on-demand Singularity preflight, provision and health. `dsv41-serving-bench.html` is updated source only; the live
+  Claude artifact has not been republished from this implementation.

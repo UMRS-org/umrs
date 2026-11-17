@@ -615,7 +615,7 @@ def test_allowed_images_are_pinned_and_archive_named(front):
         assert image_archive_stem(image)
 
 
-# ── ADR-109 D-3 / V1: per-partition GPU request, ai-pro6000 not yet listed ───
+# ── ADR-109 D-3: per-partition GPU request; NVFP4 ng-dgx-l stays serving-only ───
 
 #: rccs's compute-side file and the front's own (each server reads its own).
 RCCS_SITES = ("rccs", "rccs-front")
@@ -632,7 +632,8 @@ def test_rccs_gb10_profiles_never_ask_for_gres_and_ai_pro6000_does(site):
     profiles = _site(site).partition_profiles
     for name in GB10_PARTITIONS:
         assert profiles[name].gpu_request == "none", name
-    pro = profiles["ai-pro6000"]
+    assert "ai-pro6000" not in profiles  # hardware description, not the live partition key
+    pro = profiles["ng-dgx-l"]
     assert (pro.arch, pro.gpu_vendor, pro.gpu_memory_gb, pro.gpus) == ("aarch64", "nvidia", 96, 2)
     assert (pro.gpu_request, pro.gres, pro.exclusive) == ("gres", "gpu:PRO6000-96GB:2", True)
 
@@ -648,7 +649,7 @@ def _ai_pro6000_roster_entries(roster: Path) -> list[dict]:
     return [
         entry
         for entry in endpoints
-        if "ai-pro6000" in pc.split_partitions(entry.get("partition", ""))
+        if "ng-dgx-l" in pc.split_partitions(entry.get("partition", ""))
     ]
 
 
@@ -661,11 +662,17 @@ def _assert_only_on_demand_dsv41(roster: Path, matches: list[dict]) -> None:
 
 
 @pytest.mark.parametrize("site", RCCS_SITES)
-def test_ai_pro6000_is_limited_to_the_on_demand_dsv41_roster_entry(site):
-    """Before V2 receipts, ai-pro6000 is DSV41 on-demand only, never a step/keep-alive lane."""
+def test_ng_dgx_l_is_limited_to_the_on_demand_dsv41_roster_entry(site):
+    """The renamed ai-pro6000 partition is NVFP4 on-demand only, never a step
+    or keep-alive lane. Only the direct backend needs it as a fallback candidate
+    for per-request override validation; the remote front does not widen its own."""
     cfg = _site(site)
-    assert "ai-pro6000" not in pc.split_partitions(cfg.scheduler.partition)
-    assert "ai-pro6000" not in pc.split_partitions(cfg.step_executor.partition)
+    serving = pc.split_partitions(cfg.scheduler.partition)
+    if site == "rccs":
+        assert serving[-1] == "ng-dgx-l"
+    else:
+        assert "ng-dgx-l" not in serving
+    assert "ng-dgx-l" not in pc.split_partitions(cfg.step_executor.partition)
     for roster in (DEPLOY / site).glob("pool-*.yaml"):
         _assert_only_on_demand_dsv41(roster, _ai_pro6000_roster_entries(roster))
     if site == "rccs-front":
@@ -685,25 +692,25 @@ def test_rccs_gb10_step_scripts_are_byte_identical_with_their_profiles(monkeypat
 
 
 def test_rccs_front_ai_pro6000_step_script_asks_for_its_whole_node(monkeypatch):
-    ex = _site_executor(monkeypatch, "rccs-front", partition="ng-dgx-m3,ai-pro6000")
-    script = _rendered(ex, "ai-pro6000", {EXECUTOR_GPU_METADATA_KEY: True})
+    ex = _site_executor(monkeypatch, "rccs-front", partition="ng-dgx-m3,ng-dgx-l")
+    script = _rendered(ex, "ng-dgx-l", {EXECUTOR_GPU_METADATA_KEY: True})
     lines = script.splitlines()
-    assert "#SBATCH --partition=ai-pro6000" in lines
+    assert "#SBATCH --partition=ng-dgx-l" in lines
     assert PRO6000_GRES in lines and "#SBATCH --exclusive" in lines
     # a step without the GPU hint holds the exclusive node but asks no GPU
-    plain = _rendered(ex, "ai-pro6000").splitlines()
+    plain = _rendered(ex, "ng-dgx-l").splitlines()
     assert PRO6000_GRES not in plain and "#SBATCH --exclusive" in plain
 
 
 def test_rccs_front_two_gpu_steps_are_eligible_only_on_ai_pro6000(monkeypatch):
-    ex = _site_executor(monkeypatch, "rccs-front", partition="ng-dgx-m3,ai-pro6000")
+    ex = _site_executor(monkeypatch, "rccs-front", partition="ng-dgx-m3,ng-dgx-l")
 
     def ctx(count: int) -> StepContext:
         return StepContext(s3=None, input_bucket="b", input_keys=[], output_bucket="b-output",
                            metadata={EXECUTOR_GPU_COUNT_METADATA_KEY: count}, run_id="wf-1")  # fmt: skip
 
-    assert ex._lane_partitions(ctx(1)) == ["ng-dgx-m3", "ai-pro6000"]
-    assert ex._lane_partitions(ctx(2)) == ["ai-pro6000"]
+    assert ex._lane_partitions(ctx(1)) == ["ng-dgx-m3", "ng-dgx-l"]
+    assert ex._lane_partitions(ctx(2)) == ["ng-dgx-l"]
     live = _site_executor(monkeypatch, "rccs-front")  # today: ng-dgx-m3 only
     with pytest.raises(StepExecutionError, match="gpu_count 2"):
         live._lane_partitions(ctx(2))
@@ -717,10 +724,10 @@ def test_rccs_serving_args_of_every_gb10_candidate_are_unchanged(site):
     args = ["sbatch", "--parsable", "--mem=0", "--partition=x", "--time=23:00:00",
             "--cpus-per-task=8", "--account=cloud-users", "/deploy/serve-model.slurm"]  # fmt: skip
     shape = _partition_shaper(cfg, None)
-    for name in pc.split_partitions(cfg.scheduler.partition):
+    for name in GB10_PARTITIONS:
         assert shape(args, name) == pc.with_partition(args, name), name
-    assert shape(args, "ai-pro6000")[3:6] == [
-        "--partition=ai-pro6000", "--gres=gpu:PRO6000-96GB:2", "--exclusive",
+    assert shape(args, "ng-dgx-l")[3:6] == [
+        "--partition=ng-dgx-l", "--gres=gpu:PRO6000-96GB:2", "--exclusive",
     ]  # fmt: skip
 
 

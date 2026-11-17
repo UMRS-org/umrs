@@ -92,7 +92,7 @@ def test_deepseek_v41_chat_services_on_m_pairs_and_ai_pro6000():
         "ai_pro6000_kept": False,
         "nodes": (2, 2),
         "tf_partitions": ["ng-dgx-m2", "ng-dgx-m0", "ng-dgx-m1"],
-        "sg_partition": "ai-pro6000",
+        "sg_partition": "ng-dgx-l",
         "runners": ("tensorfold-dsv41", "sglang-mn"),
         "tf_fit": ("1", "131072", "100"),
         "tf_rendezvous": ("enP7s7", "step"),
@@ -110,3 +110,28 @@ def test_ai_pro6000_deepseek_v41_nvfp4_not_service_kept():
     sg = entries["deepseek-v4.1-flash-1017-nvfp4"]
     assert "service" not in sg
     assert "svc-chat" in sg.get("aliases", [])
+    assert sg["env_vars"]["SG_RUNTIME"] == "singularity"
+
+
+def test_ng_dgx_l_reaches_cluster_and_hold_sources():
+    rccs = POOL.parent
+    cluster_line = next(
+        line
+        for line in (rccs / "cluster.env").read_text().splitlines()
+        if line.startswith("UMRS_PARTITIONS=")
+    )
+    assert "ng-dgx-l" in cluster_line.split('"')[1].split()
+    hold = (rccs / "dsv41/pro6000_hold.sbatch").read_text()
+    assert "#SBATCH -p ng-dgx-l" in hold.splitlines()
+
+
+def test_dsv41_report_source_records_current_rollout_without_invented_results():
+    """The report does not turn either failed readiness attempt into a result."""
+    report = (POOL.parent / "dsv41/dsv41-serving-bench.html").read_text()
+    assert "499019" in report
+    assert "ng-dgx-m0" in report
+    assert "VLLM_API_KEY" in report
+    assert "468620" in report
+    assert "468760" in report
+    assert "no nvfp4 benchmark results" in report.lower()
+    assert "468124 holds" not in report

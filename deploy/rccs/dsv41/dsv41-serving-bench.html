@@ -73,11 +73,11 @@ details summary { cursor: pointer; color: var(--ink-2); font-size: 13.5px; }
   <header class="prose">
     <div class="eyebrow">RIKEN R-CCS · rccs cluster · UMRS service tier</div>
     <h1>DeepSeek-V4.1-Flash-1017 on GB10 and RTX PRO 6000</h1>
-    <p class="lede">How the node architecture, the GPU and the interconnect shape LLM serving, measured with one client and one workload. The GB10 leg is complete; the RTX PRO 6000 leg runs when its queued job starts.</p>
+    <p class="lede">How the node architecture, the GPU and the interconnect shape LLM serving, measured with one client and one workload. The GB10 measurements are complete; direct TensorFold job 499019 is running on ng-dgx-m0, while the managed rollout and NVFP4 preflight remain open. There are no NVFP4 benchmark results yet.</p>
     <div class="meta">
-      <span class="status">Interim · GB10 leg done, PRO 6000 leg queued</span>
-      <span>measured 2026-11-12</span>
-      <span>rccs jobs 468148, 468257</span>
+      <span class="status">Interim · GB10 measured, NVFP4 preflight blocked</span>
+      <span>measured 2026-11-12 · updated 2026-11-18</span>
+      <span>benchmark jobs 468148, 468257 · direct serving job 499019</span>
     </div>
   </header>
 
@@ -99,11 +99,11 @@ details summary { cursor: pointer; color: var(--ink-2); font-size: 13.5px; }
     </div>
     <div class="tablewrap">
       <table>
-        <thead><tr><th></th><th>ng-dgx-m2 pair (GB10)</th><th>ai-pro6000 ×2 (RTX PRO 6000)</th></tr></thead>
+        <thead><tr><th></th><th>ng-dgx-m pair (GB10; direct 499019 on m0)</th><th>ng-dgx-l ×2 (ai-pro6000 / RTX PRO 6000)</th></tr></thead>
         <tbody>
           <tr><td>Accelerators</td><td>2 nodes × 1 GB10, unified LPDDR5x (121.6 GiB a node)</td><td>2 nodes × 2 discrete RTX PRO 6000 Blackwell, 96 GB GDDR7 each; 1 TB host RAM a node</td></tr>
           <tr><td>Parallelism</td><td>TP=2, one rank per node</td><td>TP=4: 2 ranks per node over PCIe, 2 nodes over the network (SGLang refuses PP for V4.1)</td></tr>
-          <tr><td>Interconnect</td><td>QSFP ConnectX-7, RoCE v2, one 200G rail addressed (the twin port has no IPv4); TCP blocked on it, so rendezvous uses the 10G mgmt NIC</td><td>probed when the job starts</td></tr>
+          <tr><td>Interconnect</td><td>QSFP ConnectX-7, RoCE v2, one 200G rail addressed (the twin port has no IPv4); TCP blocked on it, so rendezvous uses the 10G mgmt NIC</td><td>InfiniBand NDR 400 (mlx5_0) plus Ethernet rendezvous; runtime validation still pending</td></tr>
           <tr><td>Engine</td><td>TensorFold native (Zig), MiaAI recipe <span class="mono">c7f2b851</span></td><td>SGLang nightly <span class="mono">314bce7c</span> (DeepSeek-V4.1 native, SM120 kernels)</td></tr>
           <tr><td>Weights</td><td>Mia-AiLab EXL3 EAQ v1, 2.9 bpw (197 GiB) + Engram FP8 tables on local NVMe</td><td>nvidia NVFP4 (399 GiB; Engram MXFP4 in host RAM)</td></tr>
           <tr><td>Serving settings</td><td>context 131,072 · 4 streams · DSpark drafts on (off in one ablation) · vision off</td><td>context 131,072 · TP=4 · DSpark speculative decoding</td></tr>
@@ -179,11 +179,13 @@ details summary { cursor: pointer; color: var(--ink-2); font-size: 13.5px; }
   </section>
 
   <section class="prose">
-    <h2>RTX PRO 6000 leg</h2>
+    <h2>Rollout state and the RTX PRO 6000 leg</h2>
     <div class="pending">
-      <p><b>Queued:</b> rccs job 468124 holds both ai-pro6000 nodes for 23 h once they free up (other users' jobs run there now; Slurm's estimate was 2026-11-14 22:10). When it starts it probes the nodes, launches SGLang at TP=4, runs the same serving benchmark at 1–8 streams, then the all-reduce and memory benchmarks intra-node (PCIe) and inter-node (RDMA if present, and TCP), and keeps serving. This page is updated with those results.</p>
+      <p><b>Managed GB10 launch awaits the key repair:</b> direct TensorFold job 499019 is RUNNING on ng-dgx-m0. Managed attempts 499008, 501002, 501015 and their successors failed in about 20 s with <span class="mono">FATAL: TensorFold needs VLLM_API_KEY</span>. The wrapper now resolves and exports one supplied or generated key before it renders the Compose environment and sources TensorFold; the repair still needs reviewed convergence and a managed-health check. The direct job is not a managed-health substitute and stays untouched.</p>
+      <p><b>No NVFP4 benchmark results:</b> previous direct jobs 468620 and the later 468760 both failed the readiness phase. Their rank-0 logs end with <span class="mono">CUDA error: invalid device ordinal</span> (device 1 requested while only device 0 was visible), and both failure markers identify the <span class="mono">ready</span> phase. The current configuration intentionally stays on Singularity; these receipts do not justify a speculative runtime or GPU change.</p>
+      <p><b>Next:</b> the two ai-pro6000 nodes are now in partition <span class="mono">ng-dgx-l</span>, which was UP with both nodes idle and no PENDING job at the 2026-11-18 check. Idle capacity is not runtime health. The existing NVFP4 registration and aliases remain; keep-alive is disabled until the converged on-demand Singularity preflight, provision and health check prove the prerequisites. Only a separate later decision can enable keep-alive.</p>
     </div>
-    <p>What the comparison isolates when it lands:</p>
+    <p>What the comparison isolates when a healthy NVFP4 run lands:</p>
     <ul>
       <li><b>Memory bandwidth.</b> GDDR7 on a PRO 6000 is several times the GB10's 227 GB/s, and TP=4 splits the active weights four ways, so the per-token bandwidth floor drops by an order of magnitude. Decode should no longer be bandwidth-bound; synchronisation takes over.</li>
       <li><b>Topology.</b> TP=4 mixes a PCIe hop inside a node with a network hop between nodes in every all-reduce, so the slower hop sets the pace, as the single TCP link did on the GB10 pair.</li>
@@ -199,7 +201,7 @@ details summary { cursor: pointer; color: var(--ink-2); font-size: 13.5px; }
       <li>Hardware numbers: <span class="mono">hw_bench.py</span> (PyTorch 2.13, NCCL 2.30.7) in the serving image; raw RDMA with <span class="mono">ib_write_bw / ib_write_lat</span>.</li>
       <li>Two repetitions per point, medians shown. Single-stream decode varied by ±3 tok/s between repetitions.</li>
       <li>The GB10 nodes run in rccs's shared Lustre environment: ~15 GiB of kernel slab stays resident, so a job gets ~105 GiB of the 121.6 GiB. The recipe asks for 112 GiB free; it runs here with vision off, a 131,072 context, a 100 GiB pre-start reclaim and the engine reserve at 11.5 GiB.</li>
-      <li>Scripts, staging and the serving entries: umrs branch <span class="mono">feat/dsv41-rccs-pro6000</span>, <span class="mono">deploy/rccs/dsv41/</span>. Raw JSON: <span class="mono">~/tmp/dsv41/bench/</span> on rccs.</li>
+      <li>Scripts, staging and the serving entries: umrs branch <span class="mono">ai4s-platform</span>, <span class="mono">deploy/rccs/dsv41/</span>. Raw GB10 JSON: <span class="mono">~/tmp/dsv41/bench/</span> on rccs. This source was updated on 2026-11-18 without republishing the live Claude artifact and without inventing PRO 6000 measurements.</li>
     </ul>
   </section>
 </div>

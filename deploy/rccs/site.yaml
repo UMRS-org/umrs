@@ -19,12 +19,14 @@ description: >-
 scheduler:
   kind: slurm-podman
   # GB10 candidates: ng-dgx-m0-[08-09], m1-[10-11], m2-[12-13], m3-[14-15],
-  # ng-dgx-s-[00-07]. Slurm never sees this as a list: RCCS rejects
-  # --partition=a,b (2026-10-24). This on-cluster config (slurm-podman, no
-  # partition_choice) submits to one candidate (the first, or an idle one by
-  # sinfo when nothing names a partition); the live front
-  # (rccs-front/site.yaml) picks the earliest sbatch --test-only start.
-  partition: ng-dgx-m0,ng-dgx-m1,ng-dgx-m2,ng-dgx-m3,ng-dgx-s
+  # ng-dgx-s-[00-07]. NVFP4-only ng-dgx-l (ai-pro6000 hardware) is last:
+  # SlurmPodmanBackend requires that fallback candidate for roster override
+  # validation (2026-11-18); it is not a step_executor candidate.
+  # Slurm never sees this as a list: RCCS rejects --partition=a,b (2026-10-24).
+  # This on-cluster config (slurm-podman, no partition_choice) submits to one
+  # candidate (the first, or an idle one by sinfo when nothing names a partition);
+  # the live front (rccs-front/site.yaml) picks the earliest sbatch --test-only start.
+  partition: ng-dgx-m0,ng-dgx-m1,ng-dgx-m2,ng-dgx-m3,ng-dgx-s,ng-dgx-l
   account: cloud-users
   qos: ""
   time_limit: "2-00:00:00"   # 2 days; allows queued jobs to run uninterrupted once started
@@ -198,18 +200,20 @@ partition_profiles:
     needs_netavark_switch: false
 
   # ── aarch64 NVIDIA (RTX PRO 6000 Blackwell, discrete) ──
-  # ai-pro6000-[00-01] (sinfo/scontrol 2026-11-04): aarch64, two discrete
-  # 96 GB RTX PRO 6000 Blackwell (sm_120, not the GB10's unified sm_121) per
-  # node, 128 CPUs, 1 TB RAM, MaxTime 1-00:00:00, DefaultTime 01:00:00,
-  # OverSubscribe=EXCLUSIVE, AllowAccounts=ALL. ADR-109 D-3: in NO candidate
-  # list yet (scheduler.partition, step_executor.partition); it joins them
-  # only after the V2 first-launch receipts.
-  ai-pro6000:
+  # ng-dgx-l-[00-01] is the live name verified 2026-11-18 for the ai-pro6000
+  # hardware: aarch64, two discrete 96 GB RTX PRO 6000 Blackwell (sm_120, not
+  # the GB10's unified sm_121) per node, 128 CPUs, 1 TB RAM, MaxTime
+  # 1-00:00:00, DefaultTime 01:00:00, OverSubscribe=EXCLUSIVE, AllowAccounts=ALL.
+  # Both nodes were idle with no PENDING job at that check; this does not prove
+  # runtime health. Only scheduler.partition carries ng-dgx-l, last, for direct
+  # roster override validation; step_executor is unchanged. Keep-alive remains
+  # disabled until on-demand preflight + readiness succeeds.
+  ng-dgx-l:
     arch: aarch64
     gpu_vendor: nvidia
     gpu_memory_gb: 96            # per GPU; two per node
-    # first-launch receipt pending (ADR-109 V2): runtime, userns, network
-    # and vLLM tag are ng-dgx-m3's, not yet proven on these nodes.
+    # Runtime, userns and network remain unproven on these nodes; the current
+    # NVFP4 entry intentionally uses Singularity, not these podman placeholders.
     oci_runtime: runc
     userns_mode: host
     network_backend: netavark

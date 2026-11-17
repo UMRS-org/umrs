@@ -332,20 +332,22 @@ partition_profiles:
     gpu_mem_util_max: 0.78     # GB10 shared with harness + vision sidecar (~97 GiB free of 121.6)
     needs_netavark_switch: false
 
-  # ai-pro6000-[00-01] (sinfo/scontrol 2026-11-04): aarch64, two discrete
-  # 96 GB RTX PRO 6000 Blackwell (sm_120, not the GB10's unified sm_121) per
-  # node, 128 CPUs, 1 TB RAM, MaxTime 1-00:00:00, DefaultTime 01:00:00,
-  # OverSubscribe=EXCLUSIVE, AllowAccounts=ALL. This server's serving submit
-  # and step lane read their partition profiles from THIS file (the compute
-  # side reads ../rccs/site.yaml). ADR-109 D-3: in NO candidate list yet
-  # (scheduler.partition, step_executor.partition); it joins them only after
-  # the V2 first-launch receipts.
-  ai-pro6000:
+  # ng-dgx-l-[00-01] is the live name verified 2026-11-18 for the ai-pro6000
+  # hardware: aarch64, two discrete 96 GB RTX PRO 6000 Blackwell (sm_120, not
+  # the GB10's unified sm_121) per node, 128 CPUs, 1 TB RAM, MaxTime
+  # 1-00:00:00, DefaultTime 01:00:00, OverSubscribe=EXCLUSIVE, AllowAccounts=ALL.
+  # Both nodes were idle with no PENDING job at that check; this is not a runtime
+  # health result. The remote backend accepts the roster's explicit ng-dgx-l
+  # override without adding it to this front's generic scheduler candidates;
+  # step_executor remains ng-dgx-m3 only. Serving reads THIS profile (the compute
+  # side reads ../rccs/site.yaml); keep-alive stays off until on-demand preflight
+  # and readiness succeed. Both 468620 and 468760 failed readiness.
+  ng-dgx-l:
     arch: aarch64
     gpu_vendor: nvidia
     gpu_memory_gb: 96            # per GPU; two per node
-    # first-launch receipt pending (ADR-109 V2): runtime, userns, network
-    # and vLLM tag are ng-dgx-m3's, not yet proven on these nodes.
+    # Runtime, userns and network remain unproven on these nodes; the current
+    # NVFP4 entry intentionally uses Singularity, not these podman placeholders.
     oci_runtime: runc
     userns_mode: host
     network_backend: netavark
