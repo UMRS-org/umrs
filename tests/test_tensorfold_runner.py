@@ -308,6 +308,47 @@ def test_wrapper_dispatches_and_supervises_tensorfold() -> None:
     assert "tensorfold_stop" in text[text.index("cleanup_stack() {") :]
 
 
+def test_wrapper_resolves_one_exported_key_before_tensorfold_and_env_render(
+    tmp_path: Path,
+) -> None:
+    text = SERVE_MODEL_SLURM.read_text()
+    setup = 'VLLM_API_KEY="${VLLM_API_KEY:-$(openssl rand -hex 32)}"\nexport VLLM_API_KEY'
+    render = "VLLM_API_KEY=${VLLM_API_KEY:-$(openssl rand -hex 32)}"
+    heredoc = text.index('cat <<EOF > "./env.${uuid}"')
+    dispatch = text.index('== "tensorfold-dsv41" ]]; then')
+    assert setup in text
+    assert text.index(setup) < heredoc < dispatch
+    assert f"\n{render}\n" in text[heredoc : text.index("\nEOF\n", heredoc)]
+
+    calls = tmp_path / "openssl.calls"
+    script = f"""set -eu
+openssl() {{ printf 'call\\n' >> "$OPENSSL_CALLS"; printf '%064d' 0; }}
+unset VLLM_API_KEY
+{setup}
+shell_key=$VLLM_API_KEY
+{render}
+[ "$VLLM_API_KEY" = "$shell_key" ]
+[ "$(wc -l < "$OPENSSL_CALLS")" -eq 1 ]
+supplied_key=test-only-supplied-key
+VLLM_API_KEY=$supplied_key
+{setup}
+[ "$VLLM_API_KEY" = "$supplied_key" ]
+shell_key=$VLLM_API_KEY
+{render}
+[ "$VLLM_API_KEY" = "$shell_key" ]
+[ "$(wc -l < "$OPENSSL_CALLS")" -eq 1 ]
+export -p | grep -q '^declare -x VLLM_API_KEY='
+"""
+    res = subprocess.run(
+        [shutil.which("bash") or "/bin/bash", "-c", script],
+        env={"PATH": os.environ["PATH"], "OPENSSL_CALLS": str(calls)},
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert res.returncode == 0, res.stderr
+
+
 def test_missing_image_loads_from_the_site_archive(env: dict[str, str], tmp_path: Path) -> None:
     """RCCS node image stores are node-local: a localhost/* image reaches a
     node only as <archive dir>/<name>-<tag>-<arch>.tar (venue.sh)."""

@@ -595,6 +595,11 @@ if [[ -z "${LITELLM_MAX_REQUESTS_BEFORE_RESTART+set}" ]]; then
     fi
 fi
 
+# TensorFold reads the batch-shell key while Compose reads env.${uuid}. Resolve
+# and export it once here so both consumers use the same supplied/generated key.
+VLLM_API_KEY="${VLLM_API_KEY:-$(openssl rand -hex 32)}"
+export VLLM_API_KEY
+
 # Owner-only from the start (2026-09-26): it carries the LiteLLM/vLLM keys, and
 # the job dir sits on shared Lustre. Every reader is host-side (grep/sed,
 # podman --env-file), so no container user needs to read it.
