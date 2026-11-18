@@ -27,6 +27,22 @@ def test_shape_rules(url: str, reason: str) -> None:
         validate_provider_base_url(url)
 
 
+@pytest.mark.parametrize(
+    "key",
+    ["key", "api_key", "api-key", "apikey", "token", "access_token", "sig", "signature"],
+)
+def test_blank_credential_query_keys_rejected(key: str) -> None:
+    with pytest.raises(ProviderUrlError) as exc_info:
+        validate_provider_base_url(f"https://93.184.216.34/v1?{key}=")
+    assert exc_info.value.reason == "credential_query_key"
+
+
+@pytest.mark.parametrize("query", ["label=", "api-version=2024-01-01", "tokenize=disabled"])
+def test_non_secret_query_keys_remain_allowed(query: str) -> None:
+    result = validate_provider_base_url(f"https://93.184.216.34/v1?{query}")
+    assert result.base_url == f"https://93.184.216.34/v1?{query}"
+
+
 def test_trusted_http_host_allowed(monkeypatch) -> None:
     monkeypatch.setattr(socket, "getaddrinfo", _fake_getaddrinfo(["104.18.2.161"]))
     result = validate_provider_base_url(
@@ -69,6 +85,12 @@ def test_infra_and_numeric_rejects(url: str, reason: str) -> None:
         validate_provider_base_url(url)
 
 
+def test_global_unicast_ipv6_literal_accepted() -> None:
+    result = validate_provider_base_url("https://[2001:200::1]/v1")
+    assert result.base_url == "https://[2001:200::1]/v1"
+    assert result.allow_host == "https://[2001:200::1]"
+
+
 # ── DNS resolution behavior (stubbed getaddrinfo) ───────────────────────
 
 
@@ -95,6 +117,13 @@ def test_dns_rejected_on_link_local(monkeypatch):
     monkeypatch.setattr(socket, "getaddrinfo", _fake_getaddrinfo(["169.254.169.254"]))
     with pytest.raises(ProviderUrlError, match="address_not_global"):
         validate_provider_base_url("https://imds.example.internal.cloud")
+
+
+def test_dns_name_rejects_malformed_resolved_address(monkeypatch) -> None:
+    monkeypatch.setattr(socket, "getaddrinfo", _fake_getaddrinfo(["not-an-ip-address"]))
+    with pytest.raises(ProviderUrlError) as exc_info:
+        validate_provider_base_url("https://malformed.example/v1")
+    assert exc_info.value.reason == "address_not_global"
 
 
 def test_unresolvable_name_rejected(monkeypatch):
