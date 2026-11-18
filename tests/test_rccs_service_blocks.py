@@ -4,12 +4,51 @@ served once carry ``service`` blocks; svc-chat (DeepSeek, blocked) and Nimble
 
 from __future__ import annotations
 
+from fractions import Fraction
 from pathlib import Path
 
 import yaml
 from umrs.orchestrator.endpoint_relay import keep_alive_policies
 
 POOL = Path(__file__).resolve().parents[1] / "deploy/rccs/pool-rccs.yaml"
+GIB = 1 << 30
+
+# SGLang 314bce7c + checkpoint 3ae9c0d3, measured by failed job 502594:
+# SM120 selects V4 pages (584 B raw, 585 B after page padding); 40 SWA layers
+# plus the 41/40 DSpark draft inflation price one SWA token at 23,985 B. One
+# ratio-1 and three ratio-2 owner layers price a full token with the same
+# inflation. Revalidate every constant against the pinned source if either pin,
+# the model shape, speculative settings, page size or KV layout changes.
+SWA_BYTES_PER_TOKEN = Fraction(585 * 40 * 41, 40)
+FULL_BYTES_PER_TOKEN = Fraction(41, 40) * (585 + 68 + 3 * Fraction(585 + 68, 2))
+OBSERVED_AVAILABLE_BYTES = 3675 * GIB // 1000
+
+
+def _pool_entry(name: str) -> dict:
+    entries = yaml.safe_load(POOL.read_text(encoding="utf-8"))["endpoints"]
+    return next(entry for entry in entries if entry["name"] == name)
+
+
+def _swa_cap_tokens(max_running: int) -> int:
+    per_request = 128 + 128 * 6 + 256 + 2 * 6
+    unaligned = max_running * per_request + 2 * 8192 + 256
+    unaligned += 4 * max_running * (128 + 256)
+    return (unaligned + 255) // 256 * 256
+
+
+def _ratio2_state_bytes(max_running: int) -> int:
+    # Six draft tokens select an eight-row ratio-2 ring. Three owner layers
+    # carry (kv, score) fp32 state with 2*512 values per row and request slot.
+    ring_size = 1 << (6 + 1).bit_length()
+    state_rows = (max_running + 1) * ring_size + ring_size + 1
+    state_rows = (state_rows + 1) // 2 * 2
+    return state_rows * (2 * 512) * 4 * 3
+
+
+def _required_bytes(max_running: int) -> Fraction:
+    fixed = _swa_cap_tokens(max_running) * SWA_BYTES_PER_TOKEN
+    fixed += _ratio2_state_bytes(max_running)
+    return fixed + 131072 * FULL_BYTES_PER_TOKEN
 
 
 def _policies():
@@ -107,6 +146,68 @@ def test_deepseek_v41_chat_services_on_m_pairs_and_ai_pro6000():
     }
 
 
+def test_nvfp4_smoke_budget_keeps_all_other_serving_settings():
+    entry = _pool_entry("deepseek-v4.1-flash-1017-nvfp4")
+    env = entry["env_vars"]
+    assert int(env["SG_MAX_RUNNING"]) == 32
+    assert int(env["SG_MAX_RUNNING"]) > 0
+    assert entry["max_model_len"] == 131072
+    assert "service" not in entry
+    assert {
+        key: env[key]
+        for key in (
+            "SG_CONTEXT",
+            "SG_KV_DTYPE",
+            "SG_MEM_FRACTION",
+            "SG_ENGRAM_CONFIG",
+            "SG_SPEC",
+            "SG_SPEC_BLOCK",
+            "SG_RUNTIME",
+            "SG_IMAGE",
+            "SG_TP",
+            "SG_GPUS_PER_NODE",
+            "SG_MODEL_ROOT",
+        )
+    } == {
+        "SG_CONTEXT": "131072",
+        "SG_KV_DTYPE": "fp8_e4m3",
+        "SG_MEM_FRACTION": "0.88",
+        "SG_ENGRAM_CONFIG": '{"placement":"cpu","replication":"none","lookup":"auto"}',
+        "SG_SPEC": "DSPARK",
+        "SG_SPEC_BLOCK": "5",
+        "SG_RUNTIME": "singularity",
+        "SG_IMAGE": "/home/users/masaru.nagaso/umrs_models_hs/images/sglang-314bce7c-arm64.sif",
+        "SG_TP": "4",
+        "SG_GPUS_PER_NODE": "2",
+        "SG_MODEL_ROOT": (
+            "/home/users/masaru.nagaso/umrs_models_hs/hub/"
+            "models--nvidia--DeepSeek-V4.1-Flash-1017-NVFP4"
+        ),
+    }
+    assert env["SG_MODEL_DIR"] == (
+        f"{env['SG_MODEL_ROOT']}/snapshots/3ae9c0d3fbbea5370bd06e679d22044db15883f1"
+    )
+
+
+def test_nvfp4_swa_cap_leaves_one_full_context_at_measured_budget():
+    max_running = int(_pool_entry("deepseek-v4.1-flash-1017-nvfp4")["env_vars"]["SG_MAX_RUNNING"])
+    assert _swa_cap_tokens(256) == 707840
+    assert round(float(_swa_cap_tokens(256) * SWA_BYTES_PER_TOKEN / GIB), 2) == 15.81
+    assert _swa_cap_tokens(max_running) == 103168
+    assert _swa_cap_tokens(64) == 189440
+
+    # Job 502594 printed 3.68 GB. Conservatively use only 3.675 GiB, include
+    # the ratio-2 fixed state, and require room for one complete 131072-token
+    # request. This arithmetic is a smoke admission check, never health proof.
+    required = _required_bytes(max_running)
+    assert required <= OBSERVED_AVAILABLE_BYTES
+    fixed_without_full = required - 131072 * FULL_BYTES_PER_TOKEN
+    full_tokens = int((OBSERVED_AVAILABLE_BYTES - fixed_without_full) / FULL_BYTES_PER_TOKEN)
+    full_tokens = full_tokens // 256 * 256
+    assert full_tokens >= 131072
+    assert _required_bytes(64) > OBSERVED_AVAILABLE_BYTES
+
+
 def test_ai_pro6000_deepseek_v41_nvfp4_not_service_kept():
     """Regression: ai-pro6000 NVFP4 stays on-demand until external prereqs
     (GPU reset/podman, receipt/logs) are cleared; m-pair TensorFold remains kept."""
@@ -135,8 +236,8 @@ def test_ng_dgx_l_reaches_cluster_and_hold_sources():
 def test_dsv41_report_source_records_current_rollout_without_invented_results():
     """The report does not turn either failed readiness attempt into a result."""
     report = (POOL.parent / "dsv41/dsv41-serving-bench.html").read_text()
-    assert "499019" in report
-    assert "ng-dgx-m0" in report
+    assert "501690" in report
+    assert "ng-dgx-m1" in report
     assert "VLLM_API_KEY" in report
     assert "468620" in report
     assert "468760" in report

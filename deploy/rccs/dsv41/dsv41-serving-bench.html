@@ -73,11 +73,11 @@ details summary { cursor: pointer; color: var(--ink-2); font-size: 13.5px; }
   <header class="prose">
     <div class="eyebrow">RIKEN R-CCS · rccs cluster · UMRS service tier</div>
     <h1>DeepSeek-V4.1-Flash-1017 on GB10 and RTX PRO 6000</h1>
-    <p class="lede">How the node architecture, the GPU and the interconnect shape LLM serving, measured with one client and one workload. The GB10 measurements are complete; direct TensorFold job 499019 is running on ng-dgx-m0, while the managed rollout and NVFP4 preflight remain open. There are no NVFP4 benchmark results yet.</p>
+    <p class="lede">How the node architecture, the GPU and the interconnect shape LLM serving, measured with one client and one workload. The GB10 measurements are complete; managed 501721 has a real ADMISSION_OK receipt and direct 501690 remains untouched. NVFP4 has a conservative SWA-budget correction awaiting a controlled retry, not health evidence. There are no NVFP4 benchmark results yet.</p>
     <div class="meta">
-      <span class="status">Interim · GB10 measured, NVFP4 preflight blocked</span>
-      <span>measured 2026-11-12 · updated 2026-11-18</span>
-      <span>benchmark jobs 468148, 468257 · direct serving job 499019</span>
+      <span class="status">Interim · GB10 measured, NVFP4 budget correction awaiting retry</span>
+      <span>measured 2026-11-12 · updated 2026-11-19</span>
+      <span>benchmark jobs 468148, 468257 · direct 501690 untouched</span>
     </div>
   </header>
 
@@ -99,7 +99,7 @@ details summary { cursor: pointer; color: var(--ink-2); font-size: 13.5px; }
     </div>
     <div class="tablewrap">
       <table>
-        <thead><tr><th></th><th>ng-dgx-m pair (GB10; direct 499019 on m0)</th><th>ng-dgx-l ×2 (ai-pro6000 / RTX PRO 6000)</th></tr></thead>
+        <thead><tr><th></th><th>ng-dgx-m pair (GB10; direct 501690 on ng-dgx-m1 untouched)</th><th>ng-dgx-l ×2 (ai-pro6000 / RTX PRO 6000)</th></tr></thead>
         <tbody>
           <tr><td>Accelerators</td><td>2 nodes × 1 GB10, unified LPDDR5x (121.6 GiB a node)</td><td>2 nodes × 2 discrete RTX PRO 6000 Blackwell, 96 GB GDDR7 each; 1 TB host RAM a node</td></tr>
           <tr><td>Parallelism</td><td>TP=2, one rank per node</td><td>TP=4: 2 ranks per node over PCIe, 2 nodes over the network (SGLang refuses PP for V4.1)</td></tr>
@@ -181,10 +181,11 @@ details summary { cursor: pointer; color: var(--ink-2); font-size: 13.5px; }
   <section class="prose">
     <h2>Rollout state and the RTX PRO 6000 leg</h2>
     <div class="pending">
-      <p><b>Managed GB10 launch awaits the key repair:</b> direct TensorFold job 499019 is RUNNING on ng-dgx-m0. Managed attempts 499008, 501002, 501015 and their successors failed in about 20 s with <span class="mono">FATAL: TensorFold needs VLLM_API_KEY</span>. The wrapper now resolves and exports one supplied or generated key before it renders the Compose environment and sources TensorFold; the repair still needs reviewed convergence and a managed-health check. The direct job is not a managed-health substitute and stays untouched.</p>
+      <p><b>Managed GB10 request, separate from NVFP4:</b> managed 501721 returned <span class="mono">ADMISSION_OK</span> to a real authenticated managed chat after the <span class="mono">VLLM_API_KEY</span> and admission corrections. Direct 501690 remains untouched. Neither fact is NVFP4 model-health, readiness or benchmark evidence.</p>
       <p><b>No NVFP4 benchmark results:</b> previous direct jobs 468620 and the later 468760 both failed readiness with <span class="mono">CUDA error: invalid device ordinal</span>. Follow-up diagnosis found GPU 0 reporting <span class="mono">[GPU requires reset]</span>: NVML and <span class="mono">singularity --nv</span> enumerated two devices, but TP1 then saw only ordinal 0. Slurm and <span class="mono">--gres=gpu:2</span> were correct; no launch-flag or partition change can heal that hardware state.</p>
       <p><b>Hardware/visibility preflight only:</b> short diagnostic <span class="mono">501617 / nvfp4-gpu-preflight</span> completed on 2026-11-18 with <span class="mono">PREFLIGHT_OK all four GPUs</span>. On BOTH ai-pro6000 nodes, every <span class="mono">mig.mode.current</span> result was <span class="mono">[N/A]</span>, legacy <span class="mono">singularity exec --nv</span> saw both devices, and fresh-process CUDA allocations/synchronizations succeeded on local ordinals 0 and 1. Typed allocation plus untyped per-step <span class="mono">--gres=gpu:2</span> was accepted. This is not model loading, health, auth, network, storage or readiness evidence and creates no benchmark result. The reset-required guard remains for future failures.</p>
-      <p><b>Next:</b> the two ai-pro6000 nodes use partition <span class="mono">ng-dgx-l</span>. The existing NVFP4 registration and aliases remain; the reset guard rejects a future reset-required row before key/rank launch. After merge and rccs convergence, on-demand Singularity provision and an actual model health check are still required. Only a separate later decision can enable keep-alive.</p>
+      <p><b>Failed process state is not health:</b> on-demand 502594 remained Slurm-RUNNING, but rank 0 had already failed with a 707840-token SWA cap (15.81 GB) leaving no full-KV pool in the observed 3.68 GB, while rank 1 waited for the dead head. The roster-only correction sets <span class="mono">SG_MAX_RUNNING=32</span>, yielding a 103168-token cap (~2.3045 GiB) with no other memory, speculative, context, storage, image or TP change. This conservative smoke budget must be revalidated before any increase; it is neither optimal production concurrency nor a readiness guarantee.</p>
+      <p><b>Next:</b> after merge and rccs convergence, identify and gracefully stop the failed endpoint, confirm terminal Slurm and registry state, then make one controlled on-demand retry. Require <span class="mono">max_running_requests=32</span>, <span class="mono">swa_tokens=103168</span>, positive full-token capacity and both-rank health before any authenticated generation or later keep-alive decision. Registration and aliases remain; <span class="mono">service:</span> and max surge stay disabled.</p>
     </div>
     <p>What the comparison isolates when a healthy NVFP4 run lands:</p>
     <ul>
@@ -202,7 +203,7 @@ details summary { cursor: pointer; color: var(--ink-2); font-size: 13.5px; }
       <li>Hardware numbers: <span class="mono">hw_bench.py</span> (PyTorch 2.13, NCCL 2.30.7) in the serving image; raw RDMA with <span class="mono">ib_write_bw / ib_write_lat</span>.</li>
       <li>Two repetitions per point, medians shown. Single-stream decode varied by ±3 tok/s between repetitions.</li>
       <li>The GB10 nodes run in rccs's shared Lustre environment: ~15 GiB of kernel slab stays resident, so a job gets ~105 GiB of the 121.6 GiB. The recipe asks for 112 GiB free; it runs here with vision off, a 131,072 context, a 100 GiB pre-start reclaim and the engine reserve at 11.5 GiB.</li>
-      <li>Scripts, staging and the serving entries: umrs branch <span class="mono">ai4s-platform</span>, <span class="mono">deploy/rccs/dsv41/</span>. Raw GB10 JSON: <span class="mono">~/tmp/dsv41/bench/</span> on rccs. This source was updated on 2026-11-18 without republishing the live Claude artifact and without inventing PRO 6000 measurements.</li>
+      <li>Scripts, staging and the serving entries: umrs branch <span class="mono">ai4s-platform</span>, <span class="mono">deploy/rccs/dsv41/</span>. Raw GB10 JSON: <span class="mono">~/tmp/dsv41/bench/</span> on rccs. This source was updated on 2026-11-19 without republishing the live Claude artifact and without inventing PRO 6000 measurements.</li>
     </ul>
   </section>
 </div>

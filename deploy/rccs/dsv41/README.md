@@ -30,11 +30,10 @@ rccs facts these scripts encode (measured 2026-11-12):
 - a throwaway podman store's database pins the first job's runroot: drop `db.sql`, `libpod/` and
   `overlay-containers/` before reusing it in a new job.
 
-Current rollout facts (2026-11-18):
+Current rollout facts (2026-11-19):
 
-- direct TensorFold `499019` is RUNNING on `ng-dgx-m0`; managed attempts failed because the batch shell lacked
-  `VLLM_API_KEY`. The wrapper exports one key before the env heredoc and TensorFold source, but managed health is not
-  proven until the reviewed rccs convergence and a new readiness receipt;
+- managed TensorFold `501721` returned `ADMISSION_OK` to a real authenticated managed chat after its admission
+  correction. Direct `501690` remains untouched. These are m-pair facts, not NVFP4 health evidence;
 - `ng-dgx-l` was UP with both ai-pro6000 nodes idle and no PENDING job at the check. This is capacity, not runtime
   health. Only the NVFP4 roster entry and its required direct-backend scheduler override candidate use the new name;
   TensorFold remains `ng-dgx-m2,ng-dgx-m0,ng-dgx-m1`, and the step lane remains `ng-dgx-m3`;
@@ -45,5 +44,11 @@ Current rollout facts (2026-11-18):
   `[N/A]` MIG rows, both GPUs were visible through `singularity exec --nv`, and fresh CUDA init/allocation/
   synchronization passed on local ordinals 0 and 1. Typed allocation plus per-step `--gres=gpu:2` was accepted. This
   hardware/visibility preflight is not model loading, health, auth, network, storage or readiness evidence. No NVFP4
-  benchmark exists; registration/aliases remain and `service:` stays commented pending on-demand provision + health.
+  benchmark exists; registration/aliases remain and `service:` stays commented pending on-demand provision + health;
+- on-demand `502594` remained Slurm-RUNNING after its rank 0 failed: implicit `max_running_requests=256` produced a
+  707840-token SWA cap (15.81 GB), leaving no full-KV pool within the observed 3.68 GB; rank 1 waited for the dead
+  head. Running state is therefore not health. The only correction is roster `SG_MAX_RUNNING: "32"` (103168 tokens,
+  ~2.3045 GiB), a conservative smoke budget requiring revalidation before increase, not optimal production
+  concurrency or readiness proof. It awaits a controlled graceful stop and one on-demand retry with both-rank
+  health, positive full-token capacity and authenticated generation checks; max surge/keepalive stay disabled.
   `dsv41-serving-bench.html` is updated source only; the live Claude artifact has not been republished.

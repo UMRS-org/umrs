@@ -204,6 +204,25 @@ def test_rank1_joins_rank0_without_key(env: dict[str, str]) -> None:
     }
 
 
+def test_explicit_max_running_forwards_once_to_both_ranks(env: dict[str, str]) -> None:
+    env["SG_MAX_RUNNING"] = "32"
+    for rank in (0, 1):
+        argv = _argv(env, rank)
+        cmd = argv[argv.index(IMAGE) + 1 :]
+        assert cmd.count("--max-running-requests") == 1
+        assert _after(cmd, "--max-running-requests") == "32"
+        assert ("--config" in cmd) is (rank == 0)
+
+
+def test_unset_max_running_omits_flag_without_a_model_fallback(env: dict[str, str]) -> None:
+    env.pop("SG_MAX_RUNNING", None)
+    for rank in (0, 1):
+        argv = _argv(env, rank)
+        cmd = argv[argv.index(IMAGE) + 1 :]
+        assert "--max-running-requests" not in cmd
+        assert ("--config" in cmd) is (rank == 0)
+
+
 def test_tp2_pp2_layout_and_attention_backend(env: dict[str, str]) -> None:
     env.update(SG_PP="2", SG_ATTN_BACKEND="flashmla", SG_SPEC="", SG_ENGRAM_CONFIG="")
     cmd = _argv(env, 0)

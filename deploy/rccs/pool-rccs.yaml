@@ -375,6 +375,9 @@ endpoints:
       SG_CONTEXT: "131072"
       SG_KV_DTYPE: "fp8_e4m3"
       SG_MEM_FRACTION: "0.88"
+      # Conservative 502594 smoke budget, not production optimum or readiness proof;
+      # implicit 256 exhausted SWA/full-KV memory. Revalidate before any increase.
+      SG_MAX_RUNNING: "32"
       SG_ENGRAM_CONFIG: '{"placement":"cpu","replication":"none","lookup":"auto"}'
       SG_SPEC: "DSPARK"
       SG_SPEC_BLOCK: "5"
