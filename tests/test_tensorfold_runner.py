@@ -27,6 +27,7 @@ import pytest
 MINI_RIVAULT = Path(__file__).resolve().parents[1] / "src" / "umrs" / "mini-rivault-llm"
 LIB = MINI_RIVAULT / "tensorfold_runner.sh"
 SERVE_MODEL_SLURM = MINI_RIVAULT / "serve-model.slurm"
+TF_DIRECT = MINI_RIVAULT.parents[2] / "deploy/rccs/dsv41/tf_direct.sbatch"
 SECRET = "sk-test-not-a-real-key-5f3a"
 
 _SRUN = r"""#!/bin/bash
@@ -250,6 +251,29 @@ def test_memory_gate_refuses_short_node(env: dict[str, str]) -> None:
     assert res.returncode == 1
     assert "node-a=96GiB available, 112 GiB needed" in res.stderr
     assert not any("podman run" in c for c in _calls(env))
+
+
+def test_memory_gate_111_gib_refuses_110_before_rank_launch(env: dict[str, str]) -> None:
+    env.update(
+        TF_MIN_AVAIL_GIB="111",
+        TF_MIN_AVAIL_WAIT_S="0",
+        PROBE_A="10.200.0.1 rocep1s0f1 3 110 unlimited",
+    )
+    res = _run(env, "start_tensorfold")
+    assert res.returncode == 1
+    assert "node-a=110GiB available, 111 GiB needed" in res.stderr
+    assert not any("podman run" in c for c in _calls(env))
+
+
+def test_direct_defaults_admit_exact_weights_plus_engine_reserve() -> None:
+    direct = TF_DIRECT.read_text()
+    admission = (
+        "export TF_MIN_AVAIL_GIB=${TF_MIN_AVAIL_GIB:-111} "
+        "TF_MIN_AVAIL_WAIT_S=300 TF_PRESTART_RECLAIM_GIB=100"
+    )
+    reserve = "export TF_RDMA=${TF_RDMA:-1} TF_MEMORY_RESERVE_GIB=${TF_MEMORY_RESERVE_GIB:-11.5}"
+    assert admission in direct
+    assert reserve in direct
 
 
 def test_unstaged_image_refused_before_launch(env: dict[str, str]) -> None:

@@ -25,7 +25,9 @@ export TF_ENGRAM_SUB=hub/models--deepseek-ai--DeepSeek-V4.1-Flash-1017/snapshots
 export TF_ENGRAM_DIR=/var/tmp/umrs-tf/engram-1bae0e10
 export TF_HEAD_CACHE_DIR=/var/tmp/umrs-tf/rank-cache-45ee5d0f TF_WORKER_CACHE_DIR=/var/tmp/umrs-tf/rank-cache-45ee5d0f
 export TF_CONTEXT=${TF_CONTEXT:-131072} TF_PARALLEL=${TF_PARALLEL:-4} TF_DRAFTS=${TF_DRAFTS:-1}
-export TF_MIN_AVAIL_GIB=${TF_MIN_AVAIL_GIB:-100} TF_MIN_AVAIL_WAIT_S=300 TF_PRESTART_RECLAIM_GIB=100
+# The launcher floors MemAvailable but the engine checks unrounded weights:
+# ceil(98.9 + 11.5) = 111; 110 is insufficient (default 112 uses 12.2).
+export TF_MIN_AVAIL_GIB=${TF_MIN_AVAIL_GIB:-111} TF_MIN_AVAIL_WAIT_S=300 TF_PRESTART_RECLAIM_GIB=100
 export TF_FABRIC_IFACE=${TF_FABRIC_IFACE:-enP2p1s0f1np1} TF_MASTER_IFACE=${TF_MASTER_IFACE:-enP7s7}
 export TF_RDMA=${TF_RDMA:-1} TF_MEMORY_RESERVE_GIB=${TF_MEMORY_RESERVE_GIB:-11.5}
 export TF_WORKER_MODE=step RIVAULT_MN_WORKER_MODE=step RIVAULT_USERNS_MODE=host RCCS_SKIP_CDI=1

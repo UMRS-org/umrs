@@ -83,7 +83,14 @@ def test_deepseek_v41_chat_services_on_m_pairs_and_ai_pro6000():
         "tf_partitions": tf["partition"].split(","),
         "sg_partition": sg["partition"],
         "runners": (tf_env["RIVAULT_NATIVE_LLM_RUNNER"], sg_env["RIVAULT_NATIVE_LLM_RUNNER"]),
-        "tf_fit": (tf_env["TF_DRAFTS"], tf_env["TF_CONTEXT"], tf_env["TF_MIN_AVAIL_GIB"]),
+        "tf_fit": (
+            tf_env["TF_DRAFTS"],
+            tf_env["TF_CONTEXT"],
+            tf_env["TF_MIN_AVAIL_GIB"],
+            tf_env["TF_MEMORY_RESERVE_GIB"],
+            tf_env["TF_PRESTART_RECLAIM_GIB"],
+            tf_env["TF_MIN_AVAIL_WAIT_S"],
+        ),
         "tf_rendezvous": (tf_env["TF_MASTER_IFACE"], tf_env["TF_WORKER_MODE"]),
         "chat_owners": sorted(n for n, e in entries.items() if "svc-chat" in e.get("aliases", [])),
     }
@@ -94,7 +101,7 @@ def test_deepseek_v41_chat_services_on_m_pairs_and_ai_pro6000():
         "tf_partitions": ["ng-dgx-m2", "ng-dgx-m0", "ng-dgx-m1"],
         "sg_partition": "ng-dgx-l",
         "runners": ("tensorfold-dsv41", "sglang-mn"),
-        "tf_fit": ("1", "131072", "100"),
+        "tf_fit": ("1", "131072", "111", "11.5", "100", "300"),
         "tf_rendezvous": ("enP7s7", "step"),
         "chat_owners": ["deepseek-v4.1-flash-1017", "deepseek-v4.1-flash-1017-nvfp4"],
     }

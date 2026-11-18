@@ -271,7 +271,7 @@ endpoints:
   #  Memory (the reason this was refused on 2026-11-01/02): upstream wants
   #  112 GiB free per node and rank 0 holds ~104 GiB with the DSpark drafter
   #  and vision; an rccs m node gives ~105 GiB before swap (Lustre slab floor
-  #  ~15 GiB). So: vision off (not passed), 131072 context, gate at 100 GiB after a
+  #  ~15 GiB). So: vision off (not passed), 131072 context, gate at 111 GiB after a
   #  100 GiB GB10 reclaim, engine reserve 11.5 GiB; the drafter fits (9 GiB
   #  left per node after load, measured); memguards kill a rank before the
   #  node runs dry (an OOM freezes a GB10).
@@ -317,7 +317,9 @@ endpoints:
       # drafter on (measured 2026-11-12, job 468257): 1.3-1.9x decode, 9 GiB
       # left per node after load, no memguard event through 87k-token prompts
       TF_DRAFTS: "1"
-      TF_MIN_AVAIL_GIB: "100"
+      # Fail closed for exact weights plus the engine reserve:
+      # ceil(98.9 + 11.5) = 111 (default ceil(98.9 + 12.2) = 112); 110 is short.
+      TF_MIN_AVAIL_GIB: "111"
       # the load check counts the drafter even with drafts off (98.8 GiB vs
       # 110.6 - 12.2); 11.5 admits the ~95 GiB actually loaded, ~15 GiB left
       TF_MEMORY_RESERVE_GIB: "11.5"
