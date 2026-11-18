@@ -604,3 +604,117 @@ def test_singularity_ranks_run_in_steps_that_request_the_gpus(
         "head_step": True,
         "worker_step": True,
     }, res.stderr
+
+
+_MANAGED_PODMAN = r"""#!/bin/bash
+echo "podman $*" >> "$STUB_DIR/calls.log"
+case "$1 $2" in
+  "ps -q") printf 'managed-stack-container\n'; exit 0 ;;
+  "container exists") exit 1 ;;
+  "container inspect") exit 125 ;;
+esac
+exit 0
+"""
+
+_MANAGED_SINGULARITY = r"""#!/bin/bash
+echo "singularity $*" >> "$STUB_DIR/calls.log"
+rank=
+previous=
+for argument in "$@"; do
+  [ "$previous" = --node-rank ] && rank=$argument
+  previous=$argument
+done
+if [ "$rank" = 0 ]; then
+  case "$STUB_HEAD_MODE" in
+    loading) exec @REAL_SLEEP@ 30 ;;
+    clean) exit 0 ;;
+    *) exit 42 ;;
+  esac
+fi
+exec @REAL_SLEEP@ 30
+"""
+
+
+def _run_managed_singularity(
+    env: dict[str, str], tmp_path: Path, *, stop_requested: bool = False
+) -> subprocess.CompletedProcess[str]:
+    """Run the real managed monitor with a fake, bounded Singularity engine."""
+    real_sleep = shutil.which("sleep") or "/bin/sleep"
+    _write_exec(Path(env["STUB_DIR"]) / "podman", _MANAGED_PODMAN)
+    _write_exec(
+        Path(env["STUB_DIR"]) / "singularity",
+        _MANAGED_SINGULARITY.replace("@REAL_SLEEP@", real_sleep),
+    )
+    _write_exec(
+        Path(env["STUB_DIR"]) / "sleep",
+        f"#!/bin/bash\nexec {real_sleep} 0.01\n",
+    )
+    env.update(
+        RIVAULT_NATIVE_LLM_RUNNER="sglang-mn",
+        RIVAULT_FRONT_PROBE="0",
+        RIVAULT_JOB_POLL_INTERVAL="1",
+        RIVAULT_JOB_TIMEOUT="20",
+        RIVAULT_ENGINE_RESPAWN_SLEEP_SEC="0",
+        JOB_INFO_DIR=str(tmp_path / "wrapper" / "jobs"),
+    )
+    if stop_requested:
+        env["STUB_HEAD_MODE"] = "crash"
+    text = (MINI_RIVAULT / "serve-model.slurm").read_text()
+    monitor = text[text.index("RIVAULT_JOB_TIMEOUT=${RIVAULT_JOB_TIMEOUT:-0}") :]
+    wrapper = tmp_path / "wrapper"
+    for library in ("attempt_budget.sh", "stack_health.sh"):
+        shutil.copy(MINI_RIVAULT / library, wrapper / library)
+    stop = ""
+    if stop_requested:
+        stop = ': > "$RIVAULT_STOP_REQUEST_FILE"\n'
+    script = f"""#!/bin/bash
+set -uo pipefail
+RIVAULT_COMPOSE_PROJECT=rivault-managed-test
+RIVAULT_NETWORK_NAME=rivault-managed-test-net
+RIVAULT_STOP_REQUEST_FILE={wrapper}/stop.request
+NGINX_LITELLM_DOCKER_PORT=4000
+uuid=managed-test
+GPUoverride=()
+DbOverride=()
+_profile_flags=""
+source {LIB}
+{_PROBE_STUB}
+managed_cleanup() {{
+  rc=$?
+  trap - EXIT
+  sglang_stop
+  exit "$rc"
+}}
+trap managed_cleanup EXIT
+start_sglang_mn
+{stop}{monitor}
+"""
+    script_path = wrapper / "managed-monitor.sh"
+    _write_exec(script_path, script)
+    return subprocess.run(
+        [script_path],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+
+
+@pytest.mark.parametrize(
+    ("head_mode", "stop_requested", "expected_rc"),
+    [("crash", False, 125), ("clean", False, 125), ("loading", False, 124), ("crash", True, 0)],
+    ids=["rank0-crashes", "rank0-exits-zero", "rank0-still-loading", "graceful-stop"],
+)
+def test_managed_singularity_rank0_lifecycle(
+    env: dict[str, str], tmp_path: Path, head_mode: str, stop_requested: bool, expected_rc: int
+) -> None:
+    """502594: a dead Singularity head must not leave rank 1 and Slurm alive."""
+    sif = _sif(env, tmp_path)
+    assert sif.exists()
+    env["STUB_HEAD_MODE"] = head_mode
+    res = _run_managed_singularity(env, tmp_path, stop_requested=stop_requested)
+    assert res.returncode == expected_rc, res.stdout[-3000:] + res.stderr[-3000:]
+    fatal = "FATAL: Singularity SGLang rank 0 exited; failing the managed allocation"
+    assert (fatal in res.stdout + res.stderr) is (expected_rc == 125)
+    assert "Engine dead" not in res.stdout + res.stderr

@@ -2683,6 +2683,15 @@ while [ "$RIVAULT_JOB_TIMEOUT" -eq 0 ] || [ "$ELAPSED" -lt "$RIVAULT_JOB_TIMEOUT
         echo "[rivault] Graceful stop requested via ${RIVAULT_STOP_REQUEST_FILE}. Exiting monitor loop."
         exit 0
     fi
+    # Singularity has no engine container for the podman checks below. Its
+    # rank-0 srun process is the head's lifetime: once it exits (even with rc
+    # 0), the peer cannot serve and the whole managed allocation must fail.
+    # A live rank loading weights is not a failure; graceful stop is above.
+    if [[ "${RIVAULT_NATIVE_LLM_RUNNER:-}" == "sglang-mn" && "${SG_RUNTIME:-podman}" == "singularity" ]] \
+        && ! sg_rank0_alive; then
+        echo "[rivault] FATAL: Singularity SGLang rank 0 exited; failing the managed allocation" >&2
+        exit 125
+    fi
     # Transient podman/storage stalls on the spark nodes can make a single
     # `podman ps` return empty/fail with rc!=0 even though every rivault
     # container is healthy (live evidence: jobs 3571/3572/3574 — litellm was
