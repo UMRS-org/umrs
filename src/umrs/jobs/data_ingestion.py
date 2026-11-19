@@ -31,6 +31,20 @@ def _build_s3_client() -> Any:
     )
 
 
+def _ingest_s3_client(project_id: str, bucket: str) -> Any:
+    """Return the store holding *bucket* for the job's project, failing closed."""
+    from umrs.shared.storage.project_storage import (
+        ProjectStorageUnavailable,
+        resolve_bucket_store,
+    )
+
+    try:
+        bound = resolve_bucket_store(bucket, project_id, default=None)
+    except ProjectStorageUnavailable as exc:
+        raise RuntimeError(f"project storage binding unreadable: {exc}") from exc
+    return bound.get_client() if bound is not None else _build_s3_client()
+
+
 class DataIngestionBackend(OrchestratorBackend):
     """Synchronous per-object ingestion (MVP), similar to INDEX_BUILD."""
 
@@ -61,7 +75,7 @@ class DataIngestionBackend(OrchestratorBackend):
         except CatalogStoreUnavailable as exc:
             raise RuntimeError(str(exc)) from exc
 
-        s3_client = _build_s3_client()
+        s3_client = _ingest_s3_client(project_id, bucket)
         try:
             metrics = ingest_object(
                 s3_client,
