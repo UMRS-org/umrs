@@ -10,9 +10,10 @@ throwaway rootless-Podman container instead of the UMRS server process:
   chunks + vectors out. No credentials, database or object-store access
   crosses the boundary: the server keeps every read and write.
 
-Site opt-in: ``UMRS_EMBEDDING_SANDBOX=podman``. Unset = the in-process lane
-(unchanged). A configured-but-failing sandbox raises — never a silent fall
-back to in-process compute.
+Site opt-in: ``UMRS_EMBEDDING_SANDBOX=podman``. Unset or an explicit off
+value = the in-process lane; an unknown value is refused by name. A
+configured-but-failing sandbox raises — never a silent fall back to
+in-process compute.
 
 Both lanes carry the site's chunk scheme (``fixed-v0`` | ``sent-v1``,
 ADR-093 D-11) and, for ``sent-v1``, one header title per text: chunking
@@ -41,6 +42,23 @@ Runner = Callable[..., subprocess.CompletedProcess]
 
 class EmbeddingSandboxError(RuntimeError):
     """The configured sandbox could not produce embeddings (named, never masked)."""
+
+
+_OFF_VALUES = frozenset(
+    {"", "off", "none", "0", "false", "no", "in_process", "inprocess"}
+)
+
+
+def sandbox_opted_in() -> bool:
+    """True for ``podman``, False for an explicit off; anything else is refused by name."""
+    raw = os.environ.get(SANDBOX_ENV, "").strip().lower()
+    if raw == "podman":
+        return True
+    if raw in _OFF_VALUES:
+        return False
+    raise EmbeddingSandboxError(
+        f"{SANDBOX_ENV}={raw!r} is not a known lane: use 'podman' or 'off'"
+    )
 
 
 def _default_runner(argv: list[str], *, input_text: str, timeout: float) -> Any:
@@ -79,7 +97,7 @@ def sandbox_config_from_env(model_dir: str) -> SandboxConfig | None:
 
     Opted in without an image is a configuration error, named.
     """
-    if os.environ.get(SANDBOX_ENV, "").strip().lower() != "podman":
+    if not sandbox_opted_in():
         return None
     image = os.environ.get(IMAGE_ENV, "").strip() or os.environ.get(
         "UMRS_STEP_IMAGE", ""
@@ -112,7 +130,7 @@ def worker_sandbox_config() -> SandboxConfig | None:
     """The sandbox config for a worker that mounts its own model directories
     (the ingest worker, ADR-116 D-1/D-3): same opt-in, image and limits as
     the embedder, no ``/model`` mount. None when the site did not opt in."""
-    if os.environ.get(SANDBOX_ENV, "").strip().lower() != "podman":
+    if not sandbox_opted_in():
         return None
     image = os.environ.get(IMAGE_ENV, "").strip() or os.environ.get(
         "UMRS_STEP_IMAGE", ""
@@ -340,5 +358,6 @@ __all__ = [
     "build_argv",
     "run_worker",
     "sandbox_config_from_env",
+    "sandbox_opted_in",
     "worker_sandbox_config",
 ]
