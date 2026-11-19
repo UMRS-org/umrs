@@ -22,7 +22,7 @@ from umrs.api import rag as rag_api
 from umrs.api import rag_retrieve
 from umrs.orchestrator.endpoint_registry import EndpointRegistry, get_registry
 
-from r4_contracts.handshake_hmac import sign_claims
+from umrs_protocol.handshake_hmac import sign_claims
 
 SECRET = "h1r-rag-secret"
 

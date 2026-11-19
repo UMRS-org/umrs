@@ -102,7 +102,7 @@ def test_without_a_project_fails_closed(client):
 
 
 def test_another_project_is_denied_in_strict_mode(client, monkeypatch):
-    from r4_contracts.handshake_hmac import sign_claims
+    from umrs_protocol.handshake_hmac import sign_claims
 
     monkeypatch.setenv("UMRS_AUTH_MODE", "strict")
     monkeypatch.setenv("UMRS_HANDSHAKE_HMAC_SECRET", "sec")
@@ -125,7 +125,7 @@ def test_another_project_is_denied_in_strict_mode(client, monkeypatch):
 @pytest.mark.parametrize("route", ["/status", "/findings", "/readiness/graph"])
 def test_project_query_routes_deny_another_project(client, monkeypatch, route):
     """These routes took ?project_id= and never compared it with the caller."""
-    from r4_contracts.handshake_hmac import sign_claims
+    from umrs_protocol.handshake_hmac import sign_claims
 
     findings_calls: list[dict] = []
 

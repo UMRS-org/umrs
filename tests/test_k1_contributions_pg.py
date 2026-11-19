@@ -141,7 +141,7 @@ def _client(user: str, project: str, sync_pool: Any, monkeypatch: Any) -> Any:
     from umrs.api import knowledge_v2
     from umrs.api.files import get_project_id
 
-    from r4_contracts.handshake_hmac import sign_claims
+    from umrs_protocol.handshake_hmac import sign_claims
 
     async def _pool(_request: Any) -> Any:
         return _LoopFreePool()

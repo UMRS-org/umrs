@@ -15,7 +15,7 @@ from fastapi.testclient import TestClient
 from umrs.api.buckets import router as buckets_router
 from umrs.shared.storage import user_buckets as ub
 
-from r4_contracts.handshake_hmac import sign_claims
+from umrs_protocol.handshake_hmac import sign_claims
 
 SECRET = "h1x-bucket-oracle-secret"
 BUCKET = "alice.proj-a.videos"

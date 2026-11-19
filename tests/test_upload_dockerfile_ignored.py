@@ -67,7 +67,7 @@ def test_no_dockerfile_no_notice(tmp_path):
 
 def test_http_upload_reports_the_notice(tmp_path, monkeypatch):
     monkeypatch.setenv("UMRS_HANDSHAKE_HMAC_SECRET", "test-secret")
-    from r4_contracts.handshake_hmac import sign_claims
+    from umrs_protocol.handshake_hmac import sign_claims
 
     app = FastAPI()
     app.include_router(router)

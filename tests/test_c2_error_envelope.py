@@ -21,7 +21,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from umrs.api.error_responses import structured_http_exception_handler
 
-from r4_contracts.handshake_hmac import sign_claims
+from umrs_protocol.handshake_hmac import sign_claims
 
 SECRET = "c2-error-envelope-secret"
 

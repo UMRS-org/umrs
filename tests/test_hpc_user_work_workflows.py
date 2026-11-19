@@ -24,7 +24,7 @@ from umrs.server import workflow_runner as wr
 from umrs.server.workflow_execution_registry import ExecutionRecord
 from umrs.shared import hpc_user_work_access as access
 
-from r4_contracts.handshake_hmac import sign_claims
+from umrs_protocol.handshake_hmac import sign_claims
 
 LISTED = "proj-listed"
 NOT_ALLOWED = "hpcaccess.project_not_allowed"

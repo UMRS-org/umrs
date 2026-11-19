@@ -316,7 +316,7 @@ def test_provision_endpoint_strict_mode_requires_verified_project_header(monkeyp
     service = _StubOrchestrationService()
     monkeypatch.setenv("UMRS_AUTH_MODE", "strict")
     monkeypatch.setenv("UMRS_HANDSHAKE_HMAC_SECRET", "t-secret")
-    from r4_contracts.handshake_hmac import sign_claims
+    from umrs_protocol.handshake_hmac import sign_claims
 
     signed_hmac = sign_claims("t-secret", "gateway-user", "verified-project", False)
     monkeypatch.setattr(
@@ -370,7 +370,7 @@ def test_provision_endpoint_strict_mode_requires_verified_project_header(monkeyp
 def test_strict_mode_verified_project_header_allows_projectless_oidc_token(monkeypatch):
     monkeypatch.setenv("UMRS_AUTH_MODE", "strict")
     monkeypatch.setenv("UMRS_HANDSHAKE_HMAC_SECRET", "t-secret")
-    from r4_contracts.handshake_hmac import sign_claims
+    from umrs_protocol.handshake_hmac import sign_claims
 
     monkeypatch.setattr(
         endpoints_api,

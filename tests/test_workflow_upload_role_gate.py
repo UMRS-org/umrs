@@ -126,7 +126,7 @@ STRICT_SECRET = "sig-secret-027"
 
 
 def test_strict_author_sig_valid_passes(client, monkeypatch):
-    from r4_contracts.handshake_hmac import sign_workflow_author_claim
+    from umrs_protocol.handshake_hmac import sign_workflow_author_claim
 
     _stub_pipeline(monkeypatch)
     monkeypatch.setattr(workflows, "_strict_auth_mode", lambda: True)

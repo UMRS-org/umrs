@@ -20,7 +20,7 @@ from umrs.api.workflows import (
     _verified_workflow_params,
 )
 
-from r4_contracts.handshake_hmac import sign_claims
+from umrs_protocol.handshake_hmac import sign_claims
 
 
 def _secret_env(monkeypatch: pytest.MonkeyPatch) -> str:

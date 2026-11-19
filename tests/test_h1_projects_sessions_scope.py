@@ -26,7 +26,7 @@ from fake_pg_pool import FakePool
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from r4_contracts.handshake_hmac import sign_claims
+from umrs_protocol.handshake_hmac import sign_claims
 
 SECRET = "h1-projects-sessions-secret"
 

@@ -6,7 +6,7 @@ without any gateway-origin proof. Any caller that could reach the UMRS
 sidecar port directly (shell users on the frontend, co-tenant workloads)
 self-issued an admin identity.
 
-Contract (shared with ``r4_contracts.handshake_hmac``): a gateway that has
+Contract (shared with ``umrs_protocol.handshake_hmac``): a gateway that has
 ``UMRS_HANDSHAKE_HMAC_SECRET`` signs the identity tuple and adds
 ``X-Verified-HMAC``. UMRS strict mode honors verified headers only when the
 signature validates. MVP mode keeps the legacy trust to avoid breaking the
@@ -19,7 +19,7 @@ import os
 from dataclasses import dataclass
 
 from fastapi import Header
-from r4_contracts.handshake_hmac import (
+from umrs_protocol.handshake_hmac import (
     verify_claims,
     verify_memberships,
     verify_workflow_author_claim,

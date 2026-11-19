@@ -310,7 +310,7 @@ class TestMCPMutationScoping:
         monkeypatch.setenv("UMRS_HANDSHAKE_HMAC_SECRET", "sec")
         from fastapi.testclient import TestClient
 
-        from r4_contracts.handshake_hmac import sign_claims
+        from umrs_protocol.handshake_hmac import sign_claims
 
         class _CapStore(_FakeMCPStore):
             def register_server(self, **kwargs):

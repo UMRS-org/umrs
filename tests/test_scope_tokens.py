@@ -17,7 +17,7 @@ from umrs.api.scope_tokens import require_grant, scope_of
 from umrs.api.scope_tokens import router as scopes_router
 from umrs.scopes import tokens as t
 
-from r4_contracts.handshake_hmac import sign_claims
+from umrs_protocol.handshake_hmac import sign_claims
 
 SECRET = "test-handshake-secret"
 

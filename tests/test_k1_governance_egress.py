@@ -510,7 +510,7 @@ _SECRET = "k1-external-search-secret"
 def _search_client(monkeypatch, data_class: str) -> TestClient:
     from umrs.api import knowledge as knowledge_module
 
-    from r4_contracts.handshake_hmac import sign_claims
+    from umrs_protocol.handshake_hmac import sign_claims
 
     monkeypatch.setenv("UMRS_AUTH_MODE", "strict")
     monkeypatch.setenv("UMRS_HANDSHAKE_HMAC_SECRET", _SECRET)

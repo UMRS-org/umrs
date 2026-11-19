@@ -21,7 +21,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from umrs.jobs.models import JobType
 
-from r4_contracts.handshake_hmac import sign_claims
+from umrs_protocol.handshake_hmac import sign_claims
 
 SECRET = "session-gc-admin-only-secret"
 GC_SPEC = {"max_days": 1}

@@ -832,7 +832,7 @@ class TestRailGateway:
         # token never reaches the platform route
         assert (seen["user"], seen["admin"], seen["auth"]) == ("alice", "false", None)
         assert json.loads(seen["body"]) == {"workflow_name": "wf-a"}
-        from r4_contracts.handshake_hmac import verify_claims
+        from umrs_protocol.handshake_hmac import verify_claims
 
         assert verify_claims("test-handshake-secret", seen["hmac"], "alice", seen["project"], False)
 

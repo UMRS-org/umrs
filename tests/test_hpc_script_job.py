@@ -253,7 +253,7 @@ _SECRET = "hpc-script-create-secret"
 
 
 def _headers(user: str, project: str, admin: bool = False) -> dict[str, str]:
-    from r4_contracts.handshake_hmac import sign_claims
+    from umrs_protocol.handshake_hmac import sign_claims
 
     return {
         "X-User-ID": user,

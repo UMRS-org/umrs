@@ -18,7 +18,7 @@ from fastapi.testclient import TestClient
 from umrs.knowledge.graph_registry import KnowledgeGraphMeta, default_graph_id
 from umrs.knowledge.review_queue import ReviewQueueStore, row_origin, row_run_id
 
-from r4_contracts.handshake_hmac import sign_claims
+from umrs_protocol.handshake_hmac import sign_claims
 
 SECRET = "k15-review-queue-secret"
 G_A = "g-review-a"

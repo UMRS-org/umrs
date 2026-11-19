@@ -36,7 +36,7 @@ from umrs.venues.frontend_podman import FrontendPodmanProvisioner
 from umrs.venues.frontend_service import FrontendVenueService
 from umrs.venues.venue_sessions import VenueSessionStore
 
-from r4_contracts.handshake_hmac import sign_claims
+from umrs_protocol.handshake_hmac import sign_claims
 
 SECRET = "test-jwt-secret-not-real"
 ADMIN_URL = "/umrs/admin/sessions"

@@ -124,7 +124,7 @@ def client(monkeypatch):
 
 
 def _strict_headers(monkeypatch, user: str, project: str) -> dict[str, str]:
-    from r4_contracts.handshake_hmac import sign_claims
+    from umrs_protocol.handshake_hmac import sign_claims
 
     monkeypatch.setenv("UMRS_AUTH_MODE", "strict")
     monkeypatch.setenv("UMRS_HANDSHAKE_HMAC_SECRET", "sec")
