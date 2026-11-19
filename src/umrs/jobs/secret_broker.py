@@ -451,6 +451,10 @@ class SecretBroker:
             lease.issued_at + timedelta(seconds=MAX_LEASE_SECONDS)
         )
         if new_expiry > cap:
+            # The holder proved it is alive with a valid lease: the idle sweep
+            # must see that even when the lifetime cap refuses the extension.
+            lease.last_accessed_at = _now()
+            self._persist_expiry(lease)
             return False
 
         lease.expires_at = new_expiry
