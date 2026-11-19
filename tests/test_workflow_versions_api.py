@@ -44,7 +44,7 @@ def client() -> TestClient:
 
 
 def _h(user: str = "alice", project: str = "proj-a", admin: bool = False) -> dict:
-    from r4_contracts.handshake_hmac import sign_claims
+    from umrs_protocol.handshake_hmac import sign_claims
 
     return {
         "X-User-ID": user,

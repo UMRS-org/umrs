@@ -168,7 +168,7 @@ def test_a_declared_parameter_silences_the_advice(tmp_path):
 
 def test_http_upload_answers_400_with_the_problems(tmp_path, monkeypatch):
     monkeypatch.setenv("UMRS_HANDSHAKE_HMAC_SECRET", "test-secret")
-    from r4_contracts.handshake_hmac import sign_claims
+    from umrs_protocol.handshake_hmac import sign_claims
 
     app = FastAPI()
     app.include_router(router)

@@ -41,7 +41,7 @@ def _rag_client(user: str, w: Any, pool: Any, monkeypatch: Any, *, admin: bool =
     from umrs.api.rag import router
     from umrs.orchestrator.endpoint_registry import EndpointRegistry, get_registry
 
-    from r4_contracts.handshake_hmac import sign_claims
+    from umrs_protocol.handshake_hmac import sign_claims
 
     monkeypatch.delenv("UMRS_RAG_UPLOAD_FACADE", raising=False)
     client = _client(user, w.project, pool, monkeypatch)

@@ -36,7 +36,7 @@ _SECRET = "a2l-lineage-e2e-secret"
 
 
 def _sign(project_id: str) -> str:
-    from r4_contracts.handshake_hmac import sign_claims
+    from umrs_protocol.handshake_hmac import sign_claims
 
     return sign_claims(_SECRET, "e2e-user", project_id, False)
 

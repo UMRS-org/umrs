@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import os
 
-from r4_contracts.handshake_hmac import ENV_VAR
+from umrs_protocol.handshake_hmac import ENV_VAR
 
 
 def handshake_secret() -> str | None:

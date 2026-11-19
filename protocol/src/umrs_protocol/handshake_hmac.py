@@ -18,7 +18,7 @@ canonical sorted, deduplicated list bound to the same identity tuple, on its
 own domain prefix. The identity tuple above is unchanged; UMRS strict mode
 ignores a list whose signature does not verify.
 
-Zero dependencies — stdlib only, per ADR-005 (r4-contracts is zero-dep).
+Zero dependencies — stdlib only, per ADR-005 as amended by ADR-117.
 """
 
 from __future__ import annotations

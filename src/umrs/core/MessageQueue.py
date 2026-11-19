@@ -906,7 +906,7 @@ class MessageQueue:
         # D-04: liveness reply carries the wire protocol version since 1.0
         # ("READY!:v<major.minor>"); pre-1.0 clients comparing the bare
         # prefix keep working (client tolerates both, contract pins both).
-        from r4_contracts.protocol import handshake_reply
+        from umrs_protocol.protocol import handshake_reply
 
         with contextlib.suppress(RuntimeError):
             self.send_string(handshake_reply(), zmq_sender_id)
@@ -1621,7 +1621,7 @@ class MessageQueue:
         if answer is None:
             return False
         try:
-            from r4_contracts.protocol import parse_handshake_reply
+            from umrs_protocol.protocol import parse_handshake_reply
         except ImportError:
             return answer == "READY!"
         ready, _version = parse_handshake_reply(answer)

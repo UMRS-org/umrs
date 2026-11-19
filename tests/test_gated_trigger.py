@@ -29,7 +29,7 @@ from umrs.server import gated_step_lane as lane
 from umrs.shared import hpc_user_work_access as access
 
 from r4_contracts import hpc_gate
-from r4_contracts.handshake_hmac import sign_claims
+from umrs_protocol.handshake_hmac import sign_claims
 
 DOUBLE = str(Path(__file__).resolve().parent / "gated_gate_double.py")
 IMAGE = "localhost/umrs-step:0123456789ab"
