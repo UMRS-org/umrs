@@ -5,7 +5,7 @@
 # each U2.x family PR switches src and tests to umrs_protocol and deletes its rows.
 # Rows marked "# floor: U3-S5" (loop_plan, team_engine, taint) stay in r4-contracts
 # until U3 S5 (ADR-117 U3a D9). Seeded 2026-11-13 (U-A0) from umrs 3f6841cb.
-# U2.x family 1 (protocol + handshake_hmac) migrated 2026-11-19; 85 rows removed.
+# U2.x family 1 (protocol + handshake_hmac) migrated 2026-11-20; 85 rows removed.
 src/umrs/a2l/models.py::r4_contracts.a2l
 src/umrs/a2l/store.py::r4_contracts.a2l
 src/umrs/api/error_responses.py::r4_contracts.errors
