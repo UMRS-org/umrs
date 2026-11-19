@@ -36,8 +36,8 @@ from umrs.workflow_plans import (
     verify_plan,
 )
 
-from r4_contracts.handshake_hmac import sign_claims
 from umrs import workflow_plans
+from umrs_protocol.handshake_hmac import sign_claims
 
 SECRET = "plan-test-handshake"
 CODE = "x-platform-error-code"

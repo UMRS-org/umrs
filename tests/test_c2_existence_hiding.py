@@ -35,7 +35,7 @@ from umrs.model_registry.store.errors import (
     PermissionDeniedError,
 )
 
-from r4_contracts.handshake_hmac import sign_claims, sign_memberships
+from umrs_protocol.handshake_hmac import sign_claims, sign_memberships
 
 JOB_ID = "job-alice00000001"
 RANDOM_JOB = "job-zzzzzzzzzzzz"

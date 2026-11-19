@@ -29,7 +29,7 @@ ROOT_B = "22222222-2222-2222-2222-222222222222"  # proj-b's knowledge artifact
 
 
 def _headers(user: str, project: str, admin: bool = False) -> dict[str, str]:
-    from r4_contracts.handshake_hmac import sign_claims
+    from umrs_protocol.handshake_hmac import sign_claims
 
     return {
         "X-User-ID": user,

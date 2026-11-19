@@ -24,7 +24,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from umrs.knowledge.graph_registry import KnowledgeGraphMeta, default_graph_id
 
-from r4_contracts.handshake_hmac import sign_claims
+from umrs_protocol.handshake_hmac import sign_claims
 
 SECRET = "h1-knowledge-objects-secret"
 

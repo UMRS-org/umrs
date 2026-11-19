@@ -91,7 +91,7 @@ def test_the_name_rule():
 
 def test_http_upload_refuses_a_traversing_name(tmp_path, state, monkeypatch):
     monkeypatch.setenv("UMRS_HANDSHAKE_HMAC_SECRET", "test-secret")
-    from r4_contracts.handshake_hmac import sign_claims
+    from umrs_protocol.handshake_hmac import sign_claims
 
     app = FastAPI()
     app.include_router(router)

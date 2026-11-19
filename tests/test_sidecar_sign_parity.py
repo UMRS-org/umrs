@@ -1,7 +1,7 @@
 """Guard: sidecar's inlined signer stays byte-identical with the contract.
 
 The auth-sidecar image has a narrow ansible build context and cannot ship
-r4-contracts, so it carries an inlined twin of handshake_hmac.sign_claims
+umrs-protocol, so it carries an inlined twin of handshake_hmac.sign_claims
 with a KEEP IN SYNC comment. Any canonical-format drift breaks the
 gateway↔UMRS handshake silently (401-for-everyone) — this test makes drift
 loud instead.
@@ -12,7 +12,7 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 
-from r4_contracts.handshake_hmac import sign_claims, sign_workflow_author_claim
+from umrs_protocol.handshake_hmac import sign_claims, sign_workflow_author_claim
 
 
 def _load_sidecar():

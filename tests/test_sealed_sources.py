@@ -19,7 +19,7 @@ from umrs.api.user_sources import router
 from umrs.jobs.secret_broker import SecretBroker
 from umrs.security.seal import generate_recipient_keypair
 
-from r4_contracts.handshake_hmac import sign_claims
+from umrs_protocol.handshake_hmac import sign_claims
 
 SECRET = "sealed-secret"
 _MIGRATIONS = Path(__file__).resolve().parents[1] / "src/umrs/migrations"

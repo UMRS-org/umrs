@@ -25,7 +25,7 @@ from umrs.evidence import build_default_store as build_evidence_store
 from umrs.research_sessions.store import SessionStore
 from umrs.scientific_memory import InMemoryScientificMemoryStore
 
-from r4_contracts.handshake_hmac import sign_claims
+from umrs_protocol.handshake_hmac import sign_claims
 
 SECRET = "wave6-secret"
 

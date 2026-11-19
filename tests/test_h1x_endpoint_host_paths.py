@@ -32,7 +32,7 @@ from umrs.api.endpoints import router as endpoints_router
 from umrs.orchestrator import caller_roots
 from umrs.orchestrator.endpoint_registry import EndpointRegistry
 
-from r4_contracts.handshake_hmac import sign_claims
+from umrs_protocol.handshake_hmac import sign_claims
 
 SECRET = "h1x-endpoint-paths-secret"
 JOB = "job-001"

@@ -708,7 +708,7 @@ def rail_project_for(principal: RailPrincipal, request: Request) -> str:
 
 def mint_rail_identity(owner: str, project: str) -> dict[str, str]:
     """Gateway-equivalent verified identity headers for the lease owner."""
-    from r4_contracts.handshake_hmac import sign_claims
+    from umrs_protocol.handshake_hmac import sign_claims
 
     from umrs.shared.handshake import handshake_secret
 

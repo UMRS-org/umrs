@@ -1,6 +1,6 @@
 """H-1 memberships lane (2026-10-18): the sidecar's memberships signer is a
-stdlib twin of ``r4_contracts.handshake_hmac.sign_memberships`` (the sidecar
-image does not ship r4-contracts). Drift would make UMRS ignore every
+stdlib twin of ``umrs_protocol.handshake_hmac.sign_memberships`` (the sidecar
+image does not ship umrs-protocol). Drift would make UMRS ignore every
 gateway-issued list, silently narrowing multi-project users to their
 active project; this test makes it loud.
 """
@@ -14,7 +14,7 @@ import pytest
 # harness, so the ADR-053 import-hygiene validator stays green.
 from tests.test_sidecar_sign_parity import _load_sidecar
 
-from r4_contracts.handshake_hmac import (
+from umrs_protocol.handshake_hmac import (
     HEADER_MEMBERSHIPS_HMAC,
     HEADER_PROJECT_MEMBERSHIPS,
     sign_claims,

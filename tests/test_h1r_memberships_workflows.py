@@ -23,7 +23,7 @@ from umrs.server.workflow_execution_registry import (
 )
 from umrs.server.workflow_registry_handler import register_workflow
 
-from r4_contracts.handshake_hmac import sign_claims, sign_memberships
+from umrs_protocol.handshake_hmac import sign_claims, sign_memberships
 
 SECRET = "h1r-memberships-wf-secret"
 

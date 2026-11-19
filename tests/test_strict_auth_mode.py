@@ -27,7 +27,7 @@ def test_endpoint_project_id_accepts_verified_header_in_strict_mode(monkeypatch)
     """
     from umrs.api import endpoints
 
-    from r4_contracts.handshake_hmac import sign_claims
+    from umrs_protocol.handshake_hmac import sign_claims
 
     monkeypatch.setenv("UMRS_AUTH_MODE", "strict")
     monkeypatch.setenv("UMRS_HANDSHAKE_HMAC_SECRET", "test-secret")
@@ -68,7 +68,7 @@ def test_files_project_id_accepts_verified_header_in_strict_mode(monkeypatch):
     """Strict mode accepts verified project context for file APIs."""
     from umrs.api import files
 
-    from r4_contracts.handshake_hmac import sign_claims
+    from umrs_protocol.handshake_hmac import sign_claims
 
     monkeypatch.setenv("UMRS_AUTH_MODE", "strict")
     monkeypatch.setenv("UMRS_HANDSHAKE_HMAC_SECRET", "test-secret")

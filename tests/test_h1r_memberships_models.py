@@ -26,7 +26,7 @@ from umrs.model_registry.models import ModelEntry, ModelScope, ModelType
 from umrs.model_registry.store import ModelNotFoundError
 from umrs.model_registry.store.acl import ACLEnforcer
 
-from r4_contracts.handshake_hmac import sign_claims, sign_memberships
+from umrs_protocol.handshake_hmac import sign_claims, sign_memberships
 
 SECRET = "h1r-memberships-secret"
 

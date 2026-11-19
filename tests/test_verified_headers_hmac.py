@@ -13,7 +13,7 @@ import uuid
 
 import pytest
 
-from r4_contracts.handshake_hmac import sign_claims, verify_claims
+from umrs_protocol.handshake_hmac import sign_claims, verify_claims
 
 
 class TestHandshakeContract:

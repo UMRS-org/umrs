@@ -163,7 +163,7 @@ def _owner_headers_from_env() -> dict[str, str]:
     runs under an owner-scoped verified envelope against the gateway lane)."""
     import os
 
-    from r4_contracts.handshake_hmac import sign_claims
+    from umrs_protocol.handshake_hmac import sign_claims
 
     secret = os.environ.get("UMRS_GATEWAY_HMAC_SECRET", "")
     if not secret:

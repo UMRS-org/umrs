@@ -33,8 +33,8 @@ from umrs.jobs.store import (
 )
 from umrs.platform_notifications import NotificationStore
 
-from r4_contracts.handshake_hmac import sign_claims
 from umrs import platform_notifications
+from umrs_protocol.handshake_hmac import sign_claims
 
 SECRET = "job-events-secret"
 

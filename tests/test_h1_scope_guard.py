@@ -75,7 +75,7 @@ from fastapi.routing import APIRoute
 from pydantic import BaseModel
 from test_surface_characterization import _iter_api_routes
 
-from r4_contracts import handshake_hmac
+from umrs_protocol import handshake_hmac
 
 # ── vocabulary ─────────────────────────────────────────────────────────────
 # Guards and resolvers are matched by the referenced object's
@@ -490,11 +490,11 @@ DEFERRED_ELSEWHERE: tuple[str, ...] = (
     " security.md / apis.md signed memberships, mvp caller_project_id note (orchestrator commit)",
     "DEFERRED H-1: nginx -t on gateway/nginx after the /gw/web/ and memberships-HMAC blocks (maintainer,"
     " converge check before apply)",
-    "DEFERRED H-1: deploy coupling: _verified_headers imports r4_contracts.handshake_hmac.verify_memberships"
-    " (new, parent r4-contracts), so an older r4-contracts install stops every router at import; and strict"
-    " UMRS drops an unsigned memberships list. r4-contracts handshake_hmac.py, gateway/sidecar/main.py and"
+    "DEFERRED H-1: deploy coupling: _verified_headers imports umrs_protocol.handshake_hmac.verify_memberships"
+    " (new, UMRS protocol package), so an older protocol install stops every router at import; and strict"
+    " UMRS drops an unsigned memberships list. umrs_protocol handshake_hmac.py, gateway/sidecar/main.py and"
     " gateway/nginx server.conf land in the parent commit with the umrs pointer bump; converge the gateway no"
-    " later than UMRS; the converge check confirms the installed r4-contracts exports verify_memberships"
+    " later than UMRS; the converge check confirms the installed umrs_protocol exports verify_memberships"
     " (maintainer, escalated)",
     "DEFERRED H-1: plan status row, gap analysis and wave ledger for the H-1 fixes (orchestrator commit)",
 )

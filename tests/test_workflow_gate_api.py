@@ -68,7 +68,7 @@ def _headers(user: str = "alice", project: str = "proj-a", admin: bool = False) 
     """Gateway-equivalent signed identity headers (wave-6 F1)."""
     import os
 
-    from r4_contracts.handshake_hmac import sign_claims
+    from umrs_protocol.handshake_hmac import sign_claims
 
     secret = os.environ.get("UMRS_HANDSHAKE_HMAC_SECRET", "")
     headers = {"X-User-ID": user, "X-Verified-Project-ID": project}

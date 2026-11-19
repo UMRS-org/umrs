@@ -29,7 +29,7 @@ from umrs.model_registry.store import ModelStore
 from umrs.model_registry.store.acl import AccessContext
 from umrs.model_registry.store.errors import PathNotAllowedError, PermissionDeniedError
 
-from r4_contracts.handshake_hmac import sign_claims, sign_memberships
+from umrs_protocol.handshake_hmac import sign_claims, sign_memberships
 
 SECRET = "c2-model-version-secret"
 MODEL_ID = "mdl-alice0000001"

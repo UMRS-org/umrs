@@ -139,6 +139,13 @@ def test_scan_finds_the_known_consumers(scanned: set[str]) -> None:
     assert "src/umrs/api/hpc_accounts.py::r4_contracts.hpc_gate" in scanned
 
 
+def test_protocol_and_handshake_hmac_have_moved(scanned: set[str]) -> None:
+    """U2.x's first family uses UMRS-owned modules directly, never the aliases."""
+    family = {"r4_contracts.protocol", "r4_contracts.handshake_hmac"}
+    leftovers = sorted(entry for entry in scanned if entry.partition("::")[2] in family)
+    assert not leftovers, f"protocol/HMAC imports still use r4_contracts: {leftovers}"
+
+
 # ── the scanner ─────────────────────────────────────────────────────────────
 
 

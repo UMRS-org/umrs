@@ -168,7 +168,7 @@ def test_chat_completions_requires_verified_project_in_strict_mode(monkeypatch):
 
 def test_chat_completions_prefers_verified_project(monkeypatch):
     """Verified Gateway project identity wins over advisory X-Project-ID."""
-    from r4_contracts.handshake_hmac import sign_claims
+    from umrs_protocol.handshake_hmac import sign_claims
 
     monkeypatch.setenv("UMRS_AUTH_MODE", "strict")
     # H-1 (2026-10-18): strict mode checks the gateway HMAC on /umrs/llm, so
