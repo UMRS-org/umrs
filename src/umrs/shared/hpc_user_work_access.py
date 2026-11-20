@@ -224,7 +224,9 @@ def is_user_work_job(job_type: Any, spec: Any) -> bool:
     if kind == "hpc_script":
         return True
     venue = str((spec or {}).get("venue") or "") if isinstance(spec, dict) else ""
-    return kind == "research_loop_job" and venue.strip().startswith("cluster:")
+    from umrs.jobs.venue_names import is_cluster_venue
+
+    return kind == "research_loop_job" and is_cluster_venue(venue)
 
 
 def user_work_refusal(

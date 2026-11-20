@@ -31,6 +31,7 @@ from .hosted_elsewhere import (
 from .monitor import AttemptCheckResult, BackendStatusChecker
 from .reindex import _parse_ref
 from .scheduler import OrchestratorBackend
+from .venue_names import CLUSTER_VENUE_PREFIX, split_cluster_venue_name
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +41,7 @@ CLIENT_HOSTED_DETAIL = "client-hosted plan run: its client reports the outcome"
 VENUE_HOSTED_DETAIL = "venue-hosted plan run: its venue worker reports the outcome"
 
 
-CLUSTER_VENUE_PATTERN = "cluster:"
+CLUSTER_VENUE_PATTERN = CLUSTER_VENUE_PREFIX  # re-export; the parser lives in core (U3 S1)
 
 # ADR-092 slice 6 / 8b: a server-hosted loop whose iteration is a team plan
 # carries the plan on its LOOP RECORD (``metadata.iteration_plan``) and runs
@@ -94,23 +95,6 @@ def _venue_fields(spec: dict, driver: str) -> dict:
             "(the companion agent driver needs cluster-side wiring — follow-on)"
         )
     return {"cluster_site": split_cluster_venue_name(venue), "venue": venue}
-
-
-def split_cluster_venue_name(venue: str) -> str:
-    """`cluster:<site-name>` → the site.name part (byte-exact with site.yaml).
-
-    Claim scoping must be exact: ``cluster:rccs-front`` ⇔ site.name=rccs-front.
-    The name after the prefix must be non-empty and free of separators that
-    would make reconciliation ambiguous.
-    """
-    name = venue[len(CLUSTER_VENUE_PATTERN) :].strip()
-    if not name:
-        raise ValueError(
-            "research_loop_job cluster venue requires a site name after 'cluster:'"
-        )
-    if "/" in name or name != name.lower() or name.startswith((" ", "-")):
-        raise ValueError(f"research_loop_job cluster site name is invalid: {name!r}")
-    return name
 
 
 class ResearchLoopBackend(OrchestratorBackend):

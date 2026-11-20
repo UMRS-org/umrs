@@ -42,6 +42,11 @@ from .models import (
     generate_job_id,
 )
 from .schema import ensure_schema
+from .venue_names import (
+    CLUSTER_VENUE_PREFIX,
+    is_cluster_venue,
+    split_cluster_venue_name,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -108,7 +113,7 @@ def cross_site_venue_refusal(venue: Any, site_name: str) -> str | None:
     """
     name = str(venue or "").strip()
     own = (site_name or "").strip()
-    if not own or name in OWN_SITE_VENUE_ALIASES or name in (own, f"cluster:{own}"):
+    if not own or name in OWN_SITE_VENUE_ALIASES or name in (own, f"{CLUSTER_VENUE_PREFIX}{own}"):
         return None
     return (
         f"cross_site_venue_refused: venue {name!r} is not this site ({own!r}); "
@@ -388,9 +393,7 @@ class JobStore:
         global/shared lane when the site itself has no name).
         """
         venue = str(spec.get("venue") or "").strip()
-        if venue.startswith("cluster:"):
-            from .research_loop_backend import split_cluster_venue_name
-
+        if is_cluster_venue(venue):
             return split_cluster_venue_name(venue)
         return self._resolve_bare_venue(venue)
 
@@ -409,7 +412,7 @@ class JobStore:
             return self.site_name
         raise UnknownVenueError(
             f"unknown_venue: {venue!r} is not this site ({self.site_name!r}); "
-            f"use '' or 'cluster:{self.site_name}'"
+            f"use '' or '{CLUSTER_VENUE_PREFIX}{self.site_name}'"
         )
 
     def set_post_completion_callbacks(

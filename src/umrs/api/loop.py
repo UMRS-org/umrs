@@ -975,7 +975,9 @@ def _refuse_cluster_loop_identity(
     The project is the verified header (none for an ownerless mvp start,
     which is then refused); the admin bit is the owner's user record, the
     same source the durable submit reads. A frontend loop is not checked."""
-    if not venue.startswith("cluster:"):
+    from umrs.jobs.venue_names import is_cluster_venue
+
+    if not is_cluster_venue(venue):
         return
     from umrs.orchestrator.hpc_identity import platform_error
     from umrs.shared.hpc_user_work_access import user_work_refusal
