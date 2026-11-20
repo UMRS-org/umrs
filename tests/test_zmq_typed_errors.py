@@ -14,7 +14,7 @@ from fastapi.testclient import TestClient
 from umrs.api.zmq_sessions import router, set_session_curve_provider
 from umrs.core.session_curve_provider import SessionCredentialsProvider
 
-from r4_contracts.errors import ERROR_CODE_HEADER
+from umrs_protocol.errors import ERROR_CODE_HEADER
 
 
 def _app() -> FastAPI:
@@ -137,7 +137,7 @@ class TestProviderUnavailable:
 
 
 def test_contract_gains_research_session_codes():
-    from r4_contracts.errors import known_error_codes
+    from umrs_protocol.errors import known_error_codes
 
     codes = known_error_codes()
     assert codes["session.store_unavailable"] == 503
@@ -170,7 +170,7 @@ def test_research_session_404_is_typed_and_byte_identical():
 
 
 def test_contract_files_family_codes():
-    from r4_contracts.errors import known_error_codes
+    from umrs_protocol.errors import known_error_codes
 
     codes = known_error_codes()
     expected = {
@@ -220,7 +220,7 @@ def test_files_bucket_denied_carries_typed_header(monkeypatch):
 
 
 def test_contract_jobs_family_codes():
-    from r4_contracts.errors import known_error_codes
+    from umrs_protocol.errors import known_error_codes
 
     codes = known_error_codes()
     expected = {
@@ -261,7 +261,7 @@ def test_jobs_404_carries_typed_header_byte_identical():
 
 
 def test_contract_pipelines_family_codes():
-    from r4_contracts.errors import known_error_codes
+    from umrs_protocol.errors import known_error_codes
 
     codes = known_error_codes()
     expected = {
@@ -276,7 +276,7 @@ def test_contract_pipelines_family_codes():
 
 
 def test_contract_ops_family_codes():
-    from r4_contracts.errors import known_error_codes
+    from umrs_protocol.errors import known_error_codes
 
     codes = known_error_codes()
     expected = {
@@ -292,7 +292,7 @@ def test_contract_ops_family_codes():
 
 
 def test_contract_workflows_family_codes():
-    from r4_contracts.errors import known_error_codes
+    from umrs_protocol.errors import known_error_codes
 
     codes = known_error_codes()
     expected = {
@@ -309,7 +309,7 @@ def test_contract_workflows_family_codes():
 
 
 def test_contract_models_family_codes():
-    from r4_contracts.errors import known_error_codes
+    from umrs_protocol.errors import known_error_codes
 
     codes = known_error_codes()
     expected = {
@@ -349,7 +349,7 @@ def test_models_404_carries_typed_header_byte_identical():
 
 
 def test_contract_endpoints_family_codes():
-    from r4_contracts.errors import known_error_codes
+    from umrs_protocol.errors import known_error_codes
 
     codes = known_error_codes()
     expected = {
@@ -367,7 +367,7 @@ def test_contract_endpoints_family_codes():
 
 
 def test_contract_loops_family_codes():
-    from r4_contracts.errors import known_error_codes
+    from umrs_protocol.errors import known_error_codes
 
     codes = known_error_codes()
     expected = {
@@ -383,7 +383,7 @@ def test_contract_loops_family_codes():
 
 
 def test_contract_companion_family_codes():
-    from r4_contracts.errors import known_error_codes
+    from umrs_protocol.errors import known_error_codes
 
     codes = known_error_codes()
     expected = {
@@ -400,7 +400,7 @@ def test_contract_companion_family_codes():
 
 
 def test_contract_rag_family_codes():
-    from r4_contracts.errors import known_error_codes
+    from umrs_protocol.errors import known_error_codes
 
     codes = known_error_codes()
     expected = {
@@ -414,7 +414,7 @@ def test_contract_rag_family_codes():
 
 
 def test_contract_artifacts_family_codes():
-    from r4_contracts.errors import known_error_codes
+    from umrs_protocol.errors import known_error_codes
 
     codes = known_error_codes()
     expected = {
@@ -427,7 +427,7 @@ def test_contract_artifacts_family_codes():
 
 
 def test_contract_mcp_family_codes():
-    from r4_contracts.errors import known_error_codes
+    from umrs_protocol.errors import known_error_codes
 
     codes = known_error_codes()
     expected = {
@@ -440,7 +440,7 @@ def test_contract_mcp_family_codes():
 
 
 def test_contract_knowledge2_family_codes():
-    from r4_contracts.errors import known_error_codes
+    from umrs_protocol.errors import known_error_codes
 
     codes = known_error_codes()
     expected = {
@@ -455,7 +455,7 @@ def test_contract_knowledge2_family_codes():
 
 
 def test_contract_ragservice_family_codes():
-    from r4_contracts.errors import known_error_codes
+    from umrs_protocol.errors import known_error_codes
 
     codes = known_error_codes()
     expected = {
@@ -469,7 +469,7 @@ def test_contract_ragservice_family_codes():
 
 
 def test_contract_usersources_family_codes():
-    from r4_contracts.errors import known_error_codes
+    from umrs_protocol.errors import known_error_codes
 
     codes = known_error_codes()
     expected = {
@@ -484,7 +484,7 @@ def test_contract_usersources_family_codes():
 
 
 def test_contract_sourcegrants_family_codes():
-    from r4_contracts.errors import known_error_codes
+    from umrs_protocol.errors import known_error_codes
 
     codes = known_error_codes()
     expected = {
@@ -498,7 +498,7 @@ def test_contract_sourcegrants_family_codes():
 
 
 def test_contract_scimem_family_codes():
-    from r4_contracts.errors import known_error_codes
+    from umrs_protocol.errors import known_error_codes
 
     codes = known_error_codes()
     expected = {
@@ -511,7 +511,7 @@ def test_contract_scimem_family_codes():
 
 
 def test_contract_provenance_family_codes():
-    from r4_contracts.errors import known_error_codes
+    from umrs_protocol.errors import known_error_codes
 
     codes = known_error_codes()
     expected = {
@@ -524,7 +524,7 @@ def test_contract_provenance_family_codes():
 
 
 def test_contract_knowledgemodel_family_codes():
-    from r4_contracts.errors import known_error_codes
+    from umrs_protocol.errors import known_error_codes
 
     codes = known_error_codes()
     expected = {
@@ -537,7 +537,7 @@ def test_contract_knowledgemodel_family_codes():
 
 
 def test_contract_grants_family_codes():
-    from r4_contracts.errors import known_error_codes
+    from umrs_protocol.errors import known_error_codes
 
     codes = known_error_codes()
     expected = {
@@ -552,7 +552,7 @@ def test_contract_grants_family_codes():
 
 
 def test_contract_traces_family_codes():
-    from r4_contracts.errors import known_error_codes
+    from umrs_protocol.errors import known_error_codes
 
     codes = known_error_codes()
     expected = {
@@ -564,7 +564,7 @@ def test_contract_traces_family_codes():
 
 
 def test_contract_knowledgegraphs_family_codes():
-    from r4_contracts.errors import known_error_codes
+    from umrs_protocol.errors import known_error_codes
 
     codes = known_error_codes()
     expected = {
@@ -577,7 +577,7 @@ def test_contract_knowledgegraphs_family_codes():
 
 
 def test_contract_knowledge_family_codes():
-    from r4_contracts.errors import known_error_codes
+    from umrs_protocol.errors import known_error_codes
 
     codes = known_error_codes()
     expected = {

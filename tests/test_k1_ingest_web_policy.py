@@ -28,7 +28,7 @@ from umrs.knowledge.ingest_web_policy import (
 from umrs.knowledge.sources import EgressDisabledError, SourceResolver
 from umrs.session_policy import PolicyRule, PolicyRuleStore
 
-from r4_contracts.errors import ERROR_CODE_HEADER
+from umrs_protocol.errors import ERROR_CODE_HEADER
 
 SITE = "test-front"
 ME = IngestRequester(user_id="u-1", project_id="proj-a")

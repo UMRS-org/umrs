@@ -234,7 +234,7 @@ def test_identity_records_mode_login_account_and_lane() -> None:
 
 
 def test_refusal_reasons_are_the_typed_codes() -> None:
-    from r4_contracts.errors import HPCACCESS_ERRORS
+    from umrs_protocol.errors import HPCACCESS_ERRORS
 
     # Wave A's three, then wave B2's two (plan §5 B2.0 §10.1).
     assert REFUSAL_REASONS == (

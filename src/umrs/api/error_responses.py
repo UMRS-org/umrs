@@ -31,7 +31,7 @@ from typing import Any
 
 from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse
-from r4_contracts.errors import ERROR_CODE_HEADER
+from umrs_protocol.errors import ERROR_CODE_HEADER
 
 # HTTP status → default error_id mapping
 _STATUS_ERROR_MAP: dict[int, str] = {

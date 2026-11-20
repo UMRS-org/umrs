@@ -15,7 +15,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from umrs.api.bundle_restore import router as restore_router
 
-from r4_contracts.errors import ERROR_CODE_HEADER
+from umrs_protocol.errors import ERROR_CODE_HEADER
 
 
 def _archive(manifest: dict | None = None, extra=None) -> bytes:

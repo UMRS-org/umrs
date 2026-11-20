@@ -619,7 +619,7 @@ def _typed_handler_error(data: dict[str, Any]) -> None:
 
 
 def _raise_hpcaccess(code: Any, data: dict[str, Any]) -> None:
-    from r4_contracts.errors import HPCACCESS_ERRORS
+    from umrs_protocol.errors import HPCACCESS_ERRORS
 
     if not isinstance(code, str) or code not in HPCACCESS_ERRORS:
         return

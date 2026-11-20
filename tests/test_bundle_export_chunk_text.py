@@ -35,7 +35,7 @@ from umrs.knowledge.bundle_import import BundleFormatError, KnowledgeImportEngin
 from umrs.knowledge.bundle_reader import CHUNK_TEXT_MAX_CHARS, chunk_passage
 from umrs.knowledge.store import KnowledgeArtifact, KnowledgeNode
 
-from r4_contracts.errors import ERROR_CODE_HEADER
+from umrs_protocol.errors import ERROR_CODE_HEADER
 
 _DOC_A = "Interleukin six rises after exercise. It falls during rest periods."
 _DOC_B = "TiO2 photocatalysis degrades dyes. Rates double under UV light."

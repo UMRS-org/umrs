@@ -108,7 +108,7 @@ def test_trusted_host_only_publish_requires_admin(monkeypatch):
     from umrs.api import mcp as mcp_mod
     from umrs.api.mcp import _enforce_registration_scope
 
-    from r4_contracts.errors import ERROR_CODE_HEADER
+    from umrs_protocol.errors import ERROR_CODE_HEADER
 
     monkeypatch.setattr(mcp_mod, "_caller_scope", lambda _r: _Scope(is_admin=False))
     with pytest.raises(HTTPException) as exc:
@@ -180,7 +180,7 @@ def test_invoke_refuses_trusted_host_only_server(monkeypatch):
         assert "trusted-host-only" in str(exc.value.detail)
         assert "never approximating" in str(exc.value.detail)
         # the taxonomy member carries the 403 (contract-side)
-        from r4_contracts.errors import MCP_ERRORS
+        from umrs_protocol.errors import MCP_ERRORS
 
         assert MCP_ERRORS["mcp.trust_class_denied"] == 403
     finally:

@@ -151,7 +151,7 @@ class TestRestoreIsOperatorOnly:
         engine.import_project.assert_not_called()
 
     def test_non_admin_caller_refused_by_name(self, monkeypatch, bundle_dir):
-        from r4_contracts.errors import ERROR_CODE_HEADER
+        from umrs_protocol.errors import ERROR_CODE_HEADER
 
         engine = _engine()
         client, _ = _restore_client(monkeypatch, [], engine)
@@ -199,7 +199,7 @@ class TestLintNeverReadsServerPaths:
         return TestClient(app)
 
     def test_files_lane_refused(self, tmp_path):
-        from r4_contracts.errors import ERROR_CODE_HEADER
+        from umrs_protocol.errors import ERROR_CODE_HEADER
 
         secret = tmp_path / "server_only.py"
         secret.write_text("def f(:\n    pass\n")  # would surface as a syntax finding

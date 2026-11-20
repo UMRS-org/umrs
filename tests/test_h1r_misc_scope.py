@@ -43,7 +43,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from r4_contracts.errors import ERROR_CODE_HEADER, PlatformError
+from umrs_protocol.errors import ERROR_CODE_HEADER, PlatformError
 from umrs_protocol.handshake_hmac import sign_claims
 
 SECRET = "h1r-misc-secret"

@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import NoReturn
 
 from fastapi import HTTPException
-from r4_contracts.errors import PlatformError
+from umrs_protocol.errors import PlatformError
 
 
 def raise_typed(error: PlatformError, *, cause: Exception | None = None) -> NoReturn:

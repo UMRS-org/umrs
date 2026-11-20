@@ -245,7 +245,7 @@ class TestRemoteSafeSourceKinds:
             "/umrs/k2/ingest", json={"sources": [source]}, headers={"X-Project-ID": "proj-a"}
         )
         assert resp.status_code == 400, resp.text
-        from r4_contracts.errors import ERROR_CODE_HEADER
+        from umrs_protocol.errors import ERROR_CODE_HEADER
 
         assert resp.headers.get(ERROR_CODE_HEADER) == "knowledge2.source_kind_refused"
         assert "/umrs/knowledge/upload" in resp.text
@@ -294,7 +294,7 @@ class TestIngestTargetAccess:
 
     def test_another_projects_graph_is_an_unknown_target(self):
         client, _ = _client([_graph_row(graph_id="g-b", project_id="proj-b", owner_id="bob")])
-        from r4_contracts.errors import ERROR_CODE_HEADER
+        from umrs_protocol.errors import ERROR_CODE_HEADER
 
         resp = _ingest(client, graph_id="g-b")
         assert resp.status_code == 400

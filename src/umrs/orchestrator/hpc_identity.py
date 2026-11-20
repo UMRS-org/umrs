@@ -120,7 +120,7 @@ def refusal_message(exc: HpcAccessRefused) -> str:
 
 def platform_error(exc: HpcAccessRefused) -> Any:
     """The r4-contracts ``PlatformError`` for a refusal (HTTP routes)."""
-    from r4_contracts.errors import PlatformError
+    from umrs_protocol.errors import PlatformError
 
     return PlatformError.hpcaccess(exc.reason, refusal_message(exc), site=exc.site)
 

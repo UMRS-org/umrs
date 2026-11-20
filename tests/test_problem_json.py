@@ -10,7 +10,7 @@ from umrs.api.problem_json import (
     problem_body,
 )
 
-from r4_contracts.errors import ERROR_CODE_HEADER, PlatformError
+from umrs_protocol.errors import ERROR_CODE_HEADER, PlatformError
 
 
 class TestProblemBody:

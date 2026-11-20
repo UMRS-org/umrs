@@ -28,7 +28,7 @@ import logging
 
 from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse
-from r4_contracts.errors import ERROR_CODE_HEADER, PlatformError
+from umrs_protocol.errors import ERROR_CODE_HEADER, PlatformError
 
 logger = logging.getLogger(__name__)
 
