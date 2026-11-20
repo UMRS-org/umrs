@@ -457,7 +457,7 @@ class PlanIterationEngine:
 
 def remaining_wallclock_sec(loop: ResearchLoop) -> float | None:
     """What the loop has left of its ADR-067 wall clock (None = uncapped)."""
-    from .engine_loop_runner import _elapsed_hours
+    from .engine_loop_runner import elapsed_hours
 
     try:
         cap = float(loop.metadata.get("max_wall_clock_hours") or 0.0)
@@ -465,7 +465,7 @@ def remaining_wallclock_sec(loop: ResearchLoop) -> float | None:
         return None
     if cap <= 0:
         return None
-    return max(0.0, (cap - _elapsed_hours(loop)) * 3600.0)
+    return max(0.0, (cap - elapsed_hours(loop)) * 3600.0)
 
 
 def _record(

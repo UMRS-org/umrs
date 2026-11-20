@@ -513,8 +513,7 @@ def loop_rows(ctx: BriefContext) -> list[str]:
     reads; the visibility rule is the loop routes' ``_may_access``."""
     from . import loop as loop_api
 
-    caller = loop_api._LoopCaller(user_id=ctx.user_id, is_admin=ctx.identity.is_admin)
-    summaries = loop_api._loop_store.list_project_summaries(
+    summaries = loop_api.get_loop_store().list_project_summaries(
         ctx.project_id,
         _ACTIVE_LOOP_STATUSES,
         limit=_LOOP_SCAN,
@@ -523,15 +522,10 @@ def loop_rows(ctx: BriefContext) -> list[str]:
     return [
         f"{s['loop_id']}  status={s['status']}  phase={s['phase']}"
         for s in summaries
-        if loop_api._may_access(_LoopOwner(s["owner_user_id"]), caller)
+        if loop_api.loop_access(
+            s["owner_user_id"], user_id=ctx.user_id, is_admin=ctx.identity.is_admin
+        )
     ]
-
-
-class _LoopOwner:
-    """The one field ``_may_access`` reads from a loop."""
-
-    def __init__(self, owner: str) -> None:
-        self.metadata = {"owner_user_id": owner}
 
 
 def mcp_rows(ctx: BriefContext) -> list[str]:

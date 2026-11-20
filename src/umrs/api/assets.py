@@ -76,9 +76,9 @@ def _gather_stores() -> dict[str, Any]:
         logger.debug("artifact store construction skipped; artifact kind omitted")
 
     try:
-        from umrs.api.loop import _loop_store
+        from umrs.api.loop import get_loop_store
 
-        stores["loop_store"] = _loop_store
+        stores["loop_store"] = get_loop_store()
     except ImportError:
         logger.debug("loop store accessor not present; loops kind skipped")
 

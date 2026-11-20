@@ -268,7 +268,7 @@ def _authorize_loop_link(
         return  # mvp without identity: dev behaviour unchanged
     from umrs.api import loop as loop_api
 
-    loop = loop_api._loop_store.get(request.loop_id)
+    loop = loop_api.get_loop_store().get(request.loop_id)
     if loop is None and request.venue == "local":
         return
     if loop is None or not _loop_attachable(loop, project_id, caller):

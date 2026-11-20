@@ -59,7 +59,7 @@ def _caps(request: Request, project_id: str) -> dict[str, Any]:
     """
     reader = getattr(request.app.state, "plan_run_budget_reader", None)
     if reader is None:
-        from .loop import _project_budget_caps as reader
+        from .loop import project_budget_caps as reader
     return plan_runs.caps_for(reader(project_id))
 
 
@@ -209,9 +209,9 @@ def build_loop_plan_host(
         return store
 
     def start(*, owner, project, run_id, definition, caps, **venue_args):
-        from .loop import _project_budget_caps
+        from .loop import project_budget_caps
 
-        project_caps = plan_runs.caps_for(_project_budget_caps(project))
+        project_caps = plan_runs.caps_for(project_budget_caps(project))
         merged = _tighter_caps(project_caps, caps)
         return plan_runs.start(
             venue,

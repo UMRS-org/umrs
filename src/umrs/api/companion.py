@@ -687,7 +687,7 @@ def _loop_project_and_owner(loop_id: str) -> tuple[str, str]:
     """A server-hosted loop's project and owner ('' for what is unknown)."""
     from umrs.api import loop as loop_api
 
-    loop = loop_api._loop_store.get(loop_id) if loop_id else None
+    loop = loop_api.get_loop_store().get(loop_id) if loop_id else None
     metadata = getattr(loop, "metadata", None) or {}
     return (
         str(getattr(loop, "project_id", "") or ""),
@@ -742,12 +742,13 @@ def _enforce_approval_ownership(record: dict, x_user_id: str, request: Request) 
 
 def _flip_loop_to_auto(loop_id: str) -> None:
     try:
-        from umrs.api.loop import _loop_store
+        from umrs.api.loop import get_loop_store
 
-        loop = _loop_store.get(loop_id)
+        store = get_loop_store()
+        loop = store.get(loop_id)
         if loop is not None:
             loop.metadata["mode"] = "auto"
-            _loop_store.save(loop)
+            store.save(loop)
     except Exception:
         logger.warning(
             "always-decision mode flip failed for loop %s", loop_id, exc_info=True

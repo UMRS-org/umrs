@@ -37,7 +37,7 @@ EngineFactory = Callable[[], AutonomousResearchLoop]
 IterationHook = Callable[[ResearchLoop, LoopIteration], None]
 
 
-def _elapsed_hours(loop: ResearchLoop) -> float:
+def elapsed_hours(loop: ResearchLoop) -> float:
     """Hours since loop.started_at (0.0 when the stamp is unparseable)."""
     try:
         started = datetime.fromisoformat(str(loop.started_at))
@@ -48,6 +48,10 @@ def _elapsed_hours(loop: ResearchLoop) -> float:
     return max(0.0, (datetime.now(timezone.utc) - started).total_seconds() / 3600.0)
 
 
+
+_elapsed_hours = elapsed_hours  # public since U3 S1 item 7
+
+
 def _wall_clock_exceeded(loop: ResearchLoop) -> bool:
     """ADR-067: per-project wall-clock cap, checked at iteration boundaries."""
     cap = 0.0
@@ -55,7 +59,7 @@ def _wall_clock_exceeded(loop: ResearchLoop) -> bool:
         cap = float(loop.metadata.get("max_wall_clock_hours") or 0.0)
     except (TypeError, ValueError):
         return False
-    return cap > 0.0 and _elapsed_hours(loop) > cap
+    return cap > 0.0 and elapsed_hours(loop) > cap
 
 
 def _measured_gpu_seconds(loop: ResearchLoop) -> float:

@@ -227,6 +227,16 @@ def _apply_loop_mode(loop: Any, request: Any) -> None:
         loop.metadata["max_tracks"] = request.max_tracks
 
 
+def get_loop_store() -> LoopStore:
+    """The loop store in use (read at call time; public since U3 S1 item 7)."""
+    return _loop_store
+
+
+def project_budget_caps(project_id: str) -> dict[str, float]:
+    """A project's ADR-067 budget caps (public since U3 S1 item 7)."""
+    return _project_budget_caps(project_id)
+
+
 def _project_budget_caps(project_id: str) -> dict[str, float]:
     """Row from project_budgets (ADR-067) via the loop store's sync conn.
 
@@ -1100,10 +1110,20 @@ def _loop_caller(
     return _LoopCaller(user_id=user, is_admin=admin)
 
 
+def loop_access(owner_user_id: str, *, user_id: str, is_admin: bool) -> bool:
+    """Who may see a loop: its owner, an admin, anyone for an ownerless (mvp)
+    loop, and an identity-less mvp caller. Public since U3 S1 item 7."""
+    owner = str(owner_user_id or "")
+    return not owner or not user_id or is_admin or user_id == owner
+
+
 def _may_access(loop: ResearchLoop, caller: _LoopCaller) -> bool:
     """Owner, admin, an ownerless (mvp) loop, or an identity-less mvp caller."""
-    owner = str(loop.metadata.get("owner_user_id") or "")
-    return not owner or not caller.user_id or caller.is_admin or caller.user_id == owner
+    return loop_access(
+        str(loop.metadata.get("owner_user_id") or ""),
+        user_id=caller.user_id,
+        is_admin=caller.is_admin,
+    )
 
 
 def _owned_loop(loop_id: str, caller: _LoopCaller) -> ResearchLoop:
