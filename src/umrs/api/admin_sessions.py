@@ -38,7 +38,7 @@ from umrs.venues.frontend_service import SESSION_HOST, VenueError
 from umrs.venues.session_audit import audit_venue
 from umrs.venues.venue_sessions import VALID_STATES
 
-from .admin_auth import require_session_admin  # noqa: F401 - re-export
+from .admin_auth import require_session_admin
 from .companion_venue import _typed, _unexpected, get_venue_service
 from .typed_errors import PlatformError, raise_typed
 
