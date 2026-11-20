@@ -909,7 +909,8 @@ def _check_plan_web_choice(
         return
     from umrs.session_policy import PolicyError
 
-    from .companion_venue import get_venue_service, policy_typed
+    from .companion_venue import get_venue_service
+    from .session_policy_errors import policy_typed
 
     try:
         get_venue_service(http_request).check_web_choice(

@@ -1103,3 +1103,19 @@ def reset_site_config() -> None:
     """Clear the cached singleton (useful in tests)."""
     global _site_config
     _site_config = None
+
+
+def this_site_name() -> str:
+    """This process's site name, ``""`` when none is configured or it cannot
+    be read (U3 S1 item 5; the venue routes' "claiming site" lookup).
+
+    Wraps :func:`umrs.jobs.store.configured_site_name`, which raises on an
+    unreadable site.yaml; callers here want the old soft behaviour.
+    """
+    from umrs.jobs.store import configured_site_name
+
+    try:
+        return configured_site_name()
+    except Exception:
+        logging.getLogger(__name__).warning("site name unresolved", exc_info=True)
+        return ""

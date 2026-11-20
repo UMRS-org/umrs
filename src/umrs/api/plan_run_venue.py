@@ -73,7 +73,7 @@ def _caller_scope(caller: CallerIdentity) -> tuple[str, str]:
 
 def _refused(exc: Exception, verb: str) -> None:
     if isinstance(exc, PolicyError):  # ADR-099: the web choice and the limits
-        from .companion_venue import policy_typed
+        from .session_policy_errors import policy_typed
 
         policy_typed(exc)
     if isinstance(exc, VenueError):

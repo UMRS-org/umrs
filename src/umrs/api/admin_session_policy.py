@@ -47,7 +47,7 @@ from umrs.session_policy.model import check_rule_key
 from umrs.venues.session_audit import audit_venue
 
 from .admin_sessions import require_session_admin
-from .companion_venue import policy_typed
+from .session_policy_errors import policy_typed
 from .typed_errors import PlatformError, raise_typed
 
 logger = logging.getLogger(__name__)

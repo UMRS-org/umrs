@@ -35,7 +35,7 @@ import hashlib
 import logging
 import os
 import re
-from typing import Any, NoReturn
+from typing import Any
 from urllib.parse import unquote
 
 import httpx
@@ -72,6 +72,7 @@ from .companion_sessions import (
     snapshot_detail_row,
     upsert_snapshot_row,
 )
+from .session_policy_errors import policy_typed  # re-export (U3 S1 item 5)
 from .typed_errors import PlatformError, raise_typed
 
 logger = logging.getLogger(__name__)
@@ -83,14 +84,11 @@ router = APIRouter(prefix="/umrs/companion/sessions", tags=["companion-sessions"
 
 
 def _site_name() -> str:
-    """The claiming site for session jobs (the store's own site, else config)."""
-    try:
-        from umrs.orchestrator.site_config import load_site_config
+    """The claiming site for session jobs; "" when unresolved (the service
+    then refuses to submit). Core accessor since U3 S1 item 5."""
+    from umrs.orchestrator.site_config import this_site_name
 
-        return str(load_site_config().name or "")
-    except Exception:  # unresolved → the service refuses to submit
-        logger.warning("site name unresolved for frontend_session jobs", exc_info=True)
-        return ""
+    return this_site_name()
 
 
 def _quota_check(pool: Any) -> Any:
@@ -152,13 +150,6 @@ def build_venue_service(pool: Any) -> FrontendVenueService:
 def _typed(exc: VenueError) -> None:
     raise_typed(
         PlatformError.companionvenue(exc.code, exc.message, **exc.detail), cause=exc
-    )
-
-
-def policy_typed(exc: PolicyError) -> NoReturn:
-    """A session-policy refusal as its typed ``sessionpolicy.*`` error."""
-    raise_typed(
-        PlatformError.sessionpolicy(exc.code, exc.message, **exc.detail), cause=exc
     )
 
 

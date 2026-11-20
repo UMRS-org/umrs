@@ -36,13 +36,12 @@ from umrs.quotas.session_cap import (
     start_in_flight,
 )
 from umrs.session_policy import (
-    PolicyError,
     PolicyRuleStore,
     WebChoice,
-    effective_limits_for,
     resolve_session_policy,
     web_choice_required,
 )
+from umrs.session_policy.web_check import check_web_choice, limits_for, web_choice
 from umrs.shared.project_data_class import (
     PUBLIC_PROVIDER_KINDS,
     data_class_for_project,
@@ -436,19 +435,13 @@ class FrontendVenueService:
 
     def _limits(self, owner: str, project: str) -> dict[str, Any]:
         """Effective limits of a session here; unreadable rules fail closed."""
-        try:
-            return effective_limits_for(
-                self.policy_store,
-                venue=self.site_name,
-                user_id=owner,
-                project_id=project,
-                env=self._policy_env,
-            )
-        except Exception as exc:
-            logger.warning("session policy rules unreadable", exc_info=True)
-            raise PolicyError(
-                "unavailable", f"session policy rules unreadable: {type(exc).__name__}"
-            ) from exc
+        return limits_for(
+            self.policy_store,
+            site=self.site_name,
+            owner=owner,
+            project=project,
+            env=self._policy_env,
+        )
 
     def _resolve_policy(
         self, owner: str, project: str, choice: WebChoice
@@ -488,8 +481,15 @@ class FrontendVenueService:
         """The policy a start with this web choice would get, or the typed
         :class:`PolicyError` it would raise; nothing is reserved (a loop
         checks its runs' choice at loop start, ADR-099 D-2)."""
-        return self._resolve_policy(
-            owner, project, _web_choice(web_policy, web_allow_domains)
+        return check_web_choice(
+            self.policy_store,
+            site=self.site_name,
+            owner=owner,
+            project=project,
+            web_policy=web_policy,
+            web_allow_domains=web_allow_domains,
+            env=self._policy_env,
+            legacy_default=self.config.web_policy_default,
         )
 
     def policy_preview(
@@ -927,11 +927,7 @@ def _shaped_by(policy: dict[str, Any]) -> dict[str, str]:
     return {k: v for k, v in policy.get("origin", {}).items() if v != "default"}
 
 
-def _web_choice(web_policy: str, domains: list[str] | None) -> WebChoice:
-    return WebChoice(
-        mode=(web_policy or "").strip(),
-        domains=tuple(d.strip() for d in (domains or []) if d and d.strip()),
-    )
+_web_choice = web_choice  # core since U3 S1 item 5
 
 
 def _session_spec(

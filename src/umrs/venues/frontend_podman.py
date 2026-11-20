@@ -20,6 +20,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from umrs.session_policy.model import normalize_allow_domain
+
 from .session_audit import audit_venue
 
 logger = logging.getLogger(__name__)
@@ -225,13 +227,6 @@ def _squid_deny_set(cfg: ProvisionConfig) -> str:
         "224.0.0.0/4 240.0.0.0/4 ::1/128 fc00::/7 fe80::/10 ::ffff:0:0/96\n"
         f"acl infra_names dstdomain .infra .internal .local localhost {extras}"
     )
-
-
-def normalize_allow_domain(host: str) -> str:
-    """EgressGuard normalization (parse_allowlist parity, R2-7):
-    lower-case, whitespace trimmed, one trailing dot stripped.
-    """
-    return host.strip().lower().rstrip(".")
 
 
 def render_allowlist_file(domains: tuple[str, ...]) -> str:

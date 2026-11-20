@@ -118,11 +118,16 @@ def check_rule_key(scope: str, subject: str, layer: str) -> None:
         raise _invalid("subject", f"a {scope} rule names its {scope}")
 
 
+def normalize_allow_domain(host: str) -> str:
+    """EgressGuard normalization (parse_allowlist parity, R2-7): lower-case,
+    whitespace trimmed, one trailing dot stripped. Core since U3 S1 item 5;
+    the egress pod's allowlist renderer (``frontend_podman``) imports it."""
+    return host.strip().lower().rstrip(".")
+
+
 def normalize_domain(raw: Any, field_name: str) -> str:
     """One squid ``dstdomain`` entry, normalized like the egress pod's
-    allowlist file (``frontend_podman.normalize_allow_domain``)."""
-    from umrs.venues.frontend_podman import normalize_allow_domain
-
+    allowlist file (:func:`normalize_allow_domain`)."""
     if not isinstance(raw, str):
         raise _invalid(field_name, f"{field_name}: domains are strings")
     domain = normalize_allow_domain(raw)
