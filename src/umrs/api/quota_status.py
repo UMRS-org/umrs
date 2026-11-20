@@ -129,7 +129,7 @@ def _remote_session_poles(
 def _sessions_pole(
     pool: Any, venue: str, user_id: str, limits: dict[str, Any]
 ) -> LimitPoleRow | None:
-    from umrs.quotas.session_cap import count_live_sessions, session_limits
+    from umrs.quotas.session_count import count_live_sessions, session_limits
 
     try:
         current = count_live_sessions(pool, venue=venue, user_id=user_id)
