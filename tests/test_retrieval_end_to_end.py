@@ -35,12 +35,12 @@ from fastapi.testclient import TestClient
 from umrs.api import knowledge_query as kq
 from umrs.api import rag as rag_api
 from umrs.api import rag_retrieve, rag_spine
+from umrs.knowledge import llm_chat
 from umrs.knowledge.retrieval import calibrate, lexical, pipeline
 from umrs.knowledge.retrieval import hydrate as hydrate_mod
 from umrs.knowledge.retrieval.types import RetrieveSpec
 
 from umrs_protocol.retrieval import RetrieveResult
-from umrs.knowledge import llm_chat
 
 DIM = 24
 MODEL = "/models/e5-base-v2"

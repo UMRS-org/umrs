@@ -17,11 +17,11 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from umrs.api import rag as rag_api
 from umrs.api import rag_retrieve, rag_spine
+from umrs.knowledge import llm_chat
 from umrs.knowledge.retrieval import calibrate, pipeline
 from umrs.knowledge.retrieval import hydrate as hydrate_mod
 
 from umrs_protocol.retrieval import RetrievalSufficiency, RetrievedPassage, RetrieveResult
-from umrs.knowledge import llm_chat
 
 _RESULT = RetrieveResult(
     query="q",

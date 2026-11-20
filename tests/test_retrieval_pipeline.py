@@ -20,11 +20,11 @@ from pathlib import Path
 
 import httpx
 import pytest
+from umrs.knowledge import llm_chat
 from umrs.knowledge.retrieval import calibrate, dense, pipeline
 from umrs.knowledge.retrieval import hydrate as hydrate_mod
 from umrs.knowledge.retrieval.calibrate import NullStats
 from umrs.knowledge.retrieval.types import Candidate, LaneResult, RetrieveSpec
-from umrs.knowledge import llm_chat
 
 _RETRIEVAL_DIR = Path(pipeline.__file__).parent
 

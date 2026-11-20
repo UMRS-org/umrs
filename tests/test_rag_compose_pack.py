@@ -13,10 +13,10 @@ from __future__ import annotations
 
 import pytest
 from umrs.api import rag_spine
+from umrs.knowledge import llm_chat
 
 from umrs_protocol.context_pack import NOT_COVERED
 from umrs_protocol.retrieval import RetrievalSufficiency, RetrievedPassage, RetrieveResult
-from umrs.knowledge import llm_chat
 
 
 def _passage(rank, text="Encapsulation with alumina slows moisture ingress.", name="note.md"):

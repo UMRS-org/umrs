@@ -50,20 +50,24 @@ def test_the_backend_reexports_the_core_parser():
     assert research_loop_backend.split_cluster_venue_name is split_cluster_venue_name
 
 
+def _prefix_literals(tree: ast.AST) -> list[str]:
+    return [
+        n.value for n in ast.walk(tree) if isinstance(n, ast.Constant) and n.value == "cluster:"
+    ]
+
+
+def _borrows_backend_parser(node: ast.AST) -> bool:
+    if not isinstance(node, ast.ImportFrom) or not (node.module or "").endswith(
+        "research_loop_backend"
+    ):
+        return False
+    return any(a.name == "split_cluster_venue_name" for a in node.names)
+
+
 @pytest.mark.parametrize("rel", CONSUMERS)
 def test_consumers_use_the_core_parser(rel):
     text = (SRC / rel).read_text(encoding="utf-8")
     tree = ast.parse(text)
-    literals = [
-        n.value for n in ast.walk(tree) if isinstance(n, ast.Constant) and n.value == "cluster:"
-    ]
-    parser_from_backend = [
-        n
-        for n in ast.walk(tree)
-        if isinstance(n, ast.ImportFrom)
-        and (n.module or "").endswith("research_loop_backend")
-        and any(a.name == "split_cluster_venue_name" for a in n.names)
-    ]
-    assert not literals, f"{rel} tests the 'cluster:' prefix by hand"
-    assert not parser_from_backend, f"{rel} borrows the parser from the loop backend"
+    assert not _prefix_literals(tree), f"{rel} tests the 'cluster:' prefix by hand"
+    assert not any(_borrows_backend_parser(n) for n in ast.walk(tree)), rel
     assert "is_cluster_venue" in text, f"{rel} does not use the core helper"

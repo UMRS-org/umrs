@@ -12,8 +12,8 @@ from types import SimpleNamespace
 
 import pytest
 from umrs.jobs import knowledge_adapters as ka
-from umrs.orchestrator.endpoint_registry import EndpointStatus
 from umrs.knowledge import llm_chat
+from umrs.orchestrator.endpoint_registry import EndpointStatus
 
 
 def _ep(project, model, *, access=None, meta=None, url="http://m:11434"):

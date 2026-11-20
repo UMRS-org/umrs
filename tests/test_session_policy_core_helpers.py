@@ -12,7 +12,6 @@ import ast
 from pathlib import Path
 
 import pytest
-
 from umrs.api import companion_venue
 from umrs.api.session_policy_errors import policy_typed
 from umrs.orchestrator import site_config

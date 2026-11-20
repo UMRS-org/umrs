@@ -13,7 +13,6 @@ import ast
 from pathlib import Path
 
 import pytest
-
 from umrs.jobs import hosted_elsewhere as core
 from umrs.jobs import plan_run_records as ext
 

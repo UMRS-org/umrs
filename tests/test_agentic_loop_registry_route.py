@@ -14,8 +14,8 @@ from types import SimpleNamespace
 
 import pytest
 from umrs.jobs import knowledge_adapters
-from umrs.knowledge.agent_executor import UmrsAgentIterationExecutor
 from umrs.knowledge import llm_chat
+from umrs.knowledge.agent_executor import UmrsAgentIterationExecutor
 
 _LLAMA = SimpleNamespace(
     model="llama3.2:3b", litellm_url="http://host.containers.internal:11434", metadata={}

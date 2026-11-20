@@ -11,7 +11,6 @@ import ast
 from pathlib import Path
 
 import pytest
-
 from umrs.jobs import plan_run_records, reindex
 from umrs.jobs.backend_refs import parse_backend_ref
 
