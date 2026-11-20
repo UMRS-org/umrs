@@ -35,6 +35,7 @@ from umrs.api.llm_usage import (
     record_usage,
 )
 from umrs.api.typed_errors import PlatformError, raise_typed
+from umrs.knowledge.llm_chat import resolve_service_key
 from umrs.metrics import METRICS
 from umrs.orchestrator.endpoint_access import EndpointCaller, usable_endpoints
 from umrs.orchestrator.endpoint_registry import (
@@ -70,10 +71,7 @@ def get_usage_db_pool():
     return _usage_db_pool
 
 
-def _resolve_litellm_service_key() -> str | None:
-    return os.environ.get("GATEWAY_LITELLM_SERVICE_KEY") or os.environ.get(
-        "LITELLM_MASTER_KEY"
-    )
+_resolve_litellm_service_key = resolve_service_key  # one resolver (U3 S1 item 4)
 
 
 # LiteLLM service key — injected as Authorization header when proxying.

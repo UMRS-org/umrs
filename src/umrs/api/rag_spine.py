@@ -241,7 +241,7 @@ def compose_answer(
     caller already did (``answer_from_spine`` sizes the profile with them).
     """
     from umrs.jobs.knowledge_adapters import _extract_timeout
-    from umrs.knowledge.agent_executor import _default_litellm_chat
+    from umrs.knowledge import llm_chat
 
     instruction = pack_instruction()
     pack, citation_map = render_pack(
@@ -260,7 +260,7 @@ def compose_answer(
     base_url, model = target
     limit = answer_max_tokens() if max_tokens is _RESOLVE else max_tokens
     try:
-        reply = _default_litellm_chat(
+        reply = llm_chat.chat_completion(
             [
                 {"role": "system", "content": answer_system(instruction)},
                 {"role": "user", "content": pack},

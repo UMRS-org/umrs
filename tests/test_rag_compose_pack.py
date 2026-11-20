@@ -16,6 +16,7 @@ from umrs.api import rag_spine
 
 from umrs_protocol.context_pack import NOT_COVERED
 from umrs_protocol.retrieval import RetrievalSufficiency, RetrievedPassage, RetrieveResult
+from umrs.knowledge import llm_chat
 
 
 def _passage(rank, text="Encapsulation with alumina slows moisture ingress.", name="note.md"):
@@ -45,7 +46,6 @@ def _result(status, n=3, **sufficiency):
 def chat(monkeypatch):
     """The registry resolves a model; every chat call is recorded."""
     from umrs.jobs import knowledge_adapters as ka
-    from umrs.knowledge import agent_executor
 
     calls = []
     reply = {"text": "Alumina encapsulation slows it [1]."}
@@ -57,7 +57,7 @@ def chat(monkeypatch):
         calls.append({"messages": messages, **kwargs})
         return reply["text"]
 
-    monkeypatch.setattr(agent_executor, "_default_litellm_chat", fake)
+    monkeypatch.setattr(llm_chat, "chat_completion", fake)
     for name in ("UMRS_RAG_PACK_INSTRUCTION", "UMRS_RAG_PACK_ORDER", "UMRS_RAG_ANSWER_MAX_TOKENS"):
         monkeypatch.delenv(name, raising=False)
     return calls, reply
@@ -284,15 +284,14 @@ class _Response:
 
 def test_the_chat_helper_takes_a_temperature_and_keeps_its_default(monkeypatch):
     import httpx
-    from umrs.knowledge import agent_executor
 
     bodies = []
     monkeypatch.setattr(
         httpx, "post", lambda _url, **kwargs: bodies.append(kwargs["json"]) or _Response()
     )
     kwargs = {"model": "m", "base_url": "http://x", "api_key": "k"}
-    agent_executor._default_litellm_chat([], **kwargs)
-    agent_executor._default_litellm_chat([], **kwargs, temperature=0.0)
+    llm_chat.chat_completion([], **kwargs)
+    llm_chat.chat_completion([], **kwargs, temperature=0.0)
     assert [b["temperature"] for b in bodies] == [0.3, 0.0]
 
 
@@ -300,16 +299,15 @@ def test_no_output_limit_leaves_max_tokens_out_of_the_request(monkeypatch):
     """ADR-093 D-14: a large reader's answer sends no limit at all, never
     ``"max_tokens": null``; a set limit is sent as before (integrator)."""
     import httpx
-    from umrs.knowledge import agent_executor
 
     bodies = []
     monkeypatch.setattr(
         httpx, "post", lambda _url, **kwargs: bodies.append(kwargs["json"]) or _Response()
     )
     kwargs = {"model": "kimi-k3", "base_url": "http://x", "api_key": "k"}
-    agent_executor._default_litellm_chat([], **kwargs, max_tokens=None)
-    agent_executor._default_litellm_chat([], **kwargs, max_tokens=400)
-    agent_executor._default_litellm_chat([], **kwargs)
+    llm_chat.chat_completion([], **kwargs, max_tokens=None)
+    llm_chat.chat_completion([], **kwargs, max_tokens=400)
+    llm_chat.chat_completion([], **kwargs)
     assert "max_tokens" not in bodies[0]
     assert [b.get("max_tokens") for b in bodies[1:]] == [400, 700]
 

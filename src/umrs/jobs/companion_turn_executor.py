@@ -94,9 +94,9 @@ def project_from_registry_key(registry_key: str) -> str:
 
 def _default_chat() -> ChatFn:
     """Site LiteLLM chat (same upstream/auth pattern as api/llm.py)."""
-    from umrs.knowledge.agent_executor import _default_litellm_chat
+    from umrs.knowledge import llm_chat
 
-    return _default_litellm_chat
+    return llm_chat.chat_completion
 
 
 def resolve_model() -> str:

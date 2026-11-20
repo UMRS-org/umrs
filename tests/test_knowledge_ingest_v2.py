@@ -16,6 +16,7 @@ from typing import Any
 
 import pytest
 from umrs.jobs import knowledge_adapters as ka
+from umrs.knowledge import llm_chat
 
 _EMPTY = {k: [] for k in ("modules", "classes", "functions", "algorithms", "dependencies")}
 
@@ -102,7 +103,7 @@ def _chat_recorder(monkeypatch, replies: dict[str, dict[str, Any]]) -> list[str]
         entities = [e for marker, r in replies.items() if marker in user for e in r["entities"]]
         return json.dumps({"entities": entities, "relations": []})
 
-    monkeypatch.setattr("umrs.knowledge.agent_executor._default_litellm_chat", chat)
+    monkeypatch.setattr("umrs.knowledge.llm_chat.chat_completion", chat)
     return users
 
 
@@ -814,7 +815,6 @@ def test_no_site_embedder_means_no_label_vectors(monkeypatch):
 
 def test_chat_sends_response_format_and_reads_reasoning_content(monkeypatch):
     import httpx
-    from umrs.knowledge import agent_executor
 
     bodies: list[dict[str, Any]] = []
 
@@ -830,7 +830,7 @@ def test_chat_sends_response_format_and_reads_reasoning_content(monkeypatch):
         return _Resp()
 
     monkeypatch.setattr(httpx, "post", post)
-    reply = agent_executor._default_litellm_chat(
+    reply = llm_chat.chat_completion(
         [{"role": "user", "content": "x"}],
         model="m",
         base_url="http://l:1",
@@ -841,7 +841,7 @@ def test_chat_sends_response_format_and_reads_reasoning_content(monkeypatch):
     assert reply == "{}"
     assert bodies[0]["response_format"] == {"type": "json_object"}
     # existing callers: no field sent, content as before
-    agent_executor._default_litellm_chat(
+    llm_chat.chat_completion(
         [{"role": "user", "content": "x"}], model="m", base_url="http://l:1", api_key="k"
     )
     assert "response_format" not in bodies[1]
@@ -857,7 +857,7 @@ def test_chat_sends_response_format_and_reads_reasoning_content(monkeypatch):
     ],
 )
 def test_message_text(message, expected):
-    from umrs.knowledge.agent_executor import message_text
+    from umrs.knowledge.llm_chat import message_text
 
     assert message_text(message) == expected
 
@@ -876,7 +876,7 @@ def test_the_call_timeout_covers_a_reply_at_the_token_cap(monkeypatch):
         seen.append(kw)
         return json.dumps({"entities": [], "relations": []})
 
-    monkeypatch.setattr("umrs.knowledge.agent_executor._default_litellm_chat", chat)
+    monkeypatch.setattr("umrs.knowledge.llm_chat.chat_completion", chat)
     ka._llm_extract_document(_prose(5), project_id="p", vocab=FakeVocab())
     timeout, max_tokens = seen[0]["timeout"], seen[0]["max_tokens"]
     assert max_tokens == 2500
@@ -906,7 +906,7 @@ def test_the_extraction_budget_is_per_job_not_per_document(monkeypatch):
         time.sleep(1.5)
         return json.dumps({"entities": [{"name": "Zirconia", "type": "material"}]})
 
-    monkeypatch.setattr("umrs.knowledge.agent_executor._default_litellm_chat", slow_chat)
+    monkeypatch.setattr("umrs.knowledge.llm_chat.chat_completion", slow_chat)
     started = time.monotonic()
     result, store, *_rest = _run_job(monkeypatch, er_module=_er_module([]), llm="real")
     assert time.monotonic() - started < 3.4  # 1 s job budget + one lite call (+ slack)

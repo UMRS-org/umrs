@@ -26,6 +26,7 @@ from umrs.knowledge.retrieval import hydrate as hydrate_mod
 from umrs.knowledge.retrieval.types import Candidate
 
 from umrs_protocol.retrieval import RetrievalSufficiency, RetrievedPassage, RetrieveResult
+from umrs.knowledge import llm_chat
 
 _DOC = "  # Perovskite note\n\nEncapsulation with alumina slows moisture ingress. Dr. Tanaka measured 1200 h.\n"
 _TEXT = _DOC.strip()  # what the embed job chunked (decode + strip)
@@ -203,7 +204,6 @@ def _hydrated(text=_CHUNK):
 
 def test_answer_uses_the_registry_model_and_the_pack_question_last(monkeypatch):
     from umrs.jobs import knowledge_adapters as ka
-    from umrs.knowledge import agent_executor
 
     seen = {}
     monkeypatch.setattr(
@@ -214,7 +214,7 @@ def test_answer_uses_the_registry_model_and_the_pack_question_last(monkeypatch):
         seen.update(messages=messages, **kwargs)
         return "<think>hmm</think>Alumina encapsulation slows it [1]."
 
-    monkeypatch.setattr(agent_executor, "_default_litellm_chat", chat)
+    monkeypatch.setattr(llm_chat, "chat_completion", chat)
     answer, model, reason, cmap = rag_spine.compose_answer(
         "what slows moisture?", _hydrated(), "p1"
     )
@@ -237,14 +237,13 @@ def test_no_chat_endpoint_is_a_reason(monkeypatch):
 
 def test_chat_failure_is_a_reason_naming_the_model(monkeypatch):
     from umrs.jobs import knowledge_adapters as ka
-    from umrs.knowledge import agent_executor
 
     monkeypatch.setattr(ka, "_extract_chat_endpoint", lambda _project: ("http://x", "m"))
 
     def boom(*_a, **_k):
         raise TimeoutError("slow")
 
-    monkeypatch.setattr(agent_executor, "_default_litellm_chat", boom)
+    monkeypatch.setattr(llm_chat, "chat_completion", boom)
     answer, model, reason, _cmap = rag_spine.compose_answer("q", _hydrated(), "p1")
     assert answer == "" and model == "m" and "TimeoutError" in reason
 

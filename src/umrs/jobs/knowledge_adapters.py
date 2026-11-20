@@ -3253,10 +3253,10 @@ def _extract_chat(
     """One extraction call. The JSON-mode attempt also switches thinking off;
     the plain retry ``llm_extract`` makes after a 4xx sends neither field, so
     a server that refuses ``chat_template_kwargs`` still gets an answer."""
-    from umrs.knowledge.agent_executor import _default_litellm_chat
+    from umrs.knowledge import llm_chat
 
     extra = _THINKING_OFF if response_format is not None and _extract_thinking_off() else None
-    return _default_litellm_chat(
+    return llm_chat.chat_completion(
         messages, response_format=response_format, extra_body=extra, **kw
     )
 

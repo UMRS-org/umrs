@@ -21,6 +21,7 @@ from umrs.knowledge.retrieval import calibrate, pipeline
 from umrs.knowledge.retrieval import hydrate as hydrate_mod
 
 from umrs_protocol.retrieval import RetrievalSufficiency, RetrievedPassage, RetrieveResult
+from umrs.knowledge import llm_chat
 
 _RESULT = RetrieveResult(
     query="q",
@@ -330,7 +331,6 @@ class _Response:
 
 
 def test_the_route_never_calls_a_chat_model(monkeypatch):
-    from umrs.knowledge import agent_executor
 
     urls = []
 
@@ -343,7 +343,7 @@ def test_the_route_never_calls_a_chat_model(monkeypatch):
         raise AssertionError("chat call on the retrieve path")
 
     monkeypatch.setattr(httpx, "post", post)
-    monkeypatch.setattr(agent_executor, "_default_litellm_chat", chat)
+    monkeypatch.setattr(llm_chat, "chat_completion", chat)
     monkeypatch.setenv("UMRS_KNOWLEDGE_QUERY_ENCODER_URL", "http://rag:8003")
     monkeypatch.setattr(rag_api, "_require_rag_scope", lambda *_a, **_k: ("u", "p1"))
     monkeypatch.setattr(rag_retrieve, "site_reranker", lambda: None)

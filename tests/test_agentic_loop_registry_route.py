@@ -14,8 +14,8 @@ from types import SimpleNamespace
 
 import pytest
 from umrs.jobs import knowledge_adapters
-from umrs.knowledge import agent_executor
 from umrs.knowledge.agent_executor import UmrsAgentIterationExecutor
+from umrs.knowledge import llm_chat
 
 _LLAMA = SimpleNamespace(
     model="llama3.2:3b", litellm_url="http://host.containers.internal:11434", metadata={}
@@ -33,7 +33,7 @@ def calls(monkeypatch):
         seen.append({"model": model, "base_url": base_url})
         return '{"hypothesis": "h"}'
 
-    monkeypatch.setattr(agent_executor, "_default_litellm_chat", chat)
+    monkeypatch.setattr(llm_chat, "chat_completion", chat)
     monkeypatch.delenv("UMRS_AGENT_LITELLM_URL", raising=False)
     monkeypatch.delenv("UMRS_AGENT_MODEL", raising=False)
     return seen

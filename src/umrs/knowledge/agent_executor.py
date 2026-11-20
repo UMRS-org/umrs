@@ -20,6 +20,8 @@ import re
 from collections.abc import Callable
 from typing import Any
 
+from . import llm_chat
+
 logger = logging.getLogger(__name__)
 
 _JSON_BLOCK_RE = re.compile(r"\{.*\}", re.DOTALL)
@@ -53,12 +55,6 @@ def normalize_iteration_requires(raw: Any) -> dict[str, Any]:
     }
 
 
-def _resolve_litellm_service_key() -> str | None:
-    return os.environ.get("GATEWAY_LITELLM_SERVICE_KEY") or os.environ.get(
-        "LITELLM_MASTER_KEY"
-    )
-
-
 def _node_digest(node: Any) -> dict[str, str]:
     """Compact node row for the LLM prompt digest (#207)."""
     node_type = getattr(node, "node_type", None)
@@ -81,79 +77,6 @@ def _edge_digest(edge: Any) -> dict[str, str] | None:
         "to": target,
         "type": str(getattr(rel, "value", rel) or "related"),
     }
-
-
-def _default_litellm_chat(
-    messages: list[dict[str, Any]],
-    *,
-    model: str,
-    base_url: str,
-    api_key: str | None,
-    max_tokens: int | None = 700,
-    timeout: float = 60.0,
-    temperature: float = 0.3,
-    response_format: dict[str, Any] | None = None,
-    reasoning_fallback: bool = False,
-    extra_body: dict[str, Any] | None = None,
-) -> str:
-    """Chat via the site LiteLLM upstream (same auth as api/llm.py).
-
-    ``temperature`` stays 0.3 for the loop and extraction callers; the RAG
-    answer path passes 0.0 (ADR-093 D-4). ``max_tokens=None`` sends no
-    output limit at all (the provider's own default): the RAG answer of a
-    large reader (ADR-093 D-14, rikyu's kimi-k3 and glm-5.3).
-
-    ``response_format`` (ADR-116 D-2) is sent as given, e.g.
-    ``{"type": "json_object"}``; None sends no field. ``reasoning_fallback``
-    returns the message's ``reasoning_content`` (or ``reasoning``) when a
-    reasoning model left ``content`` empty; without it the reply text is
-    ``str(content)`` as before. ``extra_body`` adds request fields as given
-    (knowledge extraction sends ``chat_template_kwargs`` to switch a Qwen3
-    model's thinking off, 2026-11-14); None adds nothing.
-    """
-    key = api_key or _resolve_litellm_service_key()
-    if not base_url:
-        raise RuntimeError("no litellm base url configured for agent executor")
-    headers = {"Content-Type": "application/json"}
-    if key:
-        headers["Authorization"] = f"Bearer {key}"
-    import httpx
-
-    body: dict[str, Any] = {
-        "model": model,
-        "messages": messages,
-        "temperature": temperature,
-        "stream": False,
-    }
-    if max_tokens is not None:
-        body["max_tokens"] = max_tokens
-    if response_format is not None:
-        body["response_format"] = response_format
-    if extra_body:
-        body.update(extra_body)
-    resp = httpx.post(
-        f"{base_url.rstrip('/')}/v1/chat/completions",
-        headers=headers,
-        json=body,
-        timeout=timeout,
-        trust_env=False,
-    )
-    resp.raise_for_status()
-    message = resp.json()["choices"][0]["message"]
-    if reasoning_fallback:
-        return message_text(message)
-    return str(message["content"])
-
-
-def message_text(message: dict[str, Any]) -> str:
-    """The reply text of one chat message: ``content``, else the reasoning
-    field a reasoning model filled instead (``reasoning_content`` or
-    ``reasoning``), else ``""``. Never the string ``"None"``."""
-    for key in ("content", "reasoning_content", "reasoning"):
-        value = message.get(key)
-        if isinstance(value, str) and value.strip():
-            return value
-    return ""
 
 
 class UmrsAgentIterationExecutor:
@@ -258,8 +181,8 @@ class UmrsAgentIterationExecutor:
                     "and UMRS_AGENT_LITELLM_URL unset"
                 }
             base_url, model = target
-            key = _resolve_litellm_service_key()
-            chat = lambda messages, model, max_tokens: _default_litellm_chat(
+            key = llm_chat.resolve_service_key()
+            chat = lambda messages, model, max_tokens: llm_chat.chat_completion(
                 messages,
                 model=model,
                 base_url=base_url,

@@ -13,6 +13,7 @@ from types import SimpleNamespace
 import pytest
 from umrs.jobs import knowledge_adapters as ka
 from umrs.orchestrator.endpoint_registry import EndpointStatus
+from umrs.knowledge import llm_chat
 
 
 def _ep(project, model, *, access=None, meta=None, url="http://m:11434"):
@@ -108,7 +109,7 @@ def test_connection_failure_is_reported(monkeypatch):
     def _boom(*_a, **_k):
         raise ConnectionRefusedError(111, "Connection refused")
 
-    monkeypatch.setattr("umrs.knowledge.agent_executor._default_litellm_chat", _boom)
+    monkeypatch.setattr("umrs.knowledge.llm_chat.chat_completion", _boom)
     notes: list[str] = []
     assert ka._llm_extract_document("prose", project_id="p", notes=notes) is None
     # GLiNER is on by default (2026-11-13); unstaged here, it adds its own
@@ -200,7 +201,7 @@ def _record_chat(monkeypatch):
         calls.append(kw)
         return "{}"
 
-    monkeypatch.setattr("umrs.knowledge.agent_executor._default_litellm_chat", fake)
+    monkeypatch.setattr("umrs.knowledge.llm_chat.chat_completion", fake)
     return calls
 
 
@@ -221,7 +222,6 @@ def test_thinking_can_be_left_on(monkeypatch):
 
 
 def test_the_chat_call_sends_extra_body_fields(monkeypatch):
-    from umrs.knowledge import agent_executor
 
     sent = {}
 
@@ -239,7 +239,7 @@ def test_the_chat_call_sends_extra_body_fields(monkeypatch):
         return _Resp()
 
     monkeypatch.setattr("httpx.post", fake_post)
-    agent_executor._default_litellm_chat(
+    llm_chat.chat_completion(
         [],
         model="m",
         base_url="http://x",

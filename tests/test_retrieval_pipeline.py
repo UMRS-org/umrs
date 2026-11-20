@@ -24,6 +24,7 @@ from umrs.knowledge.retrieval import calibrate, dense, pipeline
 from umrs.knowledge.retrieval import hydrate as hydrate_mod
 from umrs.knowledge.retrieval.calibrate import NullStats
 from umrs.knowledge.retrieval.types import Candidate, LaneResult, RetrieveSpec
+from umrs.knowledge import llm_chat
 
 _RETRIEVAL_DIR = Path(pipeline.__file__).parent
 
@@ -411,11 +412,10 @@ def _chat_trap(monkeypatch):
         calls.append("chat:_default_litellm_chat")
         raise AssertionError("the retrieve path called a chat model")
 
-    from umrs.knowledge import agent_executor
 
     monkeypatch.setattr(httpx, "post", post)
     monkeypatch.setattr(httpx.Client, "post", client_post)
-    monkeypatch.setattr(agent_executor, "_default_litellm_chat", chat)
+    monkeypatch.setattr(llm_chat, "chat_completion", chat)
     return calls
 
 
@@ -458,9 +458,11 @@ def _chat_reach(path: Path) -> list[str]:
     source = path.read_text()
     imports = _imports(source)
     hits = [
-        name for name in imports if name.endswith("agent_executor") or name.startswith("umrs.api")
+        name
+        for name in imports
+        if name.endswith(("agent_executor", "llm_chat")) or name.startswith("umrs.api")
     ]
-    hits += ["_default_litellm_chat"] if "_default_litellm_chat" in imports else []
+    hits += [n for n in ("_default_litellm_chat", "chat_completion") if n in imports]
     return hits + (["chat/completions"] if "chat/completions" in source else [])
 
 

@@ -26,7 +26,6 @@ from fastapi.testclient import TestClient
 from umrs.api import rag as rag_api
 from umrs.api import rag_retrieve, rag_spine
 from umrs.jobs import knowledge_adapters as ka
-from umrs.knowledge import agent_executor
 from umrs.knowledge.retrieval import calibrate, pipeline, profiles
 from umrs.knowledge.retrieval import hydrate as hydrate_mod
 from umrs.knowledge.retrieval.calibrate import NullStats
@@ -34,6 +33,7 @@ from umrs.knowledge.retrieval.types import Candidate, LaneResult, RetrieveSpec
 
 from umrs_protocol.models import RETRIEVAL_PROFILES
 from umrs_protocol.retrieval import RetrievalSufficiency, RetrievedPassage, RetrieveResult
+from umrs.knowledge import llm_chat
 
 _ENV = (
     "UMRS_RAG_PROFILE",
@@ -255,7 +255,7 @@ def compose(monkeypatch):
 
     monkeypatch.setattr(pipeline, "retrieve", retrieve)
     monkeypatch.setattr(rag_retrieve, "site_reranker", lambda: None)
-    monkeypatch.setattr(agent_executor, "_default_litellm_chat", chat)
+    monkeypatch.setattr(llm_chat, "chat_completion", chat)
 
     def answer(model: str, status: str = "sufficient"):
         seen["status"] = status

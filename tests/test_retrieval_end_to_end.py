@@ -35,12 +35,12 @@ from fastapi.testclient import TestClient
 from umrs.api import knowledge_query as kq
 from umrs.api import rag as rag_api
 from umrs.api import rag_retrieve, rag_spine
-from umrs.knowledge import agent_executor
 from umrs.knowledge.retrieval import calibrate, lexical, pipeline
 from umrs.knowledge.retrieval import hydrate as hydrate_mod
 from umrs.knowledge.retrieval.types import RetrieveSpec
 
 from umrs_protocol.retrieval import RetrieveResult
+from umrs.knowledge import llm_chat
 
 DIM = 24
 MODEL = "/models/e5-base-v2"
@@ -500,7 +500,7 @@ def forbidden(monkeypatch):
         calls.append((args, kwargs))
         raise AssertionError("a model or HTTP call on the retrieve path")
 
-    monkeypatch.setattr(agent_executor, "_default_litellm_chat", refuse)
+    monkeypatch.setattr(llm_chat, "chat_completion", refuse)
     monkeypatch.setattr(httpx, "post", refuse)
     monkeypatch.setattr(httpx.Client, "post", refuse)
     return calls
@@ -752,7 +752,7 @@ def test_a_sufficient_answer_costs_exactly_one_chat_call(db, encoder, monkeypatc
         chats.append(kwargs)
         return "Swelling slows moisture sorption [1]."
 
-    monkeypatch.setattr(agent_executor, "_default_litellm_chat", chat)
+    monkeypatch.setattr(llm_chat, "chat_completion", chat)
     monkeypatch.setattr(
         "umrs.jobs.knowledge_adapters._extract_chat_endpoint", lambda _p: ("http://llm", "m")
     )
