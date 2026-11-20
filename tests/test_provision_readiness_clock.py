@@ -159,10 +159,16 @@ async def test_readiness_timeout_is_capped_by_the_recipe(
     service = _service(_Backend(), ReadinessConfig(timeout_sec=budget))
     request = ProvisionRequest("p", "m", metadata=metadata)
 
+    loop = asyncio.get_running_loop()
+    began = loop.time()
     result = await _finalize(service, request, start_offset=0, budget=budget)
+    # The service subtracts the real loop time already spent from the budget;
+    # on a loaded CI runner that exceeded the old fixed 1 s slack (2026-11-20:
+    # 2398 for an expected 2400). Allow exactly the time that elapsed.
+    slack = loop.time() - began + 1
 
     assert result.success is True
-    assert expected - 1 <= captured["timeout_sec"] <= expected
+    assert expected - slack <= captured["timeout_sec"] <= expected
     assert captured["liveness"] is not None
 
 
