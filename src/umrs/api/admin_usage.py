@@ -11,7 +11,7 @@ effective session policy (``null`` = no limit, or unreadable when
 every user. Days are calendar days in ``UMRS_QUOTA_DAY_TZ`` (default UTC).
 
 Access: the admin credential of the RS-0 session routes
-(``admin_sessions.require_session_admin``). Admin views never include
+(``admin_auth.require_session_admin``). Admin views never include
 request or response content: the ledger holds none.
 """
 
@@ -23,7 +23,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Query, Request
 
-from .admin_sessions import require_session_admin
+from .admin_auth import require_session_admin
 from .typed_errors import PlatformError, raise_typed
 
 router = APIRouter(prefix="/umrs/admin/usage", tags=["admin-usage"])

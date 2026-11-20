@@ -10,7 +10,7 @@ binds: absent = this site, ``""`` = every site. When this server's site
 name is unknown (its site config could not be loaded) an absent ``venue``
 is refused (``sessionpolicy.unavailable``) rather than read as ``""``, and
 the owner layer is refused always. Access: the admin credential
-of the admin session routes (``admin_sessions.require_session_admin``: an
+of the admin session routes (``admin_auth.require_session_admin``: an
 admin JWT or a gateway-verified admin identity).
 
 The project owner's layer (``PUT /umrs/projects/{id}/session-policy``) is
@@ -46,7 +46,7 @@ from umrs.session_policy import (
 from umrs.session_policy.model import check_rule_key
 from umrs.venues.session_audit import audit_venue
 
-from .admin_sessions import require_session_admin
+from .admin_auth import require_session_admin
 from .session_policy_errors import policy_typed
 from .typed_errors import PlatformError, raise_typed
 
