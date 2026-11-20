@@ -801,7 +801,7 @@ def _verified_workflow_params(
     return resolved_params
 
 
-def _require_verified_workflow_identity(
+def require_verified_workflow_identity(
     x_user_id: str | None,
     x_verified_project_id: str | None,
     x_verified_is_admin: str | None = None,
@@ -842,6 +842,11 @@ def _require_verified_workflow_identity(
                 "Gateway-verified identity signature rejected",
             )
         )
+
+
+
+# Public since U3 S1 item 10; the private name stays for this module's routes.
+_require_verified_workflow_identity = require_verified_workflow_identity
 
 
 def _verified_users_may_upload() -> bool:

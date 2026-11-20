@@ -1020,9 +1020,9 @@ def _loop_owner(
                 ),
             )
         return ""
-    from umrs.api.workflows import _require_verified_workflow_identity
+    from umrs.api.identity import require_verified_workflow_identity
 
-    _require_verified_workflow_identity(
+    require_verified_workflow_identity(
         x_user_id, x_verified_project_id, x_verified_is_admin, x_verified_hmac
     )
     return (x_user_id or "").strip()

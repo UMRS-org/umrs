@@ -11,7 +11,7 @@ Routes under ``/umrs/companion`` (deployed as ``/gw/companion/*`` behind NGINX
   (401 on a worker mismatch; another user's approval reads as 404), token ≠
   auth ≠ liveness holds end-to-end.
 
-Strict-mode identity gate reuses ``workflows._require_verified_workflow_identity``
+Strict-mode identity gate reuses ``identity.require_verified_workflow_identity``
 — the venue consumes ONLY the sidecar's signed identity tuple, never raw auth
 material, exactly per ADR-027's claim-carrier line.
 """
@@ -45,8 +45,8 @@ from umrs.jobs.companion_worker_supervisor import AtCapacity
 from umrs.shared.scope_grammar import ScopeError, fallback_chain
 from umrs.shared.scope_grammar import parse as parse_scope
 
+from .identity import require_verified_workflow_identity
 from .typed_errors import PlatformError, raise_typed
-from .workflows import _require_verified_workflow_identity
 
 logger = logging.getLogger(__name__)
 
@@ -116,7 +116,7 @@ def _strict_headers(
     x_verified_hmac: str | None = Header(None),
 ) -> str:
     """Gate + return the caller's verified user id."""
-    _require_verified_workflow_identity(
+    require_verified_workflow_identity(
         x_user_id, x_verified_project_id, x_verified_is_admin, x_verified_hmac
     )
     return (x_user_id or "").strip()
