@@ -1,0 +1,7 @@
+Tag: 20261030-102911-N16-run2
+Host: Linux ai-h100-00.r-ccs27.riken.jp 6.8.0-146-generic #146-Ubuntu SMP PREEMPT_DYNAMIC Thu Sep  3 16:12:30 UTC 2026 x86_64 x86_64 x86_64 GNU/Linux
+CPU: Intel(R) Xeon(R) Silver 4410Y
+GPU: NVIDIA H100 NVL, 95830 MiB, 560.35.03
+Started: 2026-10-30 10:29:13.249
+Last finished: 2026-10-30 10:29:42.189
+Duration: 00:00:28.940
