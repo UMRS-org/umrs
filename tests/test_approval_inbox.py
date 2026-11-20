@@ -134,18 +134,20 @@ def test_migration_0081_shape():
 def test_schema_module_mirrors_migration_and_bumps_version():
     from pathlib import Path
 
+    from umrs.companion_trust import schema
     from umrs.companion_trust.schema import (
         COMPANION_TRUST_SCHEMA_VERSION,
         CREATE_APPROVAL_INBOX_TABLE,
     )
 
-    import umrs
-
     # v4 (ADR-057 D-3): chat_turn_approvals is owned by migration 0098 alone
     # since U3 S1; the version stays 4 so existing databases are unaffected.
     assert COMPANION_TRUST_SCHEMA_VERSION == 4
     assert "companion_approval_inbox" in CREATE_APPROVAL_INBOX_TABLE
-    migration = Path(umrs.__file__).parent / "migrations" / "0098_chat_turn_approvals.sql"
+    # umrs can be a namespace package (umrs.__file__ is None in CI), so the
+    # path is anchored on a real module: companion_trust/schema.py.
+    umrs_dir = Path(schema.__file__).parents[1]
+    migration = umrs_dir / "migrations" / "0098_chat_turn_approvals.sql"
     assert "CREATE TABLE IF NOT EXISTS chat_turn_approvals" in migration.read_text()
 
 
