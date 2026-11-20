@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from r4_contracts.skills import SkillManifest, SkillScope
+from umrs_protocol.skills import SkillManifest, SkillScope
 
 logger = logging.getLogger(__name__)
 

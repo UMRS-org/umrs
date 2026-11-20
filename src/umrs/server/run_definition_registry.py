@@ -17,7 +17,7 @@ Ownership model: ``(name, user_id)`` is the identity. Reads, triggers, and
 deletes are owner-only; admins ( callers with the verified admin header) are
 handled at the route layer by passing the record's owner as ``user_id``.
 
-Records are plain dicts matching ``r4_contracts.workflows.RunDefinitionRecord``.
+Records are plain dicts matching ``umrs_protocol.workflows.RunDefinitionRecord``.
 """
 
 from __future__ import annotations

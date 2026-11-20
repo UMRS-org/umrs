@@ -18,7 +18,7 @@ import logging
 import re
 from typing import Any
 
-from r4_contracts.security import ScanFinding, ScanResult, SeverityLevel
+from umrs_protocol.security import ScanFinding, ScanResult, SeverityLevel
 
 logger = logging.getLogger(__name__)
 

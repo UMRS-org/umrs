@@ -2,7 +2,7 @@
 
 - which trigger classes an engine action carries (a set: a physical workflow
   trigger is both ``cost`` and ``physical_action``). The class names and
-  the kind → class table are ``r4_contracts.ask_policy``'s, shared with r4's
+  the kind → class table are ``umrs_protocol.ask_policy``'s, shared with r4's
   local loop; a team-plan run, ``plan_run``, is ``cost`` there (ADR-092
   slice 6, registered before any loop runs a plan), so an ask-mode loop
   parks at it and a profile naming ``cost`` does too;
@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from r4_contracts.ask_policy import (
+from umrs_protocol.ask_policy import (
     ACTION_KIND_CLASSES,
     COMPETING,
     COST,

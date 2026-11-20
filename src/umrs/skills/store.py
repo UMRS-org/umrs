@@ -378,7 +378,7 @@ def _row_to_skill(row: tuple) -> RegisteredSkill:
     manifest_data = _manifest_data(manifest_raw)
     review_state = _jsonb_field(review_state_raw)
 
-    from r4_contracts.skills import SkillManifest
+    from umrs_protocol.skills import SkillManifest
 
     manifest = SkillManifest.from_dict(manifest_data)
     if not manifest.name:
@@ -409,7 +409,7 @@ def _manifest_from_row(
     name: str,
     version: str,
 ) -> Any:
-    from r4_contracts.skills import SkillManifest
+    from umrs_protocol.skills import SkillManifest
 
     m = SkillManifest.from_dict(manifest)
     if not m.name:

@@ -14,7 +14,7 @@ from umrs.knowledge.engine_loop_runner import EngineLoopRunner
 
 def test_ask_policy_reads_the_shared_action_table():
     # The table is pinned once, in r4-contracts (test_ask_policy.py).
-    from r4_contracts.ask_policy import ACTION_KIND_CLASSES, PLAN_RUN
+    from umrs_protocol.ask_policy import ACTION_KIND_CLASSES, PLAN_RUN
 
     assert ap.PLAN_RUN == PLAN_RUN
     assert set(ap.COST_ACTION_KINDS) == set(ACTION_KIND_CLASSES)

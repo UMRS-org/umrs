@@ -160,7 +160,7 @@ class TestPipelineBuilder:
 
 class TestUploadContract:
     """2026-10-02: what the builder emits meets the upload contract
-    (r4_contracts.workflow_package): a description and every step's
+    (umrs_protocol.workflow_package): a description and every step's
     depends_on, [] for a step that starts the run."""
 
     def test_description_is_required(self):
@@ -169,7 +169,7 @@ class TestUploadContract:
             builder.build()
 
     def test_a_built_workflow_passes_the_upload_check(self):
-        from r4_contracts.workflow_package import errors_of, workflow_package_problems
+        from umrs_protocol.workflow_package import errors_of, workflow_package_problems
 
         wf = (
             PipelineBuilder("fan")

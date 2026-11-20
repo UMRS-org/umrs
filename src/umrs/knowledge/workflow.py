@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 
 
 # ── Project Workflow Result ───────────────────────────────────────────────
-# Not to be confused with r4_contracts.workflows.WorkflowResult (registered
+# Not to be confused with umrs_protocol.workflows.WorkflowResult (registered
 # UMRS run result). This type is the RC1 project-pipeline summary.
 
 

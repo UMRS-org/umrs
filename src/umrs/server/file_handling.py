@@ -282,13 +282,13 @@ def _check_zip_size(zf) -> None:
 
 
 def _package_check(raw: bytes) -> tuple[list[str], str]:
-    """The upload contract (r4_contracts.workflow_package, 2026-10-02): a
+    """The upload contract (umrs_protocol.workflow_package, 2026-10-02): a
     description and an explicit flow graph (every step's ``depends_on``)
     are mandatory, so an error refuses the upload, every problem named at
     once; ``version`` must be a semantic version (ADR-113 D-1, refused by
     name as ``workflows.invalid_version``). Returns the contract's warnings
     as advice lines for the upload notice, and the version."""
-    from r4_contracts.workflow_package import (
+    from umrs_protocol.workflow_package import (
         errors_of,
         format_problems,
         warnings_of,
@@ -519,7 +519,7 @@ def upload_workflow_bundle(
 
     The zip must contain a ``workflow.json`` at its root (or one level deep)
     that meets the upload contract (a description, every step's
-    ``depends_on``, ``r4_contracts.workflow_package``), carries a SemVer
+    ``depends_on``, ``umrs_protocol.workflow_package``), carries a SemVer
     ``version`` and parses as a :class:`WorkflowDefinition`; *workflow_name*
     must match :data:`WORKFLOW_NAME_RE`. The tree is extracted into an empty
     staging directory and renamed into place: a version is never written

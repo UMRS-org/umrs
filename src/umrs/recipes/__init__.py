@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from r4_contracts.recipes import (
+from umrs_protocol.recipes import (
     RecipeDefinition,
     RecipeParam,
     RecipeScope,

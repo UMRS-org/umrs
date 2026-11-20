@@ -8,20 +8,7 @@
 # U2.x family 1 (protocol + handshake_hmac) migrated 2026-11-20; 85 rows removed.
 src/umrs/api/loop.py::r4_contracts.loop_plan  # floor: U3-S5
 src/umrs/api/loop.py::r4_contracts.team_engine.plan  # floor: U3-S5
-src/umrs/api/workflows.py::r4_contracts.workflows
-src/umrs/knowledge/ask_policy.py::r4_contracts.ask_policy
-src/umrs/knowledge/bundle_import.py::r4_contracts.skills
 src/umrs/knowledge/plan_iteration.py::r4_contracts.loop_plan  # floor: U3-S5
 src/umrs/knowledge/plan_iteration.py::r4_contracts.team_engine.plan  # floor: U3-S5
-src/umrs/recipes/__init__.py::r4_contracts.recipes
-src/umrs/security/scanner.py::r4_contracts.security
-src/umrs/server/file_handling.py::r4_contracts.workflow_package
-src/umrs/skills/__init__.py::r4_contracts.skills
-src/umrs/skills/store.py::r4_contracts.skills
 src/umrs/venues/plan_runs.py::r4_contracts.team_engine.plan  # floor: U3-S5
-tests/test_h10b_followups.py::r4_contracts.skills
-tests/test_loop_plan_iteration.py::r4_contracts.ask_policy
-tests/test_pipeline_builder.py::r4_contracts.workflow_package
 tests/test_plan_loop_server.py::r4_contracts.loop_plan  # floor: U3-S5
-tests/test_skills_api.py::r4_contracts.skills
-tests/test_upload_workflow_contract.py::r4_contracts.workflow_package

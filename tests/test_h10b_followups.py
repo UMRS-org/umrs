@@ -153,7 +153,7 @@ def test_component_registry_stays(kind):
 
 
 def _manifest(name: str) -> Any:
-    from r4_contracts.skills import SkillManifest
+    from umrs_protocol.skills import SkillManifest
 
     return SkillManifest.from_dict({"name": name, "version": "1.0.0"})
 

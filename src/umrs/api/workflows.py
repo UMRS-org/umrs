@@ -1104,7 +1104,7 @@ def _all_definitions() -> list[dict[str, Any]]:
 
 def _definition_payload(record_dict: dict[str, Any]) -> dict[str, Any]:
     """The contract record plus the version pin (ADR-113 D-4)."""
-    from r4_contracts.workflows import RunDefinitionRecord
+    from umrs_protocol.workflows import RunDefinitionRecord
 
     payload = RunDefinitionRecord.from_dict(record_dict).to_dict()
     for key in ("workflow_version", "source_sha256"):

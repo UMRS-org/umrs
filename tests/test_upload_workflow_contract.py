@@ -1,4 +1,4 @@
-"""The upload contract (2026-10-02, r4_contracts.workflow_package).
+"""The upload contract (2026-10-02, umrs_protocol.workflow_package).
 
 An uploaded workflow.json must carry a description and an explicit flow
 graph: every step lists ``depends_on`` ([] for a step that starts the run).
@@ -196,7 +196,7 @@ def test_http_upload_answers_400_with_the_problems(tmp_path, monkeypatch):
 def test_the_contract_knows_exactly_the_runner_enums():
     from umrs.pipeline_sdk.workflow import ExecutionMode, SourceType
 
-    from r4_contracts.workflow_package import EXECUTION_MODES, SOURCE_TYPES
+    from umrs_protocol.workflow_package import EXECUTION_MODES, SOURCE_TYPES
 
     assert set(SOURCE_TYPES) == {t.value for t in SourceType}
     assert set(EXECUTION_MODES) == {m.value for m in ExecutionMode}

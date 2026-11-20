@@ -1409,7 +1409,7 @@ def _import_skill_refs(
     stub another project held counted as this one's (H-10.1 follow-up,
     2026-10-18; key: migration 0123).
     """
-    from r4_contracts.skills import SkillScope
+    from umrs_protocol.skills import SkillScope
 
     imported = 0
     existing = 0
