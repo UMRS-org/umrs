@@ -246,7 +246,7 @@ class TestHosting:
             loop_hosting.host("loop-ghost", job_id="job-3", attempt_id="att-3")
 
     def test_iteration_hook_mints_findings_into_sink(self):
-        from r4_contracts.research import EvidenceRef, EvidenceSource, Finding
+        from umrs_protocol.research import EvidenceRef, EvidenceSource, Finding
 
         store = LoopStore.memory()
         loop = _loop("loop-mint", max_iterations=1)

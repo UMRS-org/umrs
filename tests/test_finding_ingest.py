@@ -16,7 +16,7 @@ from umrs.knowledge.loop import (
 )
 from umrs.knowledge.loop_hosting import HostingWiring, _pin_real_findings, configure
 
-from r4_contracts.research import EvidenceRef, EvidenceSource, Finding
+from umrs_protocol.research import EvidenceRef, EvidenceSource, Finding
 
 
 def _loop() -> ResearchLoop:

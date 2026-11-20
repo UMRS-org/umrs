@@ -21,7 +21,7 @@ from umrs.a2l.models import ArtifactDerive, ArtifactRecord, DecisionCreate
 from umrs.a2l.recorder import NullA2lRecorder, StoreA2lRecorder
 from umrs.a2l.store import ConservationStore, compute_artifact_id
 
-from r4_contracts.a2l import (
+from umrs_protocol.a2l import (
     A2lArtifactStatus,
     a2l_artifact_transition_ok,
 )

@@ -16,7 +16,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from r4_contracts.a2l import a2l_artifact_transition_ok
+from umrs_protocol.a2l import a2l_artifact_transition_ok
 
 from .models import (
     AgentExecution,

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from r4_contracts.a2l import (
+from umrs_protocol.a2l import (
     A2lAgentExecutionCreate,
     A2lAgentExecutionRecord,
     A2lAgentExecutionUpdate,

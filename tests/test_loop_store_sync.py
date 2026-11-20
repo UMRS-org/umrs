@@ -137,7 +137,7 @@ def test_sync_save_serializes_finding_dataclasses_and_artifact_ids() -> None:
     """Engine findings are dataclasses; the sync store must JSON them (WP-05 fix)."""
     from umrs.knowledge.loop import LoopIteration, LoopPhase
 
-    from r4_contracts.research import Finding
+    from umrs_protocol.research import Finding
 
     loop = _loop()
     iteration = LoopIteration(

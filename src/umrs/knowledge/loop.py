@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
-from r4_contracts.research import (
+from umrs_protocol.research import (
     EvidenceRef,
     EvidenceSource,
     Finding,

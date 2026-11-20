@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from umrs.knowledge.run_store import ResearchRunStore
 
-from r4_contracts.research import ResearchRunStatus
+from umrs_protocol.research import ResearchRunStatus
 
 
 def test_create_get_and_status_transitions(tmp_path: Path) -> None:

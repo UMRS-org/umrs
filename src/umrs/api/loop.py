@@ -1528,7 +1528,7 @@ async def _apply_iteration_record(
     loop: ResearchLoop, body: AppendIterationRequest
 ) -> dict[str, Any]:
     """Map the driver-provided body onto the store-backed loop and save it."""
-    from r4_contracts.research import Finding
+    from umrs_protocol.research import Finding
 
     from umrs.knowledge.loop import LoopIteration, LoopPhase
 

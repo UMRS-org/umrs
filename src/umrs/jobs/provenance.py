@@ -19,7 +19,7 @@ import logging
 from datetime import datetime
 from typing import Any
 
-from r4_contracts.provenance import (
+from umrs_protocol.provenance import (
     ArtifactRef,
     AttemptSummary,
     ModelRef,

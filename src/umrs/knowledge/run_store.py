@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from r4_contracts.research import ResearchRunHandle, ResearchRunStatus
+from umrs_protocol.research import ResearchRunHandle, ResearchRunStatus
 
 _ALLOWED_TRANSITIONS: dict[ResearchRunStatus, frozenset[ResearchRunStatus]] = {
     ResearchRunStatus.PENDING: frozenset(

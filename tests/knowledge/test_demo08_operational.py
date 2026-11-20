@@ -17,7 +17,7 @@ from umrs.knowledge.graph_types import RelationType
 from umrs.knowledge.project import ProjectPhase, ResearchProject
 from umrs.knowledge.run_store import ResearchRunStore
 
-from r4_contracts.research import ResearchRunStatus
+from umrs_protocol.research import ResearchRunStatus
 
 
 @pytest.fixture(autouse=True)

@@ -33,7 +33,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from r4_contracts.research import ResearchRunStatus
+from umrs_protocol.research import ResearchRunStatus
 
 from umrs.knowledge.graph_types import RelationType
 
