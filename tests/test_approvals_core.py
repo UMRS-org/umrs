@@ -26,7 +26,7 @@ def _routes(router) -> set[tuple[str, str]]:
 
 
 def test_companion_router_still_serves_the_approval_paths():
-    assert PATHS <= _routes(companion.router)
+    assert _routes(companion.router) >= PATHS
 
 
 def test_the_approval_routes_come_from_the_core_module():

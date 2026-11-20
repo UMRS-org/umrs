@@ -742,6 +742,6 @@ async def archive_companion_session(
 
 
 # ── tool-approval inbox (core since U3 S1 item 8) ───────────────────────────
-from .approvals import register as _register_approvals  # noqa: E402
+from .approvals import register as _register_approvals
 
 _register_approvals(router)
