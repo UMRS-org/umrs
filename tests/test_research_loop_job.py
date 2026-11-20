@@ -140,11 +140,9 @@ class TestSpecAndWiring:
     def test_job_kind_registered_everywhere(self):
         from umrs.api.jobs import _UNDISPATCHABLE_JOB_TYPES
         from umrs.jobs.adapters import create_backend_factory
-        from umrs.server.job_tracking_handler import _JOB_SPEC_VALIDATORS
 
         assert JobType.RESEARCH_LOOP.value == "research_loop_job"
         assert DEFAULT_BACKOFFS[JobType.RESEARCH_LOOP]["max_attempts"] >= 2
-        assert JobType.RESEARCH_LOOP in _JOB_SPEC_VALIDATORS
         assert JobType.RESEARCH_LOOP not in _UNDISPATCHABLE_JOB_TYPES
         factory = create_backend_factory(
             orchestrator=SimpleNamespace(),

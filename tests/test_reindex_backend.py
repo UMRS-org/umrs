@@ -244,10 +244,11 @@ def test_checker_fails_on_missing_or_malformed_ref():
 # ── wiring ────────────────────────────────────────────────────────────────
 
 
-def test_spec_validator_registered():
-    from umrs.server.job_tracking_handler import _JOB_SPEC_VALIDATORS
+def test_not_submittable_over_the_job_lane():
+    """Created server-side only; the ZMQ submit lane refuses the type."""
+    from umrs.server.job_tracking_handler import VALID_JOB_TYPES
 
-    assert JobType.KNOWLEDGE_REINDEX in _JOB_SPEC_VALIDATORS
+    assert JobType.KNOWLEDGE_REINDEX.value not in VALID_JOB_TYPES
 
 
 def test_factory_and_checker_registered():

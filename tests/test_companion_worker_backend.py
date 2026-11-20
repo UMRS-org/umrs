@@ -56,7 +56,8 @@ def test_status_checker_succeeds_and_fails_cleanly():
     assert malformed.status == "failed"
 
 
-def test_dispatch_wiring_registered():
-    from umrs.server.job_tracking_handler import _JOB_SPEC_VALIDATORS
+def test_not_submittable_over_the_job_lane():
+    """Created server-side only; the ZMQ submit lane refuses the type."""
+    from umrs.server.job_tracking_handler import VALID_JOB_TYPES
 
-    assert JobType.COMPANION_WORKER in _JOB_SPEC_VALIDATORS
+    assert JobType.COMPANION_WORKER.value not in VALID_JOB_TYPES

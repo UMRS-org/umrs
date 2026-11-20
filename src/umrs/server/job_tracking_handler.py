@@ -135,37 +135,15 @@ def _validate_data_ingestion_spec(spec: dict[str, Any]) -> None:
         raise ValueError("data_ingestion spec.object_etag must be a string")
 
 
-def _validate_knowledge_reindex_spec(spec: dict[str, Any]) -> None:
-    """ADR flourish aside: submit-time contract for the S10 re-index pattern."""
-    from umrs.jobs.reindex import validate_knowledge_reindex_spec as _validate
-
-    _validate(spec)
-
-
-def _validate_companion_worker_spec(spec: dict[str, Any]) -> None:
-    from umrs.jobs.companion_worker_backend import (
-        validate_companion_worker_spec as _validate,
-    )
-
-    _validate(spec)
-
-
-def _validate_research_loop_spec(spec: dict[str, Any]) -> None:
-    from umrs.jobs.research_loop_backend import (
-        validate_research_loop_spec as _validate,
-    )
-
-    _validate(spec)
-
-
+# Only submittable types (VALID_JOB_TYPES) reach these validators. The
+# knowledge-reindex, companion-worker and research-loop validators were
+# unreachable here (U3 S1 dead code): those jobs are created server-side and
+# validated on their own paths.
 _JOB_SPEC_VALIDATORS = {
     JobType.INDEX_BUILD: _validate_index_build_spec,
     JobType.WORKFLOW_RUN: _validate_workflow_run_spec,
     JobType.CLEANUP: _validate_cleanup_spec,
     JobType.DATA_INGESTION: _validate_data_ingestion_spec,
-    JobType.KNOWLEDGE_REINDEX: _validate_knowledge_reindex_spec,
-    JobType.COMPANION_WORKER: _validate_companion_worker_spec,
-    JobType.RESEARCH_LOOP: _validate_research_loop_spec,
 }
 
 
