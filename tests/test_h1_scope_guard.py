@@ -127,10 +127,10 @@ SCOPE_GUARDS: dict[str, str] = {
     "umrs.api.circles._require_create_right": "named circle: owner/admin/affiliated",
     "umrs.api.companion._owns_turn": "turn owner is the worker owner",
     "umrs.api.companion._turn_worker": "turns begin only on the caller's worker",
-    "umrs.api.companion._ownerless_approval_open": "ownerless intents follow the loop rule",
+    "umrs.api.approvals._ownerless_approval_open": "ownerless intents follow the loop rule",
     "umrs.api.companion._authorize_scope_write": "project:<pid> must be the caller's",
     "umrs.api.companion._enforce_ownership": "registry row owner",
-    "umrs.api.companion._enforce_approval_ownership": "approval owner / loop project",
+    "umrs.api.approvals._enforce_approval_ownership": "approval owner / loop project",
     # H-1 fix lanes, 2026-10-18 (each read before listing):
     "umrs.api.companion._caller_worker_job": "body job_id must be the caller's own worker job",
     "umrs.api.circles._roster_visible": "roster: admin, project owner or affiliated",

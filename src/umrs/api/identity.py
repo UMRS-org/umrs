@@ -9,8 +9,29 @@ are the same.
 
 from __future__ import annotations
 
+from fastapi import Header
+
 from ._scope_identity import request_caller_scope
 from ._verified_headers import resolve_caller
 from .workflows import require_verified_workflow_identity
 
-__all__ = ["request_caller_scope", "require_verified_workflow_identity", "resolve_caller"]
+
+def strict_user_header(
+    x_user_id: str | None = Header(None),
+    x_verified_project_id: str | None = Header(None),
+    x_verified_is_admin: str | None = Header(None),
+    x_verified_hmac: str | None = Header(None),
+) -> str:
+    """Gate + return the caller's verified user id."""
+    require_verified_workflow_identity(
+        x_user_id, x_verified_project_id, x_verified_is_admin, x_verified_hmac
+    )
+    return (x_user_id or "").strip()
+
+
+__all__ = [
+    "request_caller_scope",
+    "require_verified_workflow_identity",
+    "resolve_caller",
+    "strict_user_header",
+]

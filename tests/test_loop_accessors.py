@@ -70,11 +70,11 @@ def test_always_decision_flips_the_loop_through_the_current_store(monkeypatch):
     have logged a warning, never failed, so the save is checked here."""
     from types import SimpleNamespace
 
-    from umrs.api import companion
+    from umrs.api import approvals
 
     saved = []
     record = SimpleNamespace(metadata={"mode": "manual"})
     store = SimpleNamespace(get=lambda _id: record, save=saved.append)
     monkeypatch.setattr(loop, "_loop_store", store)
-    companion._flip_loop_to_auto("L1")
+    approvals._flip_loop_to_auto("L1")
     assert saved == [record] and record.metadata["mode"] == "auto"
