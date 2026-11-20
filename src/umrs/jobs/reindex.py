@@ -83,6 +83,7 @@ from umrs.knowledge.embedding_metadata import (
     validate_reindex_payload,
 )
 
+from .backend_refs import parse_backend_ref
 from .monitor import AttemptCheckResult, BackendStatusChecker
 from .scheduler import OrchestratorBackend
 
@@ -508,15 +509,7 @@ def _backend_ref(spec: dict, totals: _PassTotals) -> str:
     )
 
 
-def _parse_ref(ref: str) -> dict[str, str]:
-    """Local pipe-ref parser (adapters._parse_backend_ref twin without the
-    import cycle)."""
-    out: dict[str, str] = {}
-    for part in ref.split("|"):
-        if "=" in part:
-            key, _, value = part.partition("=")
-            out[key] = value
-    return out
+_parse_ref = parse_backend_ref  # public core parser (U3 S1 item 3)
 
 
 class KnowledgeReindexStatusChecker(BackendStatusChecker):

@@ -23,13 +23,13 @@ from typing import Any
 
 from umrs.jobs.models import Job, JobAttempt, JobType
 
+from .backend_refs import parse_backend_ref
 from .hosted_elsewhere import (
     HOSTED_ELSEWHERE_REFUSAL,
     is_externally_hosted,
     is_venue_hosted,
 )
 from .monitor import AttemptCheckResult, BackendStatusChecker
-from .reindex import _parse_ref
 from .scheduler import OrchestratorBackend
 from .venue_names import CLUSTER_VENUE_PREFIX, split_cluster_venue_name
 
@@ -164,7 +164,7 @@ class ResearchLoopStatusChecker(BackendStatusChecker):
         backend_ref = attempt.backend_ref or ""
         if not backend_ref.startswith(REF_PREFIX):
             return AttemptCheckResult.failed("Unexpected backend reference")
-        loop_id = _parse_ref(backend_ref).get("loop_id")
+        loop_id = parse_backend_ref(backend_ref).get("loop_id")
         if not loop_id:
             return AttemptCheckResult.failed("Missing loop_id in backend reference")
         from umrs.knowledge import loop_hosting
@@ -172,7 +172,7 @@ class ResearchLoopStatusChecker(BackendStatusChecker):
         snap = loop_hosting.snapshot(loop_id)
         if snap is None:
             return AttemptCheckResult.failed(f"research loop record missing: {loop_id}")
-        remote = _parse_ref(backend_ref).get("driver") == "slurm"
+        remote = parse_backend_ref(backend_ref).get("driver") == "slurm"
         foreign = not remote and self._foreign(attempt)
         result = _result_for(
             snap, remote_driver=remote, attempt=attempt, foreign=foreign

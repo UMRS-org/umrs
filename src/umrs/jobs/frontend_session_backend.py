@@ -43,8 +43,8 @@ from umrs.companion_trust.chat_turn_questions import cancel_session_questions
 from umrs.jobs.models import Job, JobAttempt, JobType
 from umrs.venues.session_audit import audit_session_stop, audit_venue
 
+from .backend_refs import parse_backend_ref
 from .monitor import AttemptCheckResult, BackendStatusChecker
-from .reindex import _parse_ref
 from .scheduler import OrchestratorBackend
 
 logger = logging.getLogger(__name__)
@@ -327,7 +327,7 @@ class FrontendSessionStatusChecker(BackendStatusChecker):
         ref = attempt.backend_ref or ""
         if not ref.startswith(REF_PREFIX):
             return AttemptCheckResult.failed("Unexpected backend reference")
-        sid = _parse_ref(ref).get("session_id") or ""
+        sid = parse_backend_ref(ref).get("session_id") or ""
         row = self._backend.store.get(sid)
         if row is None:
             return AttemptCheckResult.failed("venue registry row missing")

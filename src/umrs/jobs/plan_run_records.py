@@ -40,6 +40,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from .backend_refs import parse_backend_ref
 from .execution_trace_store import ExecutionTraceStore, TraceRecord
 from .hosted_elsewhere import (
     EXTERNAL_HOSTINGS,
@@ -382,13 +383,7 @@ def _attempt_row(attempt: Any) -> dict[str, Any]:
     }
 
 
-def _parse_ref(ref: str) -> dict[str, str]:
-    out: dict[str, str] = {}
-    for part in ref.split("|"):
-        key, sep, value = part.partition("=")
-        if sep:
-            out[key] = value
-    return out
+_parse_ref = parse_backend_ref  # same lenient parser, from core (U3 S1 item 3)
 
 
 def finish_attempt(

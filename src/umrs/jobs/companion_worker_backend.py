@@ -15,8 +15,8 @@ import logging
 
 from umrs.jobs.models import Job, JobAttempt, JobType
 
+from .backend_refs import parse_backend_ref
 from .monitor import AttemptCheckResult, BackendStatusChecker
-from .reindex import _parse_ref
 from .scheduler import OrchestratorBackend
 
 logger = logging.getLogger(__name__)
@@ -61,7 +61,7 @@ class CompanionWorkerStatusChecker(BackendStatusChecker):
             return AttemptCheckResult.failed("No backend reference")
         if not backend_ref.startswith("companion_worker|"):
             return AttemptCheckResult.failed("Unexpected backend reference")
-        parsed = _parse_ref(backend_ref)
+        parsed = parse_backend_ref(backend_ref)
         registry_key = parsed.get("registry_key")
         if not registry_key:
             return AttemptCheckResult.failed("Missing venue metadata")
