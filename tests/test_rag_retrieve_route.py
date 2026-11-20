@@ -20,7 +20,7 @@ from umrs.api import rag_retrieve, rag_spine
 from umrs.knowledge.retrieval import calibrate, pipeline
 from umrs.knowledge.retrieval import hydrate as hydrate_mod
 
-from r4_contracts.retrieval import RetrievalSufficiency, RetrievedPassage, RetrieveResult
+from umrs_protocol.retrieval import RetrievalSufficiency, RetrievedPassage, RetrieveResult
 
 _RESULT = RetrieveResult(
     query="q",

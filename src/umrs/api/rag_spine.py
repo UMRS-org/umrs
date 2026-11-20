@@ -10,7 +10,7 @@
    answers this (basis, value, threshold)" WITHOUT calling the model;
    ``partial`` composes from at most two passages, labelled partial.
 3. **compose** — the passages the T-216 scanner lets through, rendered by
-   ``r4_contracts.context_pack`` (data block first, question last, SOFT
+   ``umrs_protocol.context_pack`` (data block first, question last, SOFT
    instruction by default, ``UMRS_RAG_PACK_INSTRUCTION=strict`` selectable),
    one call to the chat model the endpoint registry resolves (gap D-63) at
    temperature 0 with ``UMRS_RAG_ANSWER_MAX_TOKENS`` (400) for a small model.
@@ -43,8 +43,8 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from r4_contracts.context_pack import NOT_COVERED, ORDERS, instruction_text, render_pack
-from r4_contracts.retrieval import (
+from umrs_protocol.context_pack import NOT_COVERED, ORDERS, instruction_text, render_pack
+from umrs_protocol.retrieval import (
     RetrievalSufficiency,
     RetrievedPassage,
     RetrieveResult,
@@ -485,7 +485,7 @@ def _answer_spec(
 
 def _answer_limit(profile_name: str) -> int | None:
     """compose's ``max_tokens`` for the profile (``None``: no explicit limit)."""
-    from r4_contracts.models import RETRIEVAL_PROFILES
+    from umrs_protocol.models import RETRIEVAL_PROFILES
 
     from umrs.knowledge.retrieval.profiles import answer_limit
 

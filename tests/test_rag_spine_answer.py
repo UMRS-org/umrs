@@ -25,7 +25,7 @@ from umrs.api.rag_spine import SpineAnswer
 from umrs.knowledge.retrieval import hydrate as hydrate_mod
 from umrs.knowledge.retrieval.types import Candidate
 
-from r4_contracts.retrieval import RetrievalSufficiency, RetrievedPassage, RetrieveResult
+from umrs_protocol.retrieval import RetrievalSufficiency, RetrievedPassage, RetrieveResult
 
 _DOC = "  # Perovskite note\n\nEncapsulation with alumina slows moisture ingress. Dr. Tanaka measured 1200 h.\n"
 _TEXT = _DOC.strip()  # what the embed job chunked (decode + strip)

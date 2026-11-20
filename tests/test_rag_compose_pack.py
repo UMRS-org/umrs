@@ -14,8 +14,8 @@ from __future__ import annotations
 import pytest
 from umrs.api import rag_spine
 
-from r4_contracts.context_pack import NOT_COVERED
-from r4_contracts.retrieval import RetrievalSufficiency, RetrievedPassage, RetrieveResult
+from umrs_protocol.context_pack import NOT_COVERED
+from umrs_protocol.retrieval import RetrievalSufficiency, RetrievedPassage, RetrieveResult
 
 
 def _passage(rank, text="Encapsulation with alumina slows moisture ingress.", name="note.md"):

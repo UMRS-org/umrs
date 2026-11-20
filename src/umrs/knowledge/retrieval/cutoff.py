@@ -42,7 +42,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from r4_contracts.retrieval import RetrievalSufficiency
+from umrs_protocol.retrieval import RetrievalSufficiency
 
 from .types import Candidate, RetrieveSpec
 

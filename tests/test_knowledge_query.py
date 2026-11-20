@@ -14,7 +14,7 @@ from umrs.data_catalog.schema import CatalogObjectMeta
 from umrs.data_catalog.scoring import CatalogHit
 from umrs.knowledge.retrieval.types import Candidate, LaneResult, RetrieveSpec
 
-from r4_contracts.retrieval import RetrievalSufficiency
+from umrs_protocol.retrieval import RetrievalSufficiency
 
 
 @pytest.fixture

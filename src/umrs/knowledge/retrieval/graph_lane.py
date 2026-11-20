@@ -15,7 +15,7 @@ spec ``graph_lane`` ``on`` or ``off``:
   (``UMRS_RAG_GRAPH_LANE_MEASURED=1``, which the maintainer sets once the
   probe passes; D-14: "no default flips without a multi-hop probe") AND the
   site's extraction model is large under the ONE size rule
-  (``r4_contracts.models.model_size_class``: the EFFECTIVE size, so a
+  (``umrs_protocol.models.model_size_class``: the EFFECTIVE size, so a
   30B-A3B extracts like a ~9.5B model and gets no lane; lead decision,
   2026-10-10). Until the probe passes, ``auto`` is off everywhere (review of
   ADR-093, 2026-10-10: every other ADR-093 stage defaults off until its gate
@@ -72,7 +72,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any
 
-from r4_contracts.models import model_size_class
+from umrs_protocol.models import model_size_class
 
 from .dense import (
     _exclude_clause,

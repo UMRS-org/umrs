@@ -12,7 +12,7 @@ and ``lanes.profile`` report of the core.
 
 Lead decision for the maintainer (2026-10-10), which re-pins C18's answers:
 ONE size rule (the EFFECTIVE size, shared with R4 through
-``r4_contracts.models.profile_for``), so a mixture-of-experts reader such as
+``umrs_protocol.models.profile_for``), so a mixture-of-experts reader such as
 ``qwen3-30b-a3b`` or ``gpt-oss-20b`` reads with medium; and a NAMED model of
 unknown scale reads with medium. A request that names no reader keeps the
 site's own defaults (small), as before D-14.
@@ -32,8 +32,8 @@ from umrs.knowledge.retrieval import hydrate as hydrate_mod
 from umrs.knowledge.retrieval.calibrate import NullStats
 from umrs.knowledge.retrieval.types import Candidate, LaneResult, RetrieveSpec
 
-from r4_contracts.models import RETRIEVAL_PROFILES
-from r4_contracts.retrieval import RetrievalSufficiency, RetrievedPassage, RetrieveResult
+from umrs_protocol.models import RETRIEVAL_PROFILES
+from umrs_protocol.retrieval import RetrievalSufficiency, RetrievedPassage, RetrieveResult
 
 _ENV = (
     "UMRS_RAG_PROFILE",
@@ -414,7 +414,7 @@ def test_a_small_reader_reads_the_site_lexical_default():
     # table: the small reader reads the site's UMRS_RAG_LEXICAL.
     from umrs.knowledge.retrieval import profiles
 
-    from r4_contracts.models import RETRIEVAL_PROFILES
+    from umrs_protocol.models import RETRIEVAL_PROFILES
 
     small = RETRIEVAL_PROFILES["small"]
     assert small.lexical == "gate"
@@ -425,7 +425,7 @@ def test_a_small_reader_reads_the_site_lexical_default():
 def test_larger_readers_keep_the_site_lexical_default():
     from umrs.knowledge.retrieval import profiles
 
-    from r4_contracts.models import RETRIEVAL_PROFILES
+    from umrs_protocol.models import RETRIEVAL_PROFILES
 
     for name in ("medium", "large"):
         assert profiles.lexical_mode("auto", RETRIEVAL_PROFILES[name]) == "auto"
@@ -436,7 +436,7 @@ def test_a_profile_that_says_off_still_reads_without_lexical():
 
     from umrs.knowledge.retrieval import profiles
 
-    from r4_contracts.models import RETRIEVAL_PROFILES
+    from umrs_protocol.models import RETRIEVAL_PROFILES
 
     off = dataclasses.replace(RETRIEVAL_PROFILES["small"], lexical="off")
     assert profiles.lexical_mode("auto", off) == "off"
@@ -445,7 +445,7 @@ def test_a_profile_that_says_off_still_reads_without_lexical():
 def test_an_explicit_lexical_request_wins_over_the_profile():
     from umrs.knowledge.retrieval import profiles
 
-    from r4_contracts.models import RETRIEVAL_PROFILES
+    from umrs_protocol.models import RETRIEVAL_PROFILES
 
     assert profiles.lexical_mode("on", RETRIEVAL_PROFILES["small"]) == "on"
     assert profiles.lexical_mode("off", RETRIEVAL_PROFILES["large"]) == "off"

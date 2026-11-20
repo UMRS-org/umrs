@@ -31,7 +31,7 @@ from umrs.knowledge.retrieval import hydrate as hydrate_mod
 from umrs.knowledge.retrieval.calibrate import NullStats
 from umrs.knowledge.retrieval.types import Candidate, LaneResult, RetrieveSpec
 
-from r4_contracts.retrieval import RetrievalSufficiency, RetrievedPassage, RetrieveResult
+from umrs_protocol.retrieval import RetrievalSufficiency, RetrievedPassage, RetrieveResult
 
 NOTES = "g-16565937d32d441b"  # the T2 notes' named graph
 LDH = "art-7e49373d907a"  # NiFe-LDH / OER note (Tohoku University)

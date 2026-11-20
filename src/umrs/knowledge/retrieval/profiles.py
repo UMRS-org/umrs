@@ -4,7 +4,7 @@ One design, sized by the model that reads the passages. The stand-alone
 reference reader is ``llama3.2:3b`` (the ``small`` profile); the rikyu
 deployment reads with ``kimi-k3`` and ``glm-5.3``, frontier MoE models with
 1M-token windows (the ``large`` profile). The size rule and the profile table
-live in ``r4_contracts.models`` so R4 and UMRS cannot drift apart.
+live in ``umrs_protocol.models`` so R4 and UMRS cannot drift apart.
 
 Which profile:
 
@@ -14,7 +14,7 @@ Which profile:
    sends none) reads with the site's own defaults, the ``small`` profile,
    exactly as before D-14;
 4. else the ONE size rule over the reading model's name
-   (``r4_contracts.models.profile_for``, which R4 applies too): the class of
+   (``umrs_protocol.models.profile_for``, which R4 applies too): the class of
    the EFFECTIVE size, sqrt(total x active) for a mixture-of-experts model,
    so ``qwen3-30b-a3b`` and ``gpt-oss-20b`` read with ``medium``; a named
    model of unknown scale reads with ``medium`` (lead decision for the
@@ -41,7 +41,7 @@ from __future__ import annotations
 
 import os
 
-from r4_contracts.models import RETRIEVAL_PROFILES, RetrievalProfile, profile_for
+from umrs_protocol.models import RETRIEVAL_PROFILES, RetrievalProfile, profile_for
 
 PROFILE_ENV = "UMRS_RAG_PROFILE"
 #: The profile whose numbers are the site's env defaults (``UMRS_RAG_FINAL_K_MAX``

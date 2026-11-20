@@ -40,7 +40,7 @@ from umrs.knowledge.retrieval import calibrate, lexical, pipeline
 from umrs.knowledge.retrieval import hydrate as hydrate_mod
 from umrs.knowledge.retrieval.types import RetrieveSpec
 
-from r4_contracts.retrieval import RetrieveResult
+from umrs_protocol.retrieval import RetrieveResult
 
 DIM = 24
 MODEL = "/models/e5-base-v2"

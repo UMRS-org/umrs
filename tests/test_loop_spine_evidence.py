@@ -17,7 +17,7 @@ from umrs.api import rag_retrieve, rag_spine
 from umrs.knowledge.loop import AutonomousResearchLoop
 from umrs.knowledge.retrieval import hydrate as hydrate_mod
 
-from r4_contracts.retrieval import RetrievalSufficiency, RetrievedPassage, RetrieveResult
+from umrs_protocol.retrieval import RetrievalSufficiency, RetrievedPassage, RetrieveResult
 
 
 def test_the_app_engine_has_a_knowledge_store(monkeypatch):

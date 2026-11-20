@@ -46,7 +46,7 @@ import time
 from collections.abc import Callable, Sequence
 from typing import Any
 
-from r4_contracts.retrieval import (
+from umrs_protocol.retrieval import (
     RetrievalSufficiency,
     RetrievedPassage,
     RetrieveResult,
