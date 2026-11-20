@@ -239,11 +239,12 @@ def _require_gate_site_name(venue: str) -> None:
 def _require_person(request: Request) -> None:
     """D-8: the account's trust anchors move only on the person's own act:
     never on a request an agent marked (``x-r4-actor``) or one made inside a
-    work level (an ADR-108 ``x-r4-scope`` token: loop or teamup work)."""
-    from umrs.knowledge.actors import AGENT_ACTOR, normalize_actor
+    work level (an ADR-108 ``x-r4-scope`` token: loop or teamup work).
+    The neutral ``x-umrs-actor`` / ``x-umrs-scope`` names restrict the same
+    way (U3 S1 item 11): either name marking the request is enough."""
+    from umrs.shared.compat_names import is_agent_request, is_scoped_request
 
-    agent = normalize_actor(request.headers.get("x-r4-actor")) == AGENT_ACTOR
-    if not agent and not (request.headers.get("x-r4-scope") or "").strip():
+    if not is_agent_request(request.headers) and not is_scoped_request(request.headers):
         return
     raise_typed(
         PlatformError.hpcaccess(

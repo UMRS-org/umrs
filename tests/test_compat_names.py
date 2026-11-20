@@ -55,3 +55,28 @@ def test_agent_request_fails_closed(headers, agent):
 )
 def test_scoped_request_fails_closed(headers, scoped):
     assert cn.is_scoped_request(headers) is scoped
+
+
+@pytest.mark.parametrize(
+    ("headers", "refused"),
+    [
+        ({}, False),
+        ({"x-r4-actor": "user"}, False),
+        ({"x-r4-actor": "agent"}, True),
+        ({"x-umrs-actor": "agent"}, True),
+        ({"x-umrs-actor": "user", "x-r4-actor": "agent"}, True),
+        ({"x-umrs-scope": "tok"}, True),
+    ],
+)
+def test_hpc_account_person_check_uses_the_fail_closed_rule(headers, refused):
+    """The first caller of compat_names: the HPC account trust-anchor guard."""
+    from types import SimpleNamespace
+
+    from umrs.api import hpc_accounts
+
+    request = SimpleNamespace(headers=headers)
+    if not refused:
+        assert hpc_accounts._require_person(request) is None
+        return
+    with pytest.raises(Exception, match="person_required|own act"):
+        hpc_accounts._require_person(request)
