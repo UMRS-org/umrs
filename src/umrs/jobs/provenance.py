@@ -2,7 +2,7 @@
 
 Reads completed (or in-flight) jobs and their attempts from the JobStore,
 enriches them with model metadata extracted from the job spec, and returns
-a :class:`r4_contracts.provenance.ProvenanceRecord`.
+a :class:`umrs_protocol.provenance.ProvenanceRecord`.
 
 This module lives in ``umrs.jobs`` because it reads from the job store
 and does not import from ``umrs.api`` or ``umrs.server``.
