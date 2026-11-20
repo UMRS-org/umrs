@@ -124,7 +124,7 @@ class _Hasher:
 
 
 def _gate() -> Any:
-    from r4_contracts import hpc_gate
+    from umrs_protocol import hpc_gate
 
     return hpc_gate
 
@@ -560,7 +560,7 @@ def proposal_answer(body: dict[str, Any]) -> dict[str, Any]:
 def require_current_gate(identity: Any, profile_sha: str) -> None:
     """A live ``hello``: the installed gate is this server's release and its
     site profile the one this server publishes (``hpcaccess.gate_version``)."""
-    from r4_contracts import hpc_gate
+    from umrs_protocol import hpc_gate
 
     from umrs.server.gated_step_lane import _checked, transport_for
 

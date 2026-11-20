@@ -62,7 +62,7 @@ from umrs.server.grant_admission import compose_run_spec, encode_run
 from umrs.server.run_intent_admission import admit_run
 from umrs.server.workflow_execution_registry import ExecutionRecord
 
-hpc_gate = pytest.importorskip("r4_contracts.hpc_gate")
+hpc_gate = pytest.importorskip("umrs_protocol.hpc_gate")
 hpc_grants = pytest.importorskip("r4.hpc_grants")
 hpc_intents = pytest.importorskip("r4.hpc_intents")
 

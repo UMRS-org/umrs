@@ -19,7 +19,7 @@ import pytest
 from test_hpc_accounts_api import ALICE, _code, _hello, _register, _user_site
 from test_hpc_accounts_api import env as _accounts_env  # noqa: F401 — fixture
 
-from r4_contracts import hpc_gate
+from umrs_protocol import hpc_gate
 
 PROFILE_OVERRIDES = {"image_archive_dir": "/shared/umrs/archives"}
 

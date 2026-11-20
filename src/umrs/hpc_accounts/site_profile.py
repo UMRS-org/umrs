@@ -171,7 +171,7 @@ def service_pricing_profile(site: Any) -> dict[str, Any]:
 
 def build_site_profile(site: Any) -> dict[str, Any]:
     """The gate site profile of *site* (validated by the gate's own rules)."""
-    from r4_contracts import hpc_gate
+    from umrs_protocol import hpc_gate
 
     user_account = _user_account(site)
     profile = _override(
@@ -192,7 +192,7 @@ def build_site_profile(site: Any) -> dict[str, Any]:
 
 
 def profile_bytes(profile: dict[str, Any]) -> bytes:
-    from r4_contracts import hpc_gate
+    from umrs_protocol import hpc_gate
 
     return hpc_gate.site_profile_bytes(profile)
 

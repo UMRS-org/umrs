@@ -53,7 +53,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from step_lane_harness import FakeS3
 
-hpc_gate = pytest.importorskip("r4_contracts.hpc_gate")
+hpc_gate = pytest.importorskip("umrs_protocol.hpc_gate")
 hs = pytest.importorskip("r4.hpc_signing")
 hpc_remote = pytest.importorskip("r4.hpc_remote")
 hpc_intents = pytest.importorskip("r4.hpc_intents")

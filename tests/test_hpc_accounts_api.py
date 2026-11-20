@@ -559,7 +559,7 @@ def test_the_store_needs_the_shared_pool(monkeypatch):
 
 
 def test_the_gate_manifest_is_the_shipped_gate_file():
-    hpc_gate = pytest.importorskip("r4_contracts.hpc_gate")
+    hpc_gate = pytest.importorskip("umrs_protocol.hpc_gate")
     assert api._gate_manifest() == (hpc_gate.GATE_VERSION, hpc_gate.gate_sha256())
 
 

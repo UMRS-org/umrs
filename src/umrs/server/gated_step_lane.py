@@ -202,7 +202,7 @@ class GatedRun:
 
 def grant_run_key(grant_id: str, run_id: str) -> str:
     """X2: the gate's own run key of a grant run (shared code, lane G)."""
-    from r4_contracts import hpc_gate
+    from umrs_protocol import hpc_gate
 
     try:
         return str(hpc_gate.grant_run_key(grant_id, run_id))

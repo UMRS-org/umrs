@@ -205,6 +205,6 @@ def test_the_gate_resolver_asks_lookup_by_the_runs_gate_key(monkeypatch):
     monkeypatch.setattr(lane, "transport_for", lambda *_a: _T())
     row = {"person": "alice", "site_login": "a1", "grant_id": "c" * 32, "run_id": "wf-0123456789ab", "step": "s1"}
     assert GateResolver(V).lookup(row) == ("job", "77")
-    from r4_contracts import hpc_gate
+    from umrs_protocol import hpc_gate
 
     assert seen == [("lookup", hpc_gate.grant_run_key("c" * 32, "wf-0123456789ab"), "s1")]

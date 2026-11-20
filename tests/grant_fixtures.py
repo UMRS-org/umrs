@@ -11,7 +11,7 @@ from typing import Any
 from umrs.hpc_accounts.grants import GrantContext, SignedGrant
 from umrs.hpc_accounts.store import InMemorySiteAccountStore
 
-from r4_contracts import hpc_gate
+from umrs_protocol import hpc_gate
 
 SITE = "bdrt-front"
 SIG = "-----BEGIN SSH SIGNATURE-----\nU1NIU0lH\n-----END SSH SIGNATURE-----"

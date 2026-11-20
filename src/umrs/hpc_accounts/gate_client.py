@@ -295,7 +295,7 @@ def encode_body(body: dict[str, Any] | None) -> bytes:
     """The body as the contract's canonical JSON (the gate's own encoder)."""
     if body is None:
         return b""
-    from r4_contracts.hpc_gate import canonical_bytes
+    from umrs_protocol.hpc_gate import canonical_bytes
 
     return canonical_bytes(body)
 

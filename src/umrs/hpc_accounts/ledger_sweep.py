@@ -243,7 +243,7 @@ class UsageLedgerSweep:
 
 def _gate_key(row: dict[str, Any]) -> str:
     if row.get("grant_id"):
-        from r4_contracts import hpc_gate
+        from umrs_protocol import hpc_gate
 
         return str(
             hpc_gate.grant_run_key(str(row["grant_id"]), str(row.get("run_id") or ""))

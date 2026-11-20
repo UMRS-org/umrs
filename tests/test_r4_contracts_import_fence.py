@@ -136,7 +136,7 @@ def test_floor_marks_only_on_u3_s5_modules(listed: list[tuple[str, bool]]) -> No
 def test_scan_finds_the_known_consumers(scanned: set[str]) -> None:
     """Sanity: the scanner sees both eager and function-local imports."""
     assert "src/umrs/knowledge/plan_iteration.py::r4_contracts.loop_plan" in scanned
-    assert "src/umrs/api/hpc_accounts.py::r4_contracts.hpc_gate" in scanned
+    assert "src/umrs/api/workflows.py::r4_contracts.workflows" in scanned
 
 
 def test_protocol_and_handshake_hmac_have_moved(scanned: set[str]) -> None:
@@ -144,6 +144,13 @@ def test_protocol_and_handshake_hmac_have_moved(scanned: set[str]) -> None:
     family = {"r4_contracts.protocol", "r4_contracts.handshake_hmac"}
     leftovers = sorted(entry for entry in scanned if entry.partition("::")[2] in family)
     assert not leftovers, f"protocol/HMAC imports still use r4_contracts: {leftovers}"
+
+
+def test_errors_and_hpc_gate_have_moved(scanned: set[str]) -> None:
+    """U2.x families 2 (errors) and 3 (hpc_gate) import umrs_protocol directly."""
+    family = {"r4_contracts.errors", "r4_contracts.hpc_gate"}
+    leftovers = sorted(entry for entry in scanned if entry.partition("::")[2] in family)
+    assert not leftovers, f"errors/hpc_gate imports still use r4_contracts: {leftovers}"
 
 
 # ── the scanner ─────────────────────────────────────────────────────────────

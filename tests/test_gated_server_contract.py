@@ -23,7 +23,7 @@ from umrs.hpc_accounts import gate_client
 from umrs.hpc_accounts.intents import IntentInvalid, decode_signed_intent
 from umrs.orchestrator.site_config import SiteConfig, _parse_user_account
 
-from r4_contracts import hpc_gate
+from umrs_protocol import hpc_gate
 
 UMRS = Path(__file__).resolve().parents[1]
 SIGNATURE = "-----BEGIN SSH SIGNATURE-----\nU1NIU0lH\n-----END SSH SIGNATURE-----"

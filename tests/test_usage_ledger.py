@@ -325,7 +325,7 @@ def test_the_estimate_follows_the_gates_rounding_and_the_whole_exclusive_node():
 
 
 def test_the_estimate_agrees_with_the_gates_grant_cost():
-    from r4_contracts import hpc_gate
+    from umrs_protocol import hpc_gate
 
     cost = getattr(hpc_gate, "grant_cost", None)
     if cost is None:

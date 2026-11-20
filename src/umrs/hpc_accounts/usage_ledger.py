@@ -190,7 +190,7 @@ def estimate(
     cpus: int, gpus: int, time_s: int, partition: dict[str, Any] | None = None
 ) -> Resources:
     """The canonical gate K4 cost as resources; zero-time keeps its request."""
-    from r4_contracts import hpc_gate
+    from umrs_protocol import hpc_gate
 
     step = {"cpus": int(cpus), "gpus": int(gpus), "time": max(0, int(time_s))}
     wall = hpc_gate.grant_wall(step)

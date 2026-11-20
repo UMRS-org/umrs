@@ -42,7 +42,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-hpc_gate = pytest.importorskip("r4_contracts.hpc_gate")
+hpc_gate = pytest.importorskip("umrs_protocol.hpc_gate")
 hs = pytest.importorskip("r4.hpc_signing")
 hpc_remote = pytest.importorskip("r4.hpc_remote")
 

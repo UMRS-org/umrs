@@ -101,7 +101,7 @@ def _check_signature_text(signature: Any) -> str:
 
 def _parse_payload(payload: bytes) -> dict[str, Any]:
     """The gate's strict parser and intent schema (shared code, lane G)."""
-    from r4_contracts import hpc_gate
+    from umrs_protocol import hpc_gate
 
     try:
         body = hpc_gate.parse_strict(payload, json_values=True)
@@ -146,7 +146,7 @@ def _mismatch(field: str, signed: Any, actual: Any) -> IntentInvalid:
 
 
 def _canonical(value: Any) -> bytes:
-    from r4_contracts import hpc_gate
+    from umrs_protocol import hpc_gate
 
     try:
         return hpc_gate.canonical_bytes(value, json_values=True)

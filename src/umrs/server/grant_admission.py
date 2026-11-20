@@ -83,7 +83,7 @@ class GrantRun:
 
 
 def _gate() -> Any:
-    from r4_contracts import hpc_gate
+    from umrs_protocol import hpc_gate
 
     return hpc_gate
 

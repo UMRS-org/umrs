@@ -8,7 +8,6 @@
 # U2.x family 1 (protocol + handshake_hmac) migrated 2026-11-20; 85 rows removed.
 src/umrs/a2l/models.py::r4_contracts.a2l
 src/umrs/a2l/store.py::r4_contracts.a2l
-src/umrs/api/hpc_accounts.py::r4_contracts.hpc_gate
 src/umrs/api/loop.py::r4_contracts.loop_plan  # floor: U3-S5
 src/umrs/api/loop.py::r4_contracts.research
 src/umrs/api/loop.py::r4_contracts.team_engine.plan  # floor: U3-S5
@@ -16,12 +15,6 @@ src/umrs/api/rag_spine.py::r4_contracts.context_pack
 src/umrs/api/rag_spine.py::r4_contracts.models
 src/umrs/api/rag_spine.py::r4_contracts.retrieval
 src/umrs/api/workflows.py::r4_contracts.workflows
-src/umrs/hpc_accounts/gate_client.py::r4_contracts.hpc_gate
-src/umrs/hpc_accounts/grants.py::r4_contracts.hpc_gate
-src/umrs/hpc_accounts/intents.py::r4_contracts.hpc_gate
-src/umrs/hpc_accounts/ledger_sweep.py::r4_contracts.hpc_gate
-src/umrs/hpc_accounts/site_profile.py::r4_contracts.hpc_gate
-src/umrs/hpc_accounts/usage_ledger.py::r4_contracts.hpc_gate
 src/umrs/jobs/provenance.py::r4_contracts.provenance
 src/umrs/knowledge/ask_policy.py::r4_contracts.ask_policy
 src/umrs/knowledge/bundle_import.py::r4_contracts.skills
@@ -34,32 +27,17 @@ src/umrs/knowledge/retrieval/graph_lane.py::r4_contracts.models
 src/umrs/knowledge/retrieval/pipeline.py::r4_contracts.retrieval
 src/umrs/knowledge/retrieval/profiles.py::r4_contracts.models
 src/umrs/knowledge/run_store.py::r4_contracts.research
-src/umrs/orchestrator/site_config.py::r4_contracts.hpc_gate
 src/umrs/recipes/__init__.py::r4_contracts.recipes
 src/umrs/security/scanner.py::r4_contracts.security
 src/umrs/server/file_handling.py::r4_contracts.workflow_package
-src/umrs/server/gated_step_lane.py::r4_contracts.hpc_gate
-src/umrs/server/grant_admission.py::r4_contracts.hpc_gate
-src/umrs/server/intent_proposal.py::r4_contracts.hpc_gate
 src/umrs/skills/__init__.py::r4_contracts.skills
 src/umrs/skills/store.py::r4_contracts.skills
 src/umrs/venues/plan_runs.py::r4_contracts.team_engine.plan  # floor: U3-S5
-tests/grant_fixtures.py::r4_contracts.hpc_gate
 tests/knowledge/test_demo08_operational.py::r4_contracts.research
 tests/knowledge/test_run_store.py::r4_contracts.research
 tests/test_a2l_conservation.py::r4_contracts.a2l
 tests/test_finding_ingest.py::r4_contracts.research
-tests/test_gated_grant_e2e.py::r4_contracts.hpc_gate
-tests/test_gated_grants_e2e.py::r4_contracts.hpc_gate
-tests/test_gated_server_contract.py::r4_contracts.hpc_gate
-tests/test_gated_step_lane_e2e.py::r4_contracts.hpc_gate
-tests/test_gated_trigger.py::r4_contracts.hpc_gate
-tests/test_grant_admission.py::r4_contracts.hpc_gate
 tests/test_h10b_followups.py::r4_contracts.skills
-tests/test_hpc_accounts_api.py::r4_contracts.hpc_gate
-tests/test_hpc_accounts_b2_api.py::r4_contracts.hpc_gate
-tests/test_hpc_gate_client.py::r4_contracts.hpc_gate
-tests/test_hpc_gate_e2e.py::r4_contracts.hpc_gate
 tests/test_knowledge_query.py::r4_contracts.retrieval
 tests/test_loop_plan_iteration.py::r4_contracts.ask_policy
 tests/test_loop_spine_evidence.py::r4_contracts.retrieval
@@ -77,6 +55,3 @@ tests/test_retrieval_profiles.py::r4_contracts.models
 tests/test_retrieval_profiles.py::r4_contracts.retrieval
 tests/test_skills_api.py::r4_contracts.skills
 tests/test_upload_workflow_contract.py::r4_contracts.workflow_package
-tests/test_usage_ledger.py::r4_contracts.hpc_gate
-tests/test_usage_ledger_reporting_pricing.py::r4_contracts.hpc_gate
-tests/test_usage_ledger_sweep.py::r4_contracts.hpc_gate

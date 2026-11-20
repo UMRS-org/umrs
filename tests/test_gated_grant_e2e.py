@@ -51,7 +51,7 @@ from umrs.server import workflow_runner as wr
 from umrs.server.run_intent_admission import admit_run
 from umrs.server.workflow_execution_registry import ExecutionRecord
 
-hpc_gate = pytest.importorskip("r4_contracts.hpc_gate")
+hpc_gate = pytest.importorskip("umrs_protocol.hpc_gate")
 hs = pytest.importorskip("r4.hpc_signing")
 
 PRODUCED = INPUT.upper() + b"!"

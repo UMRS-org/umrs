@@ -27,7 +27,7 @@ from umrs.hpc_accounts.grants import SignedGrant
 from umrs.hpc_accounts.usage_ledger import InMemoryUsageLedger, set_usage_ledger
 from umrs.shared import hpc_user_work_access as access
 
-from r4_contracts import hpc_gate
+from umrs_protocol import hpc_gate
 
 
 @pytest.fixture

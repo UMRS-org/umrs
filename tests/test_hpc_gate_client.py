@@ -297,7 +297,7 @@ def test_a_hung_call_times_out_as_unreachable() -> None:
 
 
 def _gate_runner(home: Path):
-    hpc_gate = pytest.importorskip("r4_contracts.hpc_gate")
+    hpc_gate = pytest.importorskip("umrs_protocol.hpc_gate")
     gate_file = Path(hpc_gate.__file__)
 
     async def runner(argv, stdin, timeout):

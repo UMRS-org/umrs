@@ -28,7 +28,7 @@ from umrs.orchestrator.site_config import (
 from umrs.server import gated_step_lane as lane
 from umrs.shared import hpc_user_work_access as access
 
-from r4_contracts import hpc_gate
+from umrs_protocol import hpc_gate
 from umrs_protocol.handshake_hmac import sign_claims
 
 DOUBLE = str(Path(__file__).resolve().parent / "gated_gate_double.py")

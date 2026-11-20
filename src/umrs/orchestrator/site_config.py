@@ -847,7 +847,7 @@ def _from_address(data: dict[str, Any], where: str) -> str:
     value = str(data.get("from_address") or "").strip()
     if not value:
         return ""
-    from r4_contracts.hpc_gate import check_from_address
+    from umrs_protocol.hpc_gate import check_from_address
 
     try:
         return check_from_address(value)

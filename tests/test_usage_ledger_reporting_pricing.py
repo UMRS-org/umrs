@@ -23,7 +23,7 @@ from umrs.hpc_accounts import usage_ledger as ul
 from umrs.server import gated_step_lane
 from umrs.server.step_executor import StepExecutionError
 
-from r4_contracts import hpc_gate
+from umrs_protocol import hpc_gate
 
 SINCE = datetime(2026, 11, 9, tzinfo=timezone.utc)
 

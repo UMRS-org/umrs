@@ -160,7 +160,7 @@ def _make_store(request: Request, venue: str) -> Any:
 
 def _gate_manifest() -> tuple[str, str]:
     """(version, sha256) of the gate this server ships (r4-contracts)."""
-    from r4_contracts import hpc_gate
+    from umrs_protocol import hpc_gate
 
     return str(hpc_gate.GATE_VERSION), hpc_gate.gate_sha256()
 
@@ -222,7 +222,7 @@ def _require_gate_site_name(venue: str) -> None:
     r4 and the gate accept only ``[a-z0-9-]{1,40}`` there, and the tables key
     it as ``VARCHAR(32)``, so registration is not offered under any other
     name (2026-11-08 integration and review)."""
-    from r4_contracts.hpc_gate import is_site_name
+    from umrs_protocol.hpc_gate import is_site_name
 
     if is_site_name(venue) and len(venue) <= VENUE_MAX:
         return
