@@ -18,7 +18,7 @@ from typing import Any
 from fastapi import HTTPException
 
 from umrs.api.typed_errors import PlatformError
-from umrs.jobs.plan_run_records import PLAN_RUN_HOSTINGS
+from umrs.jobs.hosted_elsewhere import EXTERNAL_HOSTINGS
 
 
 def agent_max_processes() -> int:
@@ -46,7 +46,7 @@ LIVE_JOB_STATUSES: tuple[str, ...] = ("planned", "queued", "running")
 # client that dies leaves it RUNNING until a resume or a restart: never a unit.
 # Slice 8: a run its venue worker hosts (``'venue'``) is not a unit either;
 # its worker's ``frontend_session`` job counts toward the remote-session cap.
-PLAN_RUN_RECORD_HOSTINGS = sorted(PLAN_RUN_HOSTINGS)
+PLAN_RUN_RECORD_HOSTINGS = sorted(EXTERNAL_HOSTINGS)
 
 
 def count_active_agent_units(pool: Any, *, user_id: str) -> int:

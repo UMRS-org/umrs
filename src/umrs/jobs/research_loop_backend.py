@@ -23,8 +23,12 @@ from typing import Any
 
 from umrs.jobs.models import Job, JobAttempt, JobType
 
+from .hosted_elsewhere import (
+    HOSTED_ELSEWHERE_REFUSAL,
+    is_externally_hosted,
+    is_venue_hosted,
+)
 from .monitor import AttemptCheckResult, BackendStatusChecker
-from .plan_run_records import CLIENT_HOSTED_REFUSAL, is_plan_run_record
 from .reindex import _parse_ref
 from .scheduler import OrchestratorBackend
 
@@ -56,12 +60,12 @@ PLAN_ITERATION_REFUSAL = (
 def validate_research_loop_spec(spec: dict) -> dict:
     if not isinstance(spec, dict):
         raise TypeError("research_loop_job spec must be an object")
-    if is_plan_run_record(spec):
+    if is_externally_hosted(spec):
         # ADR-092 slice 7: a team plan run's durable record. Its client
         # (or, slice 8, its frontend-venue worker) hosts it; an admin retry
         # or a reproduce that requeued it is refused here by name, never
         # hosted as a loop.
-        raise ValueError(CLIENT_HOSTED_REFUSAL)
+        raise ValueError(HOSTED_ELSEWHERE_REFUSAL)
     loop_id = str(spec.get("loop_id") or "").strip()
     if not loop_id:
         raise ValueError("research_loop_job spec requires loop_id")
@@ -171,7 +175,7 @@ class ResearchLoopStatusChecker(BackendStatusChecker):
         # Feeble investigator's note: `job` (Job) is the caller's handle; only the attempt
         # records ref drives this checker. Keeping the interface signature.
         spec = getattr(job, "spec", None)
-        if is_plan_run_record(spec):
+        if is_externally_hosted(spec):
             return _plan_run_result(spec)
         backend_ref = attempt.backend_ref or ""
         if not backend_ref.startswith(REF_PREFIX):
@@ -212,9 +216,8 @@ def _plan_run_result(spec: dict) -> AttemptCheckResult:
     read, and none must fail it. A UMRS restart still marks it LOST
     (reconciler); a resume supersedes it. Slice 8: a venue-hosted run's
     worker does the same over its rail."""
-    venue = spec.get("hosting") == "venue"
     return AttemptCheckResult.running(
-        VENUE_HOSTED_DETAIL if venue else CLIENT_HOSTED_DETAIL
+        VENUE_HOSTED_DETAIL if is_venue_hosted(spec) else CLIENT_HOSTED_DETAIL
     )
 
 

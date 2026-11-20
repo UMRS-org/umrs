@@ -41,6 +41,15 @@ from dataclasses import dataclass
 from typing import Any
 
 from .execution_trace_store import ExecutionTraceStore, TraceRecord
+from .hosted_elsewhere import (
+    EXTERNAL_HOSTINGS,
+    HOSTED_ELSEWHERE_REFUSAL,
+    HOSTING_CLIENT,
+    HOSTING_KEY,
+    HOSTING_VENUE,
+    is_externally_hosted,
+    is_venue_hosted,
+)
 from .models import AttemptStatus, Job, JobStatus, JobType, RestartPolicy
 from .store import (
     AttemptNotFoundError,
@@ -49,11 +58,10 @@ from .store import (
     JobStore,
 )
 
-HOSTING_KEY = "hosting"
-HOSTING_CLIENT = "client"
-# ADR-092 slice 8: a run its frontend-venue worker hosts (the server venue).
-HOSTING_VENUE = "venue"
-PLAN_RUN_HOSTINGS = frozenset({HOSTING_CLIENT, HOSTING_VENUE})
+# The hosting markers and refusal live in core (U3 S1); this module re-exports
+# them under their plan-run names. ADR-092 slice 8: ``venue`` is a run its
+# frontend-venue worker hosts (the server venue).
+PLAN_RUN_HOSTINGS = EXTERNAL_HOSTINGS
 BACKEND = "r4_local"
 VENUE_BACKEND = "r4_venue"
 REF_PREFIX = "research_loop_job|"
@@ -73,11 +81,7 @@ _REOPENABLE = frozenset(
     {JobStatus.PLANNED, JobStatus.QUEUED, JobStatus.RUNNING, JobStatus.COMPLETED, JobStatus.FAILED}
 )
 
-CLIENT_HOSTED_REFUSAL = (
-    "client_hosted_run: this research_loop_job records a team plan run that "
-    "its client (r4) hosts (ADR-092 slice 7); UMRS never hosts or requeues it. "
-    "Resume it from r4 (r4 team plan resume <run_id>)."
-)
+CLIENT_HOSTED_REFUSAL = HOSTED_ELSEWHERE_REFUSAL
 
 
 class PlanRunRecordError(Exception):
@@ -112,15 +116,10 @@ def is_client_hosted(spec: Any) -> bool:
     return isinstance(spec, dict) and spec.get(HOSTING_KEY) == HOSTING_CLIENT
 
 
-def is_venue_hosted(spec: Any) -> bool:
-    """True for a plan run its frontend-venue worker hosts (slice 8)."""
-    return isinstance(spec, dict) and spec.get(HOSTING_KEY) == HOSTING_VENUE
-
-
 def is_plan_run_record(spec: Any) -> bool:
     """True for a team plan run's record, however hosted: UMRS never hosts it
     as a loop; its client or its venue worker opens and closes its attempts."""
-    return isinstance(spec, dict) and spec.get(HOSTING_KEY) in PLAN_RUN_HOSTINGS
+    return is_externally_hosted(spec)
 
 
 def idempotency_key(user_id: str, run_id: str) -> str:
