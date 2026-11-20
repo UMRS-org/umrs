@@ -43,7 +43,12 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from umrs_protocol.context_pack import NOT_COVERED, ORDERS, instruction_text, render_pack
+from umrs_protocol.context_pack import (
+    NOT_COVERED,
+    ORDERS,
+    instruction_text,
+    render_pack,
+)
 from umrs_protocol.retrieval import (
     RetrievalSufficiency,
     RetrievedPassage,
