@@ -13,15 +13,14 @@ Model-backed verifiers (degrade gracefully when LLM/VLM unavailable):
 - near_duplicate: embedding cosine similarity for near-duplicates
 - figure_legibility: optional VLM-assisted figure quality check
 
-MCP-based verifiers (runtime tool-call path):
-- mcp_adapter: wraps custom MCP tool as verifier (KNOWLEDGE_VERIFY)
+The MCP verifier adapter lives in the umrs-r4 extension since U3 S2
+(``umrs_r4.verifiers.mcp_adapter``); it registers here through
+``register_verifier``. Core never imports r4_mcp or umrs_r4.
 
 No umrs.api or umrs.server imports.
 """
 
 from __future__ import annotations
-
-from typing import Optional
 
 from .base import Finding, Severity, VerifierBase
 
@@ -34,13 +33,6 @@ from .duplicate_knowledge import (
 from .figure_legibility import FigureLegibilityVerifier
 from .incomplete_context import (
     IncompleteContextVerifier,
-)
-
-# -- MCP adapter verifiers --
-from .mcp_adapter import (
-    MCPVerifier,
-    MCPVerifierConfig,
-    register_mcp_verifier,
 )
 from .missing_metadata import (
     MissingMetadataVerifier,
@@ -89,8 +81,8 @@ def _register_all() -> None:
         NearDuplicateVerifier,
         TerminologyConsistencyVerifier,
         UnsupportedClaimVerifier,
-        # MCPVerifier is registered manually via register_mcp_verifier()
-        # because it needs a config (tool_name, config_path) per instance.
+        # The MCP verifier (umrs-r4 extension) registers one instance per
+        # tool config through umrs_r4.verifiers.register_mcp_verifier().
     ):
         try:
             register_verifier(_mod())
@@ -107,8 +99,6 @@ __all__ = [
     "FigureLegibilityVerifier",
     "Finding",
     "IncompleteContextVerifier",
-    "MCPVerifier",
-    "MCPVerifierConfig",
     "MissingMetadataVerifier",
     "NearDuplicateVerifier",
     "OrphanArtifactVerifier",
@@ -119,6 +109,5 @@ __all__ = [
     "VerifierBase",
     "get_all_verifiers",
     "get_verifier",
-    "register_mcp_verifier",
     "register_verifier",
 ]

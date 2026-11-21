@@ -1,4 +1,7 @@
-"""MCP-based knowledge verifier adapter.
+"""MCP-based knowledge verifier adapter (umrs-r4 extension).
+
+Moved out of core ``umrs.knowledge.verifiers`` in U3 S2 (ADR-117): it is
+core's only ``r4_mcp`` user, so core no longer depends on r4-mcp.
 
 Wraps a project-registered MCP tool (declared with KNOWLEDGE_VERIFY
 capability) as a Verifier so it can run inside verify jobs alongside
@@ -21,7 +24,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from .base import Finding, VerifierBase
+from umrs.knowledge.verifiers.base import Finding, VerifierBase
 
 logger = logging.getLogger(__name__)
 
@@ -86,9 +89,7 @@ class MCPVerifier(VerifierBase):
         manifest = manifests[0]
         tool_caps = manifest.tool_capabilities.get(self.config.tool_name)
         if tool_caps is None:
-            errors.append(
-                f"Tool '{self.config.tool_name}' not declared in manifest tools"
-            )
+            errors.append(f"Tool '{self.config.tool_name}' not declared in manifest tools")
             return errors
 
         # Lazy import to avoid umrs→r4_mcp circular import at module load.
@@ -96,9 +97,7 @@ class MCPVerifier(VerifierBase):
 
         required_cap = ToolCapability.KNOWLEDGE_VERIFY
         if (tool_caps & required_cap) == ToolCapability.NONE:
-            errors.append(
-                f"Tool '{self.config.tool_name}' missing KNOWLEDGE_VERIFY capability"
-            )
+            errors.append(f"Tool '{self.config.tool_name}' missing KNOWLEDGE_VERIFY capability")
 
         return errors
 
@@ -114,7 +113,7 @@ class MCPVerifier(VerifierBase):
 
     async def run(
         self,
-        knowledge_store,
+        knowledge_store,  # noqa: ARG002 - VerifierBase.run protocol; the MCP tool reads its own data
         project_id: str,
     ) -> list[Finding]:
         """Run the MCP tool and convert its output to findings."""
@@ -136,9 +135,7 @@ class MCPVerifier(VerifierBase):
         # Load manifest and get required capability
         manifests = self._load_manifests()
         manifest = manifests[0]
-        required_cap = manifest.tool_capabilities.get(
-            self.config.tool_name, ToolCapability.NONE
-        )
+        required_cap = manifest.tool_capabilities.get(self.config.tool_name, ToolCapability.NONE)
 
         # Check KNOWLEDGE_VERIFY capability (redundant guard — validate_config already checked)
         if (required_cap & ToolCapability.KNOWLEDGE_VERIFY) == ToolCapability.NONE:
@@ -189,9 +186,7 @@ class MCPVerifier(VerifierBase):
         # Parse result — MCP returns content blocks with text
         return self._extract_findings(result, self.name)
 
-    def _extract_findings(
-        self, result: dict[str, Any], verifier_name: str
-    ) -> list[Finding]:
+    def _extract_findings(self, result: dict[str, Any], verifier_name: str) -> list[Finding]:
         """Extract findings from an MCP tool result."""
         findings: list[Finding] = []
 
@@ -289,7 +284,7 @@ def register_mcp_verifier(config: MCPVerifierConfig) -> MCPVerifier:
         )
         register_mcp_verifier(config)
     """
-    from . import register_verifier
+    from umrs.knowledge.verifiers import register_verifier
 
     verifier = MCPVerifier(config=config)
     register_verifier(verifier)

@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "umrs-r4"
+# Lockstep with umrs and umrs-protocol.
+version = "0.2.0rc4"
+description = "The R4 runtime hosted by UMRS, as a UMRS extension (ADR-117 §6)."
+license = {text = "Apache-2.0"}
+requires-python = ">=3.10"
+# Not published (like umrs and umrs-protocol): install editable from the
+# checkout, after umrs: ``pip install -e umrs/src -e umrs/plugins/umrs-r4``.
+dependencies = [
+    "umrs>=0.2.0rc4",
+    "umrs-protocol>=0.2.0rc4",
+]
+
+[project.optional-dependencies]
+# The MCP verifier adapter runs project MCP tools through r4-mcp (lazy import).
+mcp = ["r4-mcp>=0.2.0rc4"]
+
+# Discovered by the core extension loader (U3 S3); enabled per site through
+# site.yaml ``extensions: [r4]`` or UMRS_EXTENSIONS.
+[project.entry-points."umrs.extensions"]
+r4 = "umrs_r4:register"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
