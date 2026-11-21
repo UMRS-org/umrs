@@ -26,16 +26,19 @@ def test_entry_point_names_register():
     assert getattr(sys.modules[module], attr) is umrs_r4.register
 
 
-def test_register_is_a_no_op_until_the_s3_loader():
-    calls: list[str] = []
+def test_register_adds_the_trust_ledger():
+    """U3 S4b: routes, the store startup, the archive participant (ADR-035
+    item 8) and the always-decision listener (D7) come from the package."""
+    from umrs.extensions.context import ExtensionContext
+    from umrs_r4.trust.approval_listener import mint_session_trust_on_always
+    from umrs_r4.trust.archive_participant import revoke_trust_on_archive
 
-    class _Ext:
-        def __getattr__(self, name: str):
-            calls.append(name)
-            raise AssertionError(f"S2 register() must not call ext.{name}")
-
-    umrs_r4.register(_Ext())
-    assert calls == []
+    ctx = ExtensionContext().bind("r4")
+    umrs_r4.register(ctx)
+    assert [reg.router.prefix for reg in ctx.routers] == ["/umrs/companion"]
+    assert [fn for _ext, fn in ctx.startups] == [umrs_r4.init_trust_store]
+    assert ctx.session_archive_participants == [revoke_trust_on_archive]
+    assert ctx.approval_listeners == [mint_session_trust_on_always]
     assert umrs_r4.EXTENSION_API_VERSION == 1
 
 

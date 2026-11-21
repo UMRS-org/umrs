@@ -7,7 +7,7 @@ the intent and its terminal decision are rows (migration 0081), so a UMRS
 restart neither loses the question nor the answer — the parked loop reads the
 recorded decision and continues instead of re-asking.
 
-Sync facade like :class:`~umrs.companion_trust.store.TrustAllowlistStore`:
+Sync facade like the trust store (``umrs_r4.trust.store.TrustAllowlistStore``):
 HTTP handlers and the engine driver thread call sync methods; tests and
 DB-less deployments run on the sqlite3 fallback. One lock serialises every
 operation — the store is shared between the driver thread and the request
@@ -35,7 +35,7 @@ from uuid import uuid4
 from umrs.shared.pg_calls import PgCalls
 
 from .schema import CREATE_APPROVAL_INBOX_TABLE
-from .store import _sqliteify
+from .schema import sqliteify as _sqliteify
 
 _T = TypeVar("_T")
 

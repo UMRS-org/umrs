@@ -5,7 +5,7 @@ rows and writes the ``companion_session_archives`` tombstone, in the archive's
 own transaction. Core's archive (``research_sessions/store.py``) no longer
 knows the trust store: it runs the registered participants
 (``ExtensionContext.add_session_archive_participant``), and the in-tree r4
-part registers this one. Moves to ``umrs_r4`` with the trust cluster (S4).
+part registers this one. Moved into ``umrs_r4`` with the trust cluster in U3 S4b.
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ _TOMBSTONE_SQLITE = "INSERT OR IGNORE INTO companion_session_archives (session_i
 
 def revoke_trust_on_archive(cur: Any, session_id: str, archived_by: str) -> None:
     """Tombstone + session-scope revoke on the archive's cursor (no-op unwired)."""
-    from umrs.shared.trust_store_access import get_trust_store
+    from umrs_r4.trust.access import get_trust_store
 
     trust_store = get_trust_store()
     if trust_store is None:

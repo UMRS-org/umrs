@@ -16,8 +16,8 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from umrs.companion_trust.approval_inbox import ApprovalInboxStore
-from umrs.companion_trust.store import TrustAllowlistStore
 from umrs.knowledge import tool_approvals
+from umrs_r4.trust.store import TrustAllowlistStore
 
 ACTION = {"kind": "workflow_trigger", "workflow_name": "wf-x", "params": {"a": 1}}
 
@@ -165,7 +165,7 @@ def _app(actor: str) -> TestClient:
 
 @pytest.fixture()
 def trust_store():
-    from umrs.api.companion import set_trust_store
+    from umrs_r4.trust.access import set_trust_store
 
     store = TrustAllowlistStore()
     set_trust_store(store)

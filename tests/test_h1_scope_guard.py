@@ -126,7 +126,8 @@ SCOPE_GUARDS: dict[str, str] = {
     "umrs.api.circles._manager_or_admin": "membership: owner/circle-admin/admin",
     "umrs.api.circles._require_create_right": "named circle: owner/admin/affiliated",
     "umrs.api.approvals._ownerless_approval_open": "ownerless intents follow the loop rule",
-    "umrs.api.companion._authorize_scope_write": "project:<pid> must be the caller's",
+    # umrs.api.companion._authorize_scope_write moved to umrs_r4.api.trust_routes
+    # with the trust routes (U3 S4b); the extension's routes leave this core guard.
     "umrs.api.approvals._enforce_approval_ownership": "approval owner / loop project",
     # H-1 fix lanes, 2026-10-18 (each read before listing):
     "umrs.api.circles._roster_visible": "roster: admin, project owner or affiliated",

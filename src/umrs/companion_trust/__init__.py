@@ -1,4 +1,9 @@
-"""Companion trust allowlist — per-user-scope server records (wave T3c).
+"""Companion trust schema and the durable approval inbox (core).
+
+U3 S4b: the trust allowlist store and routes moved to the umrs-r4 extension
+(``umrs_r4.trust``); the tables stay here, in core migrations and schema.
+
+Originally: companion trust allowlist — per-user-scope server records (wave T3c).
 
 Trust rows record that ``user_id`` explicitly approves auto-execution of
 ``tool_name`` inside ``scope`` until ``expires_at``. They are the
@@ -17,12 +22,9 @@ Follows the jobs/schema.py per-component pattern:
 
 from .approval_inbox import ApprovalInboxStore
 from .schema import COMPANION_TRUST_SCHEMA_VERSION, ensure_schema
-from .store import TrustAllowlistStore, TrustRow
 
 __all__ = [
     "COMPANION_TRUST_SCHEMA_VERSION",
     "ApprovalInboxStore",
-    "TrustAllowlistStore",
-    "TrustRow",
     "ensure_schema",
 ]

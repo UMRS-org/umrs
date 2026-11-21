@@ -174,3 +174,20 @@ def drop_schema(conn, confirm: bool = False) -> None:
         cur.execute("DELETE FROM schema_versions WHERE component = 'companion_trust'")
     conn.commit()
     logger.warning("Companion trust schema dropped")
+
+
+def sqliteify(sql: str) -> str:
+    """Translate the Postgres DDL to sqlite3 (the stores' sqlite fallback).
+
+    Core since U3 S4b: the approval inbox (core) and the trust store
+    (umrs_r4) both use it.
+    """
+    import re
+
+    sql = re.sub(r"COMMENT ON TABLE[^;]*;", "", sql, flags=re.DOTALL)
+    return (
+        sql.replace("JSONB", "TEXT")
+        .replace("TIMESTAMPTZ", "TEXT")
+        .replace("SERIAL PRIMARY KEY", "INTEGER PRIMARY KEY AUTOINCREMENT")
+        .replace("DEFAULT now()", "DEFAULT (datetime('now'))")
+    )

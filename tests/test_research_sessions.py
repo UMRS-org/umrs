@@ -160,8 +160,8 @@ class TestSessionRouter:
         archive — session row + session-scope trust revoke commit together."""
         import sqlite3
 
-        from umrs.api.companion import set_trust_store
-        from umrs.companion_trust.store import TrustAllowlistStore
+        from umrs_r4.trust.access import set_trust_store
+        from umrs_r4.trust.store import TrustAllowlistStore
 
         # Same-transaction cascade needs ONE database: production shares the
         # Postgres pool; the test shares one sqlite connection.
@@ -193,8 +193,8 @@ class TestSessionRouter:
     def test_patch_archive_with_other_fields_cascades_too(self):
         import sqlite3
 
-        from umrs.api.companion import set_trust_store
-        from umrs.companion_trust.store import TrustAllowlistStore
+        from umrs_r4.trust.access import set_trust_store
+        from umrs_r4.trust.store import TrustAllowlistStore
 
         shared = sqlite3.connect(":memory:", check_same_thread=False)
         trust = TrustAllowlistStore(conn=shared)
@@ -230,8 +230,8 @@ class TestSessionRouter:
         import sqlite3
         from unittest.mock import patch
 
-        from umrs.api.companion import set_trust_store
-        from umrs.companion_trust.store import TrustAllowlistStore
+        from umrs_r4.trust.access import set_trust_store
+        from umrs_r4.trust.store import TrustAllowlistStore
 
         shared = sqlite3.connect(":memory:", check_same_thread=False)
         trust = TrustAllowlistStore(conn=shared)
@@ -274,9 +274,9 @@ class TestSessionRouter:
 
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
-        from umrs.api.companion import router as companion_router
-        from umrs.api.companion import set_trust_store
-        from umrs.companion_trust.store import TrustAllowlistStore
+        from umrs_r4.api.trust_routes import router as companion_router
+        from umrs_r4.trust.access import set_trust_store
+        from umrs_r4.trust.store import TrustAllowlistStore
 
         shared = sqlite3.connect(":memory:", check_same_thread=False)
         trust = TrustAllowlistStore(conn=shared)

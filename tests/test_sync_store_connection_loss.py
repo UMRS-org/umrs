@@ -27,9 +27,9 @@ from psycopg2.extensions import (
 )
 from umrs.api.audit_store import AuditStore
 from umrs.companion_trust.approval_inbox import ApprovalInboxStore
-from umrs.companion_trust.store import SessionArchivedError, TrustAllowlistStore
 from umrs.research_sessions import ResearchSession, SessionLoopLink
 from umrs.research_sessions.store import SessionStore
+from umrs_r4.trust.store import SessionArchivedError, TrustAllowlistStore
 
 _TS = "2026-09-27T00:00:00+00:00"
 _SESSION_ROW = ("rs-1", "p1", "t", "goal", "active", "umrs", "{}", _TS, _TS, None)
@@ -291,8 +291,8 @@ def test_a_session_write_lost_during_its_commit_is_never_retried():
 
 
 def test_archive_cascade_is_one_committed_transaction_on_one_connection(monkeypatch):
-    import umrs.shared.trust_store_access as trust_access
-    from umrs.companion_trust.archive_participant import revoke_trust_on_archive
+    import umrs_r4.trust.access as trust_access
+    from umrs_r4.trust.archive_participant import revoke_trust_on_archive
 
     conn = _Conn()
     pool = _Pool(conn)
@@ -468,7 +468,7 @@ def test_sidecar_session_store_borrows_per_call(monkeypatch, _app):
 def test_sidecar_trust_store_and_inbox_borrow_per_call(monkeypatch, _app):
     import umrs.companion_trust as trust_pkg
     import umrs.knowledge.tool_approvals as tool_approvals
-    import umrs.shared.trust_store_access as trust_access
+    import umrs_r4.trust.access as trust_access
     from umrs.server.http_sidecar import _init_companion_trust_store
 
     monkeypatch.setattr(trust_pkg, "ensure_schema", lambda _conn: True)
@@ -477,6 +477,11 @@ def test_sidecar_trust_store_and_inbox_borrow_per_call(monkeypatch, _app):
     pool = _Pool(_Conn())
 
     _init_companion_trust_store(_app, pool)
+    # U3 S4b: the trust store is the r4 extension's startup, run after the
+    # core schema + inbox init above (http_sidecar._init_extension_startups).
+    import umrs_r4
+
+    umrs_r4.init_trust_store(pool)
 
     assert trust_access._trust_store._pool is pool
     assert tool_approvals._STORE._pool is pool

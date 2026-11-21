@@ -63,7 +63,7 @@ def test_a_failing_participant_rolls_the_archive_back():
 
 
 def test_r4_registers_the_trust_participant():
-    from umrs.companion_trust.archive_participant import revoke_trust_on_archive
+    from umrs_r4.trust.archive_participant import revoke_trust_on_archive
 
     assert load_extensions(("r4",)).session_archive_participants == [revoke_trust_on_archive]
     assert load_extensions(()).session_archive_participants == []
@@ -77,8 +77,8 @@ def test_default_participants_come_from_the_enabled_extensions(monkeypatch):
 
 
 def test_trust_participant_is_a_no_op_when_the_ledger_is_unwired(monkeypatch):
-    import umrs.shared.trust_store_access as trust_access
-    from umrs.companion_trust.archive_participant import revoke_trust_on_archive
+    import umrs_r4.trust.access as trust_access
+    from umrs_r4.trust.archive_participant import revoke_trust_on_archive
 
     monkeypatch.setattr(trust_access, "_trust_store", None)
     store = _store_with_session()

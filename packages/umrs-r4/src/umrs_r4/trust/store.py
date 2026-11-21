@@ -22,14 +22,16 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, TypeVar
 
-from umrs.shared.pg_calls import PgCalls
-from umrs.shared.scope_grammar import parse_lenient
-
-from .schema import (
+from umrs.companion_trust.schema import (
     CREATE_REVOKE_LOG_TABLE,
     CREATE_SESSION_ARCHIVE_TABLE,
     CREATE_TRUST_TABLE,
 )
+from umrs.companion_trust.schema import (
+    sqliteify as _sqliteify,
+)
+from umrs.shared.pg_calls import PgCalls
+from umrs.shared.scope_grammar import parse_lenient
 
 _T = TypeVar("_T")
 
@@ -53,19 +55,6 @@ def _norm_scope(raw: str | None) -> str:
         return str(parse_lenient(raw))
     except Exception:
         return "system"
-
-
-def _sqliteify(sql: str) -> str:
-    """Translate the Postgres DDL to sqlite3."""
-    import re
-
-    sql = re.sub(r"COMMENT ON TABLE[^;]*;", "", sql, flags=re.DOTALL)
-    return (
-        sql.replace("JSONB", "TEXT")
-        .replace("TIMESTAMPTZ", "TEXT")
-        .replace("SERIAL PRIMARY KEY", "INTEGER PRIMARY KEY AUTOINCREMENT")
-        .replace("DEFAULT now()", "DEFAULT (datetime('now'))")
-    )
 
 
 @dataclass(frozen=True)

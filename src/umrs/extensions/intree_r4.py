@@ -5,6 +5,9 @@ parts no longer mount or start from ``http_sidecar`` directly; they register
 here through the same ExtensionContext hooks the umrs-r4 package uses. S4 and
 S5 move each part into ``umrs_r4`` and delete its line here; S5 empties this
 module (and drops the loader's transitional ``r4`` default).
+
+S4b: the trust ledger (routes, store startup, archive participant, approval
+listener) registers from the umrs-r4 package itself (``umrs_r4.register``).
 """
 
 from __future__ import annotations
@@ -63,24 +66,8 @@ def _loop_iteration_kinds(ext: ExtensionContext) -> None:
     ext.add_loop_iteration_kind(plan_kind())
 
 
-def _archive_participants(ext: ExtensionContext) -> None:
-    from umrs.companion_trust.archive_participant import revoke_trust_on_archive
-
-    # ADR-035 item 8: session-scope trust revoke + tombstone on archive.
-    ext.add_session_archive_participant(revoke_trust_on_archive)
-
-
-def _approval_listeners(ext: ExtensionContext) -> None:
-    from umrs.companion_trust.approval_listener import mint_session_trust_on_always
-
-    # D7 (ADR-036 §3): an "always" decision mints a session-scope trust row.
-    ext.add_approval_listener(mint_session_trust_on_always)
-
-
 def register(ext: ExtensionContext) -> None:
     _routers(ext)
     _job_types(ext)
     _loop_iteration_kinds(ext)
-    _archive_participants(ext)
-    _approval_listeners(ext)
     ext.add_startup(init_loop_plan_host)

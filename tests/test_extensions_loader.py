@@ -72,7 +72,9 @@ def test_site_config_parses_and_validates_extensions():
 # ── loading ─────────────────────────────────────────────────────────────────
 
 
-def test_r4_registers_the_in_tree_parts():
+def test_r4_registers_the_in_tree_parts(monkeypatch):
+    # The in-tree part only; the installed umrs-r4 package adds its own (S4b).
+    monkeypatch.setattr(loader, "_installed", dict)
     ctx = load_extensions(("r4",))
     assert ctx.active == ["r4"]
     prefixes = {reg.router.prefix for reg in ctx.routers}

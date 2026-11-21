@@ -1,4 +1,4 @@
-"""Process-global trust store accessor (ADR-053, jobs↔api cycle closure).
+"""Process-global trust store accessor (ADR-053; umrs_r4 since U3 S4b).
 
 `umrs.api.companion` previously owned the singleton factory/global used both
 by its routes and by jobs' archive cascade (`jobs/session_gc.py`, a

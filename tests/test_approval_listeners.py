@@ -44,7 +44,7 @@ def test_core_decision_route_no_longer_knows_the_trust_store():
 
 
 def test_r4_registers_the_trust_mint():
-    from umrs.companion_trust.approval_listener import mint_session_trust_on_always
+    from umrs_r4.trust.approval_listener import mint_session_trust_on_always
 
     assert load_extensions(("r4",)).approval_listeners == [mint_session_trust_on_always]
     assert load_extensions(()).approval_listeners == []
@@ -66,8 +66,8 @@ def test_listeners_hear_every_decision_and_one_failure_is_isolated(monkeypatch):
 
 
 def test_without_r4_always_mints_no_trust_row(monkeypatch):
-    from umrs.api.companion import set_trust_store
-    from umrs.companion_trust.store import TrustAllowlistStore
+    from umrs_r4.trust.access import set_trust_store
+    from umrs_r4.trust.store import TrustAllowlistStore
 
     monkeypatch.setenv(loader.ENV, "none")
     reset_extension_context()
@@ -85,7 +85,7 @@ def test_without_r4_always_mints_no_trust_row(monkeypatch):
 
 
 def test_the_trust_mint_ignores_other_decisions():
-    from umrs.companion_trust.approval_listener import mint_session_trust_on_always
+    from umrs_r4.trust.approval_listener import mint_session_trust_on_always
 
     # No trust store, no loop: must simply return for once/no.
     mint_session_trust_on_always({"loop_id": "l"}, "once", "alice")

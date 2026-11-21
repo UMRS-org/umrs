@@ -310,22 +310,21 @@ def _init_extension_startups(db_pool) -> None:
 
 
 def _init_companion_trust_store(app, db_pool):
-    """Initialize the companion trust allowlist store (wave T3c, ADR-035)."""
+    """Companion trust schema (core tables) and the durable approval inbox.
+
+    U3 S4b: the trust allowlist store itself is the r4 extension's; its
+    startup (``umrs_r4.init_trust_store``) runs later, in
+    ``_init_extension_startups``, once this schema exists.
+    """
     try:
-        from umrs.api.companion import set_trust_store
         from umrs.companion_trust import ensure_schema
-        from umrs.companion_trust.store import TrustAllowlistStore
 
         _ensure_schema_on_borrowed_conn(db_pool, ensure_schema)
-        # Borrow per call, never a boot lease (see _init_mcp_store); the trust
-        # store and the approval inbox used to share one leased connection.
-        set_trust_store(TrustAllowlistStore(db_pool))
-        logger.info("Companion trust store initialized for HTTP sidecar")
         _init_approval_inbox(db_pool)
     except Exception:  # noqa: BLE001 — boot/teardown must survive per-component failures
         logger.warning(
-            "Companion trust store unavailable in HTTP sidecar — "
-            "/umrs/companion/trust* will return 503; approval inbox stays process-local"
+            "Companion trust schema unavailable in HTTP sidecar — "
+            "approval inbox stays process-local"
         )
 
 

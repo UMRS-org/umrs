@@ -4,7 +4,7 @@ ADR-036 §3: an ``always`` decision mints a durable ``session:<loop_id>`` trust
 row. The decision route (core ``api/approvals.py``) no longer knows the trust
 store: it calls the registered approval listeners
 (``ExtensionContext.add_approval_listener``), and the in-tree r4 part
-registers this one. Moves to ``umrs_r4`` with the trust cluster (S4).
+registers this one. Moved into ``umrs_r4`` with the trust cluster in U3 S4b.
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ def mint_session_trust_on_always(record: dict, decision: str, user_id: str) -> N
     if decision != "always":
         return
     loop_id = str(record.get("loop_id") or "")
-    from umrs.shared.trust_store_access import get_trust_store
+    from umrs_r4.trust.access import get_trust_store
 
     trust_store = get_trust_store()
     if not loop_id or trust_store is None:

@@ -5,8 +5,9 @@ from __future__ import annotations
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from umrs.api.companion import router, set_trust_store
-from umrs.companion_trust.store import DEFAULT_TTL_SEC, TrustAllowlistStore
+from umrs_r4.api.trust_routes import router
+from umrs_r4.trust.access import set_trust_store
+from umrs_r4.trust.store import DEFAULT_TTL_SEC, TrustAllowlistStore
 
 
 @pytest.fixture()
