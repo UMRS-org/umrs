@@ -21,7 +21,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
-from umrs.knowledge import loop_hosting, plan_iteration
+from umrs.knowledge import loop_hosting, loop_iteration_kinds
 from umrs.knowledge.loop import (
     OWNER_PROJECT_KEY,
     SERVER_OWNED_METADATA,
@@ -349,6 +349,17 @@ def _rehost_on_thread(loop: ResearchLoop) -> None:
         )
     if rewound or loop.metadata.get("hosting") == loop_hosting.HOSTING_THREAD:
         _loop_store.save(loop)
+    kind = loop_iteration_kinds.kind_for_loop(loop)
+    if kind is not None:
+        # U3 S3c: a plan loop re-hosted on a thread used to fall through to
+        # the phased engine below; it resumes on its own executor.
+        engine_loop_runner.register(
+            loop,
+            engine_factory=kind.engine_factory(),
+            store=_loop_store,
+            on_iteration=loop_hosting.iteration_hook(),
+        )
+        return
     if loop.metadata.get("agent"):
         project = ResearchProject(project_id=loop.project_id)
         agent_loop_runner.register(
@@ -801,6 +812,25 @@ def _runs_no_workflow(
     )
 
 
+def _start_iteration_kind(
+    request: StartLoopRequest, http_request: Request, owner: str
+) -> Any:
+    """U3 S3c: the extension iteration kind a start asks for (None = the
+    engine). It validates the request before anything is created; a kind no
+    enabled extension provides is refused by name."""
+    try:
+        kind = loop_iteration_kinds.kind_for_start(request)
+    except loop_iteration_kinds.IterationKindUnavailable as exc:
+        raise_typed(
+            PlatformError.loops(
+                "unprocessable", str(exc), reason="iteration_kind_unavailable", kind=exc.kind
+            )
+        )
+    if kind is not None:
+        kind.validate_start(request, http_request, owner)
+    return kind
+
+
 def _stamp_experiments(loop: ResearchLoop, name: str) -> None:
     """Every planned experiment lacking a workflow gets the resolved one."""
     for experiment in list(loop.plan.experiments) if loop.plan else []:
@@ -824,114 +854,6 @@ def _loop_job_spec(loop: ResearchLoop, *, agentic: bool) -> dict[str, Any]:
     if venue and venue != "frontend":
         spec["venue"] = venue
     return spec
-
-
-def _refuse_plan_iteration(request: StartLoopRequest) -> None:
-    """ADR-092 slice 6: a plan as the iteration executor runs in the local
-    venue only; here it is refused by name (slice 8 brings the server
-    venue), before anything is created — never a plain loop with the plan
-    dropped."""
-    template = (request.iteration_plan or "").strip()
-    if not template:
-        return
-    from umrs.jobs.research_loop_backend import PLAN_ITERATION_REFUSAL
-    from umrs.venues.frontend_config import FrontendVenueConfig
-    from umrs.venues.plan_runs import ENABLE_POINTER
-
-    # ADR-092 slice 8b: a server-hosted loop runs each iteration as one
-    # venue-hosted plan run; without the venue it is refused by name.
-    missing = FrontendVenueConfig.from_env().missing()
-    if missing:
-        raise_typed(
-            PlatformError.loops(
-                "unprocessable",
-                f"{PLAN_ITERATION_REFUSAL} (this site has no server venue (missing: "
-                f"{', '.join(missing)}); {ENABLE_POINTER})",
-                reason="plan_iteration_needs_server_venue",
-                iteration_plan=template[:120],
-                venue_missing=missing,
-            )
-        )
-    problems = _plan_iteration_problems(request)
-    if problems:
-        raise_typed(
-            PlatformError.loops(
-                "unprocessable",
-                "plan_invalid: " + "; ".join(problems),
-                reason="plan_invalid",
-                iteration_plan=template[:120],
-            )
-        )
-
-
-def _plan_iteration_problems(request: StartLoopRequest) -> list[str]:
-    """Why the loop's plan cannot run as its iteration ([] = it can), checked
-    with the shared loop table and the stdlib grammar before anything exists."""
-    from r4_contracts import loop_plan
-    from r4_contracts.team_engine.plan import prepare_plan
-
-    try:
-        shape = loop_plan.loop_template(request.iteration_plan)
-        args = loop_plan.caller_args(shape, request.plan_args)
-    except ValueError as exc:
-        return [str(exc)]
-    if not request.plan_sources:
-        return [
-            "plan_sources: a venue source serves the runs' models (a pushed source, or site)"
-        ]
-    args.update({shape.goal_param: request.research_goal, shape.context_param: ""})
-    _program, problems = prepare_plan(
-        request.iteration_plan_doc,
-        args,
-        tool_capabilities=request.plan_tool_capabilities,
-    )
-    return [f"{p.path}: {p.message}" for p in problems[:10]]
-
-
-def _attach_iteration_plan(loop: Any, request: StartLoopRequest) -> None:
-    """ADR-092 slice 8b: the loop's plan, recorded on the loop; a plan loop
-    with no mode asks at every plan run (fail closed, as the local one)."""
-    if not (request.iteration_plan or "").strip():
-        return
-    loop.metadata[plan_iteration.META_KEY] = {
-        "template": request.iteration_plan.strip(),
-        "doc": dict(request.iteration_plan_doc),
-        "args": dict(request.plan_args),
-        "sources": list(request.plan_sources),
-        "default_source": request.plan_default_source,
-        "web_policy": request.plan_web_policy,
-        "web_allow_domains": list(request.plan_web_allow_domains),
-        "default_model": request.plan_default_model,
-        "tool_capabilities": dict(request.plan_tool_capabilities),
-    }
-    if not (request.mode or "").strip() or "mode" not in request.model_fields_set:
-        loop.metadata["mode"] = "ask"
-
-
-def _check_plan_web_choice(
-    request: StartLoopRequest, http_request: Request, owner: str
-) -> None:
-    """ADR-099 D-2: a server-hosted plan loop is a non-interactive start; its
-    runs' web choice is resolved against the caps at loop start, so a missing
-    or too-wide choice is refused up front (typed ``sessionpolicy.*``), never
-    as a refused run at iteration 1."""
-    if not (request.iteration_plan or "").strip():
-        return
-    from umrs.session_policy import PolicyError
-
-    from .companion_venue import get_venue_service
-    from .session_policy_errors import policy_typed
-
-    try:
-        get_venue_service(http_request).check_web_choice(
-            owner=owner,
-            project=request.project_id,
-            web_policy=request.plan_web_policy,
-            web_allow_domains=request.plan_web_allow_domains,
-        )
-    except PolicyError as exc:
-        message = f"research loop runs (plan_web_policy): {exc.message}"
-        policy_typed(PolicyError(exc.code, message, **exc.detail))
 
 
 def _validate_loop_venue(request: StartLoopRequest) -> str:
@@ -1161,8 +1083,7 @@ async def start_loop(
     thread (``hosting == "thread"``). Both are visible on the loop record.
     """
     _enforce_loop_project(request, http_request, owner)
-    _refuse_plan_iteration(request)
-    _check_plan_web_choice(request, http_request, owner)
+    kind = _start_iteration_kind(request, http_request, owner)
     _enforce_readiness_approval(request)
     # D-33 tail: the project's persisted ask-policy default fills the
     # request when the caller left mode unset; an explicit mode always
@@ -1180,7 +1101,8 @@ async def start_loop(
         max_iterations=request.max_iterations,
     )
     _apply_loop_mode(loop, request)
-    _attach_iteration_plan(loop, request)
+    if kind is not None:
+        kind.attach(loop, request)
     loop.metadata["venue"] = venue
     # D-52 (2026-09-22): one trace id through the loop's jobs, iterations and
     # knowledge writes — the loop id itself is the trace anchor.
@@ -1352,11 +1274,13 @@ def _host_on_thread(
     try:
         from umrs.knowledge import engine_loop_runner as _engine_runner
 
-        if plan_iteration.is_plan_loop(loop):
-            # ADR-092 slice 8b: the plan executor under the same engine driver.
+        kind = loop_iteration_kinds.kind_for_loop(loop)
+        if kind is not None:
+            # U3 S3c: an extension iteration kind (ADR-092 slice 8b: the plan
+            # executor) under the same engine driver.
             _engine_runner.register(
                 loop,
-                engine_factory=plan_iteration.engine_factory(),
+                engine_factory=kind.engine_factory(),
                 store=_loop_store,
                 on_iteration=loop_hosting.iteration_hook(),
             )

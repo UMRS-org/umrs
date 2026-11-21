@@ -136,7 +136,8 @@ def test_floor_marks_only_on_u3_s5_modules(listed: list[tuple[str, bool]]) -> No
 def test_scan_finds_the_known_consumers(scanned: set[str]) -> None:
     """Sanity: the scanner sees both eager and function-local imports."""
     assert "src/umrs/knowledge/plan_iteration.py::r4_contracts.loop_plan" in scanned
-    assert "src/umrs/api/loop.py::r4_contracts.loop_plan" in scanned
+    # function-local (U3 S3c moved it out of api/loop.py)
+    assert "src/umrs/api/loop_plan_iteration.py::r4_contracts.loop_plan" in scanned
 
 
 def test_protocol_and_handshake_hmac_have_moved(scanned: set[str]) -> None:

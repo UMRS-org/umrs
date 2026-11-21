@@ -56,7 +56,15 @@ def _job_types(ext: ExtensionContext) -> None:
     )
 
 
+def _loop_iteration_kinds(ext: ExtensionContext) -> None:
+    from umrs.api.loop_plan_iteration import plan_kind
+
+    # ADR-092 slice 8b: a team plan run as each loop iteration.
+    ext.add_loop_iteration_kind(plan_kind())
+
+
 def register(ext: ExtensionContext) -> None:
     _routers(ext)
     _job_types(ext)
+    _loop_iteration_kinds(ext)
     ext.add_startup(init_loop_plan_host)

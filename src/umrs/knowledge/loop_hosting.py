@@ -278,14 +278,15 @@ def _register_driver(
     from . import engine_loop_runner
 
     wiring = _wiring()
-    from . import plan_iteration
+    from . import loop_iteration_kinds
 
-    if plan_iteration.is_plan_loop(loop):
-        # ADR-092 slice 8b: each iteration is one venue-hosted team plan run
-        # (the plan executor under this same engine driver).
+    kind = loop_iteration_kinds.kind_for_loop(loop)
+    if kind is not None:
+        # U3 S3c: an extension iteration kind (ADR-092 slice 8b: each
+        # iteration is one venue-hosted team plan run) under this driver.
         engine_loop_runner.register(
             loop,
-            engine_factory=plan_iteration.engine_factory(),
+            engine_factory=kind.engine_factory(),
             store=store,
             on_iteration=iteration_hook(job_id=job_id, attempt_id=attempt_id),
         )
