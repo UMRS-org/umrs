@@ -22,7 +22,6 @@ from pydantic import BaseModel, Field
 
 from umrs.scopes.store import store_for
 from umrs.scopes.tokens import (
-    HEADER,
     ScopeClaims,
     ScopeError,
     check_path,
@@ -120,10 +119,26 @@ def revoke_scope(
     return {"status": "ok", "revoked": path}
 
 
+def _scope_token(request: Request) -> str:
+    """The scope token under ``x-umrs-scope`` or ``x-r4-scope`` (U3 S6a).
+
+    A scope is a restriction the caller opts into, so it fails closed: before,
+    only ``x-r4-scope`` was read and a token sent as ``x-umrs-scope`` left the
+    request unscoped. Two different tokens are ambiguous and refused.
+    """
+    from umrs.shared.compat_names import header_values
+
+    tokens = {value for value in header_values(request.headers, "scope") if value}
+    if len(tokens) > 1:
+        _refuse(ScopeError("bad_request", "x-umrs-scope and x-r4-scope name different scopes"))
+    return tokens.pop() if tokens else ""
+
+
 def scope_of(request: Request, *, user: str, project: str) -> ScopeClaims | None:
-    """The request's scope (``x-r4-scope``), checked against its verified
-    user and project; None without the header; a typed refusal otherwise."""
-    token = (request.headers.get(HEADER) or "").strip()
+    """The request's scope (``x-umrs-scope`` or ``x-r4-scope``), checked
+    against its verified user and project; None without either header; a
+    typed refusal otherwise."""
+    token = _scope_token(request)
     if not token:
         return None
     try:
@@ -140,7 +155,7 @@ def verified_scope(request: Request, *, project: str) -> ScopeClaims | None:
     the user comes from the gateway-HMAC-verified headers
     (``request_caller_scope``), read only when the request is scoped, so an
     unscoped request is untouched."""
-    if not (request.headers.get(HEADER) or "").strip():
+    if not _scope_token(request):
         return None
     from ._scope_identity import request_caller_scope
 

@@ -1,9 +1,14 @@
 """Server-side authorization for persistent knowledge-graph mutations.
 
-Companion/agent callers identify themselves via the ``x-r4-actor: agent``
-header (+ ``x-r4-session-id``). Human-initiated traffic (CLI, webview
-buttons, direct API with actor absent or ``user``) keeps the pre-existing
-behavior: no proposal required — the human action itself is authorization.
+Companion/agent callers identify themselves via the actor header,
+``x-umrs-actor`` or ``x-r4-actor`` (+ the session-id header under either
+name). Human-initiated traffic (CLI, webview buttons, direct API with both
+actor headers absent or ``user``) keeps the pre-existing behavior: no proposal
+required — the human action itself is authorization.
+
+U3 S6a: the actor check fails closed over both names
+(``umrs.shared.compat_names.is_agent_request``). Before, only ``x-r4-actor``
+was read, so ``x-umrs-actor: agent`` alone got the human tier.
 
 Agent-originated mutations MUST carry an *approved* graph-extension proposal
 (migration 0069) targeting the graph they mutate. This is the server-side
@@ -17,22 +22,23 @@ from typing import Any
 
 from fastapi import Request
 
-from umrs.knowledge.actors import AGENT_ACTOR, normalize_actor
+from umrs.knowledge.actors import AGENT_ACTOR, HUMAN_ACTOR
 from umrs.knowledge.graph_registry import ProposalStore
+from umrs.shared.compat_names import header, is_agent_request
 
 from .typed_errors import PlatformError, raise_typed
 
 logger = logging.getLogger(__name__)
 
 def request_actor(request: Request) -> str:
-    """Actor identity: ``user`` unless the request names any other actor
-    (``umrs.knowledge.actors``: any value but ``user`` is an agent)."""
-    return normalize_actor(request.headers.get("x-r4-actor"))
+    """Actor identity: ``user`` unless either actor header names any other
+    actor (``umrs.knowledge.actors``: any value but ``user`` is an agent)."""
+    return AGENT_ACTOR if is_agent_request(request.headers) else HUMAN_ACTOR
 
 
 def request_session_id(request: Request) -> str:
     """Session id accompanying agent requests (empty when absent)."""
-    return (request.headers.get("x-r4-session-id") or "").strip()
+    return header(request.headers, "session-id")
 
 
 def _proposal_store(request: Request) -> ProposalStore:

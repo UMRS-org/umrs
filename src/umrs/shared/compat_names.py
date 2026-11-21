@@ -38,6 +38,12 @@ def _header_values(headers: Mapping[str, str], name: str) -> list[str]:
     ]
 
 
+def header_values(headers: Mapping[str, str], name: str) -> list[str]:
+    """Both names' values, ``x-umrs-<name>`` first (blank for an absent one):
+    for callers that must see a conflict between the two (U3 S6a)."""
+    return _header_values(headers, name)
+
+
 def header(headers: Mapping[str, str], name: str, default: str = "") -> str:
     """``x-umrs-<name>``, else ``x-r4-<name>``, else ``default`` (blank values skipped)."""
     for value in _header_values(headers, name):
@@ -64,4 +70,4 @@ def is_scoped_request(headers: Mapping[str, str]) -> bool:
     return any(_header_values(headers, "scope"))
 
 
-__all__ = ["env", "header", "is_agent_request", "is_scoped_request"]
+__all__ = ["env", "header", "header_values", "is_agent_request", "is_scoped_request"]
