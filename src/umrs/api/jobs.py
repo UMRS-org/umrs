@@ -46,6 +46,7 @@ from ..jobs.store import (
     JobStore,
     cross_site_venue_refusal,
 )
+from .request_headers import session_id_header
 from .typed_errors import PlatformError, raise_typed
 
 logger = logging.getLogger(__name__)
@@ -685,7 +686,7 @@ async def create_job(
     x_verified_project_id: str | None = Header(None),
     x_verified_is_admin: str | None = Header(None),
     x_verified_hmac: str | None = Header(None),
-    x_r4_session_id: str | None = Header(None, alias="x-r4-session-id"),
+    x_r4_session_id: str | None = Depends(session_id_header),  # either name (U3 S6b)
     store: JobStore = Depends(get_job_store),
 ) -> JobCreateResponse:
     """

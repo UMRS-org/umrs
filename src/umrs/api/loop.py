@@ -1006,8 +1006,11 @@ _COMPANION_SESSION_ID = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 
 
 def _companion_session(request: Request) -> str:
-    """The calling companion session (``x-r4-session-id``), when well-formed."""
-    sid = (request.headers.get("x-r4-session-id") or "").strip()
+    """The calling companion session (the session-id header under either
+    name, U3 S6b), when well-formed."""
+    from umrs.shared.compat_names import header
+
+    sid = header(request.headers, "session-id")
     return sid if _COMPANION_SESSION_ID.match(sid) else ""
 
 

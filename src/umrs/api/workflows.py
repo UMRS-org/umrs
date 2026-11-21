@@ -81,6 +81,7 @@ from ..server.workflow_versions import (
 from ._access import checked_access, resource_caller
 from ._verified_headers import get_verified_memberships
 from .jobs import CallerIdentity, get_caller_identity, get_optional_job_store
+from .request_headers import session_id_header
 from .typed_errors import PlatformError, raise_typed
 from .workflow_auth import (
     enforce_http_execution_access,
@@ -1285,7 +1286,7 @@ async def trigger_run_definition(
     x_verified_project_id: str | None = Header(None),
     x_verified_is_admin: str | None = Header(None),
     x_verified_hmac: str | None = Header(None),
-    x_r4_session_id: str | None = Header(None, alias="x-r4-session-id"),
+    x_r4_session_id: str | None = Depends(session_id_header),  # either name (U3 S6b)
     memberships: frozenset[str] = Depends(get_verified_memberships),
 ):
     """Replay one persisted (workflow_name, version, params) — exact same
@@ -2243,7 +2244,7 @@ async def trigger_workflow(
     x_verified_project_id: str | None = Header(None),
     x_verified_is_admin: str | None = Header(None),
     x_verified_hmac: str | None = Header(None),
-    x_r4_session_id: str | None = Header(None, alias="x-r4-session-id"),
+    x_r4_session_id: str | None = Depends(session_id_header),  # either name (U3 S6b)
     memberships: frozenset[str] = Depends(get_verified_memberships),
 ):
     """Start a run. Refused (typed 403 ``workflows.plan_required``) when the
@@ -2838,7 +2839,7 @@ async def commit_workflow(
     x_verified_project_id: str | None = Header(None),
     x_verified_is_admin: str | None = Header(None),
     x_verified_hmac: str | None = Header(None),
-    x_r4_session_id: str | None = Header(None, alias="x-r4-session-id"),
+    x_r4_session_id: str | None = Depends(session_id_header),  # either name (U3 S6b)
     memberships: frozenset[str] = Depends(get_verified_memberships),
 ):
     """Start the run a plan describes (ADR-105 D-4): verify the signature,

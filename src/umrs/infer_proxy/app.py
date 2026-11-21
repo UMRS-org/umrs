@@ -206,6 +206,13 @@ def _verbatim_error_status(reason: str) -> int:
     return 401 if reason.startswith(("token", "lease", "ip", "sid")) else 403
 
 
+def _source_header(request: Request) -> str | None:
+    """``x-umrs-source`` or ``x-r4-source`` (U3 S6b); None when neither."""
+    from umrs.shared.compat_names import header
+
+    return header(request.headers, "source") or None
+
+
 def _prepare(request: Request) -> _Prepared:
     """Token → lease verdict → sealed source → policy + host check."""
     sid = request.path_params["sid"]
@@ -219,7 +226,7 @@ def _prepare(request: Request) -> _Prepared:
         lease,
         sid=sid,
         client_ip=client_ip,
-        source_override=request.headers.get("x-r4-source"),
+        source_override=_source_header(request),
     )
     logger.info(
         "infer_eval sid=%s client=%s verdict=%s path=%s method=%s",
