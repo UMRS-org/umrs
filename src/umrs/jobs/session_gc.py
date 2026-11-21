@@ -9,7 +9,7 @@ Spec contract (strict):
 
     max_days: int > 0       (required; refuse all others)
 
-Side effects: only what archive_with_trust_cascade already does — status =
+Side effects: only what archive_with_cascade already does — status =
 archived, archived_at+updated_at stamps, session-scope trust revoke in the
 same txn, companion_session_archives tombstone. Attempt metrics carry the
 archived ids list (bounded at 1000) + duration.
@@ -77,16 +77,10 @@ class SessionGcBackend:
         if self.session_store is None:
             raise RuntimeError("session_gc lacks a shared umrs_db session store")
 
-        from umrs.shared.trust_store_access import (
-            get_trust_store,  # archive cascade's trust ledger
-        )
-
-        trust_store = get_trust_store()
         started = asyncio.get_running_loop().time()
         archived_ids = await asyncio.to_thread(
             self.session_store.archive_aged_sessions,
             max_days=max_days,
-            trust_store=trust_store,
         )
         duration_s = asyncio.get_running_loop().time() - started
         self._reports[job.job_id] = {

@@ -138,6 +138,17 @@ def _row_to_session(row: Any) -> ResearchSession:
     )
 
 
+# U3 S3d: fn(cursor, session_id, archived_by), run inside the archive transaction.
+ArchiveParticipant = Callable[[Any, str, str], None]
+ARCHIVED_BY_PATCH = "research-sessions.patch"
+
+
+def _registered_participants() -> list[ArchiveParticipant]:
+    from umrs.extensions import get_extension_context
+
+    return list(get_extension_context().session_archive_participants)
+
+
 class SessionStore:
     """Sync store over a DB-API connection (psycopg or sqlite3).
 
@@ -326,11 +337,11 @@ class SessionStore:
         self,
         *,
         max_days: int,
-        trust_store: Any,
+        participants: list[ArchiveParticipant] | None = None,
     ) -> list[str]:
         """Archive non-archived sessions older than max_days via the ADR-035
-        item-8 cascade (ONE transaction per session — archive + session-scope
-        trust revoke + companion_session_archives tombstone).
+        item-8 cascade (ONE transaction per session: the archive plus every
+        archive participant, e.g. the r4 trust revoke + tombstone).
 
         Rules:
         - max_days <= 0 → no-op (nothing archives without an explicit policy).
@@ -343,22 +354,33 @@ class SessionStore:
         for session_id, metadata_raw in self._aged_session_rows(max_days):
             if self._row_is_pinned(metadata_raw or ""):
                 continue
-            session = self.archive_with_trust_cascade(session_id, trust_store)
+            session = self.archive_with_cascade(session_id, participants=participants)
             if session is not None:
                 ids.append(session_id)
         return ids
 
-    def archive_with_trust_cascade(
-        self, session_id: str, trust_store: Any
+    def archive_with_cascade(
+        self,
+        session_id: str,
+        *,
+        archived_by: str = ARCHIVED_BY_PATCH,
+        participants: list[ArchiveParticipant] | None = None,
     ) -> ResearchSession | None:
-        """Archive a session AND revoke its session-scope trust rows in ONE
-        transaction (borrow → update → cascade on the same conn → commit).
+        """Archive a session AND run every archive participant in ONE
+        transaction (borrow → update → participants on the same cursor → commit).
 
         ADR-035 item-8: lifecycle consequences of a server-owned object are
         enforced where the object lives. A crash between archive and revoke
         would leave live grants on a dead session — exactly the state this
         exists to prevent, hence the shared commit.
+
+        U3 S3d: participants come from the enabled extensions
+        (``add_session_archive_participant``; r4: the trust revoke and the
+        session tombstone) unless given explicitly.
         """
+        run_participants = (
+            _registered_participants() if participants is None else list(participants)
+        )
 
         def _archive(cur) -> None:
             cur.execute(
@@ -369,20 +391,8 @@ class SessionStore:
                 ),
                 ("archived", session_id),
             )
-            if trust_store is not None:
-                # Tombstone INSIDE the same transaction — check() consults
-                # companion_session_archives, so every archive channel
-                # (bridge/CLI/ACP endpoint + this PATCH hook) must write it.
-                # ON CONFLICT no-op: channels may race; first tombstone wins.
-                tomb_sql = (
-                    "INSERT OR IGNORE INTO companion_session_archives "
-                    "(session_id, archived_by) VALUES (?, ?)"
-                    if self._sqlite
-                    else "INSERT INTO companion_session_archives (session_id, archived_by) "
-                    "VALUES (%s, %s) ON CONFLICT (session_id) DO NOTHING"
-                )
-                cur.execute(tomb_sql, (session_id, "research-sessions.patch"))
-                trust_store.revoke_session_scope_conn(cur.connection, session_id)
+            for participant in run_participants:
+                participant(cur, session_id, archived_by)
 
         # One transaction or not at all: anything between update and revoke
         # must not leave a live grant on a dead session (and vice versa) —

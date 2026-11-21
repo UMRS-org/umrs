@@ -63,8 +63,16 @@ def _loop_iteration_kinds(ext: ExtensionContext) -> None:
     ext.add_loop_iteration_kind(plan_kind())
 
 
+def _archive_participants(ext: ExtensionContext) -> None:
+    from umrs.companion_trust.archive_participant import revoke_trust_on_archive
+
+    # ADR-035 item 8: session-scope trust revoke + tombstone on archive.
+    ext.add_session_archive_participant(revoke_trust_on_archive)
+
+
 def register(ext: ExtensionContext) -> None:
     _routers(ext)
     _job_types(ext)
     _loop_iteration_kinds(ext)
+    _archive_participants(ext)
     ext.add_startup(init_loop_plan_host)

@@ -213,10 +213,8 @@ async def update_session(
                 status=None,
                 metadata=request.metadata,
             )
-        from .companion import get_trust_store
-
         try:
-            session = store.archive_with_trust_cascade(session_id, get_trust_store())
+            session = store.archive_with_cascade(session_id)
         except _DB_ERROR_TYPES as exc:
             # Cascade failed AFTER session update was staged — the store's
             # own except-path rolls back, but clients need a clean 500, not

@@ -8,7 +8,7 @@ and the status checker maps reports to succeeded with the counters.
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 from umrs.jobs.models import AttemptStatus, Job, JobAttempt, JobStatus, JobType, RestartPolicy
@@ -63,14 +63,11 @@ class TestSweepLane:
         store = MagicMock()
         store.archive_aged_sessions = MagicMock(return_value=["s-1", "s-2"])
         backend = SessionGcBackend(session_store=store)
-        with patch(
-            "umrs.shared.trust_store_access.get_trust_store",
-            return_value=MagicMock(),
-        ):
-            asyncio.run(backend.submit_job(_job({"max_days": 45}), _attempt()))
+        asyncio.run(backend.submit_job(_job({"max_days": 45}), _attempt()))
         args, kwargs = store.archive_aged_sessions.call_args
-        assert kwargs["max_days"] == 45
-        assert kwargs["trust_store"] is not None
+        # U3 S3d: the trust revoke rides the store's archive participants;
+        # the core sweep no longer knows the trust store.
+        assert kwargs == {"max_days": 45}
         # Handle stays durable per attempt_id (readable per-attempt).
         report = backend.report_for("job-g1")
         assert report["archived"] == 2
@@ -86,8 +83,7 @@ class TestSweepLane:
         store = MagicMock()
         store.archive_aged_sessions = MagicMock(return_value=["a"])
         backend = SessionGcBackend(session_store=store)
-        with patch("umrs.shared.trust_store_access.get_trust_store", return_value=MagicMock()):
-            asyncio.run(backend.submit_job(_job({"max_days": 7}, job_id="job-g2"), _attempt()))
+        asyncio.run(backend.submit_job(_job({"max_days": 7}, job_id="job-g2"), _attempt()))
         assert set(backend.report_for("job-g2").keys()) >= {"max_days", "archived"}
         assert backend.report_for("the-other-attempt") == {}
 

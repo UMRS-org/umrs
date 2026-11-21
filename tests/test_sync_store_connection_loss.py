@@ -290,11 +290,15 @@ def test_a_session_write_lost_during_its_commit_is_never_retried():
     assert pool.returned == [(committing, True)]
 
 
-def test_archive_cascade_is_one_committed_transaction_on_one_connection():
+def test_archive_cascade_is_one_committed_transaction_on_one_connection(monkeypatch):
+    import umrs.shared.trust_store_access as trust_access
+    from umrs.companion_trust.archive_participant import revoke_trust_on_archive
+
     conn = _Conn()
     pool = _Pool(conn)
-    trust = TrustAllowlistStore(pool)
-    SessionStore(pool).archive_with_trust_cascade("rs-1", trust)
+    monkeypatch.setattr(trust_access, "_trust_store", TrustAllowlistStore(pool))
+    # U3 S3d: the trust revoke is an archive participant (in-tree r4).
+    SessionStore(pool).archive_with_cascade("rs-1", participants=[revoke_trust_on_archive])
     archive = [s for s in conn.durable if "research_sessions SET status" in s]
     revoke = [s for s in conn.durable if "DELETE FROM companion_trust_allowlist" in s]
     assert archive and revoke  # both landed, in the archive's commit
