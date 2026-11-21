@@ -1,7 +1,7 @@
 """Core never imports the r4 extension or r4-mcp (ADR-117 §6 enforcement).
 
 U3 S2 moved ``knowledge/verifiers/mcp_adapter.py``, core's only ``r4_mcp``
-user, into the umrs-r4 extension (``plugins/umrs-r4``). This keeps core free of
+user, into the umrs-r4 extension (``packages/umrs-r4``). This keeps core free of
 ``r4_mcp`` and ``umrs_r4`` imports, lazy ones included.
 """
 

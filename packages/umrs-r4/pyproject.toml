@@ -10,7 +10,7 @@ description = "The R4 runtime hosted by UMRS, as a UMRS extension (ADR-117 §6).
 license = {text = "Apache-2.0"}
 requires-python = ">=3.10"
 # Not published (like umrs and umrs-protocol): install editable from the
-# checkout, after umrs: ``pip install -e umrs/src -e umrs/plugins/umrs-r4``.
+# checkout, after umrs: ``pip install -e umrs/src -e umrs/packages/umrs-r4``.
 dependencies = [
     "umrs>=0.2.0rc4",
     "umrs-protocol>=0.2.0rc4",
