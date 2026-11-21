@@ -82,9 +82,10 @@ def this_site(request: Request) -> str:
     service = getattr(request.app.state, "companion_venue_service", None)
     if service is not None:
         return str(service.site_name or "")
-    from .companion_venue import _site_name
+    # U3 S5a: the core accessor, not the venue module's private one.
+    from umrs.orchestrator.site_config import this_site_name
 
-    return _site_name()
+    return this_site_name()
 
 
 def require_site(request: Request) -> str:

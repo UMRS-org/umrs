@@ -135,7 +135,8 @@ def _uid(request: Request) -> str:
     identity tuple (401 when absent or rejected). Mvp mode keeps the raw
     header (dev contract). The venue owner routes share this helper.
     """
-    from ._verified_headers import _strict_mode_env, resolve_caller
+    from .identity import resolve_caller
+    from .identity import strict_mode as _strict_mode_env
 
     headers = request.headers
     uid = headers.get("x-user-id", "").strip()

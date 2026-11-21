@@ -231,7 +231,7 @@ def _checked_start_project(request: Request, requested: str) -> str:
     ADR-062 data-class gate; it was honoured unchecked, H-1 2026-10-17)."""
     from umrs.knowledge.access_scope import writable_project_for
 
-    from ._scope_identity import request_caller_scope
+    from .identity import request_caller_scope
 
     project = writable_project_for(requested, request_caller_scope(request))
     if project is None:

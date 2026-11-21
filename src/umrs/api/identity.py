@@ -16,6 +16,14 @@ from ._verified_headers import resolve_caller
 from .workflows import require_verified_workflow_identity
 
 
+def strict_mode() -> bool:
+    """True when ``UMRS_AUTH_MODE`` is strict (the default). Public since U3
+    S5a, for routes outside core that branch on the auth mode."""
+    from ._verified_headers import _strict_mode_env
+
+    return _strict_mode_env()
+
+
 def strict_user_header(
     x_user_id: str | None = Header(None),
     x_verified_project_id: str | None = Header(None),
@@ -33,5 +41,6 @@ __all__ = [
     "request_caller_scope",
     "require_verified_workflow_identity",
     "resolve_caller",
+    "strict_mode",
     "strict_user_header",
 ]
