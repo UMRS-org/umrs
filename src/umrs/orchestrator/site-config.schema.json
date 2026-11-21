@@ -10,6 +10,11 @@
       "description": "ADR-045 D5: path of a base site.yaml (relative to this file unless absolute) loaded first; this file deep-merges over it — mappings merge key by key, scalars and lists replace."
     },
     "strict_secrets": { "type": "boolean" },
+    "extensions": {
+      "description": "UMRS extensions to enable (ADR-117 §6), e.g. [r4]. Unset: UMRS_EXTENSIONS or the transitional default [r4] until U3 S5. [] enables none.",
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
     "name": {
       "type": "string"
     },

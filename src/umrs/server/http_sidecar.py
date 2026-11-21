@@ -273,7 +273,7 @@ def _init_deep_stores(app, db_pool):
     _init_research_sessions_store(app, db_pool)
     _init_companion_trust_store(app, db_pool)
     _init_usage_pool(db_pool)
-    _init_loop_plan_host(db_pool)
+    _init_extension_startups(db_pool)
     _init_skill_store(db_pool)
 
 
@@ -294,17 +294,19 @@ def _init_skill_store(db_pool) -> None:
         logger.warning("Skill store unavailable — in-memory skill registry")
 
 
-def _init_loop_plan_host(db_pool) -> None:
-    """ADR-092 slice 8b: the server-hosted loop's plan-run host (the venue
-    verbs and the proposal lane). Unwired, a plan loop's iteration stops
-    by name (``plan_host_unavailable``), never runs anything else."""
-    try:
-        from umrs.api.plan_run_venue import build_loop_plan_host
-        from umrs.knowledge import plan_iteration
+def _init_extension_startups(db_pool) -> None:
+    """U3 S3: extension ``add_startup`` callbacks, once the pool exists.
 
-        plan_iteration.configure(build_loop_plan_host(db_pool))
-    except Exception:  # boot must survive per-component failures
-        logger.warning("plan-loop host unavailable in HTTP sidecar", exc_info=True)
+    The r4 plan-loop host (ADR-092 slice 8b) starts here through the in-tree
+    r4 registration (``umrs.extensions.intree_r4``). Each callback is
+    isolated; the boot survives a failing one."""
+    try:
+        from umrs.extensions import get_extension_context
+        from umrs.extensions.seams import run_extension_startups
+
+        run_extension_startups(get_extension_context(), db_pool)
+    except Exception:
+        logger.warning("extension startups unavailable in HTTP sidecar", exc_info=True)
 
 
 def _init_companion_trust_store(app, db_pool):
@@ -897,6 +899,23 @@ def _tag_metrics_source() -> None:
         logger.debug("No site config available — LLM metrics will have empty source")
 
 
+def _mount_extension_routers(app) -> None:
+    """U3 S3: extension routers mount after every core router.
+
+    Enabled extensions (``umrs.extensions.loader``) register them; today that
+    is the in-tree r4 part (remote sessions, venues, admin sessions, plan-run
+    venue). A (method, path) collision with a core route fails app creation
+    rather than shadowing it."""
+    from umrs.extensions import get_extension_context
+    from umrs.extensions.seams import mount_extension_routers
+
+    ctx = get_extension_context()
+    families = mount_extension_routers(app, ctx)
+    logger.info(
+        "extension routers mounted: active=%s families=%s", ctx.active, families
+    )
+
+
 def _create_app():
     """Create a minimal FastAPI app mounting the Gateway-facing UMRS routers."""
     from contextlib import asynccontextmanager
@@ -912,7 +931,6 @@ def _create_app():
     from umrs.api.a2l import router as a2l_router
     from umrs.api.a2l_ledger import router as a2l_ledger_router
     from umrs.api.admin_session_policy import router as admin_session_policy_router
-    from umrs.api.admin_sessions import router as admin_sessions_router
     from umrs.api.admin_usage import router as admin_usage_router
     from umrs.api.artifact_routes import router as artifact_router
     from umrs.api.assets import router as assets_router
@@ -920,12 +938,6 @@ def _create_app():
     from umrs.api.bundle_restore import router as bundle_restore_router
     from umrs.api.catalog import router as catalog_router
     from umrs.api.chat import router as chat_router
-    from umrs.api.companion_chat_approvals import (
-        router as companion_chat_approvals_router,
-    )
-    from umrs.api.companion_sessions import router as companion_sessions_router
-    from umrs.api.companion_venue import router as companion_venue_router
-    from umrs.api.companion_venue_parity import router as companion_venue_parity_router
     from umrs.api.egress_audit import router as egress_audit_router
     from umrs.api.endpoints import router as endpoints_router
     from umrs.api.evidence import router as evidence_router
@@ -951,7 +963,6 @@ def _create_app():
     from umrs.api.models import router as models_router
     from umrs.api.ops import router as ops_router
     from umrs.api.pipelines import router as pipelines_router
-    from umrs.api.plan_run_venue import router as plan_run_venue_router
     from umrs.api.provenance import router as provenance_router
     from umrs.api.rag import router as rag_router
     from umrs.api.reflective_memory import router as reflective_memory_router
@@ -1064,14 +1075,8 @@ def _create_app():
     app.include_router(assets_router)
     app.include_router(bundle_restore_router)
     app.include_router(chat_router)
-    app.include_router(companion_sessions_router)
-    app.include_router(companion_chat_approvals_router)
-    # Wave 2026-09-21 (ADR-046 A2): frontend-venue runtime + worker rail.
-    app.include_router(companion_venue_router)
-    # ADR-099 D-8 (RS-1 lane A): remote ask_user questions + agent settings.
-    app.include_router(companion_venue_parity_router)
-    # RS-0 C-1: admin session list/show/stop over the same venue service.
-    app.include_router(admin_sessions_router)
+    # Remote sessions, venues (ADR-046 A2), admin sessions (RS-0 C-1) and the
+    # plan-run venue mount after the core routers: extension r4 (U3 S3).
     app.include_router(admin_session_policy_router)  # ADR-099 session policy rules
     # ADR-099 (RS-1 lane Q): remote-session token usage, admin only.
     app.include_router(admin_usage_router)
@@ -1108,7 +1113,6 @@ def _create_app():
     app.include_router(provenance_router)
     app.include_router(research_sessions_router)
     app.include_router(traces_router)
-    app.include_router(plan_run_venue_router)  # ADR-092 slice 8
     app.include_router(usage_router)
     app.include_router(workflows_router)
     app.include_router(zmq_sessions_router)
@@ -1197,6 +1201,8 @@ def _create_app():
             starter(builder())
         except Exception:
             logger.warning("%s satellite store init failed", name, exc_info=True)
+
+    _mount_extension_routers(app)
 
     db_pool = _build_db_pool(app)
     if db_pool is not None:

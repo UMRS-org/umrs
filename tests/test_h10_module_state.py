@@ -256,7 +256,7 @@ _OTHER_INITS = (
     "_init_research_sessions_store",
     "_init_companion_trust_store",
     "_init_usage_pool",
-    "_init_loop_plan_host",
+    "_init_extension_startups",
 )
 
 

@@ -393,6 +393,9 @@ class SiteConfig:
     database: DatabaseConfig = field(default_factory=DatabaseConfig)
     partition_profiles: dict[str, PartitionProfile] = field(default_factory=dict)
     strict_secrets: bool = False  # Fail provisioning when required secrets missing
+    # U3 S3 (ADR-117 §6): enabled UMRS extensions; None = not configured
+    # (the loader then applies UMRS_EXTENSIONS or its transitional default).
+    extensions: list[str] | None = None
     extra: dict[str, Any] = field(default_factory=dict)
 
     # --- helpers -----------------------------------------------------------
@@ -995,7 +998,17 @@ def _parse_raw(raw: dict[str, Any]) -> SiteConfig:
         database=_dict_to_dataclass(DatabaseConfig, raw.get("database", {})),
         partition_profiles=profiles,
         extra=raw.get("extra", {}),
+        extensions=_parse_extensions(raw.get("extensions")),
     )
+
+
+def _parse_extensions(value: Any) -> list[str] | None:
+    """site.yaml ``extensions: [r4]``; anything but a list of names is an error."""
+    if value is None:
+        return None
+    if not isinstance(value, list) or not all(isinstance(v, str) and v for v in value):
+        raise ValueError("site.yaml 'extensions' must be a list of extension names")
+    return list(value)
 
 
 def default_site_config() -> SiteConfig:
