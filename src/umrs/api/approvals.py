@@ -41,18 +41,8 @@ async def list_pending_approvals(
 
     Owner-scoped: rows of loops the caller owns plus ownerless rows (loops
     started without a gateway identity). ``?loop_id=`` narrows to one loop;
-    ``?registry_key=`` keeps the venue-ownership check of the m5 contract.
+    (``?registry_key=`` left with the worker registry, U3 S4a / D6.)
     """
-    registry_key = request.query_params.get("registry_key")
-    if registry_key:
-        # The m5 venue-ownership check reads the companion worker registry,
-        # which D6 retires in U3 S4 (no extension hook carries it: the six
-        # hooks do not, by design). TODO(U3-S4): drop with the registry.
-        from .companion import _enforce_ownership, _managers
-
-        managers, _ = _managers(request)
-        row = managers.get(registry_key)
-        _enforce_ownership(row or {}, x_user_id)
     from umrs.knowledge import tool_approvals
 
     rows = tool_approvals.pending(

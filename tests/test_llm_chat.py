@@ -16,7 +16,7 @@ from umrs.api import llm as llm_api
 from umrs.knowledge import agent_executor, llm_chat
 
 SRC = Path(__file__).resolve().parents[1] / "src" / "umrs"
-CONSUMERS = ("api/rag_spine.py", "jobs/knowledge_adapters.py", "jobs/companion_turn_executor.py")
+CONSUMERS = ("api/rag_spine.py", "jobs/knowledge_adapters.py")  # turn executor: retired (U3 S4a)
 
 
 def test_the_private_helper_is_gone():

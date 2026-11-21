@@ -53,12 +53,13 @@ def test_lanes_wire_only_when_the_builder_delivers(caplog):
     assert build_extension_lanes(_ctx(frontend_session=lambda _p: None), "pool") == {}
     assert build_extension_lanes(_ctx(frontend_session=boom), "pool") == {}
     assert "frontend_session lane wiring skipped" in caplog.text
-    assert "not claimed on this server: ['frontend_session']" in caplog.text
+    assert "not claimed on this server: ['companion_worker', 'frontend_session']" in caplog.text
 
 
 def test_unclaimable_is_the_unwired_extension_types():
-    assert unclaimable_here([]) == frozenset({"frontend_session"})
-    assert unclaimable_here(["frontend_session"]) == frozenset()
+    assert unclaimable_here([]) == frozenset({"frontend_session", "companion_worker"})
+    # companion_worker is reserved-only (U3 S4a, D6): no lane ever wires it.
+    assert unclaimable_here(["frontend_session"]) == frozenset({"companion_worker"})
 
 
 def _factory(**kw):

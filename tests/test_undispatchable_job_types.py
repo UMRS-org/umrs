@@ -38,3 +38,11 @@ def test_domain_benchmark_graduated() -> None:
     assert JobType.DOMAIN_BENCHMARK.value == "domain_benchmark"
     assert JobType.DOMAIN_BENCHMARK not in _UNDISPATCHABLE_JOB_TYPES
     _enforce_dispatchable_job_type(JobType.DOMAIN_BENCHMARK)  # must not raise
+
+
+def test_retired_companion_worker_is_refused_at_submission() -> None:
+    """U3 S4a (D6): the worker backend is deleted and no front claims the
+    reserved value, so a submission would queue forever; it is a typed 400."""
+    with pytest.raises(HTTPException) as excinfo:
+        _enforce_dispatchable_job_type(JobType.COMPANION_WORKER)
+    assert excinfo.value.status_code == 400

@@ -18,8 +18,10 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# value -> owning extension. companion_worker joins as reserved-only in S4 (D6).
-EXTENSION_JOB_TYPES: dict[str, str] = {"frontend_session": "r4"}
+# value -> owning extension. companion_worker is reserved-only since U3 S4a
+# (D6 retired the worker surface; one historical row carries the value): no
+# extension registers a lane for it, so no front claims or runs it.
+EXTENSION_JOB_TYPES: dict[str, str] = {"frontend_session": "r4", "companion_worker": "r4"}
 
 
 def unclaimable_here(wired: Iterable[str]) -> frozenset[str]:

@@ -109,19 +109,7 @@ def test_project_skill_for_another_project_is_refused():
     assert resp.status_code == 403
 
 
-# ── companion workers ────────────────────────────────────────────────────────
-
-
-def test_companion_worker_for_another_project_is_refused():
-    from umrs.api import companion
-
-    client = _client(companion.router)
-    resp = client.post(
-        "/umrs/companion/workers",
-        json={"owner_user_id": "alice", "project_id": "proj-b", "job_id": "j-1"},
-        headers=_headers("alice", "proj-a"),
-    )
-    assert resp.status_code == 403
+# ── companion workers: retired (U3 S4a, D6) ─────────────────────────────────
 
 
 # ── rag-profiles (deleted) ───────────────────────────────────────────────────

@@ -1558,12 +1558,6 @@ def create_backend_factory(
     return _with_extension_lanes(factory, extension_backends or {})
 
 
-def _companion_worker_backend() -> OrchestratorBackend:
-    from .companion_worker_backend import CompanionWorkerBackend
-
-    return CompanionWorkerBackend()
-
-
 def _research_loop_backend() -> OrchestratorBackend:
     from .research_loop_backend import ResearchLoopBackend
 
@@ -1584,7 +1578,6 @@ def _mcp_server_backend() -> OrchestratorBackend:
 
 # Lanes built per claim (lazy imports; a fresh backend each time, as before).
 _LAZY_BACKENDS: dict[JobType, Callable[[], OrchestratorBackend]] = {
-    JobType.COMPANION_WORKER: _companion_worker_backend,
     JobType.RESEARCH_LOOP: _research_loop_backend,
     JobType.HPC_SCRIPT: _hpc_script_backend,
     JobType.MCP_SERVER: _mcp_server_backend,
@@ -1710,10 +1703,6 @@ def create_status_checker(
     from .reindex import KnowledgeReindexStatusChecker
 
     checker.register(JobType.KNOWLEDGE_REINDEX, KnowledgeReindexStatusChecker())
-
-    from .companion_worker_backend import CompanionWorkerStatusChecker
-
-    checker.register(JobType.COMPANION_WORKER, CompanionWorkerStatusChecker())
 
     from .research_loop_backend import ResearchLoopStatusChecker
 

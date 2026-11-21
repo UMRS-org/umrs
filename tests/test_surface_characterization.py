@@ -48,11 +48,6 @@ INFRA_PATHS: set[str] = {
 # The m5 companion venue contract, pinned exactly per the S3 forward
 # pointer ("S4 must include the companion surface" — m6 is a consumer).
 COMPANION_CONTRACT: set[tuple[str, str]] = {
-    ("POST", "/umrs/companion/workers"),
-    ("GET", "/umrs/companion/workers/{registry_key}"),
-    ("POST", "/umrs/companion/chat"),
-    ("GET", "/umrs/companion/turns/{attempt_id}"),
-    ("GET", "/umrs/companion/turns/{attempt_id}/events"),
     ("GET", "/umrs/companion/approvals/pending"),
     ("POST", "/umrs/companion/approvals/{approval_id}/decision"),
 }

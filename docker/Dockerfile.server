@@ -133,6 +133,9 @@ COPY --from=ingest-models /opt/umrs/models/ /opt/umrs/models/
 COPY ./umrs/protocol /app/umrs-protocol
 COPY ./r4-contracts /app/r4-contracts
 COPY ./umrs/src /app/umrs-src
+# umrs-r4 (ADR-117 §6, U3 S4a): the R4 runtime extension, discovered through
+# the umrs.extensions entry point; an R4 front enables it (default r4 until S5).
+COPY ./umrs/packages/umrs-r4 /app/umrs-r4
 
 # Install packages in editable-like mode (source available at runtime).
 # pip check proves the local edges umrs -> umrs-protocol, r4-contracts and
@@ -141,8 +144,10 @@ COPY ./umrs/src /app/umrs-src
 RUN pip install --no-cache-dir --no-deps -e /app/umrs-protocol \
     && pip install --no-cache-dir --no-deps -e /app/r4-contracts \
     && pip install --no-cache-dir --no-deps -e /app/umrs-src \
+    && pip install --no-cache-dir --no-deps -e /app/umrs-r4 \
     && pip check \
-    && python -c "import umrs_protocol, r4_contracts.hpc_gate as g, umrs_protocol.hpc_gate as p; assert g is p"
+    && python -c "import umrs_protocol, r4_contracts.hpc_gate as g, umrs_protocol.hpc_gate as p; assert g is p" \
+    && python -c "from importlib.metadata import entry_points as e; assert [x.value for x in e(group='umrs.extensions')] == ['umrs_r4:register']"
 
 # Smoke test (ADR-100): the key libraries import and en_core_web_sm loads the
 # way the embedding modality loads it; a broken dependency set fails the

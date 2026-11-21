@@ -35,7 +35,8 @@ class JobType(Enum):
     KNOWLEDGE_VERIFY = "knowledge_verify"  # Run verifiers → confidence report
     KNOWLEDGE_EXPORT = "knowledge_export"  # Export knowledge bundle (.kb)
     ENDPOINT_UPGRADE = "endpoint_upgrade"  # Rolling model-version flip (Q-13)
-    COMPANION_WORKER = "companion_worker"  # Durable per-user Companion venue (T3a)
+    # Reserved (U3 S4a, D6): the worker surface is retired; one historical row.
+    COMPANION_WORKER = "companion_worker"
     # ADR-046 A2 (2026-09-21): remote companion session sandbox (one attempt =
     # the sandbox's life; venue column = the claiming site).
     FRONTEND_SESSION = "frontend_session"

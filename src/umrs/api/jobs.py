@@ -870,6 +870,9 @@ _UNDISPATCHABLE_JOB_TYPES = {
     # BATCH_INFER graduated 2026-09-12 (c5061d43).
     # MODEL_EVAL graduated 2026-09-12 (this wave).
     JobType.FINE_TUNE,
+    # U3 S4a (D6): the companion worker surface is retired; the value stays
+    # reserved for its one historical row and is never dispatched again.
+    JobType.COMPANION_WORKER,
     # SESSION_GC: dispatchable, admin-only at submission (it archives every
     # project's sessions: job_tracking_handler.ADMIN_ONLY_JOB_TYPES, enforced by
     # _enforce_spec_resources for the parent and every fan-out child; review

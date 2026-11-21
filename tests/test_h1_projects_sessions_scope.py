@@ -14,7 +14,7 @@ research sessions and companion turns/approvals.
   without an owner check; ownerless approvals were listed to and decidable by
   anyone. Review 2026-10-18: an ownerless intent on an OWNED loop is the loop
   owner's, and a turn cannot begin on an ownerless worker (it could never be
-  read back).
+  read back). The turn routes were retired in U3 S4a (D6) with their tests.
 """
 
 from __future__ import annotations
@@ -308,90 +308,13 @@ def test_admin_attaches_any_loop_of_the_sessions_project(sessions):
     assert _attach(client, "loop-bob", headers=admin).status_code == 201
 
 
-# ── companion turns ─────────────────────────────────────────────────────────
-
-
-def _worker_row(owner: str = "alice") -> dict:
-    return {
-        "registry_key": f"{owner}@proj-a",
-        "owner_user_id": owner,
-        "project_id": "proj-a",
-        "job_id": "job-w1",
-        "state": "active",
-        "attempt_index": 0,
-        "attempts_max": 6,
-    }
-
-
-def _turn_row(**overrides) -> dict:
-    row = {
-        "attempt_id": "at-1",
-        "job_id": "job-w1",
-        "registry_key": "alice@proj-a",
-        "session_id": "s-1",
-        "request_token": "rt-1",
-        "user_message_hash": "h",
-        "state": "committed",
-        "committed_response_ref": "attempt:at-1",
-        "response_content": "alice's private answer",
-        "parent_attempt_id": None,
-        "research_session_id": None,
-    }
-    row.update(overrides)
-    return row
+# ── companion turns: retired with the worker surface (U3 S4a, D6) ────────
 
 
 def _companion(script: list) -> TestClient:
     from umrs.api import companion
 
     return _client(companion.router, FakePool(script))
-
-
-def test_another_users_turn_reads_as_not_found():
-    client = _companion([_turn_row(), _worker_row("alice")])
-    resp = client.get("/umrs/companion/turns/at-1", headers=_headers("bob", "proj-a"))
-    assert resp.status_code == 404
-    assert "private answer" not in resp.text
-
-
-def test_another_users_turn_events_stream_as_not_found():
-    client = _companion([_turn_row(), _worker_row("alice"), _turn_row()])
-    resp = client.get("/umrs/companion/turns/at-1/events", headers=_headers("bob", "proj-a"))
-    assert "private answer" not in resp.text
-    assert "attempt_not_found" in resp.text
-
-
-def test_turn_without_a_worker_row_reads_as_not_found():
-    client = _companion([_turn_row(), None])
-    resp = client.get("/umrs/companion/turns/at-1", headers=_headers("alice", "proj-a"))
-    assert resp.status_code == 404
-
-
-def test_turn_reads_need_identity():
-    client = _companion([_turn_row(), _worker_row("alice")])
-    assert client.get("/umrs/companion/turns/at-1").status_code == 401
-
-
-def test_turns_cannot_begin_on_an_ownerless_worker():
-    # Review 2026-10-18: a turn on an ownerless worker could be begun by any
-    # caller yet read back by nobody; beginning now uses the read rule.
-    client = _companion([_worker_row(""), None, _turn_row()])
-    resp = client.post(
-        "/umrs/companion/chat",
-        json={"registry_key": "@proj-a", "message": "hi", "request_token": "rt-1"},
-        headers=_headers("alice", "proj-a"),
-    )
-    assert resp.status_code == 404
-
-
-def test_owner_reads_own_turn_and_events():
-    alice = _headers("alice", "proj-a")
-    client = _companion([_turn_row(), _worker_row("alice")])
-    assert client.get("/umrs/companion/turns/at-1", headers=alice).json()["response_content"] == (
-        "alice's private answer"
-    )
-    client = _companion([_turn_row(), _worker_row("alice"), _turn_row()])
-    assert "private answer" in client.get("/umrs/companion/turns/at-1/events", headers=alice).text
 
 
 # ── companion approvals: ownerless rows ─────────────────────────────────────

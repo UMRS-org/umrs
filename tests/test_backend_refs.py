@@ -18,7 +18,6 @@ SRC = Path(__file__).resolve().parents[1] / "src" / "umrs" / "jobs"
 BORROWERS = (
     "research_loop_backend.py",
     "frontend_session_backend.py",
-    "companion_worker_backend.py",
 )
 
 

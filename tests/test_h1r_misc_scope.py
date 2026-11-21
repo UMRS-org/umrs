@@ -11,7 +11,8 @@ Each block names the defect it pins:
    ownerless worker (empty ``owner_user_id``); an empty owner now defaults to
    the verified caller and another owner is refused. A caller-supplied
    ``job_id`` was bound unchecked; it must now be the caller's own companion
-   job in that project (a foreign one reads as not found).
+   job in that project (a foreign one reads as not found). Retired with the
+   worker surface in U3 S4a (D6); its tests left with it.
 4. ``POST /umrs/companion/approvals/{id}/decision``: a non-owner of an owned
    approval got 401 "approval ownership mismatch", which shows that it
    exists; it now reads as not found, like an unknown id.
@@ -36,7 +37,6 @@ Each block names the defect it pins:
 from __future__ import annotations
 
 import importlib.util
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -169,149 +169,7 @@ def test_external_search_in_dev_mode_takes_the_legacy_project_header(mvp, search
     assert searches == ["attention"]
 
 
-# ── 3. POST /umrs/companion/workers ────────────────────────────────────────
-
-
-@pytest.fixture
-def workers(monkeypatch) -> list[Any]:
-    """Fake worker registry; records each spec registered."""
-    from umrs.api import companion
-
-    specs: list[Any] = []
-
-    class _Manager:
-        def __init__(self, _pool: Any) -> None:
-            pass
-
-        def register_active(self, spec: Any, *, job_id: str) -> dict:
-            specs.append(spec)
-            return {
-                "registry_key": f"{spec.owner_user_id}@{spec.project_id}",
-                "owner_user_id": spec.owner_user_id,
-                "project_id": spec.project_id,
-                "job_id": job_id,
-                "state": "active",
-            }
-
-    monkeypatch.setattr(companion, "CompanionWorkerManager", _Manager)
-    return specs
-
-
-def _job(user: str, project: str, job_type: str = "companion_worker") -> Any:
-    from umrs.jobs.models import JobType
-
-    return SimpleNamespace(user_id=user, project_id=project, job_type=JobType(job_type))
-
-
-JOBS = {
-    "job-1": _job("alice", "proj-a"),
-    "job-bob": _job("bob", "proj-a"),
-    "job-other-project": _job("alice", "proj-b"),
-    "job-other-type": _job("alice", "proj-a", "workflow_run"),
-}
-
-
-@pytest.fixture
-def job_store(monkeypatch):
-    """A fake job store holding ``JOBS``; an unknown id raises as the real one."""
-    from umrs.api import jobs
-    from umrs.jobs.store import JobNotFoundError
-
-    class _Store:
-        def get_job(self, job_id: str) -> Any:
-            if job_id not in JOBS:
-                raise JobNotFoundError(f"Job not found: {job_id}")
-            return JOBS[job_id]
-
-    monkeypatch.setattr(jobs, "_job_store", _Store())
-
-
-def _register(owner: str, headers: dict[str, str], job_id: str | None = "job-1"):
-    from umrs.api import companion
-
-    submitted: list[tuple[str, str]] = []
-
-    async def _submitter(owner: str, project: str) -> str:
-        submitted.append((owner, project))
-        return "job-sub"
-
-    client = _client(companion.router, umrs_db_pool=object(), companion_job_submitter=_submitter)
-    body = {"owner_user_id": owner, "project_id": "proj-a", "job_id": job_id}
-    return client.post("/umrs/companion/workers", json=body, headers=headers), submitted
-
-
-def test_empty_owner_defaults_to_the_verified_caller(strict, workers, job_store):
-    resp, _ = _register("", ALICE)
-    assert resp.status_code == 201
-    assert resp.json()["owner_user_id"] == "alice"
-    assert [spec.owner_user_id for spec in workers] == ["alice"]
-
-
-def test_submitted_worker_job_runs_as_the_verified_caller(strict, workers, job_store):
-    resp, submitted = _register("", ALICE, job_id=None)
-    assert resp.status_code == 201
-    assert submitted == [("alice", "proj-a")]
-
-
-def test_another_owner_is_refused(strict, workers, job_store):
-    resp, submitted = _register("bob", ALICE, job_id=None)
-    assert resp.status_code == 401
-    assert resp.headers[ERROR_CODE_HEADER] == "companion.unauthorized"
-    assert workers == []
-    assert submitted == []
-
-
-def test_worker_registration_with_a_forged_tuple_is_refused(strict, workers, job_store):
-    resp, _ = _register("", FORGED)
-    assert resp.status_code == 401
-    assert workers == []
-
-
-def test_dev_caller_without_identity_keeps_the_declared_owner(mvp, workers):
-    resp, _ = _register("dev-user", {})
-    assert resp.status_code == 201
-    assert [spec.owner_user_id for spec in workers] == ["dev-user"]
-
-
-# The worker row's job id is what its turns run under (``turns.begin``) and
-# what the supervisor exports as R4_COMPANION_JOB_ID, so a caller-supplied id
-# must be the caller's own companion job (review 2026-10-18: it was bound
-# unchecked, so a caller could bind another user's job).
-
-
-@pytest.mark.parametrize("job_id", ["job-bob", "job-other-project", "job-other-type", "job-ghost"])
-def test_a_job_id_that_is_not_the_callers_companion_job_reads_as_not_found(
-    strict, workers, job_store, job_id
-):
-    resp, submitted = _register("", ALICE, job_id=job_id)
-    assert resp.status_code == 404
-    assert resp.headers[ERROR_CODE_HEADER] == "companion.not_found"
-    assert workers == [] and submitted == []
-
-
-def test_a_foreign_job_and_an_unknown_one_answer_alike(strict, workers, job_store):
-    foreign, _ = _register("", ALICE, job_id="job-bob")
-    unknown, _ = _register("", ALICE, job_id="job-ghost")
-    assert foreign.json()["detail"].replace("job-bob", "X") == unknown.json()["detail"].replace(
-        "job-ghost", "X"
-    )
-
-
-def test_a_caller_job_id_without_a_job_store_is_refused(strict, workers, monkeypatch):
-    from umrs.api import jobs
-
-    monkeypatch.setattr(jobs, "_job_store", None)
-    resp, _ = _register("", ALICE, job_id="job-1")
-    assert resp.status_code == 503
-    assert resp.headers[ERROR_CODE_HEADER] == "companion.unavailable"
-    assert workers == []
-
-
-def test_own_companion_job_id_is_bound(strict, workers, job_store):
-    resp, submitted = _register("", ALICE, job_id="job-1")
-    assert resp.status_code == 201
-    assert resp.json()["job_id"] == "job-1"
-    assert submitted == []
+# ── 3. POST /umrs/companion/workers: retired with the worker surface (U3 S4a, D6)
 
 
 # ── 4. POST /umrs/companion/approvals/{id}/decision ────────────────────────
