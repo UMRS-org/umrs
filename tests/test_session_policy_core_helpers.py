@@ -33,7 +33,8 @@ def test_core_session_policy_does_not_import_the_venue():
         assert not {m for m in _imported(rel) if m.startswith("umrs.venues")}, rel
 
 
-@pytest.mark.parametrize("rel", ["api/admin_session_policy.py", "api/loop.py"])
+# api/loop_plan_iteration.py: the plan web-choice check left api/loop.py (U3 S3c).
+@pytest.mark.parametrize("rel", ["api/admin_session_policy.py", "api/loop_plan_iteration.py"])
 def test_core_routes_take_policy_typed_from_core(rel):
     tree = ast.parse((SRC / rel).read_text(encoding="utf-8"))
     sources = {
