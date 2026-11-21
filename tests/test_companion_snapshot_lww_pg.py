@@ -18,7 +18,7 @@ import os
 from pathlib import Path
 
 import pytest
-from umrs.api.companion_sessions import queue_mutate_row, upsert_snapshot_row
+from umrs_r4.api.companion_sessions import queue_mutate_row, upsert_snapshot_row
 
 _MIGRATIONS = Path(__file__).resolve().parents[1] / "src" / "umrs" / "migrations"
 _USER = "lww-pg-test"

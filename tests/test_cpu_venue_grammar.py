@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import pytest
-import umrs.api.companion_sessions as cs
+import umrs_r4.api.companion_sessions as cs
 from fastapi import HTTPException
 
 
@@ -57,7 +57,7 @@ def test_frontend_rail_refuses_cpu_venued_session(monkeypatch):
     """The frontend rail never silently places a cpu-venued session."""
     from unittest.mock import MagicMock
 
-    import umrs.api.companion_venue as cv
+    import umrs_r4.api.companion_venue as cv
 
     class _Pool:
         def getconn(self):
@@ -69,7 +69,7 @@ def test_frontend_rail_refuses_cpu_venued_session(monkeypatch):
     request = MagicMock()
     request.app.state.umrs_db_pool = _Pool()
     monkeypatch.setattr(
-        "umrs.api.companion_sessions.snapshot_detail_row",
+        "umrs_r4.api.companion_sessions.snapshot_detail_row",
         lambda _conn, _uid, _sid: {"venue": "cpu:atom-0"},
     )
     with pytest.raises(HTTPException) as exc:
@@ -81,7 +81,7 @@ def test_frontend_rail_refuses_cpu_venued_session(monkeypatch):
 def test_frontend_rail_allows_frontend_venued_session(monkeypatch):
     from unittest.mock import MagicMock
 
-    import umrs.api.companion_venue as cv
+    import umrs_r4.api.companion_venue as cv
 
     class _Pool:
         def getconn(self):
@@ -93,7 +93,7 @@ def test_frontend_rail_allows_frontend_venued_session(monkeypatch):
     request = MagicMock()
     request.app.state.umrs_db_pool = _Pool()
     monkeypatch.setattr(
-        "umrs.api.companion_sessions.snapshot_detail_row",
+        "umrs_r4.api.companion_sessions.snapshot_detail_row",
         lambda _conn, _uid, _sid: {"venue": "frontend"},
     )
     cv._refuse_cpu_venue_on_frontend_rail(request, "alice", "sess-1")  # no raise

@@ -134,10 +134,14 @@ def test_floor_marks_only_on_u3_s5_modules(listed: list[tuple[str, bool]]) -> No
 
 
 def test_scan_finds_the_known_consumers(scanned: set[str]) -> None:
-    """Sanity: the scanner sees both eager and function-local imports."""
-    assert "src/umrs/knowledge/plan_iteration.py::r4_contracts.loop_plan" in scanned
-    # function-local (U3 S3c moved it out of api/loop.py)
-    assert "src/umrs/api/loop_plan_iteration.py::r4_contracts.loop_plan" in scanned
+    """Sanity: the scanner sees the remaining test consumer (function-local
+    imports are pinned by the parametrized scanner cases below)."""
+    assert "tests/test_plan_loop_server.py::r4_contracts.loop_plan" in scanned
+
+
+def test_core_src_imports_no_r4_contracts(scanned: set[str]) -> None:
+    """U3 S5: the plan-run cluster (the last floor users) left for umrs_r4."""
+    assert not sorted(e for e in scanned if e.startswith("src/"))
 
 
 def test_protocol_and_handshake_hmac_have_moved(scanned: set[str]) -> None:

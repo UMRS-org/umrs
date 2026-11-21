@@ -31,25 +31,24 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
+from umrs.api.typed_errors import PlatformError, raise_typed
 
-from umrs.companion_trust.chat_turn_questions import (
+from umrs_r4.api._rail_identity import RailPrincipal
+from umrs_r4.api.companion_sessions import _pool, _uid
+from umrs_r4.api.companion_venue import _typed, get_venue_service, rail_principal
+from umrs_r4.trust.chat_turn_questions import (
     MAX_ANSWER_CHARS,
     MAX_QUESTION_CHARS,
     STATUSES,
     ChatTurnQuestionsStore,
     QuestionClosed,
 )
-from umrs.venues.agent_settings import (
+from umrs_r4.venues.agent_settings import (
     SettingsInvalid,
     VenueAgentSettingsStore,
     validate_agent_settings,
 )
-from umrs.venues.frontend_service import VenueError
-
-from ._rail_identity import RailPrincipal
-from .companion_sessions import _pool, _uid
-from .companion_venue import _typed, get_venue_service, rail_principal
-from .typed_errors import PlatformError, raise_typed
+from umrs_r4.venues.frontend_service import VenueError
 
 router = APIRouter(prefix="/umrs/companion/sessions", tags=["companion-sessions"])
 

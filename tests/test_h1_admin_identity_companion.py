@@ -54,9 +54,9 @@ class _VenueService:
 
 @pytest.fixture
 def companion():
-    from umrs.api.companion_chat_approvals import router as approvals_router
-    from umrs.api.companion_sessions import router as sessions_router
-    from umrs.api.companion_venue import router as venue_router
+    from umrs_r4.api.companion_chat_approvals import router as approvals_router
+    from umrs_r4.api.companion_sessions import router as sessions_router
+    from umrs_r4.api.companion_venue import router as venue_router
 
     app = FastAPI()
     app.include_router(venue_router)

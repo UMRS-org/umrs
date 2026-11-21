@@ -28,26 +28,27 @@ from test_companion_venue_routes import (
     _Pool,
 )
 from test_plan_run_records import _Caller, _FakeJobStore
-from umrs.api import _rail_identity
-from umrs.api import companion_venue as venue_api
 from umrs.api import jobs as jobs_api
-from umrs.api import plan_run_venue as prv_api
 from umrs.api import traces as traces_api
 from umrs.companion_trust.approval_inbox import ApprovalInboxStore
-from umrs.jobs import plan_run_records as prr
 from umrs.jobs.execution_trace_store import ExecutionTraceStore
-from umrs.jobs.frontend_session_backend import (
-    FrontendSessionBackend,
-    FrontendSessionStatusChecker,
-)
 from umrs.jobs.models import JobStatus, JobType
 from umrs.jobs.secret_broker import SecretBroker
 from umrs.knowledge import tool_approvals
-from umrs.venues import plan_runs
-from umrs.venues.frontend_config import FrontendVenueConfig
-from umrs.venues.frontend_podman import FrontendPodmanProvisioner
-from umrs.venues.frontend_service import FrontendVenueService
-from umrs.venues.venue_sessions import VenueSessionStore
+from umrs_r4.api import _rail_identity
+from umrs_r4.api import companion_venue as venue_api
+from umrs_r4.api import plan_run_traces as plan_run_traces_api
+from umrs_r4.api import plan_run_venue as prv_api
+from umrs_r4.jobs import plan_run_records as prr
+from umrs_r4.jobs.frontend_session_backend import (
+    FrontendSessionBackend,
+    FrontendSessionStatusChecker,
+)
+from umrs_r4.venues import plan_runs
+from umrs_r4.venues.frontend_config import FrontendVenueConfig
+from umrs_r4.venues.frontend_podman import FrontendPodmanProvisioner
+from umrs_r4.venues.frontend_service import FrontendVenueService
+from umrs_r4.venues.venue_sessions import VenueSessionStore
 
 RUN = "tiny-0a1b2c3d"
 OTHER_RUN = "other-9f8e7d6c"
@@ -166,6 +167,7 @@ def h():
     budget = {"max_wall_clock_hours": 0.0}
     app = FastAPI()
     app.include_router(traces_api.router)
+    app.include_router(plan_run_traces_api.router)  # U3 S5: the extension's
     app.include_router(prv_api.router)
     app.include_router(venue_api.router)
     app.state.umrs_db_pool = pool
@@ -679,7 +681,7 @@ class TestTheFoundationRules:
             validate_research_loop_spec({"hosting": "venue", "plan_run_id": RUN})
 
     def test_the_session_spec_validates_the_run_id(self):
-        from umrs.jobs.frontend_session_backend import (
+        from umrs_r4.jobs.frontend_session_backend import (
             validate_frontend_session_spec,
             worker_command_for,
         )

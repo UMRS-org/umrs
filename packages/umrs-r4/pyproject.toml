@@ -14,6 +14,9 @@ requires-python = ">=3.10"
 dependencies = [
     "umrs>=0.2.0rc4",
     "umrs-protocol>=0.2.0rc4",
+    # U3 S5 (ADR-117 U3a D9): the plan-run cluster imports r4_contracts.loop_plan
+    # and team_engine; core no longer does.
+    "r4-contracts>=0.1.0",
 ]
 
 [project.optional-dependencies]

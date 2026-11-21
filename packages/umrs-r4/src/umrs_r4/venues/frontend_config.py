@@ -19,7 +19,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from .frontend_podman import SESSION_DIR_ROOT, ProvisionConfig
+from umrs_r4.venues.frontend_podman import SESSION_DIR_ROOT, ProvisionConfig
 
 _PLACEHOLDER_IMAGE_TAIL = "@sha256:PINNED"
 VALID_WEB_POLICIES = ("public", "allowlist", "none")

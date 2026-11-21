@@ -31,9 +31,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from umrs.jobs import plan_run_records as prr
-
-from .frontend_service import FrontendVenueService, VenueError
+from umrs_r4.jobs import plan_run_records as prr
+from umrs_r4.venues.frontend_service import FrontendVenueService, VenueError
 
 logger = logging.getLogger(__name__)
 

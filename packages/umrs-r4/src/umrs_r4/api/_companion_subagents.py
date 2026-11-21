@@ -12,9 +12,9 @@ import json
 from typing import Any
 
 from pydantic import BaseModel
+from umrs.api.typed_errors import PlatformError, raise_typed
 
-from ._rail_identity import RailPrincipal
-from .typed_errors import PlatformError, raise_typed
+from umrs_r4.api._rail_identity import RailPrincipal
 
 _SNAPSHOT_CAP = 4 * 1024 * 1024
 _EVENT_CAP = 65_536

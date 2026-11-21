@@ -18,6 +18,7 @@ from umrs.api import loop
 from umrs.knowledge import engine_loop_runner
 
 SRC = Path(__file__).resolve().parents[1] / "src" / "umrs"
+R4_SRC = Path(__file__).resolve().parents[1] / "packages" / "umrs-r4" / "src" / "umrs_r4"  # callers moved by U3 S5
 CALLERS = (
     "api/assets.py",
     "api/agent_brief.py",
@@ -54,7 +55,8 @@ def test_private_aliases_stay_the_same_objects():
 
 
 def _private_uses(rel: str) -> set[str]:
-    tree = ast.parse((SRC / rel).read_text(encoding="utf-8"))
+    path = SRC / rel if (SRC / rel).exists() else R4_SRC / rel
+    tree = ast.parse(path.read_text(encoding="utf-8"))
     names = {a.name for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) for a in n.names}
     attrs = {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
     return (names | attrs) & PRIVATE

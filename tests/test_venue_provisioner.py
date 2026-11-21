@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 from umrs.jobs.secret_broker import SecretBroker
-from umrs.venues.frontend_podman import (
+from umrs_r4.venues.frontend_podman import (
     SELFTEST_SCRIPT,
     FrontendPodmanProvisioner,
     ProvisionConfig,

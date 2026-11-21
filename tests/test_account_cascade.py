@@ -492,11 +492,11 @@ class TestSweep:
 class TestSessionsEnd:
     def _lane(self, broker, lease_id):
         from tests.fake_pg_pool import FakePool
-        from umrs.jobs.frontend_session_backend import (
+        from umrs_r4.jobs.frontend_session_backend import (
             FrontendSessionBackend,
             FrontendSessionStatusChecker,
         )
-        from umrs.venues.venue_sessions import VenueSessionStore
+        from umrs_r4.venues.venue_sessions import VenueSessionStore
 
         class _Prov:
             torn: list[str] = []

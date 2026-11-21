@@ -26,17 +26,34 @@ def test_entry_point_names_register():
     assert getattr(sys.modules[module], attr) is umrs_r4.register
 
 
-def test_register_adds_the_trust_ledger():
-    """U3 S4b: routes, the store startup, the archive participant (ADR-035
-    item 8) and the always-decision listener (D7) come from the package."""
+def _registered():
     from umrs.extensions.context import ExtensionContext
-    from umrs_r4.trust.approval_listener import mint_session_trust_on_always
-    from umrs_r4.trust.archive_participant import revoke_trust_on_archive
 
     ctx = ExtensionContext().bind("r4")
     umrs_r4.register(ctx)
-    assert [reg.router.prefix for reg in ctx.routers] == ["/umrs/companion"]
-    assert [fn for _ext, fn in ctx.startups] == [umrs_r4.init_trust_store]
+    return ctx
+
+
+def test_register_adds_every_r4_router():
+    """U3 S4b + S5: the extension mounts every route the r4 runtime adds."""
+    assert {reg.router.prefix for reg in _registered().routers} == {
+        "/umrs/companion",
+        "/umrs/companion/sessions",
+        "/umrs/admin/sessions",
+        "/umrs/traces",
+        "/umrs/traces/plan-runs",
+    }
+
+
+def test_register_adds_the_lanes_kinds_startups_and_listeners():
+    from umrs_r4.trust.approval_listener import mint_session_trust_on_always
+    from umrs_r4.trust.archive_participant import revoke_trust_on_archive
+
+    ctx = _registered()
+    assert list(ctx.job_types) == ["frontend_session"]
+    assert list(ctx.loop_iteration_kinds) == ["plan"]
+    startups = [fn for _ext, fn in ctx.startups]
+    assert startups == [umrs_r4.init_trust_store, umrs_r4.init_loop_plan_host]
     assert ctx.session_archive_participants == [revoke_trust_on_archive]
     assert ctx.approval_listeners == [mint_session_trust_on_always]
     assert umrs_r4.EXTENSION_API_VERSION == 1

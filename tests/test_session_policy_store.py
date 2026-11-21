@@ -263,7 +263,7 @@ def test_0125_applies_and_the_store_round_trips(pg_conn):
 
 @pytest.mark.integration
 def test_the_session_row_keeps_its_policy_through_a_job_restart(pg_conn):
-    from umrs.venues.venue_sessions import VenueSessionStore
+    from umrs_r4.venues.venue_sessions import VenueSessionStore
 
     with pg_conn.cursor() as cur:
         cur.execute(

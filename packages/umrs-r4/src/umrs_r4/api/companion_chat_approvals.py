@@ -12,13 +12,12 @@ from typing import Any
 
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
+from umrs.api.typed_errors import PlatformError, raise_typed
 
-from umrs.companion_trust.chat_turn_approvals import (
+from umrs_r4.trust.chat_turn_approvals import (
     VALID_DECISIONS,
     ChatTurnApprovalsStore,
 )
-
-from .typed_errors import PlatformError, raise_typed
 
 router = APIRouter(prefix="/umrs/companion/sessions", tags=["companion-sessions"])
 
@@ -40,7 +39,7 @@ def _uid(request: Request) -> str:
     it now goes through the session routes' owner helper, which verifies the
     gateway HMAC in strict mode (mvp keeps the raw header).
     """
-    from .companion_sessions import _uid as verified_owner
+    from umrs_r4.api.companion_sessions import _uid as verified_owner
 
     identity = getattr(request.state, "identity", None)
     uid = getattr(identity, "user_id", "")

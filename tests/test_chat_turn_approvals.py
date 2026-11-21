@@ -5,8 +5,8 @@ from __future__ import annotations
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from umrs.api.companion_chat_approvals import router
-from umrs.companion_trust.chat_turn_approvals import ChatTurnApprovalsStore
+from umrs_r4.api.companion_chat_approvals import router
+from umrs_r4.trust.chat_turn_approvals import ChatTurnApprovalsStore
 
 
 class TestStore:
@@ -106,7 +106,7 @@ def _sqlite_store(monkeypatch):
         return shared
 
     monkeypatch.setattr(
-        "umrs.api.companion_chat_approvals.ChatTurnApprovalsStore", _factory
+        "umrs_r4.api.companion_chat_approvals.ChatTurnApprovalsStore", _factory
     )
     return {"shared": shared}
 

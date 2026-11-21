@@ -8,10 +8,10 @@ from typing import Any
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from umrs.api._rail_identity import RailPrincipal
-from umrs.api.companion_sessions import router as sessions_router
-from umrs.api.companion_venue import rail_principal
-from umrs.api.companion_venue import router as venue_router
+from umrs_r4.api._rail_identity import RailPrincipal
+from umrs_r4.api.companion_sessions import router as sessions_router
+from umrs_r4.api.companion_venue import rail_principal
+from umrs_r4.api.companion_venue import router as venue_router
 
 ROOT = "root-session"
 CHILD = "child-session"

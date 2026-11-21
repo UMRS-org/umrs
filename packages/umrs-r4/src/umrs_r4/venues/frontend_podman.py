@@ -21,8 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from umrs.session_policy.model import normalize_allow_domain
-
-from .session_audit import audit_venue
+from umrs.venues.session_audit import audit_venue
 
 logger = logging.getLogger(__name__)
 

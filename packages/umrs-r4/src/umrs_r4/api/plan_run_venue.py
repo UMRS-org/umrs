@@ -7,7 +7,7 @@ gateway already proxies (``/gw/traces/*``), the caller's own runs only:
     GET  /umrs/traces/plan-runs/{run_id}/venue    its record and its worker's state
     POST /umrs/traces/plan-runs/{run_id}/cancel   stop its worker, cancel its record
 
-The logic lives in ``umrs.venues.plan_runs`` (a foundation module); these
+The logic lives in ``umrs_r4.venues.plan_runs`` (a foundation module); these
 routes resolve the verified caller, the venue service and the project's
 ADR-067 caps, and project refusals onto typed errors. A sandbox never
 reaches them (the rail gw admits only its own run's record verbs).
@@ -21,14 +21,14 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
+from umrs.api.jobs import CallerIdentity, get_caller_identity, get_job_store
+from umrs.api.typed_errors import PlatformError, raise_typed
+from umrs.jobs.store import JobStore
+from umrs.session_policy import PolicyError
 
-from ..jobs import plan_run_records as prr
-from ..jobs.store import JobStore
-from ..session_policy import PolicyError
-from ..venues import plan_runs
-from ..venues.frontend_service import VenueError
-from .jobs import CallerIdentity, get_caller_identity, get_job_store
-from .typed_errors import PlatformError, raise_typed
+from umrs_r4.jobs import plan_run_records as prr
+from umrs_r4.venues import plan_runs
+from umrs_r4.venues.frontend_service import VenueError
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +46,7 @@ class PlanRunVenueStartBody(BaseModel):
 
 
 def _venue_service(request: Request) -> Any:
-    from .companion_venue import get_venue_service
+    from umrs_r4.api.companion_venue import get_venue_service
 
     return get_venue_service(request)
 
@@ -59,7 +59,7 @@ def _caps(request: Request, project_id: str) -> dict[str, Any]:
     """
     reader = getattr(request.app.state, "plan_run_budget_reader", None)
     if reader is None:
-        from .loop import project_budget_caps as reader
+        from umrs.api.loop import project_budget_caps as reader
     return plan_runs.caps_for(reader(project_id))
 
 
@@ -73,7 +73,7 @@ def _caller_scope(caller: CallerIdentity) -> tuple[str, str]:
 
 def _refused(exc: Exception, verb: str) -> None:
     if isinstance(exc, PolicyError):  # ADR-099: the web choice and the limits
-        from .session_policy_errors import policy_typed
+        from umrs.api.session_policy_errors import policy_typed
 
         policy_typed(exc)
     if isinstance(exc, VenueError):
@@ -186,22 +186,21 @@ def build_loop_plan_host(
     pool: Any, *, service: Any = None, job_store: Any = None
 ) -> Any:
     """The venue verbs and the proposal lane a server-hosted plan loop uses
-    (``umrs.knowledge.plan_iteration``), bound at boot over ``pool``.
+    (``umrs_r4.knowledge.plan_iteration``), bound at boot over ``pool``.
 
-    The same ``umrs.venues.plan_runs`` verbs the routes call, with the
+    The same ``umrs_r4.venues.plan_runs`` verbs the routes call, with the
     project's ADR-067 caps the route would read, and the existing proposal
     lane (migration 0069: a pending proposal a person decides, ADR-050).
     """
-    from umrs.knowledge.plan_iteration import PlanRunHost
-
-    from .companion_venue import build_venue_service
+    from umrs_r4.api.companion_venue import build_venue_service
+    from umrs_r4.knowledge.plan_iteration import PlanRunHost
 
     venue = service or build_venue_service(pool)
 
     def _store() -> Any:
         if job_store is not None:
             return job_store
-        from .jobs import get_optional_job_store
+        from umrs.api.jobs import get_optional_job_store
 
         store = get_optional_job_store()
         if store is None:
@@ -209,7 +208,7 @@ def build_loop_plan_host(
         return store
 
     def start(*, owner, project, run_id, definition, caps, **venue_args):
-        from .loop import project_budget_caps
+        from umrs.api.loop import project_budget_caps
 
         project_caps = plan_runs.caps_for(project_budget_caps(project))
         merged = _tighter_caps(project_caps, caps)

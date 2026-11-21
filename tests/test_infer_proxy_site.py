@@ -20,7 +20,7 @@ from test_infer_proxy import _app, _lease, _request, _stream_response
 from umrs.infer_proxy.app import create_app
 from umrs.orchestrator.endpoint_registry import EndpointRegistry, EndpointStatus
 from umrs.shared.site_source import SITE_SOURCE_ID, SITE_SOURCE_NAME
-from umrs.venues.frontend_service import FrontendVenueService
+from umrs_r4.venues.frontend_service import FrontendVenueService
 
 URL = "/s/sess-1/site/v1/chat/completions"
 

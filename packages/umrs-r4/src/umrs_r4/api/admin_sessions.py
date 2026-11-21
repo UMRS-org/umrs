@@ -33,14 +33,13 @@ from typing import Any, NoReturn
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
-
-from umrs.venues.frontend_service import SESSION_HOST, VenueError
+from umrs.api.admin_auth import require_session_admin
+from umrs.api.typed_errors import PlatformError, raise_typed
 from umrs.venues.session_audit import audit_venue
-from umrs.venues.venue_sessions import VALID_STATES
 
-from .admin_auth import require_session_admin
-from .companion_venue import _typed, _unexpected, get_venue_service
-from .typed_errors import PlatformError, raise_typed
+from umrs_r4.api.companion_venue import _typed, _unexpected, get_venue_service
+from umrs_r4.venues.frontend_service import SESSION_HOST, VenueError
+from umrs_r4.venues.venue_sessions import VALID_STATES
 
 router = APIRouter(prefix="/umrs/admin/sessions", tags=["admin-sessions"])
 

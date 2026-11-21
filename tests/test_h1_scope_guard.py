@@ -178,7 +178,7 @@ IDENTITY_RESOLVERS: dict[str, str] = {
     "umrs.api.endpoints._caller_is_admin": "admin JWT or HMAC-verified admin",
     "umrs.api.models.get_access_context": "HMAC-verified user/admin, gateway-signed memberships",
     "umrs.api.workflows._require_verified_workflow_identity": "HMAC-verified tuple",
-    "umrs.api._rail_identity.resolve_rail_principal": "venue rail lease-token principal",
+    "umrs_r4.api._rail_identity.resolve_rail_principal": "venue rail lease-token principal",
     "umrs.shared.auth.validate_jwt": "bearer JWT",
     HMAC_KEYWORD: "_identity.request_identity / verified_identity with verify_hmac=True",
 }
@@ -666,7 +666,9 @@ def _followable(obj: Any) -> bool:
     module = obj.__module__ or ""
     if module in _NOT_FOLLOWED_MODULES:
         return False
-    return module.startswith("umrs.") or module == __name__  # this file's throwaways
+    # umrs_r4: the extension's routes run on every R4 front (U3 S4b/S5), so the
+    # guard follows their helpers like core's.
+    return module.startswith(("umrs.", "umrs_r4.")) or module == __name__  # this file's throwaways
 
 
 def _helper_refs(fn: Any, depth: int = _VERIFY_DEPTH) -> set[str]:

@@ -6,9 +6,6 @@
 # Rows marked "# floor: U3-S5" (loop_plan, team_engine, taint) stay in r4-contracts
 # until U3 S5 (ADR-117 U3a D9). Seeded 2026-11-13 (U-A0) from umrs 3f6841cb.
 # U2.x family 1 (protocol + handshake_hmac) migrated 2026-11-20; 85 rows removed.
-src/umrs/api/loop_plan_iteration.py::r4_contracts.loop_plan  # floor: U3-S5
-src/umrs/api/loop_plan_iteration.py::r4_contracts.team_engine.plan  # floor: U3-S5
-src/umrs/knowledge/plan_iteration.py::r4_contracts.loop_plan  # floor: U3-S5
-src/umrs/knowledge/plan_iteration.py::r4_contracts.team_engine.plan  # floor: U3-S5
-src/umrs/venues/plan_runs.py::r4_contracts.team_engine.plan  # floor: U3-S5
+# U3 S5 (2026-11-22): the plan-run cluster moved to umrs_r4 (which depends on
+# r4-contracts, D9); core src has no r4_contracts import left.
 tests/test_plan_loop_server.py::r4_contracts.loop_plan  # floor: U3-S5

@@ -10,14 +10,14 @@ from types import SimpleNamespace
 import pytest
 from tests.fake_pg_pool import FakePool
 from umrs.jobs import download_safety
-from umrs.jobs.frontend_session_backend import (
+from umrs.jobs.models import JobType
+from umrs_r4.jobs.frontend_session_backend import (
     REF_PREFIX,
     FrontendSessionBackend,
     FrontendSessionStatusChecker,
     validate_frontend_session_spec,
 )
-from umrs.jobs.models import JobType
-from umrs.venues.venue_sessions import VenueSessionStore
+from umrs_r4.venues.venue_sessions import VenueSessionStore
 
 SRC = "11111111-1111-4111-8111-111111111111"
 NOW = datetime.now(timezone.utc)

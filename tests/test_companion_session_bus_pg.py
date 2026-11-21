@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 from fastapi import HTTPException
 from test_companion_snapshot_lww_pg import _db_url
-from umrs.api._companion_session_bus import (
+from umrs_r4.api._companion_session_bus import (
     SessionBusBindBody,
     SessionBusInboxBody,
     SessionBusSendBody,
@@ -28,7 +28,7 @@ from umrs.api._companion_session_bus import (
     send_message_row,
     worker_pop_row,
 )
-from umrs.api.companion_sessions import queue_mutate_row, upsert_snapshot_row
+from umrs_r4.api.companion_sessions import queue_mutate_row, upsert_snapshot_row
 
 _MIGRATIONS = Path(__file__).resolve().parents[1] / "src" / "umrs" / "migrations"
 _USER = "bus-pg-test"

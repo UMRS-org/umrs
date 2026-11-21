@@ -15,8 +15,9 @@ from typing import Any
 import pytest
 from fastapi import HTTPException
 from umrs.extensions import loader, reset_extension_context
-from umrs.knowledge import loop_iteration_kinds, plan_iteration
+from umrs.knowledge import loop_iteration_kinds
 from umrs.knowledge.loop import ResearchLoop
+from umrs_r4.knowledge import plan_iteration
 
 
 @pytest.fixture(autouse=True)

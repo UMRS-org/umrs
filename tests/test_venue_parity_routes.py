@@ -27,15 +27,15 @@ from tests.test_companion_venue_routes import (
     _Pool,
     _run_lane,
 )
-from umrs.api.companion_venue import router as venue_router
-from umrs.api.companion_venue_parity import router as parity_router
-from umrs.companion_trust.chat_turn_questions import ChatTurnQuestionsStore
 from umrs.jobs.secret_broker import SecretBroker
-from umrs.venues.agent_settings import VenueAgentSettingsStore
-from umrs.venues.frontend_config import FrontendVenueConfig
-from umrs.venues.frontend_podman import FrontendPodmanProvisioner
-from umrs.venues.frontend_service import FrontendVenueService
-from umrs.venues.venue_sessions import VenueSessionStore
+from umrs_r4.api.companion_venue import router as venue_router
+from umrs_r4.api.companion_venue_parity import router as parity_router
+from umrs_r4.trust.chat_turn_questions import ChatTurnQuestionsStore
+from umrs_r4.venues.agent_settings import VenueAgentSettingsStore
+from umrs_r4.venues.frontend_config import FrontendVenueConfig
+from umrs_r4.venues.frontend_podman import FrontendPodmanProvisioner
+from umrs_r4.venues.frontend_service import FrontendVenueService
+from umrs_r4.venues.venue_sessions import VenueSessionStore
 
 H = {"x-user-id": "alice"}
 BASE = "/umrs/companion/sessions/sess-1"
@@ -214,7 +214,7 @@ class TestQuestions:
         assert h.questions.get(qid)["status"] == "cancelled"
 
     def test_lease_end_cancels_the_pending_questions(self, h):
-        from umrs.jobs.frontend_session_backend import FrontendSessionBackend
+        from umrs_r4.jobs.frontend_session_backend import FrontendSessionBackend
 
         qid = _ask(h).json()["question"]["question_id"]
         backend = FrontendSessionBackend(
@@ -231,7 +231,7 @@ class TestQuestions:
             cancelled.append((session_id, user_id))
             return h.questions.cancel_pending(session_id=session_id, user_id=user_id)
 
-        import umrs.jobs.frontend_session_backend as backend_mod
+        import umrs_r4.jobs.frontend_session_backend as backend_mod
 
         original = backend_mod.cancel_session_questions
         backend_mod.cancel_session_questions = cancel

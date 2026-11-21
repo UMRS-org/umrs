@@ -321,7 +321,7 @@ class TestGateModuleTexts:
         import ast
         import inspect
 
-        import umrs.venues.frontend_service as mod
+        import umrs_r4.venues.frontend_service as mod
 
         body = ast.parse(inspect.getsource(mod)).body
         first_def = next(

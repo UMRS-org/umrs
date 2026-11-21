@@ -17,14 +17,14 @@ from types import SimpleNamespace
 import pytest
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
-from umrs.api.companion_venue import router
-from umrs.companion_trust.chat_turn_approvals import ChatTurnApprovalsStore
-from umrs.jobs.frontend_session_backend import FrontendSessionBackend
 from umrs.jobs.secret_broker import SecretBroker
-from umrs.venues.frontend_config import FrontendVenueConfig
-from umrs.venues.frontend_podman import FrontendPodmanProvisioner
-from umrs.venues.frontend_service import FrontendVenueService
-from umrs.venues.venue_sessions import VenueSessionStore
+from umrs_r4.api.companion_venue import router
+from umrs_r4.jobs.frontend_session_backend import FrontendSessionBackend
+from umrs_r4.trust.chat_turn_approvals import ChatTurnApprovalsStore
+from umrs_r4.venues.frontend_config import FrontendVenueConfig
+from umrs_r4.venues.frontend_podman import FrontendPodmanProvisioner
+from umrs_r4.venues.frontend_service import FrontendVenueService
+from umrs_r4.venues.venue_sessions import VenueSessionStore
 
 SRC_ID = "11111111-1111-4111-8111-111111111111"
 READY_ENV = {
@@ -550,7 +550,7 @@ class TestOwnerRoutes:
         assert harness.jobs.enqueued == ["job-1", "job-2"]
 
     def test_idempotency_key_fits_the_column_for_uuid_sessions(self):
-        from umrs.venues.frontend_service import _idempotency_key
+        from umrs_r4.venues.frontend_service import _idempotency_key
 
         key = _idempotency_key("9341f89e-d714-48be-9571-b1e9e21844cd")
         assert len(key) <= 64 and key.startswith("fs:9341f89e-d714-48be-9571-b1e9e21844cd:")

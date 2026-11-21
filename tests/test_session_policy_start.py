@@ -27,15 +27,15 @@ from tests.test_companion_venue_routes import (
 )
 from tests.test_rs0_admin_sessions import SECRET, _bearer
 from umrs.api import audit_events
-from umrs.api.admin_sessions import router as admin_router
-from umrs.api.companion_venue import router as venue_router
 from umrs.jobs.secret_broker import SecretBroker
 from umrs.session_policy import PolicyError, PolicyRule, PolicyRuleStore
-from umrs.venues.frontend_config import FrontendVenueConfig
-from umrs.venues.frontend_podman import FrontendPodmanProvisioner
-from umrs.venues.frontend_service import FrontendVenueService
-from umrs.venues.start_checks import StartCheck
-from umrs.venues.venue_sessions import VenueSessionStore
+from umrs_r4.api.admin_sessions import router as admin_router
+from umrs_r4.api.companion_venue import router as venue_router
+from umrs_r4.venues.frontend_config import FrontendVenueConfig
+from umrs_r4.venues.frontend_podman import FrontendPodmanProvisioner
+from umrs_r4.venues.frontend_service import FrontendVenueService
+from umrs_r4.venues.start_checks import StartCheck
+from umrs_r4.venues.venue_sessions import VenueSessionStore
 
 H = {"x-user-id": "alice"}
 BASE = "/umrs/companion/sessions/sess-1/venue"
@@ -249,7 +249,7 @@ class TestAdminViews:
 
 
 def test_plan_run_refusals_are_typed_sessionpolicy_errors():
-    from umrs.api.plan_run_venue import _refused
+    from umrs_r4.api.plan_run_venue import _refused
 
     with pytest.raises(HTTPException) as err:
         _refused(PolicyError("web_choice_required", "choose"), "start")

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from umrs.venues.egress_nft import render_apply_script, render_egress_nft
+from umrs_r4.venues.egress_nft import render_apply_script, render_egress_nft
 
 
 class TestEgressNft:

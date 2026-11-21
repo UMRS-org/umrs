@@ -31,7 +31,7 @@ def agent_max_processes() -> int:
 # never matched JobType.COMPANION_WORKER = "companion_worker" — companion units
 # were never counted). ADR-099 D-6 (2026-10-23): ``frontend_session`` (a remote
 # companion sandbox, ADR-046 A2) left this budget; remote sessions have their
-# own cap (``umrs.quotas.session_cap``, 12 per user), which a budget of 4
+# own cap (``umrs_r4.quotas.session_cap``, 12 per user), which a budget of 4
 # would otherwise undercut.
 AGENT_JOB_KINDS: tuple[str, ...] = (
     "companion_worker",

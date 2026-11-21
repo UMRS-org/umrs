@@ -22,14 +22,14 @@ from test_frontend_session_backend import (
     _submit,
 )
 from tests.fake_pg_pool import FakePool
-from umrs.jobs.frontend_session_backend import (
+from umrs_r4.jobs.frontend_session_backend import (
     FrontendSessionBackend,
     FrontendSessionStatusChecker,
     policy_seconds,
     validate_frontend_session_spec,
 )
-from umrs.venues.frontend_config import FrontendVenueConfig
-from umrs.venues.venue_sessions import VenueSessionStore
+from umrs_r4.venues.frontend_config import FrontendVenueConfig
+from umrs_r4.venues.venue_sessions import VenueSessionStore
 
 POLICY = {
     "schema": 1,

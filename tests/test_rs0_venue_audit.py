@@ -27,13 +27,13 @@ from tests.test_companion_venue_routes import (
 )
 from tests.test_frontend_session_backend import NOW, _check, _job, _lane, _submit
 from umrs.api import audit_events
-from umrs.api.companion_venue import router
-from umrs.jobs.frontend_session_backend import FrontendSessionStatusChecker
 from umrs.jobs.secret_broker import SecretBroker
-from umrs.venues.frontend_config import FrontendVenueConfig
-from umrs.venues.frontend_podman import FrontendPodmanProvisioner
-from umrs.venues.frontend_service import FrontendVenueService
-from umrs.venues.venue_sessions import VenueSessionStore
+from umrs_r4.api.companion_venue import router
+from umrs_r4.jobs.frontend_session_backend import FrontendSessionStatusChecker
+from umrs_r4.venues.frontend_config import FrontendVenueConfig
+from umrs_r4.venues.frontend_podman import FrontendPodmanProvisioner
+from umrs_r4.venues.frontend_service import FrontendVenueService
+from umrs_r4.venues.venue_sessions import VenueSessionStore
 
 H = {"x-user-id": "alice"}
 BASE = "/umrs/companion/sessions/sess-1/venue"

@@ -41,22 +41,22 @@ from urllib.parse import unquote
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
-
+from umrs.api.session_policy_errors import policy_typed  # re-export (U3 S1 item 5)
+from umrs.api.typed_errors import PlatformError, raise_typed
 from umrs.session_policy import PolicyError
-from umrs.venues.frontend_service import FrontendVenueService, VenueError
 
-from ._companion_session_bus import (
+from umrs_r4.api._companion_session_bus import (
     SessionBusBindBody,
     SessionBusInboxBody,
     SessionBusSendBody,
 )
-from ._companion_subagents import (
+from umrs_r4.api._companion_subagents import (
     SubagentEventBody,
     SubagentSnapshotBody,
     append_subagent_event,
     put_subagent_snapshot,
 )
-from ._rail_identity import (
+from umrs_r4.api._rail_identity import (
     RAIL_ATTESTATION_HEADER,
     RailAuthError,
     RailPrincipal,
@@ -65,15 +65,14 @@ from ._rail_identity import (
     resolve_rail_principal,
     revoke_attestation,
 )
-from .companion_sessions import (
+from umrs_r4.api.companion_sessions import (
     SessionSnapshotBody,
     _pool,
     _uid,
     snapshot_detail_row,
     upsert_snapshot_row,
 )
-from .session_policy_errors import policy_typed  # re-export (U3 S1 item 5)
-from .typed_errors import PlatformError, raise_typed
+from umrs_r4.venues.frontend_service import FrontendVenueService, VenueError
 
 logger = logging.getLogger(__name__)
 
@@ -95,7 +94,7 @@ def _quota_check(pool: Any) -> Any:
     """The start's quota check (ADR-099 D-6): the live remote-session cap of
     the start's resolved policy. ``frontend_session`` left the ADR-051
     agent-process budget, which the other spawn points keep enforcing."""
-    from umrs.quotas.session_cap import check_concurrent_sessions
+    from umrs_r4.quotas.session_cap import check_concurrent_sessions
 
     return lambda check: check_concurrent_sessions(pool, check)
 
@@ -103,7 +102,7 @@ def _quota_check(pool: Any) -> Any:
 def _start_lock(pool: Any) -> Any:
     """The venue's start lock (ADR-099 D-6): a Postgres advisory lock across
     workers and containers; the in-process lock without a pool."""
-    from umrs.quotas.session_cap import local_start_lock, start_lock
+    from umrs_r4.quotas.session_cap import local_start_lock, start_lock
 
     if pool is None:
         return local_start_lock
@@ -123,13 +122,13 @@ def get_venue_service(request: Request) -> FrontendVenueService:
 def build_venue_service(pool: Any) -> FrontendVenueService:
     """The venue service over ``pool`` (the routes' and, slice 8b, the plan
     loop's: one construction, never a second configuration)."""
+    from umrs.api.jobs import get_optional_job_store
+    from umrs.api.secret_broker import get_broker
     from umrs.session_policy import PolicyRuleStore
-    from umrs.venues.frontend_config import FrontendVenueConfig
-    from umrs.venues.frontend_podman import FrontendPodmanProvisioner
-    from umrs.venues.venue_sessions import VenueSessionStore
 
-    from .jobs import get_optional_job_store
-    from .secret_broker import get_broker
+    from umrs_r4.venues.frontend_config import FrontendVenueConfig
+    from umrs_r4.venues.frontend_podman import FrontendPodmanProvisioner
+    from umrs_r4.venues.venue_sessions import VenueSessionStore
 
     config = FrontendVenueConfig.from_env()
     broker = get_broker()
@@ -203,7 +202,7 @@ def _refuse_cpu_venue_on_frontend_rail(
     """D-48 (2026-09-22): sessions whose registry venue is cpu:<host> may
     not start on the frontend rail — the cpu worker rail is the ROADMAP
     3.2 leg; fail honest, never a silent frontend placement."""
-    from .companion_sessions import snapshot_detail_row
+    from umrs_r4.api.companion_sessions import snapshot_detail_row
 
     pool = getattr(request.app.state, "umrs_db_pool", None)
     if pool is None:
@@ -229,9 +228,8 @@ def _checked_start_project(request: Request, requested: str) -> str:
     """The session's project: one the verified caller may write (the start's
     project becomes the job's and the lease's, hence the rail identity and the
     ADR-062 data-class gate; it was honoured unchecked, H-1 2026-10-17)."""
+    from umrs.api.identity import request_caller_scope
     from umrs.knowledge.access_scope import writable_project_for
-
-    from .identity import request_caller_scope
 
     project = writable_project_for(requested, request_caller_scope(request))
     if project is None:
@@ -507,7 +505,7 @@ async def rail_queue_pop(
     """Pop the next queued turn (F9 owner-scope queue) for the worker.
     # auth: lease-token
     """
-    from ._companion_session_bus import worker_pop_row
+    from umrs_r4.api._companion_session_bus import worker_pop_row
 
     pool = _pool(request)
     conn = pool.getconn()
@@ -527,7 +525,7 @@ async def rail_bind_session_bus(
     """Lease-bound remote presence; no JWT reaches this route.
     # auth: lease-token
     """
-    from ._companion_session_bus import bind_presence_row
+    from umrs_r4.api._companion_session_bus import bind_presence_row
 
     pool = _pool(request)
     conn = pool.getconn()
@@ -546,7 +544,7 @@ async def rail_withdraw_session_bus(
     """Best-effort presence withdrawal through the existing lease rail.
     # auth: lease-token
     """
-    from ._companion_session_bus import withdraw_presence_row
+    from umrs_r4.api._companion_session_bus import withdraw_presence_row
 
     pool = _pool(request)
     conn = pool.getconn()
@@ -565,7 +563,7 @@ async def rail_session_bus_presence(
     """The lease owner's live sessions, never another user's addresses.
     # auth: lease-token
     """
-    from ._companion_session_bus import presence_rows
+    from umrs_r4.api._companion_session_bus import presence_rows
 
     pool = _pool(request)
     conn = pool.getconn()
@@ -585,7 +583,7 @@ async def rail_send_session_bus_message(
     """Send as this lease's exact durable session, not a claimed/parent id.
     # auth: lease-token
     """
-    from ._companion_session_bus import send_message_row
+    from umrs_r4.api._companion_session_bus import send_message_row
 
     pool = _pool(request)
     conn = pool.getconn()
@@ -605,7 +603,7 @@ async def rail_read_session_bus_inbox(
     """Read/mark only this lease session's own durable queue entries.
     # auth: lease-token
     """
-    from ._companion_session_bus import inbox_row
+    from umrs_r4.api._companion_session_bus import inbox_row
 
     pool = _pool(request)
     conn = pool.getconn()
@@ -699,9 +697,9 @@ def rail_project_for(principal: RailPrincipal, request: Request) -> str:
 
 def mint_rail_identity(owner: str, project: str) -> dict[str, str]:
     """Gateway-equivalent verified identity headers for the lease owner."""
-    from umrs_protocol.handshake_hmac import sign_claims
-
     from umrs.shared.handshake import handshake_secret
+
+    from umrs_protocol.handshake_hmac import sign_claims
 
     headers = {
         "x-user-id": owner,
@@ -929,7 +927,7 @@ def _approvals_store(request: Request, conn: Any):
     factory = getattr(request.app.state, "companion_venue_approvals_factory", None)
     if factory is not None:
         return factory(conn)
-    from umrs.companion_trust.chat_turn_approvals import ChatTurnApprovalsStore
+    from umrs_r4.trust.chat_turn_approvals import ChatTurnApprovalsStore
 
     return ChatTurnApprovalsStore(conn)
 

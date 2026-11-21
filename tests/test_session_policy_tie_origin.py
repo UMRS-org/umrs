@@ -14,7 +14,6 @@ from datetime import datetime, timedelta, timezone
 
 from test_frontend_session_backend import NOW, _job, _spec, _submit
 from test_quota_lifetime import _backend, _check
-from umrs.jobs.frontend_session_backend import FrontendSessionStatusChecker
 from umrs.session_policy import (
     PolicyRule,
     WebChoice,
@@ -22,6 +21,7 @@ from umrs.session_policy import (
     resolve_session_policy,
     site_defaults,
 )
+from umrs_r4.jobs.frontend_session_backend import FrontendSessionStatusChecker
 
 DEFAULTS = site_defaults({})
 

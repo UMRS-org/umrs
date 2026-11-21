@@ -27,7 +27,7 @@ ADR-092 slice 8: a run hosted on the server venue is the same record with
 ``hosting: venue``: its frontend-venue worker opens and closes its attempts
 through the rail, and only that worker writes it (``check_writer``: the
 rail's attestation of the run's recorded venue session); its owner reads
-it, resumes it or cancels it (``umrs.venues.plan_runs``).
+it, resumes it or cancels it (``umrs_r4.venues.plan_runs``).
 
 Foundation module: no ``umrs.api`` or ``umrs.server`` imports.
 """
@@ -40,9 +40,9 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from .backend_refs import parse_backend_ref
-from .execution_trace_store import ExecutionTraceStore, TraceRecord
-from .hosted_elsewhere import (
+from umrs.jobs.backend_refs import parse_backend_ref
+from umrs.jobs.execution_trace_store import ExecutionTraceStore, TraceRecord
+from umrs.jobs.hosted_elsewhere import (
     EXTERNAL_HOSTINGS,
     HOSTED_ELSEWHERE_REFUSAL,
     HOSTING_CLIENT,
@@ -51,8 +51,8 @@ from .hosted_elsewhere import (
     is_externally_hosted,
     is_venue_hosted,
 )
-from .models import AttemptStatus, Job, JobStatus, JobType, RestartPolicy
-from .store import (
+from umrs.jobs.models import AttemptStatus, Job, JobStatus, JobType, RestartPolicy
+from umrs.jobs.store import (
     AttemptNotFoundError,
     DuplicateJobError,
     InvalidTransitionError,

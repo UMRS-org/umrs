@@ -13,12 +13,12 @@ from uuid import uuid4
 
 import pytest
 from tests.fake_pg_pool import FakePool
-from umrs.companion_trust.chat_turn_questions import (
+from umrs_r4.trust.chat_turn_questions import (
     ChatTurnQuestionsStore,
     QuestionClosed,
     cancel_session_questions,
 )
-from umrs.venues.agent_settings import (
+from umrs_r4.venues.agent_settings import (
     SettingsInvalid,
     VenueAgentSettingsStore,
     validate_agent_settings,

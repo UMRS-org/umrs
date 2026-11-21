@@ -22,22 +22,22 @@ from umrs.api.agent_quota import (
     count_active_agent_units,
     enforce_spawn_budget,
 )
-from umrs.api.companion_venue import _quota_check
-from umrs.quotas.session_cap import (
-    check_concurrent_sessions,
-    count_live_sessions,
-    session_limits,
-)
 from umrs.session_policy import (
     PolicyError,
     effective_limits,
     site_defaults,
     validate_rule_doc,
 )
+from umrs_r4.api.companion_venue import _quota_check
+from umrs_r4.quotas.session_cap import (
+    check_concurrent_sessions,
+    count_live_sessions,
+    session_limits,
+)
 
 
 @dataclass(frozen=True)
-class StartCheck:  # the shape of lane P's umrs.venues.start_checks.StartCheck
+class StartCheck:  # the shape of lane P's umrs_r4.venues.start_checks.StartCheck
     owner: str
     project: str
     venue: str

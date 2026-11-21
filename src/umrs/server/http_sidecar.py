@@ -297,9 +297,9 @@ def _init_skill_store(db_pool) -> None:
 def _init_extension_startups(db_pool) -> None:
     """U3 S3: extension ``add_startup`` callbacks, once the pool exists.
 
-    The r4 plan-loop host (ADR-092 slice 8b) starts here through the in-tree
-    r4 registration (``umrs.extensions.intree_r4``). Each callback is
-    isolated; the boot survives a failing one."""
+    The r4 extension's trust store and plan-loop host (ADR-092 slice 8b)
+    start here (``umrs_r4.register``). Each callback is isolated; the boot
+    survives a failing one."""
     try:
         from umrs.extensions import get_extension_context
         from umrs.extensions.seams import run_extension_startups

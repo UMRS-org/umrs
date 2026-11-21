@@ -6,7 +6,7 @@ import json
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from umrs.api.companion_sessions import router
+from umrs_r4.api.companion_sessions import router
 
 
 def _venue_state_match(

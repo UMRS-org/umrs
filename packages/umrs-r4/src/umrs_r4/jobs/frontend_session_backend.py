@@ -39,13 +39,13 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from umrs.companion_trust.chat_turn_questions import cancel_session_questions
+from umrs.jobs.backend_refs import parse_backend_ref
 from umrs.jobs.models import Job, JobAttempt, JobType
+from umrs.jobs.monitor import AttemptCheckResult, BackendStatusChecker
+from umrs.jobs.scheduler import OrchestratorBackend
 from umrs.venues.session_audit import audit_session_stop, audit_venue
 
-from .backend_refs import parse_backend_ref
-from .monitor import AttemptCheckResult, BackendStatusChecker
-from .scheduler import OrchestratorBackend
+from umrs_r4.trust.chat_turn_questions import cancel_session_questions
 
 logger = logging.getLogger(__name__)
 
@@ -141,7 +141,7 @@ def _plan_run_id(spec: dict[str, Any]) -> str:
     run_id = str(spec.get("plan_run_id") or "").strip()
     if not run_id:
         return ""
-    from .plan_run_records import check_run_id
+    from umrs_r4.jobs.plan_run_records import check_run_id
 
     return check_run_id(run_id)
 
@@ -181,8 +181,8 @@ class FrontendSessionBackend(OrchestratorBackend):
         return await asyncio.to_thread(self._provision, job.job_id, spec)
 
     def _provision(self, job_id: str, spec: dict[str, Any]) -> str:
-        from umrs.venues.frontend_config import allocate_subnet
-        from umrs.venues.venue_sessions import project_session_state
+        from umrs_r4.venues.frontend_config import allocate_subnet
+        from umrs_r4.venues.venue_sessions import project_session_state
 
         sid = spec["session_id"]
         owner = spec["owner"]
@@ -243,7 +243,8 @@ class FrontendSessionBackend(OrchestratorBackend):
         """RS-0 S-2: a session queued before its owner was disabled (or, under
         ADR-097 ``enforce``, removed from the project) never comes up."""
         from umrs.admin.account_cascade import refusal_for
-        from umrs.venues.venue_sessions import project_session_state
+
+        from umrs_r4.venues.venue_sessions import project_session_state
 
         refusal = refusal_for(owner, project, pool=self.pool)
         if not refusal:
@@ -260,7 +261,7 @@ class FrontendSessionBackend(OrchestratorBackend):
     ) -> None:
         """Teardown + registry + snapshot, and the one ``venue.session.stop``
         audit row (``cause``: idle | lease_end | exit | done | cancel)."""
-        from umrs.venues.venue_sessions import project_session_state
+        from umrs_r4.venues.venue_sessions import project_session_state
 
         try:
             self.provisioner.teardown(row.session_id)
@@ -393,12 +394,12 @@ def build_frontend_session_lane(pool: Any, config: Any | None = None):
     provisioner; the cancel-bus listener is registered here so a durable
     cancel from any surface tears the sandbox down.
     """
-    from umrs.venues.frontend_config import FrontendVenueConfig
-    from umrs.venues.frontend_podman import FrontendPodmanProvisioner
-    from umrs.venues.venue_sessions import VenueSessionStore
+    from umrs.jobs.download_safety import register_cancel_listener
+    from umrs.jobs.secret_broker import SecretBroker
 
-    from .download_safety import register_cancel_listener
-    from .secret_broker import SecretBroker
+    from umrs_r4.venues.frontend_config import FrontendVenueConfig
+    from umrs_r4.venues.frontend_podman import FrontendPodmanProvisioner
+    from umrs_r4.venues.venue_sessions import VenueSessionStore
 
     cfg = config or FrontendVenueConfig.from_env()
     if not cfg.enabled or pool is None:

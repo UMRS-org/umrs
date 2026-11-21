@@ -12,7 +12,8 @@ import ast
 from pathlib import Path
 
 import pytest
-from umrs.api import admin_auth, admin_sessions
+from umrs.api import admin_auth
+from umrs_r4.api import admin_sessions
 
 SRC = Path(__file__).resolve().parents[1] / "src" / "umrs" / "api"
 

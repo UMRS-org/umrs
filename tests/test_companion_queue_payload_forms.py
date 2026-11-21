@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import json
 
-from umrs.api.companion_sessions import (
+from umrs_r4.api.companion_sessions import (
     _with_server_queue,
     queue_mutate_row,
     upsert_snapshot_row,

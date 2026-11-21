@@ -101,7 +101,7 @@ def test_admin_may_name_any_project(lease_client):
 
 @pytest.fixture
 def venue_client():
-    from umrs.api import companion_venue
+    from umrs_r4.api import companion_venue
 
     service = MagicMock()
     service.start.return_value = {"state": "provisioning"}
@@ -138,7 +138,7 @@ def test_venue_start_binds_own_or_named_writable_project(venue_client):
 
 
 def test_rail_never_takes_the_project_from_the_client_written_snapshot(monkeypatch):
-    from umrs.api import companion_venue
+    from umrs_r4.api import companion_venue
 
     monkeypatch.setenv("JWT_DEFAULT_PROJECT", "default")
     legacy = SimpleNamespace(lease=SimpleNamespace(project=""), owner="alice", session_id="s1")

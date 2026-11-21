@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from tests.fake_pg_pool import FakePool
-from umrs.venues.venue_sessions import _COLUMNS, VenueSessionStore
+from umrs_r4.venues.venue_sessions import _COLUMNS, VenueSessionStore
 
 
 def _provision(store: VenueSessionStore, sid: str = "s1", owner: str = "alice"):

@@ -45,7 +45,7 @@ CLUSTER_VENUE_PATTERN = CLUSTER_VENUE_PREFIX  # re-export; the parser lives in c
 
 # ADR-092 slice 6 / 8b: a server-hosted loop whose iteration is a team plan
 # carries the plan on its LOOP RECORD (``metadata.iteration_plan``) and runs
-# each round as one venue-hosted plan run (``umrs.knowledge.plan_iteration``),
+# each round as one venue-hosted plan run (``umrs_r4.knowledge.plan_iteration``),
 # only where this site has the frontend venue (the start route refuses
 # otherwise). A job spec never carries the plan: one that does is refused by
 # name here, never run as a plain engine loop with the plan silently dropped.

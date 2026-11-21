@@ -20,7 +20,6 @@ from fastapi.testclient import TestClient
 from umrs.api import agent_quota
 from umrs.api import jobs as jobs_api
 from umrs.api import traces as traces_api
-from umrs.jobs import plan_run_records as prr
 from umrs.jobs.execution_trace_store import ExecutionTraceStore
 from umrs.jobs.models import AttemptStatus, JobStatus, JobType, RestartPolicy
 from umrs.jobs.research_loop_backend import (
@@ -34,6 +33,8 @@ from umrs.jobs.store import (
     JobNotFoundError,
     JobStore,
 )
+from umrs_r4.api import plan_run_traces as plan_run_traces_api
+from umrs_r4.jobs import plan_run_records as prr
 
 RUN = "review-0a1b2c3d"
 KEY = "a" * 64
@@ -181,6 +182,7 @@ class _FakeJobStore:
 def _app(store, traces, caller):
     app = FastAPI()
     app.include_router(traces_api.router)
+    app.include_router(plan_run_traces_api.router)  # U3 S5: the extension's
     app.dependency_overrides[jobs_api.get_job_store] = lambda: store
     app.dependency_overrides[traces_api.get_trace_store] = lambda: traces
     app.dependency_overrides[jobs_api.get_caller_identity] = lambda: caller

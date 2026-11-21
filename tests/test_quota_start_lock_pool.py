@@ -20,14 +20,14 @@ import time
 import pytest
 from psycopg2.pool import PoolError
 from tests.test_session_policy_start import _harness
-from umrs.quotas.session_cap import (
+from umrs_r4.quotas.session_cap import (
     StartInFlight,
     StartLockTimeout,
     local_start_lock,
     start_in_flight,
     start_lock,
 )
-from umrs.venues.frontend_service import VenueError
+from umrs_r4.venues.frontend_service import VenueError
 
 _HELD: dict = {}
 _GUARD = threading.Lock()

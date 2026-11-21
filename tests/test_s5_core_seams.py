@@ -14,14 +14,16 @@ import ast
 from pathlib import Path
 
 API = Path(__file__).resolve().parents[1] / "src" / "umrs" / "api"
+R4_API = (
+    Path(__file__).resolve().parents[1] / "packages" / "umrs-r4" / "src" / "umrs_r4" / "api"
+)  # the cluster since U3 S5b
 
 
 def _from_imports(name: str) -> set[str]:
-    tree = ast.parse((API / name).read_text(encoding="utf-8"))
+    path = API / name if (API / name).exists() else R4_API / name
+    tree = ast.parse(path.read_text(encoding="utf-8"))
     return {
-        f"{'.' * n.level}{n.module or ''}"
-        for n in ast.walk(tree)
-        if isinstance(n, ast.ImportFrom)
+        f"{'.' * n.level}{n.module or ''}" for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)
     }
 
 
@@ -31,7 +33,12 @@ def test_core_admin_session_policy_does_not_import_the_venue_routes():
 
 def test_cluster_routes_use_the_public_identity_module():
     for name in ("companion_sessions.py", "companion_venue.py"):
-        private = _from_imports(name) & {"._verified_headers", "._scope_identity"}
+        private = _from_imports(name) & {
+            "._verified_headers",
+            "._scope_identity",
+            "umrs.api._verified_headers",
+            "umrs.api._scope_identity",
+        }
         assert not private, (name, private)
 
 

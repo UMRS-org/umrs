@@ -43,9 +43,9 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
-from r4_contracts import loop_plan
+from umrs.knowledge.loop import LoopIteration, LoopPhase, LoopStatus, ResearchLoop
 
-from .loop import LoopIteration, LoopPhase, LoopStatus, ResearchLoop
+from r4_contracts import loop_plan
 
 logger = logging.getLogger(__name__)
 
@@ -457,7 +457,7 @@ class PlanIterationEngine:
 
 def remaining_wallclock_sec(loop: ResearchLoop) -> float | None:
     """What the loop has left of its ADR-067 wall clock (None = uncapped)."""
-    from .engine_loop_runner import elapsed_hours
+    from umrs.knowledge.engine_loop_runner import elapsed_hours
 
     try:
         cap = float(loop.metadata.get("max_wall_clock_hours") or 0.0)

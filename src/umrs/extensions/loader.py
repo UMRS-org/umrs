@@ -4,15 +4,15 @@ Enablement, first match wins:
 
 1. ``UMRS_EXTENSIONS`` (comma or space separated; ``none`` or empty = none);
 2. site.yaml ``extensions: [...]``;
-3. the transitional default ``("r4",)``. The r4 runtime still lives partly
-   in core (U3 S4/S5 move it), so a site that says nothing keeps today's
-   surface. S5 drops the default; from then on a site enables r4 explicitly.
+3. otherwise every installed extension (U3 S5, agent decision: the r4 code
+   left core, so the transitional ``("r4",)`` default became "what is
+   installed"; a UMRS-only deployment installs none and gets none, an R4
+   front installs ``umrs-r4`` and keeps its surface without an ops change).
 
-An enabled extension registers through its in-tree part (the r4 code still in
-core, ``intree_r4``) and through its installed entry point
-(group ``umrs.extensions``), in that order. Installed-but-disabled is allowed;
-enabled-but-absent is logged. A module whose ``EXTENSION_API_VERSION`` differs
-from core's fails boot.
+An enabled extension registers through its installed entry point (group
+``umrs.extensions``). Installed-but-disabled is allowed; enabled-but-absent
+is logged. A module whose ``EXTENSION_API_VERSION`` differs from core's fails
+boot.
 """
 
 from __future__ import annotations
@@ -34,7 +34,6 @@ logger = logging.getLogger(__name__)
 
 ENTRY_POINT_GROUP = "umrs.extensions"
 ENV = "UMRS_EXTENSIONS"
-TRANSITIONAL_DEFAULT: tuple[str, ...] = ("r4",)
 _NONE = frozenset({"", "none", "-"})
 
 
@@ -62,13 +61,7 @@ def enabled_extensions() -> tuple[str, ...]:
     if ENV in os.environ:
         return _split(os.environ[ENV])
     configured = _site_extensions()
-    return TRANSITIONAL_DEFAULT if configured is None else configured
-
-
-def _builtin_registrars() -> dict[str, Callable[[ExtensionContext], None]]:
-    from umrs.extensions import intree_r4
-
-    return {"r4": intree_r4.register}
+    return tuple(sorted(_installed())) if configured is None else configured
 
 
 def _installed() -> dict[str, Any]:
@@ -86,18 +79,14 @@ def _check_version(name: str, register: Callable[..., Any]) -> None:
 
 
 def _register_one(ctx: ExtensionContext, name: str, installed: dict[str, Any]) -> bool:
-    builtin = _builtin_registrars().get(name)
     ep = installed.get(name)
-    if builtin is None and ep is None:
+    if ep is None:
         logger.warning("extension %r is enabled but not installed", name)
         return False
     ctx.bind(name)
-    if builtin is not None:
-        builtin(ctx)
-    if ep is not None:
-        register = ep.load()
-        _check_version(name, register)
-        register(ctx)
+    register = ep.load()
+    _check_version(name, register)
+    register(ctx)
     return True
 
 

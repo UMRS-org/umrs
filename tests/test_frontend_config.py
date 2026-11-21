@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from umrs.venues.frontend_config import (
+from umrs_r4.venues.frontend_config import (
     FrontendVenueConfig,
     SubnetPoolExhausted,
     allocate_subnet,

@@ -53,9 +53,13 @@ def test_site_yaml_list_applies_when_env_unset(monkeypatch):
     assert enabled_extensions() == ()
 
 
-def test_transitional_default_is_r4(monkeypatch):
+def test_default_is_every_installed_extension(monkeypatch):
+    # U3 S5: the transitional ("r4",) default became "what is installed".
     monkeypatch.setattr(loader, "_site_extensions", lambda: None)
-    assert enabled_extensions() == ("r4",)
+    monkeypatch.setattr(loader, "_installed", lambda: {"b": object(), "a": object()})
+    assert enabled_extensions() == ("a", "b")
+    monkeypatch.setattr(loader, "_installed", dict)
+    assert enabled_extensions() == ()
 
 
 def test_site_config_parses_and_validates_extensions():
@@ -72,15 +76,12 @@ def test_site_config_parses_and_validates_extensions():
 # ── loading ─────────────────────────────────────────────────────────────────
 
 
-def test_r4_registers_the_in_tree_parts(monkeypatch):
-    # The in-tree part only; the installed umrs-r4 package adds its own (S4b).
+def test_core_has_no_in_tree_extension_part(monkeypatch):
+    # U3 S5 emptied umrs.extensions.intree_r4; without an installed package,
+    # enabling r4 registers nothing.
     monkeypatch.setattr(loader, "_installed", dict)
     ctx = load_extensions(("r4",))
-    assert ctx.active == ["r4"]
-    prefixes = {reg.router.prefix for reg in ctx.routers}
-    assert prefixes == set(R4_PREFIXES)
-    assert {reg.extension for reg in ctx.routers} == {"r4"}
-    assert [(ext, fn.__name__) for ext, fn in ctx.startups] == [("r4", "init_loop_plan_host")]
+    assert (ctx.active, ctx.routers, ctx.startups) == ([], [], [])
 
 
 def test_nothing_enabled_registers_nothing():
@@ -113,14 +114,14 @@ def _module_register(version):
     return mod, register, calls
 
 
-def test_installed_extension_registers_after_its_in_tree_part(monkeypatch):
+def test_installed_extension_registers(monkeypatch):
     mod, register, calls = _module_register(EXTENSION_API_VERSION)
     monkeypatch.setitem(__import__("sys").modules, mod.__name__, mod)
     monkeypatch.setattr(loader, "_installed", lambda: {"r4": _fake_entry_point("r4", register)})
     ctx = load_extensions(("r4",))
     assert calls == ["called"]
-    assert [ext for ext, _fn in ctx.startups] == ["r4", "r4"]
-    assert ctx.startups[0][1].__name__ == "init_loop_plan_host"
+    assert ctx.active == ["r4"]
+    assert [ext for ext, _fn in ctx.startups] == ["r4"]
 
 
 def test_api_version_mismatch_fails(monkeypatch):

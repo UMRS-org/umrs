@@ -14,8 +14,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from pydantic import BaseModel, Field
-
-from .typed_errors import PlatformError, raise_typed
+from umrs.api.typed_errors import PlatformError, raise_typed
 
 MESSAGE_KIND = "session_message"
 PRESENCE_KEY = "session_bus"
@@ -100,19 +99,19 @@ def _refuse(code: str, message: str) -> None:
 
 
 def _json_dict(raw: Any) -> dict[str, Any]:
-    from .companion_sessions import _json_dict as parse
+    from umrs_r4.api.companion_sessions import _json_dict as parse
 
     return parse(raw) or {}
 
 
 def _parts(payload: Any) -> tuple[dict[str, Any], dict[str, Any], list]:
-    from .companion_sessions import _queue_entries
+    from umrs_r4.api.companion_sessions import _queue_entries
 
     return _queue_entries(payload)
 
 
 def _write_metadata(blob: dict[str, Any], metadata: dict[str, Any]) -> None:
-    from .companion_sessions import _set_metadata
+    from umrs_r4.api.companion_sessions import _set_metadata
 
     _set_metadata(blob, metadata)
 

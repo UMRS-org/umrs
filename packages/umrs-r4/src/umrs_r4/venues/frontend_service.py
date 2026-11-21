@@ -28,13 +28,6 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Any, Protocol
 
-from umrs.companion_trust.chat_turn_questions import cancel_session_questions
-from umrs.quotas.session_cap import (
-    StartInFlight,
-    StartLockTimeout,
-    local_start_lock,
-    start_in_flight,
-)
 from umrs.session_policy import (
     PolicyRuleStore,
     WebChoice,
@@ -48,15 +41,22 @@ from umrs.shared.project_data_class import (
     is_institutional_url,
 )
 from umrs.shared.site_source import SITE_SOURCE_ID, SITE_SOURCE_NAME
+from umrs.venues.session_audit import audit_session_stop, audit_venue
 
-from .frontend_config import (
+from umrs_r4.quotas.session_cap import (
+    StartInFlight,
+    StartLockTimeout,
+    local_start_lock,
+    start_in_flight,
+)
+from umrs_r4.trust.chat_turn_questions import cancel_session_questions
+from umrs_r4.venues.frontend_config import (
     FrontendVenueConfig,
     SubnetPoolExhausted,
     allocate_subnet,
 )
-from .session_audit import audit_session_stop, audit_venue
-from .start_checks import StartCheck, StartCheckFn, StartLockFn
-from .venue_sessions import VenueSessionRow, VenueSessionStore, project_session_state
+from umrs_r4.venues.start_checks import StartCheck, StartCheckFn, StartLockFn
+from umrs_r4.venues.venue_sessions import VenueSessionRow, VenueSessionStore, project_session_state
 
 logger = logging.getLogger(__name__)
 
@@ -169,7 +169,7 @@ class FrontendVenueService:
         return self._sealed
 
     def session_exists(self, owner: str, session_id: str) -> bool:
-        from umrs.api.companion_sessions import session_owned
+        from umrs_r4.api.companion_sessions import session_owned
 
         with self._conn() as conn:
             return session_owned(conn, owner, session_id)
@@ -512,8 +512,8 @@ class FrontendVenueService:
         }
 
     def _require_startable(self, owner: str, session_id: str) -> None:
-        from umrs.api._companion_subagents import subagent_payload_kind
-        from umrs.api.companion_sessions import snapshot_detail_row
+        from umrs_r4.api._companion_subagents import subagent_payload_kind
+        from umrs_r4.api.companion_sessions import snapshot_detail_row
 
         with self._conn() as conn:
             detail = snapshot_detail_row(conn, owner, session_id)

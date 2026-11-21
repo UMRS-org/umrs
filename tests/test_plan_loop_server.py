@@ -26,18 +26,19 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from test_companion_venue_routes import READY_ENV, FakeSealed, _meta, _Pool
 from test_plan_run_venue import TokenPodman, VenueJobStore
-from umrs.api import plan_run_venue
 from umrs.companion_trust.approval_inbox import ApprovalInboxStore
-from umrs.jobs import plan_run_records as prr
 from umrs.jobs.secret_broker import SecretBroker
-from umrs.knowledge import ask_policy, plan_iteration, tool_approvals
+from umrs.knowledge import ask_policy, tool_approvals
 from umrs.knowledge.engine_loop_runner import EngineLoopRunner
 from umrs.knowledge.loop import LoopStatus, ResearchLoop
 from umrs.session_policy import PolicyRule, PolicyRuleStore
-from umrs.venues.frontend_config import FrontendVenueConfig
-from umrs.venues.frontend_podman import FrontendPodmanProvisioner
-from umrs.venues.frontend_service import FrontendVenueService
-from umrs.venues.venue_sessions import VenueSessionStore
+from umrs_r4.api import plan_run_venue
+from umrs_r4.jobs import plan_run_records as prr
+from umrs_r4.knowledge import plan_iteration
+from umrs_r4.venues.frontend_config import FrontendVenueConfig
+from umrs_r4.venues.frontend_podman import FrontendPodmanProvisioner
+from umrs_r4.venues.frontend_service import FrontendVenueService
+from umrs_r4.venues.venue_sessions import VenueSessionStore
 
 from r4_contracts import loop_plan
 

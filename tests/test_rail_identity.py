@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import pytest
-from umrs.api._rail_identity import RailAuthError, bearer_token, resolve_rail_principal
 from umrs.jobs.secret_broker import SecretBroker
+from umrs_r4.api._rail_identity import RailAuthError, bearer_token, resolve_rail_principal
 
 
 def _lease(broker: SecretBroker, sid: str = "sess-1", **kw):

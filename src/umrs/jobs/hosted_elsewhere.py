@@ -5,7 +5,7 @@ A ``research_loop_job`` whose spec carries ``hosting: client`` or
 its client, or a frontend-venue worker, opens and closes its attempts. Core
 scheduling code only needs to recognise such a spec and refuse to host it;
 the plan-run record format itself is r4 extension material
-(``umrs.jobs.plan_run_records``, moving to ``umrs_r4`` in U3 S5).
+(``umrs_r4.jobs.plan_run_records``, in the extension since U3 S5).
 
 The values and the refusal text are unchanged from ``plan_run_records``
 (S1 changes no behaviour); neutral wording follows in S6.

@@ -20,19 +20,19 @@ from typing import Any
 
 from fastapi import APIRouter, Query, Request
 from pydantic import BaseModel, Field
+from umrs.api.typed_errors import PlatformError, raise_typed
 
-from ._companion_session_bus import (
+from umrs_r4.api._companion_session_bus import (
     SessionBusBindBody,
     SessionBusInboxBody,
     SessionBusSendBody,
 )
-from ._companion_subagents import (
+from umrs_r4.api._companion_subagents import (
     read_subagent,
     subagent_payload_kind,
     subagent_summary,
     without_subagent_event_log,
 )
-from .typed_errors import PlatformError, raise_typed
 
 logger = logging.getLogger(__name__)
 
@@ -135,8 +135,8 @@ def _uid(request: Request) -> str:
     identity tuple (401 when absent or rejected). Mvp mode keeps the raw
     header (dev contract). The venue owner routes share this helper.
     """
-    from .identity import resolve_caller
-    from .identity import strict_mode as _strict_mode_env
+    from umrs.api.identity import resolve_caller
+    from umrs.api.identity import strict_mode as _strict_mode_env
 
     headers = request.headers
     uid = headers.get("x-user-id", "").strip()
@@ -661,7 +661,7 @@ async def bind_session_bus(
     """Bind a local bus id only after proving the durable session identity.
     # auth: verified
     """
-    from ._companion_session_bus import bind_presence_row
+    from umrs_r4.api._companion_session_bus import bind_presence_row
 
     uid = _uid(request)
     conn = _pool(request).getconn()
@@ -676,7 +676,7 @@ async def withdraw_session_bus(session_id: str, request: Request) -> dict[str, A
     """Withdraw presence without turning an offline recipient into a new store.
     # auth: verified
     """
-    from ._companion_session_bus import withdraw_presence_row
+    from umrs_r4.api._companion_session_bus import withdraw_presence_row
 
     uid = _uid(request)
     pool = _pool(request)
@@ -692,7 +692,7 @@ async def session_bus_presence(request: Request) -> dict[str, Any]:
     """Only this owner's live remote bus bindings; queue outage is a 503.
     # auth: verified
     """
-    from ._companion_session_bus import presence_rows
+    from umrs_r4.api._companion_session_bus import presence_rows
 
     uid = _uid(request)
     pool = _pool(request)
@@ -710,7 +710,7 @@ async def send_session_bus_message(
     """Idempotently enqueue one message in ADR-046's server-owned turn queue.
     # auth: verified
     """
-    from ._companion_session_bus import send_message_row
+    from umrs_r4.api._companion_session_bus import send_message_row
 
     uid = _uid(request)
     pool = _pool(request)
@@ -728,7 +728,7 @@ async def read_session_bus_inbox(
     """Owner-read or atomic read-mark of messages in the same turn queue.
     # auth: verified
     """
-    from ._companion_session_bus import inbox_row
+    from umrs_r4.api._companion_session_bus import inbox_row
 
     uid = _uid(request)
     pool = _pool(request)

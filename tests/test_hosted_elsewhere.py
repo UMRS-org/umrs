@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 from umrs.jobs import hosted_elsewhere as core
-from umrs.jobs import plan_run_records as ext
+from umrs_r4.jobs import plan_run_records as ext
 
 SRC = Path(__file__).resolve().parents[1] / "src" / "umrs"
 CORE_CONSUMERS = ("jobs/research_loop_backend.py", "api/agent_quota.py")

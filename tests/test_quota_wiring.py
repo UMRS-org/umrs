@@ -19,8 +19,8 @@ from tests.fake_pg_pool import FakePool
 from tests.test_infer_proxy import _lease
 from tests.test_quota_session_cap import _JobsPool, _sessions
 from tests.test_session_policy_start import _harness, _start
-from umrs.api.companion_venue import _quota_check
 from umrs.infer_proxy.__main__ import build_quota_enforcer
+from umrs_r4.api.companion_venue import _quota_check
 
 CODE = "x-platform-error-code"
 

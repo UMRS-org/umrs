@@ -22,15 +22,15 @@ import uuid
 import pytest
 from fastapi import HTTPException
 from tests.test_session_policy_start import _harness
-from umrs.api.companion_venue import _start_lock
-from umrs.quotas.session_cap import (
+from umrs_r4.api.companion_venue import _start_lock
+from umrs_r4.quotas.session_cap import (
     START_LOCK_CLASS,
     StartLockTimeout,
     count_live_sessions,
     local_start_lock,
     start_lock,
 )
-from umrs.venues.frontend_service import VenueError
+from umrs_r4.venues.frontend_service import VenueError
 
 CAP = 3
 STARTS = 8

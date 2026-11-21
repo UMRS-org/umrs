@@ -10,7 +10,8 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-from umrs.quotas import session_cap, session_count
+from umrs.quotas import session_count
+from umrs_r4.quotas import session_cap
 
 SRC = Path(__file__).resolve().parents[1] / "src" / "umrs"
 
@@ -25,7 +26,7 @@ def test_quota_status_reads_counts_from_core():
     tree = ast.parse((SRC / "api" / "quota_status.py").read_text(encoding="utf-8"))
     modules = {n.module for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)}
     assert "umrs.quotas.session_count" in modules
-    assert "umrs.quotas.session_cap" not in modules
+    assert "umrs_r4.quotas.session_cap" not in modules
 
 
 def test_no_pool_counts_zero():

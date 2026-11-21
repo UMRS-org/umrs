@@ -30,8 +30,8 @@ def test_backoff_entry_is_single_attempt():
 
 
 def test_build_lane_is_none_without_venue_or_pool():
-    from umrs.jobs.frontend_session_backend import build_frontend_session_lane
-    from umrs.venues.frontend_config import FrontendVenueConfig
+    from umrs_r4.jobs.frontend_session_backend import build_frontend_session_lane
+    from umrs_r4.venues.frontend_config import FrontendVenueConfig
 
     assert build_frontend_session_lane(MagicMock(), FrontendVenueConfig.from_env({})) is None
     assert build_frontend_session_lane(None) is None

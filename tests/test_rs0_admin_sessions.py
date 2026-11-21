@@ -27,14 +27,14 @@ from tests.test_companion_venue_routes import (
     _run_lane,
 )
 from umrs.api import audit_events
-from umrs.api.admin_sessions import router as admin_router
-from umrs.api.companion_venue import router as venue_router
 from umrs.jobs.secret_broker import SecretBroker
 from umrs.shared.handshake import ENV_VAR as HMAC_ENV
-from umrs.venues.frontend_config import FrontendVenueConfig
-from umrs.venues.frontend_podman import FrontendPodmanProvisioner
-from umrs.venues.frontend_service import FrontendVenueService
-from umrs.venues.venue_sessions import VenueSessionStore
+from umrs_r4.api.admin_sessions import router as admin_router
+from umrs_r4.api.companion_venue import router as venue_router
+from umrs_r4.venues.frontend_config import FrontendVenueConfig
+from umrs_r4.venues.frontend_podman import FrontendPodmanProvisioner
+from umrs_r4.venues.frontend_service import FrontendVenueService
+from umrs_r4.venues.venue_sessions import VenueSessionStore
 
 from umrs_protocol.handshake_hmac import sign_claims
 

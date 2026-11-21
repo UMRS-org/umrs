@@ -1,19 +1,18 @@
 """Plan as the loop's iteration executor: the start legs (ADR-092 slice 8b).
 
-U3 S3c: moved out of ``api/loop.py``. This is r4 extension code still in core;
-it registers as loop iteration kind ``plan`` through the in-tree r4 part
-(``umrs.extensions.intree_r4``) and moves to ``umrs_r4`` in S5 with
-``knowledge/plan_iteration.py`` and the plan-run venue.
+U3 S3c: moved out of ``api/loop.py``; U3 S5: into ``umrs_r4`` with
+``knowledge/plan_iteration.py`` and the plan-run venue. It registers as loop
+iteration kind ``plan`` (``umrs_r4.register``).
 """
 
 from __future__ import annotations
 
 from typing import Any
 
+from umrs.api.typed_errors import PlatformError, raise_typed
 from umrs.extensions.context import LoopIterationKind
-from umrs.knowledge import plan_iteration
 
-from .typed_errors import PlatformError, raise_typed
+from umrs_r4.knowledge import plan_iteration
 
 
 def refuse_plan_iteration(request: Any) -> None:
@@ -25,8 +24,9 @@ def refuse_plan_iteration(request: Any) -> None:
     if not template:
         return
     from umrs.jobs.research_loop_backend import PLAN_ITERATION_REFUSAL
-    from umrs.venues.frontend_config import FrontendVenueConfig
-    from umrs.venues.plan_runs import ENABLE_POINTER
+
+    from umrs_r4.venues.frontend_config import FrontendVenueConfig
+    from umrs_r4.venues.plan_runs import ENABLE_POINTER
 
     # ADR-092 slice 8b: a server-hosted loop runs each iteration as one
     # venue-hosted plan run; without the venue it is refused by name.
@@ -105,10 +105,10 @@ def check_plan_web_choice(request: Any, http_request: Any, owner: str) -> None:
     as a refused run at iteration 1."""
     if not (request.iteration_plan or "").strip():
         return
+    from umrs.api.session_policy_errors import policy_typed
     from umrs.session_policy import PolicyError
 
-    from .companion_venue import get_venue_service
-    from .session_policy_errors import policy_typed
+    from umrs_r4.api.companion_venue import get_venue_service
 
     try:
         get_venue_service(http_request).check_web_choice(

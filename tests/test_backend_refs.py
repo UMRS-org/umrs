@@ -11,10 +11,12 @@ import ast
 from pathlib import Path
 
 import pytest
-from umrs.jobs import plan_run_records, reindex
+from umrs.jobs import reindex
 from umrs.jobs.backend_refs import parse_backend_ref
+from umrs_r4.jobs import plan_run_records
 
 SRC = Path(__file__).resolve().parents[1] / "src" / "umrs" / "jobs"
+R4_JOBS = Path(__file__).resolve().parents[1] / "packages" / "umrs-r4" / "src" / "umrs_r4" / "jobs"
 BORROWERS = (
     "research_loop_backend.py",
     "frontend_session_backend.py",
@@ -41,7 +43,8 @@ def test_old_private_names_are_the_core_parser():
 
 @pytest.mark.parametrize("name", BORROWERS)
 def test_backends_no_longer_borrow_reindex_internals(name):
-    tree = ast.parse((SRC / name).read_text(encoding="utf-8"))
+    path = SRC / name if (SRC / name).exists() else R4_JOBS / name  # U3 S5
+    tree = ast.parse(path.read_text(encoding="utf-8"))
     borrowed = [
         n
         for n in ast.walk(tree)

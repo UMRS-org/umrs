@@ -28,7 +28,6 @@ from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any
 
 from fastapi import HTTPException
-
 from umrs.api.typed_errors import PlatformError
 from umrs.quotas.session_count import (  # core since U3 S1 item 9
     SESSION_JOB_TYPE,
@@ -36,8 +35,8 @@ from umrs.quotas.session_count import (  # core since U3 S1 item 9
     session_limits,
 )
 
-if TYPE_CHECKING:  # lane P's start hook (umrs.venues.start_checks)
-    from umrs.venues.start_checks import StartCheck
+if TYPE_CHECKING:  # lane P's start hook (umrs_r4.venues.start_checks)
+    from umrs_r4.venues.start_checks import StartCheck
 
 
 #: Advisory-lock class (two-key form, its own key space) of venue starts.

@@ -2,8 +2,8 @@
 
 from datetime import timedelta
 
-from umrs.jobs.frontend_session_backend import FrontendSessionStatusChecker
 from umrs.jobs.secret_broker import SecretBroker
+from umrs_r4.jobs.frontend_session_backend import FrontendSessionStatusChecker
 
 
 def test_cap_refused_renew_still_records_recency():
