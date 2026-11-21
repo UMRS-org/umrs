@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from typing import Any
 
 from ..jobs import (
     JobService,
@@ -213,17 +214,11 @@ class DurableOrchestrationService:
 
         session_store, session_gc_backend = _session_gc_lane(self.db_pool)
 
-        # ADR-046 A2: frontend-session lane (remote companion sandboxes) —
-        # present only where the venue is configured; shared backend/checker.
-        frontend_session_backend = frontend_session_checker = None
-        try:
-            from umrs.jobs.frontend_session_backend import build_frontend_session_lane
+        # U3 S3b: extension-owned job types (frontend_session, ADR-046 A2:
+        # present only where the venue is configured); shared backend/checker.
+        from umrs.jobs.extension_job_types import unclaimable_here
 
-            lane = build_frontend_session_lane(self.db_pool)
-            if lane is not None:
-                frontend_session_backend, frontend_session_checker = lane
-        except Exception as exc:  # noqa: BLE001 — the lane never blocks the runtime
-            logger.warning("frontend_session lane wiring skipped: %s", exc)
+        lanes = _extension_lanes(self.db_pool)
 
         backend_factory = create_backend_factory(
             orchestrator=orch.backend,
@@ -235,9 +230,10 @@ class DurableOrchestrationService:
             user_store=user_store,
             session_store=session_store,
             session_gc_backend=session_gc_backend,
-            frontend_session_backend=frontend_session_backend,
+            extension_backends={v: lane[0] for v, lane in lanes.items()},
         )
         self._job_service.set_backend_factory(backend_factory)
+        self._job_service.set_unclaimable_job_types(unclaimable_here(lanes))
 
         # Create status checker that uses readiness poller
         status_checker = create_status_checker(
@@ -247,7 +243,7 @@ class DurableOrchestrationService:
             instance_id=self._job_service.instance_id,
             session_store=session_store,
             session_gc_backend=session_gc_backend,
-            frontend_session_checker=frontend_session_checker,
+            extension_checkers={v: lane[1] for v, lane in lanes.items()},
         )
         self._job_service.set_status_checker(status_checker)
 
@@ -547,3 +543,15 @@ def init_durable_orchestration_service(
         orchestration_service=orchestration_service,
     )
     return _durable_service
+
+
+def _extension_lanes(db_pool: Any) -> dict[str, tuple[Any, Any]]:
+    """value -> (backend, checker) for the job types enabled extensions own."""
+    try:
+        from umrs.extensions import get_extension_context
+        from umrs.jobs.extension_job_types import build_extension_lanes
+
+        return build_extension_lanes(get_extension_context(), db_pool)
+    except Exception as exc:  # noqa: BLE001 - extension lanes never block the runtime
+        logger.warning("extension job lanes skipped: %s", exc)
+        return {}

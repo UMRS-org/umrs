@@ -22,7 +22,7 @@ def test_factory_refuses_loudly_when_the_lane_is_absent():
 
 def test_factory_returns_the_configured_lane():
     lane = object()
-    assert _factory(frontend_session_backend=lane)(JobType.FRONTEND_SESSION) is lane
+    assert _factory(extension_backends={"frontend_session": lane})(JobType.FRONTEND_SESSION) is lane
 
 
 def test_backoff_entry_is_single_attempt():

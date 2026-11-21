@@ -371,6 +371,9 @@ class JobStore:
         # stays None anywhere the venue store is not wired and the manifest
         # builder then records spec pins ONLY (never fabricated availability).
         self.vector_version_store: Any | None = None
+        # U3 S3b (D8): extension job types with no lane on this process; the
+        # claim query skips them (JobService sets this at startup).
+        self.unclaimable_job_types: frozenset[str] = frozenset()
         # (2026-09-23 repair: these three lines had been stranded after
         # _resolve_venue's return by a bad merge — the store never
         # bootstrapped its schema and the post-completion hooks were
@@ -902,9 +905,12 @@ class JobStore:
         Returns job_ids of jobs that are:
         - status = QUEUED AND next_run_at <= now
         - venue = '' (shared) OR venue = this scheduler's site_name
+        - not an extension job type this process has no lane for (U3 S3b, D8:
+          the row stays QUEUED for a front with the extension)
         - ordered by priority DESC, next_run_at ASC
         """
         now = datetime.now(timezone.utc).replace(tzinfo=None)
+        skip = sorted(self.unclaimable_job_types)
 
         with self._get_conn() as conn, conn.cursor() as cur:
             # Use FOR UPDATE SKIP LOCKED for concurrent schedulers
@@ -914,11 +920,12 @@ class JobStore:
                     WHERE status = %s
                       AND next_run_at <= %s
                       AND (venue = '' OR venue = %s)
+                      AND NOT (job_type = ANY(%s::text[]))
                     ORDER BY priority DESC, next_run_at ASC
                     LIMIT %s
                     FOR UPDATE SKIP LOCKED
                 """,
-                (JobStatus.QUEUED.value, now, self.site_name, limit),
+                (JobStatus.QUEUED.value, now, self.site_name, skip, limit),
             )
 
             return [row[0] for row in cur.fetchall()]

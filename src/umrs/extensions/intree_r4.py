@@ -43,6 +43,20 @@ def init_loop_plan_host(db_pool: Any) -> None:
     plan_iteration.configure(build_loop_plan_host(db_pool))
 
 
+def _job_types(ext: ExtensionContext) -> None:
+    from umrs.extensions.context import JobTypeRegistration
+    from umrs.jobs.frontend_session_backend import build_frontend_session_lane
+
+    # ADR-046 A2: remote companion sandboxes; the lane is None where the venue
+    # is not configured (UMRS_VENUE_ENABLED), and the claim then skips the rows.
+    ext.add_job_type(
+        JobTypeRegistration(
+            value="frontend_session", build_lane=build_frontend_session_lane
+        )
+    )
+
+
 def register(ext: ExtensionContext) -> None:
     _routers(ext)
+    _job_types(ext)
     ext.add_startup(init_loop_plan_host)

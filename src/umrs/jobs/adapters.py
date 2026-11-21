@@ -1428,7 +1428,7 @@ def create_backend_factory(
     path_validator=None,
     user_store=None,
     session_store=None,
-    frontend_session_backend=None,
+    extension_backends=None,
     session_gc_backend=None,
 ):
     """
@@ -1555,7 +1555,7 @@ def create_backend_factory(
             raise ValueError(f"Unsupported job type: {job_type}")
         return lazy()
 
-    return _with_frontend_session(factory, frontend_session_backend)
+    return _with_extension_lanes(factory, extension_backends or {})
 
 
 def _companion_worker_backend() -> OrchestratorBackend:
@@ -1591,16 +1591,20 @@ _LAZY_BACKENDS: dict[JobType, Callable[[], OrchestratorBackend]] = {
 }
 
 
-def _with_frontend_session(inner, backend):
-    """ADR-046 A2: serve the ``frontend_session`` lane where the venue is
-    configured (UMRS_VENUE_ENABLED); elsewhere the claim fails loudly."""
+def _with_extension_lanes(inner, backends: dict[str, Any]):
+    """U3 S3b: serve extension-owned job types from the lanes their extension
+    registered (``frontend_session``: ADR-046 A2, where UMRS_VENUE_ENABLED);
+    an extension type with no lane here fails loudly (the claim query already
+    skips those rows, D8)."""
+    from .extension_job_types import EXTENSION_JOB_TYPES
 
     def factory(job_type: JobType) -> OrchestratorBackend:
-        if job_type != JobType.FRONTEND_SESSION:
-            return inner(job_type)
-        if backend is None:
-            raise RuntimeError("frontend_session lane not configured on this server")
-        return backend
+        backend = backends.get(job_type.value)
+        if backend is not None:
+            return backend
+        if job_type.value in EXTENSION_JOB_TYPES:
+            raise RuntimeError(f"{job_type.value} lane not configured on this server")
+        return inner(job_type)
 
     return factory
 
@@ -1633,7 +1637,7 @@ def create_status_checker(
     instance_id: str | None = None,
     session_store=None,
     session_gc_backend=None,
-    frontend_session_checker=None,
+    extension_checkers=None,
 ):
     """
     Create a composite status checker for JobService.
@@ -1731,8 +1735,8 @@ def create_status_checker(
         build_mcp_server_services(_mcp_registry_factory())["checker"],
     )
 
-    if frontend_session_checker is not None:
-        checker.register(JobType.FRONTEND_SESSION, frontend_session_checker)
+    for value, ext_checker in (extension_checkers or {}).items():
+        checker.register(JobType(value), ext_checker)
 
     return checker
 

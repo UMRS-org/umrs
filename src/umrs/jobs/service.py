@@ -105,6 +105,7 @@ class JobService:
 
         # Components (initialized during startup)
         self._job_store: JobStore | None = None
+        self._unclaimable_job_types: frozenset[str] = frozenset()
         self._scheduler: Scheduler | None = None
         self._monitor: AttemptMonitor | None = None
 
@@ -129,6 +130,11 @@ class JobService:
             factory: Callable that takes JobType and returns an OrchestratorBackend
         """
         self._backend_factory = factory
+
+    def set_unclaimable_job_types(self, job_types: frozenset[str]) -> None:
+        """U3 S3b (D8): extension job types this process has no lane for;
+        the store's claim query skips them."""
+        self._unclaimable_job_types = frozenset(job_types)
 
     def set_status_checker(self, checker: CompositeStatusChecker) -> None:
         """Set the status checker for monitoring."""
@@ -157,6 +163,7 @@ class JobService:
         # happen on the site itself).
         # (JobStore takes the site name itself: configured_site_name.)
         self._job_store = JobStore(self.db_pool, self.instance_id)
+        self._job_store.unclaimable_job_types = self._unclaimable_job_types
 
         # WP-06 r2 leg-c + WP-10 r2 venue-pin enrichment prerequisite: attach a
         # pool-backed VectorVersionStore at boot so model pins gain their venue
