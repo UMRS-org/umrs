@@ -46,8 +46,8 @@ async def list_pending_approvals(
     registry_key = request.query_params.get("registry_key")
     if registry_key:
         # The m5 venue-ownership check reads the companion worker registry,
-        # which moves to umrs_r4 in U3 S4; until the S3 hooks exist it is
-        # reached in-tree (TODO(U3-S3): route through the extension hook).
+        # which D6 retires in U3 S4 (no extension hook carries it: the six
+        # hooks do not, by design). TODO(U3-S4): drop with the registry.
         from .companion import _enforce_ownership, _managers
 
         managers, _ = _managers(request)
@@ -137,35 +137,32 @@ def _flip_loop_to_auto(loop_id: str) -> None:
         )
 
 
-def _mint_session_trust(loop_id: str, action: dict, x_user_id: str) -> None:
-    """ADR-036 §3: ``always`` mints a durable ``session:<loop_id>`` trust row."""
-    from umrs.shared.trust_store_access import get_trust_store as _shared_get
+def _notify_approval_listeners(record: dict, decision: str, x_user_id: str) -> None:
+    """U3 S3e: extension approval listeners (r4, D7: ``always`` mints a
+    ``session:<loop_id>`` trust row). Best effort and isolated: the decision
+    itself is already durable."""
+    from umrs.extensions import get_extension_context
 
-    if _shared_get() is None:
-        return
-    tool_name = str(
-        action.get("workflow_name") or action.get("kind") or "workflow_trigger"
-    )
-    try:
-        _shared_get().grant(
-            x_user_id, tool_name, scope=f"session:{loop_id}", created_by=x_user_id
-        )
-    except Exception:
-        logger.warning(
-            "always-decision trust grant failed for loop %s", loop_id, exc_info=True
-        )
+    for listener in get_extension_context().approval_listeners:
+        try:
+            listener(record, decision, x_user_id)
+        except Exception:
+            logger.warning(
+                "approval listener %s failed for %s",
+                getattr(listener, "__name__", listener),
+                record.get("id"),
+                exc_info=True,
+            )
 
 
 def _apply_always_decision(record: dict, x_user_id: str) -> None:
-    """``always``: flip the loop to auto AND mint a session-scope trust row.
+    """``always``: flip the loop to auto (core, D1); listeners add the rest.
 
-    Both best-effort (ADR-036 §3): the decision itself is already durable.
+    Best effort (ADR-036 §3): the decision itself is already durable.
     """
     loop_id = str(record.get("loop_id") or "")
-    if not loop_id:
-        return
-    _flip_loop_to_auto(loop_id)
-    _mint_session_trust(loop_id, record.get("action") or {}, x_user_id)
+    if loop_id:
+        _flip_loop_to_auto(loop_id)
 
 
 async def record_approval_decision(
@@ -198,6 +195,7 @@ async def record_approval_decision(
 
     if body.decision == "always":
         _apply_always_decision(record, x_user_id)
+    _notify_approval_listeners(record, body.decision, x_user_id)
 
     return {
         "approval_id": approval_id,

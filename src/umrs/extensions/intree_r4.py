@@ -70,9 +70,17 @@ def _archive_participants(ext: ExtensionContext) -> None:
     ext.add_session_archive_participant(revoke_trust_on_archive)
 
 
+def _approval_listeners(ext: ExtensionContext) -> None:
+    from umrs.companion_trust.approval_listener import mint_session_trust_on_always
+
+    # D7 (ADR-036 §3): an "always" decision mints a session-scope trust row.
+    ext.add_approval_listener(mint_session_trust_on_always)
+
+
 def register(ext: ExtensionContext) -> None:
     _routers(ext)
     _job_types(ext)
     _loop_iteration_kinds(ext)
     _archive_participants(ext)
+    _approval_listeners(ext)
     ext.add_startup(init_loop_plan_host)

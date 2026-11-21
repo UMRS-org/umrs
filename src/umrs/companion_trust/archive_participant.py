@@ -17,9 +17,7 @@ _TOMBSTONE_PG = (
     "INSERT INTO companion_session_archives (session_id, archived_by) "
     "VALUES (%s, %s) ON CONFLICT (session_id) DO NOTHING"
 )
-_TOMBSTONE_SQLITE = (
-    "INSERT OR IGNORE INTO companion_session_archives (session_id, archived_by) VALUES (?, ?)"
-)
+_TOMBSTONE_SQLITE = "INSERT OR IGNORE INTO companion_session_archives (session_id, archived_by) VALUES (?, ?)"
 
 
 def revoke_trust_on_archive(cur: Any, session_id: str, archived_by: str) -> None:
@@ -33,5 +31,7 @@ def revoke_trust_on_archive(cur: Any, session_id: str, archived_by: str) -> None
     # companion_session_archives, so every archive channel must write it.
     # ON CONFLICT no-op: channels may race; first tombstone wins.
     sqlite = isinstance(cur.connection, sqlite3.Connection)
-    cur.execute(_TOMBSTONE_SQLITE if sqlite else _TOMBSTONE_PG, (session_id, archived_by))
+    cur.execute(
+        _TOMBSTONE_SQLITE if sqlite else _TOMBSTONE_PG, (session_id, archived_by)
+    )
     trust_store.revoke_session_scope_conn(cur.connection, session_id)
