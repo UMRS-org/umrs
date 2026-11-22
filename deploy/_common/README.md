@@ -111,4 +111,8 @@ rccs-cloud login play runs it with `--if-missing`.
 4. `./harness_probe.sh` — every partition must report `VENUE_CONFIG=ok`,
    `NETWORK_CREATED=yes`, and `EGRESS_GUARD_IMAGE=ready` (or `not_declared`).
 5. `./stage_images.sh` when the site declares `network.egress_proxy_image`.
+   Core names no serving image or command (ADR-117 D10, 2026-11-22): a site
+   that allows egress also declares `network.egress_proxy_command` (run as
+   `<command> --port N`), and one that allows custom MCP mounts declares
+   `runtime.mcp_custom_image` + `runtime.mcp_custom_command`; else refused.
 6. Add the Ansible inventory; deploy through Ansible only.

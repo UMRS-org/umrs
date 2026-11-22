@@ -188,6 +188,12 @@ class RuntimeConfig:
     # (<name>-<tag>-<arch>.tar) that compute nodes load when an image is absent
     # from their node-local store and no registry can serve it.
     image_archive_dir: str = ""
+    # U3 S6f (ADR-117 D10): the custom MCP runner (compose service mcp-custom,
+    # profile custom-mcp) is site-declared; core names no image or command.
+    # The command must accept ``--config-dir DIR --transport sse --port N``.
+    # Empty = undeclared -> provisions with custom MCP mounts are refused.
+    mcp_custom_image: str = ""
+    mcp_custom_command: str = ""
 
 
 @dataclass
@@ -217,6 +223,9 @@ class NetworkConfig:
     egress_proxy_url: str = ""  # Forward proxy URL for mini-rivault egress
     egress_no_proxy: str = ""  # Comma-separated internal hosts bypassing proxy
     egress_proxy_image: str = ""  # In-stack egress-guard image (ADR-040); empty = none declared -> egress refused
+    # ADR-117 D10: the egress-guard command in that image, run as
+    # ``<command> --port N``; empty = none declared -> egress refused.
+    egress_proxy_command: str = ""
     # ADR-045 D2: pool the wrapper allocates each job's private /24 from
     # (a.b.0.0/16, walked from a job-id-derived offset) or one fixed a.b.c.0/24.
     # Empty = wrapper default 172.16.0.0/16.
@@ -489,25 +498,24 @@ def _scheduler_env(scheduler: SchedulerConfig) -> dict[str, str]:
     return env
 
 
+def _nonempty_env(*pairs: tuple[str, str]) -> dict[str, str]:
+    """``{name: value}`` for every pair whose value is set (order kept)."""
+    return {name: value for name, value in pairs if value}
+
+
 def _runtime_env(runtime: RuntimeConfig) -> dict[str, str]:
-    env: dict[str, str] = {}
-    if runtime.rivault_dir:
-        env["RIVAULT_DIR"] = runtime.rivault_dir
-    if runtime.repo_dir:
-        env["UMRS_REPO"] = runtime.repo_dir
-    if runtime.vision_image:
-        env["BENTOML_VISION_IMAGE"] = runtime.vision_image
-    if runtime.profiles:
-        env["RIVAULT_PROFILES"] = " ".join(runtime.profiles)
-    if runtime.cgroup_manager:
-        env["RIVAULT_CGROUP_MANAGER"] = runtime.cgroup_manager
-    if runtime.storage_root:
-        env["RIVAULT_STORAGE_ROOT"] = runtime.storage_root
-    if runtime.network_config_dir:
-        env["RIVAULT_NETWORK_CONFIG_DIR"] = runtime.network_config_dir
-    if runtime.image_archive_dir:
-        env["RIVAULT_IMAGE_ARCHIVE_DIR"] = runtime.image_archive_dir
-    return env
+    return _nonempty_env(
+        ("RIVAULT_DIR", runtime.rivault_dir),
+        ("UMRS_REPO", runtime.repo_dir),
+        ("BENTOML_VISION_IMAGE", runtime.vision_image),
+        ("RIVAULT_PROFILES", " ".join(runtime.profiles)),
+        ("RIVAULT_CGROUP_MANAGER", runtime.cgroup_manager),
+        ("RIVAULT_STORAGE_ROOT", runtime.storage_root),
+        ("RIVAULT_NETWORK_CONFIG_DIR", runtime.network_config_dir),
+        ("RIVAULT_IMAGE_ARCHIVE_DIR", runtime.image_archive_dir),
+        ("MCP_CUSTOM_IMAGE", runtime.mcp_custom_image),
+        ("MCP_CUSTOM_COMMAND", runtime.mcp_custom_command),
+    )
 
 
 def _storage_env(storage: StorageConfig) -> dict[str, str]:
@@ -539,18 +547,19 @@ def _network_env(network: NetworkConfig) -> dict[str, str]:
         "RIVAULT_PORT_STRATEGY": network.port_strategy,
         "RIVAULT_REMOTE_PORT": str(network.litellm_port),
     }
-    if network.litellm_master_key:
-        env["LITELLM_MASTER_KEY"] = network.litellm_master_key
-    if network.egress_proxy_url:
-        env["RIVAULT_HTTP_PROXY"] = network.egress_proxy_url
-        env["RIVAULT_HTTPS_PROXY"] = network.egress_proxy_url
-        env["EGRESS_GUARD_PROXY_URL"] = network.egress_proxy_url
-    if network.egress_no_proxy:
-        env["RIVAULT_NO_PROXY"] = network.egress_no_proxy
-    if network.egress_proxy_image:
-        env["EGRESS_GUARD_IMAGE"] = network.egress_proxy_image
-    if network.private_subnet_pool:
-        env["PRIV_SUBNET_POOL"] = network.private_subnet_pool
+    proxy = network.egress_proxy_url
+    env.update(
+        _nonempty_env(
+            ("LITELLM_MASTER_KEY", network.litellm_master_key),
+            ("RIVAULT_HTTP_PROXY", proxy),
+            ("RIVAULT_HTTPS_PROXY", proxy),
+            ("EGRESS_GUARD_PROXY_URL", proxy),
+            ("RIVAULT_NO_PROXY", network.egress_no_proxy),
+            ("EGRESS_GUARD_IMAGE", network.egress_proxy_image),
+            ("EGRESS_GUARD_COMMAND", network.egress_proxy_command),
+            ("PRIV_SUBNET_POOL", network.private_subnet_pool),
+        )
+    )
     return env
 
 
@@ -1036,6 +1045,8 @@ def default_site_config() -> SiteConfig:
     cfg.runtime.storage_root = os.getenv("RIVAULT_STORAGE_ROOT", "")
     cfg.runtime.network_config_dir = os.getenv("RIVAULT_NETWORK_CONFIG_DIR", "")
     cfg.runtime.image_archive_dir = os.getenv("RIVAULT_IMAGE_ARCHIVE_DIR", "")
+    cfg.runtime.mcp_custom_image = os.getenv("MCP_CUSTOM_IMAGE", "")
+    cfg.runtime.mcp_custom_command = os.getenv("MCP_CUSTOM_COMMAND", "")
     profiles = os.getenv("RIVAULT_PROFILES", "")
     if profiles:
         cfg.runtime.profiles = profiles.split()
@@ -1063,6 +1074,7 @@ def default_site_config() -> SiteConfig:
     )
     cfg.network.egress_no_proxy = os.getenv("RIVAULT_NO_PROXY", "")
     cfg.network.egress_proxy_image = os.getenv("EGRESS_GUARD_IMAGE", "")
+    cfg.network.egress_proxy_command = os.getenv("EGRESS_GUARD_COMMAND", "")
     cfg.network.private_subnet_pool = os.getenv("PRIV_SUBNET_POOL", "")
 
     # vLLM

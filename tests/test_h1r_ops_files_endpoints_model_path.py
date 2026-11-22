@@ -61,6 +61,9 @@ def strict(monkeypatch):
     monkeypatch.delenv("UMRS_ENDPOINT_ALLOWED_MOUNT_PREFIXES", raising=False)
     monkeypatch.delenv("UMRS_ENDPOINT_CALLER_MOUNT_ROOTS", raising=False)
     monkeypatch.setenv("EGRESS_GUARD_IMAGE", "localhost/r4-mcp:test")
+    monkeypatch.setenv("EGRESS_GUARD_COMMAND", "egress-guard")  # ADR-117 D10
+    monkeypatch.setenv("MCP_CUSTOM_IMAGE", "localhost/mcp-runner:test")
+    monkeypatch.setenv("MCP_CUSTOM_COMMAND", "mcp-runner")
 
 
 def _catalog(name: str):

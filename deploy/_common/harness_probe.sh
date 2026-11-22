@@ -26,9 +26,14 @@ read -r -a PARTITIONS <<< "$UMRS_PARTITIONS"
 
 # Venue declarations the probe checks on every partition (ADR-045).
 EGRESS_IMAGE="$(umrs_site_value network.egress_proxy_image)"
+EGRESS_COMMAND="$(umrs_site_value network.egress_proxy_command)"
 IMAGE_ARCHIVE_DIR="$(umrs_site_value runtime.image_archive_dir)"
 PRIV_SUBNET_POOL="$(umrs_site_value network.private_subnet_pool)"
-echo "Venue: egress image=${EGRESS_IMAGE:-<none>} archives=${IMAGE_ARCHIVE_DIR:-<none>} pool=${PRIV_SUBNET_POOL:-172.16.0.0/16 (default)}"
+echo "Venue: egress image=${EGRESS_IMAGE:-<none>} command=${EGRESS_COMMAND:-<none>} archives=${IMAGE_ARCHIVE_DIR:-<none>} pool=${PRIV_SUBNET_POOL:-172.16.0.0/16 (default)}"
+if [[ -n "${EGRESS_IMAGE}" && -z "${EGRESS_COMMAND}" ]]; then
+    # ADR-117 D10: core has no default command, so the wrapper refuses egress.
+    echo "WARN: network.egress_proxy_image is declared without network.egress_proxy_command: egress provisions are refused"
+fi
 
 if [[ ${#PARTITIONS[@]} -eq 0 ]]; then
     echo "ERROR: no partitions to probe — set UMRS_PARTITIONS in ${UMRS_CLUSTER_DIR}/cluster.env" >&2

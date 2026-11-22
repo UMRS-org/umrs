@@ -11,7 +11,9 @@ from umrs.orchestrator.base import OrchestratorConfig
 from umrs.orchestrator.kubernetes_backend import KubernetesBackend
 
 ROOT = Path(__file__).resolve().parents[2]
-UMRS_ROOT = ROOT / "umrs"
+# The umrs checkout this test lives in (r4's umrs/ submodule or a standalone
+# clone): its own wrapper files, never a sibling checkout's.
+UMRS_ROOT = Path(__file__).resolve().parents[1]
 MINI_RIVAULT = UMRS_ROOT / "src" / "umrs" / "mini-rivault-llm"
 SERVE_MODEL = MINI_RIVAULT / "serve-model.yaml"
 SERVE_MODEL_SLURM = MINI_RIVAULT / "serve-model.slurm"
@@ -23,7 +25,6 @@ E2E_COMPOSE = ROOT / "docker-compose.e2e.yaml"
 MINI_RIVAULT_SERVICES = (
     "litellm",
     "vllm",
-    "mcp-vision",
     "mcp-custom",
     "rag",
     "bentoml-vision",
@@ -259,18 +260,19 @@ def test_assert_offline_probe_fails_when_direct_connect_succeeds():
 # ---------------------------------------------------------------------------
 
 
-def test_egress_guard_service_ships_in_the_r4_mcp_image():
+def test_egress_guard_service_runs_the_site_declared_image_and_command():
+    # ADR-117 D10: no product image or command in core; the site declares both.
     services = yaml.safe_load(SERVE_MODEL.read_text())["services"]
     guard = services["egress-guard"]
     assert guard["profiles"] == ["egress"]
-    assert guard["image"].startswith("${EGRESS_GUARD_IMAGE:-localhost/r4-mcp:")
-    assert "ghcr.io" not in guard["image"]
-    assert "python -m r4_mcp.egress_guard" in guard["command"]
+    assert guard["image"] == "${EGRESS_GUARD_IMAGE}"
+    assert guard["command"] == "${EGRESS_GUARD_COMMAND} --port ${EGRESS_PROXY_PORT:-8888}"
 
 
 def test_slurm_wrapper_refuses_egress_profile_without_present_image():
     text = SERVE_MODEL_SLURM.read_text()
-    assert "EGRESS_GUARD_IMAGE=${EGRESS_GUARD_IMAGE:-localhost/r4-mcp:" in text
+    assert "EGRESS_GUARD_IMAGE=${EGRESS_GUARD_IMAGE:-}\n" in text
+    assert "EGRESS_GUARD_COMMAND=${EGRESS_GUARD_COMMAND:-}\n" in text
     assert "ADR-040 D4" in text
     assert "refusing to launch" in text
     # ADR-045 D3: presence is established through the staging contract

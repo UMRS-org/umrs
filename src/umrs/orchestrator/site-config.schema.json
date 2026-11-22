@@ -190,6 +190,14 @@
         "rivault_dir": { "type": "string" },
         "repo_dir": { "type": "string" },
         "vision_image": { "type": "string" },
+        "mcp_custom_image": {
+          "type": "string",
+          "description": "ADR-117 D10: image of the custom MCP runner (compose service mcp-custom); empty = none declared, provisions with custom MCP mounts are refused."
+        },
+        "mcp_custom_command": {
+          "type": "string",
+          "description": "ADR-117 D10: the custom MCP runner command, run as `<command> --config-dir /mcp-servers --transport sse --port N`; empty = none declared, custom MCP mounts are refused."
+        },
         "profiles": {
           "type": "array",
           "items": { "type": "string" }
@@ -224,6 +232,10 @@
         "egress_proxy_image": {
           "type": "string",
           "description": "ADR-040 D4: in-stack egress-guard image; empty = none declared, egress_domains provisions are refused."
+        },
+        "egress_proxy_command": {
+          "type": "string",
+          "description": "ADR-117 D10: the egress-guard command in egress_proxy_image, run as `<command> --port N`; empty = none declared, egress provisions are refused."
         },
         "private_subnet_pool": {
           "type": "string",

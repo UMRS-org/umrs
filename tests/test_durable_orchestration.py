@@ -22,6 +22,15 @@ import pytest
 
 # splice removed (ADR-053): umrs installed editable in .venv
 
+# ADR-040 D4 / ADR-117 D10: a site declaring the egress guard and the custom
+# MCP runner (image + command each); mounts with MCP servers need both.
+_EGRESS_DECLARED = {
+    "EGRESS_GUARD_IMAGE": "localhost/r4-mcp:test",
+    "EGRESS_GUARD_COMMAND": "egress-guard",
+    "MCP_CUSTOM_IMAGE": "localhost/mcp-runner:test",
+    "MCP_CUSTOM_COMMAND": "mcp-runner",
+}
+
 
 class MockConnection:
     """Mock Postgres connection for testing."""
@@ -921,7 +930,7 @@ class TestAdapters:
 
         with (
             patch.object(backend, "_determine_target_host", return_value="pending"),
-            patch.dict(os.environ, {"EGRESS_GUARD_IMAGE": "localhost/r4-mcp:test"}),
+            patch.dict(os.environ, _EGRESS_DECLARED),
         ):
             asyncio.run(backend.submit_job(job, attempt))
 
@@ -1431,7 +1440,7 @@ class TestOrchestrationServiceConfig:
             backend=mock_backend,
         )
 
-        with patch.dict(os.environ, {"EGRESS_GUARD_IMAGE": "localhost/r4-mcp:test"}):
+        with patch.dict(os.environ, _EGRESS_DECLARED):
             result = asyncio.run(
                 service.provision(
                     ProvisionRequest(

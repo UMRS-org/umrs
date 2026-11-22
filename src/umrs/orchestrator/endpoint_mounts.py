@@ -36,18 +36,50 @@ EGRESS_PROXY_REFUSAL = (
     "egress requested ({why}) but this site declares no egress proxy image "
     "(site.yaml network.egress_proxy_image / EGRESS_GUARD_IMAGE); refusing per ADR-040 D4"
 )
+# U3 S6f (ADR-117 D10): core names no serving image or command. The site
+# declares the egress-guard command (it must accept ``--port N``) next to its
+# image, and the custom MCP runner's image + command; an undeclared one refuses.
+EGRESS_PROXY_COMMAND_REFUSAL = (
+    "egress requested ({why}) but this site declares no egress proxy command "
+    "(site.yaml network.egress_proxy_command / EGRESS_GUARD_COMMAND); "
+    "refusing per ADR-040 D4 / ADR-117 D10"
+)
+MCP_CUSTOM_RUNNER_REFUSAL = (
+    "custom MCP mounts requested but this site declares no custom MCP runner {what} "
+    "(site.yaml runtime.mcp_custom_{what} / MCP_CUSTOM_{env}); refusing per ADR-117 D10"
+)
 
 
-def egress_proxy_image() -> str:
-    """Site-declared image for the in-stack egress proxy ('' = none declared)."""
-    value = os.environ.get("EGRESS_GUARD_IMAGE", "").strip()
+def _site_value(env_name: str, section: str, attr: str) -> str:
+    """Env override, else the loaded site.yaml ``section.attr`` ('' = undeclared)."""
+    value = os.environ.get(env_name, "").strip()
     if value:
         return value
     # get_site_config() falls back to env-only defaults when site.yaml is absent;
     # a malformed site.yaml raises, which is the right outcome for a provision.
     from .site_config import get_site_config
 
-    return str(get_site_config().network.egress_proxy_image or "").strip()
+    return str(getattr(getattr(get_site_config(), section), attr, "") or "").strip()
+
+
+def egress_proxy_image() -> str:
+    """Site-declared image for the in-stack egress proxy ('' = none declared)."""
+    return _site_value("EGRESS_GUARD_IMAGE", "network", "egress_proxy_image")
+
+
+def egress_proxy_command() -> str:
+    """Site-declared egress-proxy command, run as ``<command> --port N`` ('' = none)."""
+    return _site_value("EGRESS_GUARD_COMMAND", "network", "egress_proxy_command")
+
+
+def mcp_custom_image() -> str:
+    """Site-declared custom MCP runner image ('' = none declared)."""
+    return _site_value("MCP_CUSTOM_IMAGE", "runtime", "mcp_custom_image")
+
+
+def mcp_custom_command() -> str:
+    """Site-declared custom MCP runner command ('' = none declared)."""
+    return _site_value("MCP_CUSTOM_COMMAND", "runtime", "mcp_custom_command")
 
 
 def egress_reasons(*, mcp_mounts: bool, egress_domains: list[str]) -> list[str]:
@@ -68,6 +100,29 @@ def require_egress_proxy_image(reasons: list[str]) -> str:
     return image
 
 
+def require_egress_proxy(reasons: list[str]) -> dict[str, str]:
+    """The site's proxy image + command as launch env, or raise ``ValueError``."""
+    image = require_egress_proxy_image(reasons)
+    command = egress_proxy_command()
+    if not command:
+        raise ValueError(EGRESS_PROXY_COMMAND_REFUSAL.format(why="; ".join(reasons)))
+    return {"EGRESS_GUARD_IMAGE": image, "EGRESS_GUARD_COMMAND": command}
+
+
+def require_mcp_custom_runner() -> dict[str, str]:
+    """The site's custom MCP runner image + command as launch env, or raise
+    ``ValueError`` naming the missing declaration (ADR-117 D10)."""
+    image = mcp_custom_image()
+    if not image:
+        raise ValueError(MCP_CUSTOM_RUNNER_REFUSAL.format(what="image", env="IMAGE"))
+    command = mcp_custom_command()
+    if not command:
+        raise ValueError(
+            MCP_CUSTOM_RUNNER_REFUSAL.format(what="command", env="COMMAND")
+        )
+    return {"MCP_CUSTOM_IMAGE": image, "MCP_CUSTOM_COMMAND": command}
+
+
 def _apply_rag_mounts(
     env: dict[str, str], extra_profiles: list[str], normalized_mounts: dict[str, Any]
 ) -> None:
@@ -86,7 +141,9 @@ def _apply_egress_proxy(
 ) -> None:
     reasons = egress_reasons(mcp_mounts=mcp_mounts, egress_domains=domains)
     if reasons:
-        env["EGRESS_GUARD_IMAGE"] = require_egress_proxy_image(reasons)
+        env.update(require_egress_proxy(reasons))
+    if mcp_mounts:
+        env.update(require_mcp_custom_runner())
 
 
 def build_mount_environment(

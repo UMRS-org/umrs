@@ -44,7 +44,8 @@ from ..orchestrator.co_serve import primary_job_id
 from ..orchestrator.endpoint_access import usable_endpoints
 from ..orchestrator.endpoint_mounts import (
     egress_reasons,
-    require_egress_proxy_image,
+    require_egress_proxy,
+    require_mcp_custom_runner,
     validate_mount_source,
 )
 from ..orchestrator.endpoint_registry import (
@@ -1640,10 +1641,13 @@ def _dedupe_profiles(existing: str, new_profiles: list[str]) -> list[str]:
 
 
 def _require_egress_proxy_for_request(request: ProvisionRequest) -> None:
-    """ADR-040 D4: refuse egress-requiring provisions when no proxy image is declared."""
+    """ADR-040 D4 / ADR-117 D10: refuse egress-requiring provisions when the site
+    declares no proxy image + command, and custom MCP mounts when it declares
+    no custom MCP runner image + command."""
     mounts = request.mounts
+    mcp_mounts = bool(mounts and mounts.mcp_servers)
     reasons = egress_reasons(
-        mcp_mounts=bool(mounts and mounts.mcp_servers),
+        mcp_mounts=mcp_mounts,
         egress_domains=[
             str(d).strip() for d in (request.egress_domains or []) if str(d).strip()
         ],
@@ -1651,7 +1655,9 @@ def _require_egress_proxy_for_request(request: ProvisionRequest) -> None:
     if not reasons:
         return
     try:
-        require_egress_proxy_image(reasons)
+        require_egress_proxy(reasons)
+        if mcp_mounts:
+            require_mcp_custom_runner()
     except ValueError as exc:
         raise_typed(PlatformError.endpoints("bad_request", str(exc)), cause=exc)
 

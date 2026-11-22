@@ -56,6 +56,11 @@ runtime:
   # this the declared egress-guard image localhost/r4-mcp:latest can never
   # reach a compute node (node-local stores, no registry route).
   image_archive_dir: /lvs0/dne1/rccs-dmp/${USER}/umrs_models/images
+  # ADR-117 D10 (U3 S6f, 2026-11-22): core UMRS names no custom MCP runner
+  # image or command; this site keeps the R4 product's runner (the same r4-mcp
+  # image as the egress guard). Without these, custom MCP mounts are refused.
+  mcp_custom_image: localhost/r4-mcp:latest
+  mcp_custom_command: python -m r4_mcp.runners.custom_mcp
   # vision_stack: jens                   # uncomment to use Jens's VisionFrontend stack (tmp/jens_stack/internal_genAI/)
 
 storage:
@@ -82,6 +87,9 @@ network:
   # on podman-compute Slurm nodes; presence/pullability of THIS string is the
   # declared precondition for any egress_domains endpoint (else: refuse 400).
   egress_proxy_image: localhost/r4-mcp:latest
+  # ADR-117 D10 (U3 S6f, 2026-11-22): the command core used to hard-code; it
+  # is run as `<command> --port N`. Empty would refuse every egress provision.
+  egress_proxy_command: python -m r4_mcp.egress_guard
   # ADR-045 D2 (2026-09-07): each job's private /24 is taken from this pool,
   # walked from a job-id-derived offset (254 subnets), after the wrapper has
   # reaped the networks of jobs that no longer exist. Replaces the three fixed
