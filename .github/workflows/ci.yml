@@ -75,6 +75,14 @@ jobs:
       UMRS_S3_CONFORMANCE_ACCESS_KEY: seaweedadmin
       UMRS_S3_CONFORMANCE_SECRET_KEY: seaweedadmin
       UMRS_S3_CONFORMANCE_BUCKET: umrs-files
+      # U4 skip gate: the DB- and S3-backed tests run, never skip. The
+      # conftest re-points the two DSNs at each xdist worker's clone.
+      UMRS_TEST_DB_URL: postgresql://test:test@localhost:5432/umrs_test
+      UMRS_TEST_S3_ENDPOINT: http://localhost:9000
+      UMRS_TEST_S3_ACCESS_KEY: seaweedadmin
+      UMRS_TEST_S3_SECRET_KEY: seaweedadmin
+      UMRS_PROJECT_STORAGE_IT_S3_URL: http://seaweedadmin:seaweedadmin@localhost:9000
+      UMRS_PROJECT_STORAGE_IT_PG_URI: postgresql://test:test@localhost:5432/umrs_test
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v5
@@ -126,6 +134,10 @@ jobs:
           export HOME="$RUNNER_TEMP/home"
           python -m pytest tests/ -n 4 -q -p no:cacheprovider -o asyncio_mode=auto \
             --ignore=tests/test_rag_pipeline.py -rfEs --junitxml="$RUNNER_TEMP/junit-core.xml"
+
+      - name: Skip gate (tests/allowed_skips.txt, which only shrinks)
+        if: success() || failure()
+        run: python scripts/skip_gate.py "$RUNNER_TEMP/junit-core.xml"
 
       - name: JUnit (for the r4 agreement check, ADR-117 §7.3)
         if: always()

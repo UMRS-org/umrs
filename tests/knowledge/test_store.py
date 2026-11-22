@@ -453,6 +453,13 @@ class TestSchemaVersion:
 # -- Integration tests (require --db-url) --
 
 
+def _parent_artifact(store: KnowledgeStore, artifact_id: str) -> None:
+    """knowledge_ir.artifact_id references knowledge_artifacts: insert the parent."""
+    asyncio.get_event_loop().run_until_complete(
+        store.insert_artifact(artifact_id, f"parent-{artifact_id}", "code", "proj-1")
+    )
+
+
 class TestKnowledgeStoreIntegration:
     """Integration tests against real Postgres. Require --db-url or UMRS_TEST_DB_URL."""
 
@@ -460,8 +467,13 @@ class TestKnowledgeStoreIntegration:
     def pool(self, db_url):
         import asyncpg
 
+        # the production pools' codecs (api._asyncpg_pool): jsonb takes dicts
+        from umrs.api._asyncpg_pool import _init_json_codecs
+
         async def _create():
-            return await asyncpg.create_pool(dsn=db_url, min=1, max=1)
+            return await asyncpg.create_pool(
+                dsn=db_url, min_size=1, max_size=1, init=_init_json_codecs
+            )
 
         async def _setup(p):
             await p.fetch("""
@@ -550,6 +562,7 @@ class TestKnowledgeStoreIntegration:
 
     def test_ir_insert_idempotent(self, pool):
         store = KnowledgeStore(pool)
+        _parent_artifact(store, "art-001")
         r1 = asyncio.get_event_loop().run_until_complete(
             store.insert_ir("ir-001", "art-001", "code", {"x": 1}, "h1")
         )
@@ -567,6 +580,7 @@ class TestKnowledgeStoreIntegration:
         """Property test: 10 concurrent inserts with same ir_id -> only 1 row."""
         store = KnowledgeStore(pool)
         ir_id = f"ir-concurrent-{id(store)}"
+        _parent_artifact(store, "art-x")
 
         async def _insert():
             return await store.insert_ir(
@@ -722,6 +736,7 @@ class TestKnowledgeStoreIntegration:
 
     def test_get_ir_round_trip(self, pool):
         store = KnowledgeStore(pool)
+        _parent_artifact(store, "art-get")
         asyncio.get_event_loop().run_until_complete(
             store.insert_ir("ir-get", "art-get", "code", {"class": "Test"}, "gh")
         )

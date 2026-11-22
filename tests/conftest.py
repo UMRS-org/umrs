@@ -130,6 +130,23 @@ def _clone_database_for_xdist_worker() -> None:
     finally:
         conn.close()
     os.environ["POSTGRES_DB"] = clone
+    for name in ("UMRS_TEST_DB_URL", "UMRS_PROJECT_STORAGE_IT_PG_URI"):
+        _point_url_at_clone(name, template, clone)
+
+
+def _point_url_at_clone(name: str, template: str, clone: str) -> None:
+    """Re-point a DSN env var that names the template database at the clone.
+
+    The integration tests read these (U4: hosted CI sets them to the migrated
+    template); otherwise they bypass the clone and hold the template open,
+    which blocks the other workers' ``CREATE DATABASE ... TEMPLATE``.
+    """
+    from urllib.parse import urlsplit, urlunsplit
+
+    url = os.environ.get(name, "")
+    parts = urlsplit(url)
+    if parts.path.lstrip("/") == template:
+        os.environ[name] = urlunsplit(parts._replace(path=f"/{clone}"))
 
 
 _clone_database_for_xdist_worker()
