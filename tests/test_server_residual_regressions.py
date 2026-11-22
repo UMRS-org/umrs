@@ -420,6 +420,9 @@ def test_cluster_loop_tag_is_submit_name_unique_and_has_real_walltime(monkeypatc
     from umrs.shared import handshake
 
     monkeypatch.setattr(handshake, "handshake_secret", lambda: "secret")
+    # U3 S6e-2: the front declares its gateway base and loop image.
+    monkeypatch.setenv("UMRS_GATEWAY_BASE", "https://gw.example.test/site")
+    monkeypatch.setenv("LOOP_JOB_IMAGE", "loop:1")
     calls = []
 
     class Backend:

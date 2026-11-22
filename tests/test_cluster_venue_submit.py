@@ -31,6 +31,9 @@ def declared_site(monkeypatch):
     """This server's site lists ``proj-x`` (ADR-112); nobody is an admin."""
     monkeypatch.setattr(hpc_user_work, "current_site", lambda: _site())
     monkeypatch.setattr(hpc_user_work, "user_is_admin", lambda _user: False)
+    # U3 S6e-2: the front declares its gateway base and loop image (no core default).
+    monkeypatch.setenv("UMRS_GATEWAY_BASE", "https://gw.example.test/site")
+    monkeypatch.setenv("LOOP_JOB_IMAGE", "registry.example.test/loop:1")
     return monkeypatch
 
 
@@ -65,34 +68,39 @@ class TrackingSubmitter:
         return ";".join(f"{k}={v}" for k, v in kwargs.items())
 
 
-@pytest.mark.asyncio
-async def test_cluster_venue_env_contains_no_secret_hex_in_returned_ref(monkeypatch):
-    # Never let the handshake material leak into backend_ref strings.
+async def _submit_with_secret(monkeypatch) -> tuple[str, dict]:
+    """One submit whose gateway secret is ``super-secret``: (ref, sbatch env)."""
     monkeypatch.setenv("R4_GATEWAY_SECRET", "super-secret")
     recorder = TrackingSubmitter()
     submitter = ClusterSlurmSubmitter(submit_wrapped=recorder.submit_wrapped)
     spec = {"loop_id": "loop-99", "driver": "engine", "venue": "cluster:rccs"}
-
-    monkeypatch.setitem(spec, "", None)
     # Provide the gateway handshake through the umrs path the real code uses.
     from umrs.shared import handshake as _vh
 
     monkeypatch.setattr(_vh, "handshake_secret", lambda: "super-secret")
-
     result = await submitter.submit(job=_job(spec), attempt=_attempt(), spec=spec)
+    return result, recorder.kwargs["kwargs"]
 
-    assert spec["loop_id"] in result
+
+@pytest.mark.asyncio
+async def test_cluster_venue_env_contains_no_secret_hex_in_returned_ref(monkeypatch):
+    # Never let the handshake material leak into backend_ref strings.
+    result, env = await _submit_with_secret(monkeypatch)
+    assert "loop_id=loop-99" in result
     assert "slurm_id=" in result
     assert "super-secret" not in result
-    assert b"super-secret".hex() not in result or True
-    # Handshake rides only inside `env`:
-    env = recorder.kwargs["kwargs"]
-    assert env["LOOP_ID"] == "loop-99"
-    assert env["R4_GATEWAY_BASE"] == "https://data0.ai.r-ccs.riken.jp/rccs"
+    # Handshake rides only inside `env`; hex cannot map back to the secret by fluke.
     assert env["UMRS_GATEWAY_HMAC_SECRET_HEX"] == b"super-secret".hex()
     assert "super-secret" not in env.get("RIVAULT_WRAPPER_DIR", "")
-    # hex cannot map back to the secret by fluke (only inside env, never the returned ref).
     assert env["UMRS_GATEWAY_HMAC_SECRET_HEX"] != "super-secret"
+
+
+@pytest.mark.asyncio
+async def test_cluster_venue_env_carries_the_declared_gateway_and_image(monkeypatch):
+    _result, env = await _submit_with_secret(monkeypatch)
+    assert env["LOOP_ID"] == "loop-99"
+    assert env["R4_GATEWAY_BASE"] == env["UMRS_GATEWAY_BASE"] == "https://gw.example.test/site"
+    assert env["LOOP_JOB_IMAGE"] == "registry.example.test/loop:1"
 
 
 @pytest.mark.asyncio

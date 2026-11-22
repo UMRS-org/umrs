@@ -22,9 +22,21 @@ from .research_loop_backend import REF_PREFIX
 
 logger = logging.getLogger(__name__)
 
-LOOP_WRAPPER_REL = str(Path("deploy") / "rccs" / "loop-job.slurm")
+# The compute-side shim, next to the site's site.yaml in its deploy dir.
+LOOP_WRAPPER_NAME = "loop-job.slurm"
 LOOP_WRAPPER_WALL_SECONDS = 2 * 3600  # #SBATCH --time=2:00:00 in the wrapper
 
+# U3 S6e-2 (ADR-117, multi-site X-5): core names no site. The front declares
+# the base URL its cluster jobs call back and the loop driver's image; an
+# undeclared one refuses the cluster loop before anything is submitted.
+GATEWAY_BASE_REFUSAL = (
+    "cluster loop refused: this front declares no gateway base for cluster jobs "
+    "to call back (site.yaml network.gateway_base / UMRS_GATEWAY_BASE; ADR-117)"
+)
+LOOP_IMAGE_REFUSAL = (
+    "cluster loop refused: this front declares no loop driver image "
+    "(site.yaml runtime.loop_job_image / LOOP_JOB_IMAGE; ADR-117)"
+)
 
 
 def _both_names(**values: str) -> dict[str, str]:
@@ -35,6 +47,7 @@ def _both_names(**values: str) -> dict[str, str]:
         out[f"UMRS_{name}"] = value
         out[f"R4_{name}"] = value
     return out
+
 
 def _hmac_hex(secret: str) -> str:
     return secret.encode().hex()
@@ -50,24 +63,55 @@ def _gateway_hmac_secret() -> str:
     return secret.strip()
 
 
-def _cluster_deploy_dir(site_name: str) -> str:
-    """Remote deploy dir for this venue's wrapper stack.
+def _loaded_site() -> Any:
+    """This front's site config, ``None`` without a site.yaml."""
+    from ..orchestrator.site_config import load_site_config
+
+    try:
+        return load_site_config()
+    except FileNotFoundError:
+        return None
+
+
+def _site_declared(env_value: str, section: str, attr: str) -> str:
+    """*env_value* when set, else the site's ``section.attr`` ('' = undeclared)."""
+    if env_value.strip():
+        return env_value.strip()
+    block = getattr(_loaded_site(), section, None)
+    return str(getattr(block, attr, "") or "").strip()
+
+
+def _require_loop_declarations() -> tuple[str, str]:
+    """The gateway base and loop image this front declares, or ``ValueError``
+    naming the missing one (U3 S6e-2, ADR-117)."""
+    base = _site_declared(compat_names.env("GATEWAY_BASE"), "network", "gateway_base")
+    if not base:
+        raise ValueError(GATEWAY_BASE_REFUSAL)
+    image = _site_declared(
+        os.environ.get("LOOP_JOB_IMAGE", ""), "runtime", "loop_job_image"
+    )
+    if not image:
+        raise ValueError(LOOP_IMAGE_REFUSAL)
+    return base, image
+
+
+def _cluster_deploy_dir() -> str:
+    """Remote deploy dir for this site's wrapper stack.
 
     Resolved the same way RemoteSlurmBackend resolves its job-info dir:
     ``site.yaml`` ``extra.slurm_job_info_dir``'s parent — a path that exists
     on the *remote* submit host, not inside the server container. Falls back
-    to the local repo path (unit tests / in-proc submit seams).
+    to the local repo path ``deploy/<this site's name>`` (unit tests /
+    in-proc submit seams; U3 S6e-2: no site name is hard-coded). An
+    unreadable site.yaml raises here instead of silently picking a path.
     """
-    try:
-        from ..orchestrator.site_config import load_site_config
-
-        info_dir = (load_site_config().extra or {}).get("slurm_job_info_dir")
-        if info_dir:
-            return str(Path(str(info_dir)).parent)
-    except Exception:
-        pass
+    site = _loaded_site()
+    info_dir = (getattr(site, "extra", None) or {}).get("slurm_job_info_dir")
+    if info_dir:
+        return str(Path(str(info_dir)).parent)
+    name = str(getattr(site, "name", "") or "")
     repo = os.environ.get("R4_REPO_ROOT", os.getcwd())
-    return str(Path(repo) / "deploy" / "rccs")
+    return str(Path(repo) / "deploy" / name)
 
 
 def _job_identity(job: Job) -> Any:
@@ -144,23 +188,23 @@ class ClusterSlurmSubmitter:
             raise ValueError("cluster-venue loop job requires spec.loop_id")
         identity = _platform_login_identity(self._identity(job))
         attempt.metrics["hpc_identity"] = identity.to_metrics()
-        # TODO(MS X-5): the deploy dir is still the rccs one for every site;
-        # resolve it from the venue's own site (multi-site plan item X-5).
-        deploy_dir = _cluster_deploy_dir("rccs")
-        wrapper = str(Path(deploy_dir) / Path(LOOP_WRAPPER_REL).name)
+        # U3 S6e-2 (multi-site X-5): gateway, image and deploy dir are this
+        # front's own declarations; an undeclared one refuses before submit.
+        gateway_base, loop_image = _require_loop_declarations()
+        deploy_dir = _cluster_deploy_dir()
+        wrapper = str(Path(deploy_dir) / LOOP_WRAPPER_NAME)
         env = {
             "LOOP_ID": loop_id,
+            "LOOP_JOB_IMAGE": loop_image,
             **_both_names(
-                GATEWAY_BASE=compat_names.env(
-                    "GATEWAY_BASE", "https://data0.ai.r-ccs.riken.jp/rccs"
-                ),
+                GATEWAY_BASE=gateway_base,
                 LOOP_JOB_ID=job.job_id,
                 LOOP_ATTEMPT_ID=attempt.attempt_id,
                 LOOP_OWNER=str(job.user_id),
                 LOOP_PROJECT=job.project_id,
             ),
             "UMRS_GATEWAY_HMAC_SECRET_HEX": _hmac_hex(_gateway_hmac_secret()),
-            "RIVAULT_WRAPPER_DIR": _cluster_deploy_dir("rccs"),
+            "RIVAULT_WRAPPER_DIR": deploy_dir,
         }
         # WP-12 round 2: OTel trace-context propagation across the durable-job
         # boundary — only when the server-side boot is active; never fabricate.

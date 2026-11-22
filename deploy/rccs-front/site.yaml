@@ -91,6 +91,9 @@ runtime:
   # ../rccs/site.yaml). Without them, custom MCP mounts are refused.
   mcp_custom_image: localhost/r4-mcp:latest
   mcp_custom_command: python -m r4_mcp.runners.custom_mcp
+  # ADR-117 (U3 S6e-2, 2026-11-22): the cluster research-loop driver image
+  # core used to default. Without it, cluster-venue loops are refused.
+  loop_job_image: localhost/r4-mcp:latest
   # Compute-side venue knobs (ADR-045: runtime.image_archive_dir,
   # network.private_subnet_pool) live in ../rccs/site.yaml — the file the
   # compute shim hands to the wrapper. This overlay could `extends:` that file
@@ -127,6 +130,10 @@ network:
   # ADR-117 D10 (U3 S6f, 2026-11-22): the command core used to hard-code; it
   # is run as `<command> --port N`. Empty would refuse every egress provision.
   egress_proxy_command: python -m r4_mcp.egress_guard
+  # ADR-117 (U3 S6e-2, 2026-11-22): the public base cluster loop jobs call back
+  # (core used to default to it); its host is the loop driver's only egress
+  # destination. Without it, cluster-venue loops are refused.
+  gateway_base: https://data0.ai.r-ccs.riken.jp/rccs
 
 vllm:
   model: intfloat/e5-base-v2
