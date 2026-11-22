@@ -22,9 +22,12 @@ on:
 permissions:
   contents: read
 
+# A PR update cancels its stale run. A push to main never does: every main
+# commit needs its own verdict and JUnit (the r4 agreement soak, plan §7.3),
+# and a cancelled run left eb3daacc without one (2026-11-22).
 concurrency:
-  group: umrs-ci-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  group: umrs-ci-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   PYTHON_VERSION: "3.11"
