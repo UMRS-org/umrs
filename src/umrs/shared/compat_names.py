@@ -30,6 +30,21 @@ def env(name: str, default: str = "", environ: Mapping[str, str] | None = None) 
     return default
 
 
+PLATFORM_GATEWAY_NAMES = ("UMRS_PLATFORM_GATEWAY_URL", "R4_GATEWAY_URL")
+
+
+def platform_gateway_url(environ: Mapping[str, str] | None = None) -> str:
+    """The platform's LLM gateway base for steps (U3 S6c): the neutral
+    ``UMRS_PLATFORM_GATEWAY_URL``, else the legacy ``R4_GATEWAY_URL``.
+    (``UMRS_GATEWAY_URL`` is taken: it is the UMRS API base.)"""
+    source = os.environ if environ is None else environ
+    for key in PLATFORM_GATEWAY_NAMES:
+        value = source.get(key)
+        if value:
+            return value
+    return ""
+
+
 def _header_values(headers: Mapping[str, str], name: str) -> list[str]:
     lowered = {str(k).lower(): v for k, v in headers.items()}
     return [
@@ -70,4 +85,12 @@ def is_scoped_request(headers: Mapping[str, str]) -> bool:
     return any(_header_values(headers, "scope"))
 
 
-__all__ = ["env", "header", "header_values", "is_agent_request", "is_scoped_request"]
+__all__ = [
+    "PLATFORM_GATEWAY_NAMES",
+    "env",
+    "header",
+    "header_values",
+    "is_agent_request",
+    "is_scoped_request",
+    "platform_gateway_url",
+]

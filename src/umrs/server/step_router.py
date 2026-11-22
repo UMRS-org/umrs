@@ -42,6 +42,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from umrs.pipeline_sdk.workflow import StepSpec
+from umrs.shared.compat_names import PLATFORM_GATEWAY_NAMES, platform_gateway_url
 
 logger = logging.getLogger(__name__)
 
@@ -984,7 +985,7 @@ class StepRouter:
         api_base = (
             self.default_api_base
             or os.environ.get("OPENAI_BASE_URL")
-            or os.environ.get("R4_GATEWAY_URL")
+            or platform_gateway_url()
         )
         return RoutingDecision(
             api_base=api_base,
@@ -1010,10 +1011,12 @@ class StepRouter:
 
     def _is_platform_base(self, api_base: str) -> bool:
         """True when *api_base* is one this deployment configured itself."""
+        # Both gateway names count as the platform's own base (U3 S6c), so the
+        # platform key never rides to a host that only one name configured.
         bases = (
             self.default_api_base,
             os.environ.get("OPENAI_BASE_URL"),
-            os.environ.get("R4_GATEWAY_URL"),
+            *(os.environ.get(name) for name in PLATFORM_GATEWAY_NAMES),
         )
         return api_base.rstrip("/") in {b.rstrip("/") for b in bases if b}
 

@@ -75,6 +75,7 @@ class VisionStep(Step):
         self.api_base: str | None = (
             config.get("api_base")
             or os.environ.get("OPENAI_BASE_URL")
+            or os.environ.get("UMRS_PLATFORM_GATEWAY_URL")  # neutral (U3 S6c)
             or os.environ.get("R4_GATEWAY_URL")
         )
         self.api_key: str | None = config.get("api_key") or os.environ.get(
@@ -202,7 +203,7 @@ class VisionStep(Step):
 
         if not self.api_base:
             raise RuntimeError(
-                "VisionStep requires api_base (OPENAI_BASE_URL / R4_GATEWAY_URL) "
+                "VisionStep requires api_base (OPENAI_BASE_URL / UMRS_PLATFORM_GATEWAY_URL / R4_GATEWAY_URL) "
                 "for VLM modes"
             )
 
