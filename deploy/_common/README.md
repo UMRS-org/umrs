@@ -115,4 +115,9 @@ rccs-cloud login play runs it with `--if-missing`.
    that allows egress also declares `network.egress_proxy_command` (run as
    `<command> --port N`), and one that allows custom MCP mounts declares
    `runtime.mcp_custom_image` + `runtime.mcp_custom_command`; else refused.
+   Core names no site either (U3 S6e-2, 2026-11-22): a front that runs
+   cluster-venue loops declares `network.gateway_base` (the public base its
+   cluster jobs call back; its host is the loop's only egress destination)
+   and `runtime.loop_job_image`; a front that trains adapters declares
+   `extra.finetune_site` (optional `extra.finetune_wrapper`); else refused.
 6. Add the Ansible inventory; deploy through Ansible only.

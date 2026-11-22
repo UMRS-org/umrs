@@ -376,6 +376,8 @@ def test_a_cluster_loop_job_is_ledgered_on_submit(monkeypatch):
     from umrs.shared import handshake
 
     monkeypatch.setattr(handshake, "handshake_secret", lambda: "test-secret")
+    monkeypatch.setenv("UMRS_GATEWAY_BASE", "https://gw.example.test/site")
+    monkeypatch.setenv("LOOP_JOB_IMAGE", "loop:1")
 
     async def submit(_wrapper: str, _env: dict) -> Any:
         return SimpleNamespace(job_id="777")

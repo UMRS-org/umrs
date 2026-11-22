@@ -167,6 +167,9 @@ database:
 #   umrs-front: mnagaso
 #   AI4S login: rku00126 (RIKYU, login.rikyu.r-ccs.riken.jp — moved 2026-10-02)
 extra:
+  # ADR-117 (U3 S6e-2, 2026-11-22): fine_tune trains on this front's cluster
+  # (was the core pin). Fronts without it refuse fine_tune by name.
+  finetune_site: ai4s
   ssh_target: AI4S                            # umrs-front SSH alias for AI4S login
   ssh_user: rku00126                          # RIKYU account (was ea0022@134.160.189.24)
   ssh_port: 22

@@ -1,9 +1,10 @@
-"""FineTuneBackend (WP-09 Phase FINE, ADR-047; venue = ai4s GB200 NVL4).
+"""FineTuneBackend (WP-09 Phase FINE, ADR-047; venue = the site-declared one).
 
 Runs ``fine_tune`` durable jobs: small LoRA-style adapter training against a
-catalog model REF on the ai4s site (the existing GB200 NVL4 profile; each node
-hosts 4× B200 @ 173.2 GiB each). The executor **minimally survives the first
-live leg**: authors the Slurm wrapper payload, submits through the existing
+catalog model REF on the one site this front declares for training
+(``site.yaml`` ``extra.finetune_site``; U3 S6e-2, ADR-117: core names no
+site, an undeclared one means fine-tune is not enabled here). The executor
+**minimally survives the first live leg**: authors the Slurm wrapper payload, submits through the existing
 ClusterSlurmSubmitter (same SSH route as cluster-venue loops), records a
 last-line metrics receipt in the attempt's row surface.
 
@@ -29,6 +30,7 @@ import asyncio
 import logging
 import os
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from .download_safety import register_cancel_listener
@@ -38,8 +40,40 @@ from .monitor import AttemptCheckResult, BackendStatusChecker
 logger = logging.getLogger(__name__)
 
 _VALID_RANKS = {8, 16, 32, 64}
-_DEFAULT_SITE = "ai4s"  # venue pin from user decision (GB200 NVL4)
 _BIG_PARAMS = 65536
+_WRAPPER_NAME = "finetune-adapter.slurm"
+FINETUNE_SITE_REFUSAL = (
+    "fine_tune is not enabled on this front: its site declares no training "
+    "venue (site.yaml extra.finetune_site; ADR-117)"
+)
+
+
+def _site_extra() -> dict[str, Any]:
+    """This front's ``site.yaml`` ``extra`` section ({} without a site.yaml)."""
+    from ..orchestrator.site_config import load_site_config
+
+    try:
+        return dict(load_site_config().extra or {})
+    except FileNotFoundError:
+        return {}
+
+
+def _declared_finetune_site() -> str:
+    """The one site this front trains on (U3 S6e-2), or ``ValueError``."""
+    site = str(_site_extra().get("finetune_site") or "").strip()
+    if not site:
+        raise ValueError(FINETUNE_SITE_REFUSAL)
+    return site
+
+
+def _finetune_wrapper(site: str) -> str:
+    """Submit-host path of the training wrapper: ``extra.finetune_wrapper``,
+    else ``<R4_REPO_ROOT or cwd>/deploy/<site>/finetune-adapter.slurm``."""
+    override = str(_site_extra().get("finetune_wrapper") or "").strip()
+    if override:
+        return override
+    repo = os.environ.get("R4_REPO_ROOT") or os.getcwd()
+    return str(Path(repo) / "deploy" / site / _WRAPPER_NAME)
 
 
 @dataclass
@@ -117,10 +151,12 @@ def _validate_spec(spec: dict[str, Any]) -> dict[str, Any]:
     max_seq_len = int(spec.get("max_seq_len", 2048))
     if not (512 <= max_seq_len <= 4096):
         raise ValueError("max_seq_len must be in [512, 4096]")
-    site = str(spec.get("site") or _DEFAULT_SITE).strip()
-    if site != _DEFAULT_SITE:
+    declared = _declared_finetune_site()
+    site = str(spec.get("site") or declared).strip()
+    if site != declared:
         raise ValueError(
-            f"phase-F venue pin is {site!r} only (training memory profile honoured)"
+            f"fine_tune venue pin is {declared!r} only (site.yaml "
+            f"extra.finetune_site), not {site!r}"
         )
     return {
         "target_model": target_model,
@@ -232,7 +268,7 @@ class FineTuneBackend:
         from ..orchestrator.base import OrchestratorConfig
         from ..orchestrator.remote_slurm_backend import RemoteSlurmBackend
 
-        wrapper_path = f"{os.environ.get('R4_REPO_ROOT', os.getcwd())}/deploy/ai4s/finetune-adapter.slurm"
+        wrapper_path = _finetune_wrapper(ctx.site)
         wrapper_env = {
             "R4_FINETUNE_JOB_ID": ctx.job_id,
             "R4_FINETUNE_ATTEMPT_ID": ctx.attempt_id,

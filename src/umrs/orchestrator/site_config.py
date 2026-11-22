@@ -29,6 +29,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from umrs.shared.compat_names import env as compat_env
 from umrs.shared.config import get_resolved_umrs_subdir
 
 logger = logging.getLogger(__name__)
@@ -194,6 +195,9 @@ class RuntimeConfig:
     # Empty = undeclared -> provisions with custom MCP mounts are refused.
     mcp_custom_image: str = ""
     mcp_custom_command: str = ""
+    # U3 S6e-2 (ADR-117): the image the cluster research-loop driver runs in
+    # (LOOP_JOB_IMAGE). Empty = undeclared -> cluster-venue loops are refused.
+    loop_job_image: str = ""
 
 
 @dataclass
@@ -226,6 +230,10 @@ class NetworkConfig:
     # ADR-117 D10: the egress-guard command in that image, run as
     # ``<command> --port N``; empty = none declared -> egress refused.
     egress_proxy_command: str = ""
+    # U3 S6e-2 (ADR-117): this front's public base URL that cluster jobs call
+    # back (UMRS_GATEWAY_BASE); its host is the cluster loop's only egress
+    # destination. Empty = undeclared -> cluster-venue loops are refused.
+    gateway_base: str = ""
     # ADR-045 D2: pool the wrapper allocates each job's private /24 from
     # (a.b.0.0/16, walked from a job-id-derived offset) or one fixed a.b.c.0/24.
     # Empty = wrapper default 172.16.0.0/16.
@@ -515,6 +523,7 @@ def _runtime_env(runtime: RuntimeConfig) -> dict[str, str]:
         ("RIVAULT_IMAGE_ARCHIVE_DIR", runtime.image_archive_dir),
         ("MCP_CUSTOM_IMAGE", runtime.mcp_custom_image),
         ("MCP_CUSTOM_COMMAND", runtime.mcp_custom_command),
+        ("LOOP_JOB_IMAGE", runtime.loop_job_image),
     )
 
 
@@ -557,6 +566,7 @@ def _network_env(network: NetworkConfig) -> dict[str, str]:
             ("RIVAULT_NO_PROXY", network.egress_no_proxy),
             ("EGRESS_GUARD_IMAGE", network.egress_proxy_image),
             ("EGRESS_GUARD_COMMAND", network.egress_proxy_command),
+            ("UMRS_GATEWAY_BASE", network.gateway_base),
             ("PRIV_SUBNET_POOL", network.private_subnet_pool),
         )
     )
@@ -1047,6 +1057,7 @@ def default_site_config() -> SiteConfig:
     cfg.runtime.image_archive_dir = os.getenv("RIVAULT_IMAGE_ARCHIVE_DIR", "")
     cfg.runtime.mcp_custom_image = os.getenv("MCP_CUSTOM_IMAGE", "")
     cfg.runtime.mcp_custom_command = os.getenv("MCP_CUSTOM_COMMAND", "")
+    cfg.runtime.loop_job_image = os.getenv("LOOP_JOB_IMAGE", "")
     profiles = os.getenv("RIVAULT_PROFILES", "")
     if profiles:
         cfg.runtime.profiles = profiles.split()
@@ -1075,6 +1086,7 @@ def default_site_config() -> SiteConfig:
     cfg.network.egress_no_proxy = os.getenv("RIVAULT_NO_PROXY", "")
     cfg.network.egress_proxy_image = os.getenv("EGRESS_GUARD_IMAGE", "")
     cfg.network.egress_proxy_command = os.getenv("EGRESS_GUARD_COMMAND", "")
+    cfg.network.gateway_base = compat_env("GATEWAY_BASE")  # UMRS_, then R4_
     cfg.network.private_subnet_pool = os.getenv("PRIV_SUBNET_POOL", "")
 
     # vLLM

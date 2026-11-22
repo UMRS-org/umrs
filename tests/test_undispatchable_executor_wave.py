@@ -3,6 +3,14 @@
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def declared_finetune_site(monkeypatch):
+    """U3 S6e-2: the front declares the one site it trains on (extra.finetune_site)."""
+    from umrs.jobs import fine_tune
+
+    monkeypatch.setattr(fine_tune, "_site_extra", lambda: {"finetune_site": "site-a"})
+
+
 class TestFineTuneSpecChain:
     def test_rank_whitelist_and_epochs_and_dataset_ref(self):
         from umrs.jobs.fine_tune import _validate_spec

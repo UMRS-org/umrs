@@ -15,14 +15,41 @@ set -euo pipefail
 JOB_ID="${SLURM_JOB_ID:-manual}"
 LOOP_ID="${LOOP_ID:?LOOP_ID required}"
 # U3 S6d: neutral UMRS_* names first, then the legacy R4_* ones (one release).
-R4_GATEWAY_BASE="${UMRS_GATEWAY_BASE:-${R4_GATEWAY_BASE:-https://data0.ai.r-ccs.riken.jp/rccs}}"
 R4_LOOP_JOB_ID="${UMRS_LOOP_JOB_ID:-${R4_LOOP_JOB_ID:-}}"
 R4_LOOP_ATTEMPT_ID="${UMRS_LOOP_ATTEMPT_ID:-${R4_LOOP_ATTEMPT_ID:-}}"
 R4_LOOP_OWNER="${UMRS_LOOP_OWNER:-${R4_LOOP_OWNER:-}}"
 R4_LOOP_PROJECT="${UMRS_LOOP_PROJECT:-${R4_LOOP_PROJECT:-}}"
 R4_DIR="${UMRS_SRC_DIR:-${R4_DIR:-}}"
-LOOP_IMAGE="${LOOP_JOB_IMAGE:-localhost/r4-mcp:latest}"
 RIVAULT_WRAPPER_DIR="${RIVAULT_WRAPPER_DIR:?RIVAULT_WRAPPER_DIR required}"
+
+# BEGIN loop-job declarations (ADR-117, U3 S6e-2)
+# The gateway base (site.yaml network.gateway_base) and the driver image
+# (site.yaml runtime.loop_job_image) are site-declared; core names neither,
+# so an undeclared one refuses here. The gateway's host is the only egress
+# destination of the driver network.
+loop_gateway_host() {
+  # scheme://[user@]host[:port][/path] -> host
+  local rest="${1#*://}"
+  rest="${rest%%/*}"
+  rest="${rest##*@}"
+  printf '%s' "${rest%%:*}"
+}
+R4_GATEWAY_BASE="${UMRS_GATEWAY_BASE:-${R4_GATEWAY_BASE:-}}"
+if [[ -z "${R4_GATEWAY_BASE}" ]]; then
+  echo "[loop-job] FATAL: this site declares no gateway base (site.yaml network.gateway_base / UMRS_GATEWAY_BASE; ADR-117); refusing to run the loop"
+  exit 1
+fi
+GATEWAY_HOST="$(loop_gateway_host "${R4_GATEWAY_BASE}")"
+if [[ -z "${GATEWAY_HOST}" ]]; then
+  echo "[loop-job] FATAL: gateway base '${R4_GATEWAY_BASE}' names no host; refusing to run the loop"
+  exit 1
+fi
+LOOP_IMAGE="${LOOP_JOB_IMAGE:-}"
+if [[ -z "${LOOP_IMAGE}" ]]; then
+  echo "[loop-job] FATAL: this site declares no loop driver image (site.yaml runtime.loop_job_image / LOOP_JOB_IMAGE; ADR-117); refusing to run the loop"
+  exit 1
+fi
+# END loop-job declarations
 
 _venue_sh="${RIVAULT_WRAPPER_DIR}/../../src/umrs/mini-rivault-llm/venue.sh"
 [[ -f "${_venue_sh}" ]] || {
@@ -65,11 +92,11 @@ podman secret create "loop-${JOB_ID}-gateway-hmac" "${SEC_DIR}/gateway-hmac" 2>/
 
 # Egress guard: only the venue host and (optionally) declared provider hosts
 # are reachable from the driver network; everything else refuses fail-closed.
-ALLOWLIST="data0.ai.r-ccs.riken.jp"
+ALLOWLIST="${GATEWAY_HOST}"
 [[ -n "${EGRESS_EXTRA_ALLOWLIST:-}" ]] && ALLOWLIST="${ALLOWLIST},${EGRESS_EXTRA_ALLOWLIST}"
 export EGRESS_DOMAIN_ALLOWLIST="${ALLOWLIST}"
 export HTTPS_PROXY="http://127.0.0.1:8888" HTTP_PROXY="http://127.0.0.1:8888" \
-  NO_PROXY="localhost,127.0.0.1,data0.ai.r-ccs.riken.jp"
+  NO_PROXY="localhost,127.0.0.1,${GATEWAY_HOST}"
 
 cleanup() {
   rm -rf "${SEC_DIR}"
@@ -78,8 +105,8 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# NOTE on --user 0: the image defaults to the non-root r4mcp user. On this
-# cluster the umrs source tree lives on Lustre, and rootless subuid-mapped
+# NOTE on --user 0: the image may default to a non-root user. Where the umrs
+# source tree lives on Lustre (first seen on rccs), rootless subuid-mapped
 # non-root users have no Lustre principal — every read came back EACCES
 # (diagnosed live; legs 381037/381042). uid 0 inside the rootless user
 # namespace maps to the *submitting* host user, exactly like the venue

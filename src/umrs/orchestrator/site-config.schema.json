@@ -43,7 +43,8 @@
       "$ref": "#/$defs/database"
     },
     "extra": {
-      "type": "object"
+      "type": "object",
+      "description": "Free-form site keys. Known: slurm_job_info_dir; finetune_site (ADR-117, U3 S6e-2: the one site this front trains fine_tune adapters on; absent = fine_tune refused); finetune_wrapper (submit-host path of the fine-tune wrapper; default <repo>/deploy/<finetune_site>/finetune-adapter.slurm)."
     },
     "partition_profiles": {
       "type": "object",
@@ -198,6 +199,10 @@
           "type": "string",
           "description": "ADR-117 D10: the custom MCP runner command, run as `<command> --config-dir /mcp-servers --transport sse --port N`; empty = none declared, custom MCP mounts are refused."
         },
+        "loop_job_image": {
+          "type": "string",
+          "description": "ADR-117 (U3 S6e-2): image the cluster research-loop driver runs in (LOOP_JOB_IMAGE); empty = none declared, cluster-venue loops are refused."
+        },
         "profiles": {
           "type": "array",
           "items": { "type": "string" }
@@ -236,6 +241,10 @@
         "egress_proxy_command": {
           "type": "string",
           "description": "ADR-117 D10: the egress-guard command in egress_proxy_image, run as `<command> --port N`; empty = none declared, egress provisions are refused."
+        },
+        "gateway_base": {
+          "type": "string",
+          "description": "ADR-117 (U3 S6e-2): this front's public base URL that cluster jobs call back (UMRS_GATEWAY_BASE); its host is the cluster loop's only egress destination. Empty = none declared, cluster-venue loops are refused."
         },
         "private_subnet_pool": {
           "type": "string",
