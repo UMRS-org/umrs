@@ -152,11 +152,11 @@ def test_cancel_before_run_yields_cancelled(registry):
     assert rec.status == "cancelled"
 
 
+@pytest.mark.parametrize("registry", ["pg"], indirect=True)  # a restart needs the PG mirror
 def test_read_through_after_simulated_restart(registry):
     from umrs.workflow.pg_registry import PgWorkflowExecutionRegistry
 
-    if not isinstance(registry, PgWorkflowExecutionRegistry):
-        pytest.skip("restart semantics only apply to PG mirror")
+    assert isinstance(registry, PgWorkflowExecutionRegistry)
     rec = registry.create("wf-restore", "alice")
     rec.update(status="running")
     fresh = PgWorkflowExecutionRegistry(registry._pool)

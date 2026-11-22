@@ -85,13 +85,21 @@ class FakeDataBase:
             if "information_schema" in str(query):
                 cursor.fetchall.return_value = [(c,) for c in self._columns]
             else:
-                cursor.fetchall.return_value = self._rows
+                cursor.fetchall.return_value = self._project(str(query))
 
         cursor.execute = MagicMock(side_effect=execute_side_effect)
         cursor.__enter__ = MagicMock(return_value=cursor)
         cursor.__exit__ = MagicMock(return_value=False)
         conn.cursor = MagicMock(return_value=cursor)
         return conn
+
+    def _project(self, query: str) -> list[tuple]:
+        """Rows as the real SELECT returns them: only the selected columns,
+        in the query's order (the export picks columns by profile)."""
+        picked = [c for c in self._columns if f"Identifier('{c}')" in query]
+        picked.sort(key=lambda c: query.index(f"Identifier('{c}')"))
+        index = [self._columns.index(c) for c in picked]
+        return [tuple(row[i] for i in index) for row in self._rows]
 
     def put_conn(self, conn, close=False):
         pass
@@ -121,14 +129,32 @@ class TestHandleExportEmbeddings:
     """Test the server-side handler function directly."""
 
     def _import_handler(self):
-        """Import the handler; skip if heavy server deps are unavailable."""
-        # We patch psycopg2.sql since the handler imports it
-        try:
-            from server_umrs import _handle_export_embeddings
+        """The export logic as a ``(user, args, cfg) -> reply`` call.
 
-            return _handle_export_embeddings
-        except ImportError:
-            pytest.skip("Cannot import server_umrs (missing deps)")
+        It moved from ``server_umrs._handle_export_embeddings`` into
+        ``umrs.server.sql.export_embeddings`` (a1aa0320), which runs on the
+        export thread and sends its JSON reply over the control queue; the old
+        import skipped all of these tests on ImportError until U4.
+        """
+        from umrs.server.sql import export_embeddings
+        from umrs.server.step_staging import register_bucket_registry
+
+        def handler(user, export_args, buckets_cfg):
+            control_mq = MagicMock()
+            # The server publishes its live BucketsCfg as the registry that
+            # names each provisioned bucket's owner (the access rule).
+            register_bucket_registry(buckets_cfg)
+            try:
+                export_embeddings(
+                    MagicMock(), user, export_args, buckets_cfg, control_mq, b"sender", "export"
+                )
+            finally:
+                register_bucket_registry(None)
+            reply, sender = control_mq.send_string.call_args.args
+            assert sender == b"sender"
+            return reply
+
+        return handler
 
     def test_missing_bucket(self):
         handler = self._import_handler()
@@ -150,7 +176,7 @@ class TestHandleExportEmbeddings:
 
         result = json.loads(handler("alice", "alice.xp1.test-bucket;csv", cfg))
         assert result["status"] == "ok"
-        assert result["columns"] == columns
+        assert result["columns"] == ["s3_object", "embedding"]  # default profile: minimal
         assert result["rows_exported"] == 2
         assert len(result["rows"]) == 2
         assert result["format"] == "csv"
@@ -246,7 +272,8 @@ class TestHandleExportEmbeddings:
         entry = FakeServerBucketEntry(data_base=db)
         cfg = FakeBucketsCfg({"alice.xp1.test-bucket": entry})
 
-        result = json.loads(handler("alice", "alice.xp1.test-bucket;csv", cfg))
+        # the full profile keeps the date column (minimal keeps only embedding)
+        result = json.loads(handler("alice", "alice.xp1.test-bucket;csv;full", cfg))
         assert result["status"] == "ok"
         # date should have been converted to string
         assert result["rows"][0][2] == "2025-01-15"
