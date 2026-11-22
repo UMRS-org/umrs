@@ -1,13 +1,16 @@
 """ADR-040 D4: provisions that need the egress profile are refused unless the
 site declares an egress proxy image (env EGRESS_GUARD_IMAGE or
-site.yaml network.egress_proxy_image)."""
+site.yaml network.egress_proxy_image) and, since ADR-117 D10, its command
+(EGRESS_GUARD_COMMAND / network.egress_proxy_command)."""
 
 from __future__ import annotations
 
 import pytest
 from umrs.orchestrator.endpoint_mounts import (
+    EGRESS_PROXY_COMMAND_REFUSAL,
     EGRESS_PROXY_REFUSAL,
     build_mount_environment,
+    egress_proxy_command,
     egress_proxy_image,
     egress_reasons,
 )
@@ -18,7 +21,13 @@ MCP_MOUNTS = {"mcp_servers": [{"source": "/home/alice/tools", "target": "/mcp-se
 
 @pytest.fixture
 def no_site_proxy(monkeypatch):
-    monkeypatch.delenv("EGRESS_GUARD_IMAGE", raising=False)
+    for name in (
+        "EGRESS_GUARD_IMAGE",
+        "EGRESS_GUARD_COMMAND",
+        "MCP_CUSTOM_IMAGE",
+        "MCP_CUSTOM_COMMAND",
+    ):
+        monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(
         "umrs.orchestrator.site_config.get_site_config", lambda _path=None: SiteConfig()
     )
@@ -34,6 +43,16 @@ def test_egress_reasons_names_both_triggers():
 
 def test_no_proxy_declared_reads_as_empty(no_site_proxy):
     assert egress_proxy_image() == ""
+    assert egress_proxy_command() == ""
+
+
+def test_declared_image_without_command_is_refused(no_site_proxy, monkeypatch):
+    monkeypatch.setenv("EGRESS_GUARD_IMAGE", "registry.example.org/egress:1")
+    with pytest.raises(ValueError) as excinfo:
+        build_mount_environment(tier="project", egress_domains=["api.example.com"])
+    message = str(excinfo.value)
+    assert message == EGRESS_PROXY_COMMAND_REFUSAL.format(why="egress_domains=api.example.com")
+    assert "network.egress_proxy_command" in message
 
 
 def test_egress_domains_refused_without_declared_proxy_image(no_site_proxy):
@@ -58,12 +77,18 @@ def test_provision_without_egress_needs_no_proxy(no_site_proxy):
     assert metadata["tier"] == "project"
 
 
-def test_declared_image_travels_with_the_job_env(monkeypatch):
+def test_declared_image_travels_with_the_job_env(no_site_proxy, monkeypatch):
     monkeypatch.setenv("EGRESS_GUARD_IMAGE", "localhost/r4-mcp:test")
+    monkeypatch.setenv("EGRESS_GUARD_COMMAND", "egress-guard")
+    monkeypatch.setenv("MCP_CUSTOM_IMAGE", "localhost/mcp-runner:test")
+    monkeypatch.setenv("MCP_CUSTOM_COMMAND", "mcp-runner")
     env, metadata = build_mount_environment(
         tier="project", mounts=MCP_MOUNTS, egress_domains=["api.example.com"]
     )
     assert env["EGRESS_GUARD_IMAGE"] == "localhost/r4-mcp:test"
+    assert env["EGRESS_GUARD_COMMAND"] == "egress-guard"
+    assert env["MCP_CUSTOM_IMAGE"] == "localhost/mcp-runner:test"
+    assert env["MCP_CUSTOM_COMMAND"] == "mcp-runner"
     assert env["RIVAULT_EXTRA_PROFILES"] == "custom-mcp egress"
     assert env["EGRESS_DOMAIN_ALLOWLIST"] == "api.example.com"
     assert metadata["egress_domains"] == ["api.example.com"]
@@ -71,10 +96,13 @@ def test_declared_image_travels_with_the_job_env(monkeypatch):
 
 def test_site_yaml_declaration_is_honoured(monkeypatch):
     monkeypatch.delenv("EGRESS_GUARD_IMAGE", raising=False)
+    monkeypatch.delenv("EGRESS_GUARD_COMMAND", raising=False)
     declared = SiteConfig()
     declared.network.egress_proxy_image = "registry.example.org/r4-mcp@sha256:abc"
+    declared.network.egress_proxy_command = "python -m guard"
     monkeypatch.setattr(
         "umrs.orchestrator.site_config.get_site_config", lambda _path=None: declared
     )
     env, _ = build_mount_environment(tier="project", egress_domains=["api.example.com"])
     assert env["EGRESS_GUARD_IMAGE"] == "registry.example.org/r4-mcp@sha256:abc"
+    assert env["EGRESS_GUARD_COMMAND"] == "python -m guard"

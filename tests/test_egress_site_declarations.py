@@ -34,12 +34,22 @@ class TestRccsDeclares:
         assert "r4-mcp" in cfg.network.egress_proxy_image
         assert "ghcr.io" not in cfg.network.egress_proxy_image
 
+    def test_sites_declare_the_commands_core_no_longer_names(self):
+        # ADR-117 D10 (U3 S6f): core has no default image or command; the
+        # sites that declare the r4-mcp image name its entrypoints explicitly.
+        for site in ("rccs", "rccs-front"):
+            cfg = load_site_config(str(DEPLOY / site / "site.yaml"))
+            assert cfg.network.egress_proxy_command == "python -m r4_mcp.egress_guard"
+            assert cfg.runtime.mcp_custom_image == "localhost/r4-mcp:latest"
+            assert cfg.runtime.mcp_custom_command == "python -m r4_mcp.runners.custom_mcp"
+
 
 class TestOtherVenuesStillRefuseByDefault:
     def test_ai4s_declares_no_image(self):
         # Non-rccs venues keep the default-deny baseline.
         cfg = load_site_config(str(DEPLOY / "ai4s" / "site.yaml"))
         assert (cfg.network.egress_proxy_image or "") == ""
+        assert (cfg.network.egress_proxy_command or "") == ""
 
 
 class TestGateEnvironmentShape:

@@ -441,6 +441,12 @@ def test_provision_endpoint_forwards_mounts_to_service(monkeypatch):
 
     monkeypatch.setenv("EGRESS_GUARD_IMAGE", "localhost/r4-mcp:test")  # site declares a proxy
 
+    monkeypatch.setenv("EGRESS_GUARD_COMMAND", "egress-guard")  # ADR-117 D10
+
+    monkeypatch.setenv("MCP_CUSTOM_IMAGE", "localhost/mcp-runner:test")
+
+    monkeypatch.setenv("MCP_CUSTOM_COMMAND", "mcp-runner")
+
     app = FastAPI()
     app.include_router(router)
     app.dependency_overrides[get_registry] = _new_registry

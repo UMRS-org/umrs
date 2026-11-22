@@ -4,9 +4,10 @@
 # archive on the shared filesystem for compute nodes to load (ADR-045 D3)
 # =============================================================================
 # Compute nodes keep node-local podman stores and usually have no registry
-# route for a locally built image, so `localhost/r4-mcp:latest` (the declared
-# egress proxy, ADR-040 D4) can only reach them as a `podman save` archive that
-# the wrapper's rivault_ensure_image loads on first use.
+# route for a locally built image, so the declared egress proxy image (site.yaml
+# network.egress_proxy_image, ADR-040 D4; e.g. rccs: localhost/r4-mcp:latest)
+# can only reach them as a `podman save` archive that the wrapper's
+# rivault_ensure_image loads on first use.
 #
 # Usage (login node, through the cluster shim):
 #   cd deploy/<cluster> && ./stage_images.sh [options]
@@ -59,7 +60,7 @@ while [[ $# -gt 0 ]]; do
         --if-missing) IF_MISSING=1; shift ;;
         --print-path) PRINT_PATH=1; shift ;;
         --local) FORCE_LOCAL=1; shift ;;
-        -h|--help) sed -n '2,30p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        -h|--help) sed -n '2,31p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) echo "stage_images: unknown option: $1" >&2; exit 2 ;;
     esac
 done

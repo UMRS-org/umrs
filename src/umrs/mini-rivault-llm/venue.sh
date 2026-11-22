@@ -434,7 +434,7 @@ rivault_arch_suffix() {
 
 # rivault_image_archive_path DIR REF [ARCH]
 #   "<DIR>/<name>-<tag>-<arch>.tar" from the last path component of REF:
-#   localhost/r4-mcp:latest -> <DIR>/r4-mcp-latest-arm64.tar
+#   localhost/egress-guard:latest -> <DIR>/egress-guard-latest-arm64.tar
 rivault_image_archive_path() {
     local dir="$1" ref="$2" arch="${3:-$(rivault_arch_suffix)}" leaf name tag
     leaf="${ref##*/}"

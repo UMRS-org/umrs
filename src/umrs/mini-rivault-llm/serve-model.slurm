@@ -781,9 +781,11 @@ https_proxy=${https_proxy:-${_rivault_https_proxy}}
 no_proxy=${no_proxy:-${RIVAULT_NO_PROXY:-localhost,127.0.0.1,::1,litellm,vllm,ll-postgres,coredns,nginx,egress-guard}}
 # Comma-separated domains allowed through egress-guard (empty = fully offline)
 EGRESS_DOMAIN_ALLOWLIST=${EGRESS_DOMAIN_ALLOWLIST:-}
-# In-stack egress-guard image (ADR-040): computed here so the compose file
-# keeps the simple ${EGRESS_GUARD_IMAGE:-...} form (no nested substitution).
-EGRESS_GUARD_IMAGE=${EGRESS_GUARD_IMAGE:-localhost/r4-mcp:${MCP_CUSTOM_DOCKER_TAG:-latest}}
+# In-stack egress-guard image + command (ADR-040, ADR-117 D10): site-declared
+# (site.yaml network.egress_proxy_image / network.egress_proxy_command); core
+# names neither. Empty = undeclared: the egress profile is refused below.
+EGRESS_GUARD_IMAGE=${EGRESS_GUARD_IMAGE:-}
+EGRESS_GUARD_COMMAND=${EGRESS_GUARD_COMMAND:-}
 # Audit bind source for the egress-guard service (matches the shell-side
 # default created before this heredoc; /var/log/egress-guard is not
 # creatable by rootless podman on compute nodes).
@@ -816,6 +818,11 @@ RIVAULT_USERNS_MODE=${RIVAULT_USERNS_MODE:-keep-id:uid=0,gid=0}
 # ─── 9. User-Mounted Resources (MCP / RAG / Project Data) ────────────────────
 # Host path to user-provided MCP server code (bind-mounted read-only)
 MCP_SERVERS_PATH=${MCP_SERVERS_PATH:-/tmp/mcp-servers}
+# Custom MCP runner image + command (ADR-117 D10): site-declared (site.yaml
+# runtime.mcp_custom_image / runtime.mcp_custom_command); empty = undeclared,
+# the custom-mcp profile is refused below.
+MCP_CUSTOM_IMAGE=${MCP_CUSTOM_IMAGE:-}
+MCP_CUSTOM_COMMAND=${MCP_CUSTOM_COMMAND:-}
 # Host path to project datasets (bind-mounted read-only)
 PROJECT_DATA_PATH=${PROJECT_DATA_PATH:-/tmp/project-data}
 # Host path to pre-built RAG index (bind-mounted read-only)
@@ -1208,20 +1215,33 @@ for _p in $RIVAULT_PROFILES; do
 	_profile_flags="${_profile_flags} --profile ${_p}"
 done
 
+# BEGIN serving-image refusals (ADR-040 D4, ADR-117 D10)
 # ADR-040 D4: the egress profile must never start without a present proxy
 # image. Refuse the launch here with a named error instead of bringing up a
 # stack whose proxy service is silently absent.
+# ADR-117 D10: the image and its command are site-declared; core has no
+# default, so an undeclared one refuses by name.
 # ADR-045 D3: present on the node -> archive on the shared filesystem
 # (RIVAULT_IMAGE_ARCHIVE_DIR = site.yaml runtime.image_archive_dir, produced by
 # deploy/<cluster>/stage_images.sh) -> registry pull -> refuse.
 if [[ " ${RIVAULT_PROFILES} " == *" egress "* ]]; then
-    _egress_guard_image="${EGRESS_GUARD_IMAGE:-localhost/r4-mcp:${MCP_CUSTOM_DOCKER_TAG:-latest}}"
+    if [[ -z "${EGRESS_GUARD_IMAGE:-}" || -z "${EGRESS_GUARD_COMMAND:-}" ]]; then
+        echo "[rivault] FATAL: egress profile requested but this site declares no egress-guard image or command (site.yaml network.egress_proxy_image + network.egress_proxy_command / EGRESS_GUARD_IMAGE + EGRESS_GUARD_COMMAND; ADR-040 D4, ADR-117 D10); refusing to launch."
+        exit 1
+    fi
+    _egress_guard_image="${EGRESS_GUARD_IMAGE}"
     if command -v podman >/dev/null 2>&1 && \
        ! rivault_ensure_image "${_egress_guard_image}" "${RIVAULT_IMAGE_ARCHIVE_DIR:-}" "${EGRESS_GUARD_IMAGE_ARCHIVE:-}"; then
         echo "[rivault] FATAL: egress profile requested but egress-guard image '${_egress_guard_image}' is not present on this node and cannot be pulled (ADR-040 D4); refusing to launch. Stage it with deploy/<cluster>/stage_images.sh (ADR-045 D3)."
         exit 1
     fi
 fi
+if [[ " ${RIVAULT_PROFILES} " == *" custom-mcp "* ]] && \
+   [[ -z "${MCP_CUSTOM_IMAGE:-}" || -z "${MCP_CUSTOM_COMMAND:-}" ]]; then
+    echo "[rivault] FATAL: custom-mcp profile requested but this site declares no custom MCP runner image or command (site.yaml runtime.mcp_custom_image + runtime.mcp_custom_command / MCP_CUSTOM_IMAGE + MCP_CUSTOM_COMMAND; ADR-117 D10); refusing to launch."
+    exit 1
+fi
+# END serving-image refusals
 
 # ADR-045 D3: the vision sidecar image travels the same way. Its archive keeps
 # the convention the legacy deploy shim established (VISION_TARBALL base path

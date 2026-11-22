@@ -422,58 +422,19 @@ services:
 ###          memory: "128M"
 ## ── end mcpo / mcp-* ─────────────────────────────────────────────────
 
-  # Vision MCP server wrapping SAM3 for image segmentation
-  # bug.memo B4 (Phase 2h, 2026-04-25): retargeted from the published
-  # ghcr.io/riken-rccs/r4-mcp image to the locally-built
-  # r4-mcp image (mcp-servers/Dockerfile). Override via MCP_VISION_IMAGE
-  # if you need a different build.
-  mcp-vision:
-    profiles: [ vision ]
-    image: ${MCP_VISION_IMAGE:-localhost/r4-mcp:${MCP_VISION_DOCKER_TAG:-latest}}
-    command: python -m r4_mcp.servers.vision
-    networks:
-      genai-private-net:
-        ipv4_address: ${PRIV_IP1TO3:-10.0.0}.${MCP_VISION_IP4:-25}
-    extra_hosts:
-      - ${UMRS_S3_BUCKET_HOST:?}:${PRIV_IP1TO3:-10.0.0}.${NGINX_OUT_IP4:-252}
-    volumes:
-      - type: bind
-        source: ${VISION_MODEL_PATH:-/models/sam3}
-        target: /models/sam3
-        read_only: true
-      - type: tmpfs
-        target: /tmp/vision_outputs
-    environment:
-      <<: *rivault-egress-env
-      UMRS_SAM3_MODEL_PATH: /models/sam3
-      TRANSFORMERS_OFFLINE: "1"
-      HF_HUB_OFFLINE: "1"
-      TZ: ${GENAI_TZ:-Asia/Tokyo}
-      # GPU access - set to specific device or leave for auto
-      # Note: CUDA_VISIBLE_DEVICES not set to allow GPU access
-    # cap_drop/userns_mode removed (2026-08-12): runc create crash.
-    deploy:
-      mode: replicated
-      replicas: ${MCP_VISION_REPLICAS:-1}
-      endpoint_mode: vip
-##      resources:
-##        limits:
-##          cpus: ${MCP_VISION_CPU_LIMIT:-4}
-##          memory: ${MCP_VISION_MEM_LIMIT:-16}G
-##        reservations:
-##          cpus: "0.1"
-##          memory: "128M"
-
   # EgressGuard: allowlisting forward proxy for MCP servers (ADR-040).
-  # Ships in the platform's own r4-mcp image (python -m r4_mcp.egress_guard);
-  # no external image. Started only for jobs that request egress
-  # (egress_domains / custom MCP mounts -> 'egress' profile). Fail-closed:
-  # an empty EGRESS_DOMAIN_ALLOWLIST denies every destination. The full
-  # image reference is computed in the per-job env file by serve-model.slurm.
+  # ADR-117 D10: the site declares the image and the command (site.yaml
+  # network.egress_proxy_image + network.egress_proxy_command ->
+  # EGRESS_GUARD_IMAGE + EGRESS_GUARD_COMMAND); core names neither. The
+  # declared command must accept `--port N`. Started only for jobs that
+  # request egress (egress_domains / custom MCP mounts -> 'egress' profile);
+  # serve-model.slurm refuses that profile when either value is empty, so no
+  # default stands in here. Fail-closed: an empty EGRESS_DOMAIN_ALLOWLIST
+  # denies every destination.
   egress-guard:
     profiles: [ egress ]
-    image: ${EGRESS_GUARD_IMAGE:-localhost/r4-mcp:latest}
-    command: python -m r4_mcp.egress_guard --port ${EGRESS_PROXY_PORT:-8888}
+    image: ${EGRESS_GUARD_IMAGE}
+    command: ${EGRESS_GUARD_COMMAND} --port ${EGRESS_PROXY_PORT:-8888}
     networks:
       genai-private-net:
         ipv4_address: ${PRIV_IP1TO3:-10.0.0}.${EGRESS_GUARD_IP4:-30}
@@ -504,13 +465,15 @@ services:
 
   # Custom MCP server runner (for user-mounted MCP servers)
   # Mount point: /mcp-servers/<name>/ with config.json
-  # bug.memo B4 (Phase 2h, 2026-04-25): retargeted to local r4-mcp
-  # image. The custom-mcp runner currently ships as a stub in r4_mcp;
-  # override MCP_CUSTOM_IMAGE if you need the published implementation.
+  # ADR-117 D10: the site declares the image and the command (site.yaml
+  # runtime.mcp_custom_image + runtime.mcp_custom_command -> MCP_CUSTOM_IMAGE
+  # + MCP_CUSTOM_COMMAND); core names neither. The declared command must
+  # accept `--config-dir DIR --transport sse --port N`. serve-model.slurm
+  # refuses the custom-mcp profile when either value is empty.
   mcp-custom:
     profiles: [ custom-mcp ]
-    image: ${MCP_CUSTOM_IMAGE:-localhost/r4-mcp:${MCP_CUSTOM_DOCKER_TAG:-latest}}
-    command: python -m r4_mcp.runners.custom_mcp --config-dir /mcp-servers --transport sse --port ${MCP_CUSTOM_PORT:-8080}
+    image: ${MCP_CUSTOM_IMAGE}
+    command: ${MCP_CUSTOM_COMMAND} --config-dir /mcp-servers --transport sse --port ${MCP_CUSTOM_PORT:-8080}
     networks:
       genai-private-net:
         ipv4_address: ${PRIV_IP1TO3:-10.0.0}.${MCP_CUSTOM_IP4:-31}

@@ -487,3 +487,19 @@ class TestEgressProxyImage:
 
     def test_default_is_empty_meaning_no_proxy_declared(self):
         assert NetworkConfig().egress_proxy_image == ""
+
+    def test_network_env_exports_declared_command_only(self):
+        # ADR-117 D10: the egress-guard command is site-declared, like the image.
+        from umrs.orchestrator import site_config as sc
+
+        assert "EGRESS_GUARD_COMMAND" not in sc._network_env(NetworkConfig())
+        env = sc._network_env(NetworkConfig(egress_proxy_command="python -m guard"))
+        assert env["EGRESS_GUARD_COMMAND"] == "python -m guard"
+
+    def test_command_env_fallback_without_site_yaml(self):
+        from umrs.orchestrator import site_config as sc
+
+        with patch.dict(os.environ, {"EGRESS_GUARD_COMMAND": "guard", "MCP_CUSTOM_COMMAND": "run"}):
+            cfg = sc.default_site_config()
+        assert cfg.network.egress_proxy_command == "guard"
+        assert cfg.runtime.mcp_custom_command == "run"
