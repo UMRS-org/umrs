@@ -210,10 +210,39 @@ jobs:
           retention-days: 14
         continue-on-error: true
 
+  image:
+    # U4-d (plan §7.2): build docker/Dockerfile.server and run its smoke test,
+    # no push. The Dockerfile still expects the r4 checkout layout (umrs/ and
+    # r4-contracts/ side by side, the converge's build context), so the job
+    # assembles exactly that: this checkout as ctx/umrs and r4-contracts from
+    # the public R4 export (the same pin and tree as the r4-ext suite). CPU
+    # torch and no bundled weights, as r4's scripts/deps/image-smoke.sh.
+    name: Server image (build and smoke, no push)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          path: ctx/umrs
+      - name: r4-contracts from the public R4 export
+        run: |
+          curl -fsSL https://codeload.github.com/R-CCS-HPBD/r4/tar.gz/63607f1f80160db912c82b8d8afb892e6730bb7b \
+            | tar -xz -C ctx --strip-components=1 r4-63607f1f80160db912c82b8d8afb892e6730bb7b/r4-contracts
+          test -f ctx/r4-contracts/pyproject.toml
+      - name: Build (the Dockerfile runs the smoke test as its last step)
+        run: |
+          docker build --load \
+            --build-arg TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu \
+            --build-arg UMRS_BUNDLE_TEXT_EMBEDDER=0 \
+            --build-arg UMRS_BUNDLE_INGEST_MODELS=0 \
+            -f ctx/umrs/docker/Dockerfile.server -t umrs-server-ci:${{ github.run_id }} ctx
+      - name: Smoke the tagged image
+        run: docker run --rm --network=none umrs-server-ci:${{ github.run_id }} python /opt/umrs/server-image-smoke.py
+
   ci-success:
     name: ci-success
     if: always()
-    needs: [lint, test-protocol, test-core]
+    needs: [lint, test-protocol, test-core, image]
     runs-on: ubuntu-latest
     steps:
       - name: Every required job passed
@@ -221,3 +250,4 @@ jobs:
           test "${{ needs.lint.result }}" = success
           test "${{ needs.test-protocol.result }}" = success
           test "${{ needs.test-core.result }}" = success
+          test "${{ needs.image.result }}" = success
