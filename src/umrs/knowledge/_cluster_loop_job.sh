@@ -14,11 +14,13 @@ set -euo pipefail
 
 JOB_ID="${SLURM_JOB_ID:-manual}"
 LOOP_ID="${LOOP_ID:?LOOP_ID required}"
-R4_GATEWAY_BASE="${R4_GATEWAY_BASE:-https://data0.ai.r-ccs.riken.jp/rccs}"
-R4_LOOP_JOB_ID="${R4_LOOP_JOB_ID:-}"
-R4_LOOP_ATTEMPT_ID="${R4_LOOP_ATTEMPT_ID:-}"
-R4_LOOP_OWNER="${R4_LOOP_OWNER:-}"
-R4_LOOP_PROJECT="${R4_LOOP_PROJECT:-}"
+# U3 S6d: neutral UMRS_* names first, then the legacy R4_* ones (one release).
+R4_GATEWAY_BASE="${UMRS_GATEWAY_BASE:-${R4_GATEWAY_BASE:-https://data0.ai.r-ccs.riken.jp/rccs}}"
+R4_LOOP_JOB_ID="${UMRS_LOOP_JOB_ID:-${R4_LOOP_JOB_ID:-}}"
+R4_LOOP_ATTEMPT_ID="${UMRS_LOOP_ATTEMPT_ID:-${R4_LOOP_ATTEMPT_ID:-}}"
+R4_LOOP_OWNER="${UMRS_LOOP_OWNER:-${R4_LOOP_OWNER:-}}"
+R4_LOOP_PROJECT="${UMRS_LOOP_PROJECT:-${R4_LOOP_PROJECT:-}}"
+R4_DIR="${UMRS_SRC_DIR:-${R4_DIR:-}}"
 LOOP_IMAGE="${LOOP_JOB_IMAGE:-localhost/r4-mcp:latest}"
 RIVAULT_WRAPPER_DIR="${RIVAULT_WRAPPER_DIR:?RIVAULT_WRAPPER_DIR required}"
 
@@ -95,6 +97,11 @@ exec podman run --rm \
   --secret "loop-${JOB_ID}-gateway-hmac,type=env,target=UMRS_GATEWAY_HMAC_SECRET" \
   -v "${R4_DIR}:/umrs-repo/src/umrs:ro,Z" \
   -e LOOP_ID="${LOOP_ID}" \
+  -e UMRS_GATEWAY_BASE="${R4_GATEWAY_BASE}" \
+  -e UMRS_LOOP_JOB_ID="${R4_LOOP_JOB_ID}" \
+  -e UMRS_LOOP_ATTEMPT_ID="${R4_LOOP_ATTEMPT_ID}" \
+  -e UMRS_LOOP_OWNER="${R4_LOOP_OWNER}" \
+  -e UMRS_LOOP_PROJECT="${R4_LOOP_PROJECT}" \
   -e R4_GATEWAY_BASE="${R4_GATEWAY_BASE}" \
   -e R4_LOOP_JOB_ID="${R4_LOOP_JOB_ID}" \
   -e R4_LOOP_ATTEMPT_ID="${R4_LOOP_ATTEMPT_ID}" \

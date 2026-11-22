@@ -17,7 +17,6 @@ Verification headers come from the same env the loop job injects
 from __future__ import annotations
 
 import logging
-import os
 import time
 from typing import Any
 
@@ -31,9 +30,13 @@ _SUCCESS_STATUS = {"succeeded", "completed", "success"}
 
 
 def _transport_from_env() -> ClusterLoopTransport:
-    base = os.environ.get("R4_GATEWAY_BASE", "").rstrip("/")
+    from umrs.shared.compat_names import env
+
+    base = env("GATEWAY_BASE").rstrip("/")  # UMRS_ first, then R4_ (U3 S6d)
     if not base:
-        raise RuntimeError("R4_GATEWAY_BASE is required for the cluster workflow port")
+        raise RuntimeError(
+            "UMRS_GATEWAY_BASE (or R4_GATEWAY_BASE) is required for the cluster workflow port"
+        )
     return ClusterLoopTransport(
         base_url=base,
         owner_headers=_owner_headers_from_env(),
@@ -63,7 +66,9 @@ class ClusterHttpWorkflowExecutionPort(WorkflowExecutionPort):
         self._max_wait = max_wait_seconds
 
     def trigger(self, workflow_name: str, params: dict[str, Any]) -> str:
-        payload = {"user_id": os.environ.get("R4_LOOP_OWNER", ""), "params": params}
+        from umrs.shared.compat_names import env
+
+        payload = {"user_id": env("LOOP_OWNER"), "params": params}
         data = self._transport.post(f"/{workflow_name}/trigger", payload)
         execution_id = str(
             data.get("execution_id")

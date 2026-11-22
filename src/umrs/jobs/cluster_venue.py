@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from umrs.jobs.models import Job, JobAttempt
+from umrs.shared import compat_names
 
 from .research_loop_backend import REF_PREFIX
 
@@ -24,6 +25,16 @@ logger = logging.getLogger(__name__)
 LOOP_WRAPPER_REL = str(Path("deploy") / "rccs" / "loop-job.slurm")
 LOOP_WRAPPER_WALL_SECONDS = 2 * 3600  # #SBATCH --time=2:00:00 in the wrapper
 
+
+
+def _both_names(**values: str) -> dict[str, str]:
+    """U3 S6d: each value under its neutral ``UMRS_<name>`` and its legacy
+    ``R4_<name>``, so a job script from either side of the rename reads it."""
+    out: dict[str, str] = {}
+    for name, value in values.items():
+        out[f"UMRS_{name}"] = value
+        out[f"R4_{name}"] = value
+    return out
 
 def _hmac_hex(secret: str) -> str:
     return secret.encode().hex()
@@ -139,13 +150,15 @@ class ClusterSlurmSubmitter:
         wrapper = str(Path(deploy_dir) / Path(LOOP_WRAPPER_REL).name)
         env = {
             "LOOP_ID": loop_id,
-            "R4_GATEWAY_BASE": os.environ.get(
-                "R4_GATEWAY_BASE", "https://data0.ai.r-ccs.riken.jp/rccs"
+            **_both_names(
+                GATEWAY_BASE=compat_names.env(
+                    "GATEWAY_BASE", "https://data0.ai.r-ccs.riken.jp/rccs"
+                ),
+                LOOP_JOB_ID=job.job_id,
+                LOOP_ATTEMPT_ID=attempt.attempt_id,
+                LOOP_OWNER=str(job.user_id),
+                LOOP_PROJECT=job.project_id,
             ),
-            "R4_LOOP_JOB_ID": job.job_id,
-            "R4_LOOP_ATTEMPT_ID": attempt.attempt_id,
-            "R4_LOOP_OWNER": str(job.user_id),
-            "R4_LOOP_PROJECT": job.project_id,
             "UMRS_GATEWAY_HMAC_SECRET_HEX": _hmac_hex(_gateway_hmac_secret()),
             "RIVAULT_WRAPPER_DIR": _cluster_deploy_dir("rccs"),
         }

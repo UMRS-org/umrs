@@ -171,9 +171,12 @@ def _owner_headers_from_env() -> dict[str, str]:
             "UMRS_GATEWAY_HMAC_SECRET must be set on the cluster job "
             "(mount from podman/slurm secrets — never hardcoded)"
         )
-    user = os.environ.get("R4_LOOP_OWNER", "")
-    project = os.environ.get("R4_LOOP_PROJECT", "")
-    admin = os.environ.get("R4_LOOP_ADMIN", "").lower() in ("1", "true", "yes")
+    from umrs.shared.compat_names import env
+
+    # U3 S6d: UMRS_LOOP_* first, then the legacy R4_LOOP_* names.
+    user = env("LOOP_OWNER")
+    project = env("LOOP_PROJECT")
+    admin = env("LOOP_ADMIN").lower() in ("1", "true", "yes")
     return {
         "X-User-ID": user,
         "X-Verified-Project-ID": project,
@@ -184,11 +187,14 @@ def _owner_headers_from_env() -> dict[str, str]:
 
 def build_cluster_store(gateway_base_url: str | None = None) -> HttpLoopStore:
     """Assemble the HTTP-backed store from the environment."""
-    import os
 
-    base = gateway_base_url or os.environ.get("R4_GATEWAY_BASE", "").rstrip("/")
+    from umrs.shared.compat_names import env
+
+    base = gateway_base_url or env("GATEWAY_BASE").rstrip("/")
     if not base:
-        raise RuntimeError("R4_GATEWAY_BASE is required for cluster loop hosting")
+        raise RuntimeError(
+            "UMRS_GATEWAY_BASE (or R4_GATEWAY_BASE) is required for cluster loop hosting"
+        )
     return HttpLoopStore(
         ClusterLoopTransport(base_url=base, owner_headers=_owner_headers_from_env())
     )
