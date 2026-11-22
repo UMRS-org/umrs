@@ -1062,7 +1062,7 @@ class TestDataClassGate:
         )
         assert r.status_code == 200, r.text  # absent row → no gate (never invented)
 
-    def test_sensitive_project_admits_institutional_source(self, harness, monkeypatch):
+    def test_sensitive_project_admits_institutional_source(self, harness):
         """ADR-062 amendment (2026-10-15): an institutional host (the site's
         allowlist — Rikyu by default) is NOT public for the venue-start gate,
         even though the pushed source's provider_kind is."""
@@ -1104,9 +1104,7 @@ class TestDataClassGate:
         assert r.status_code == 403
         assert r.headers["x-platform-error-code"] == "companionvenue.source_class_refused"
 
-    def test_sensitive_project_mixed_set_refuses_only_the_commercial_source(
-        self, harness, monkeypatch
-    ):
+    def test_sensitive_project_mixed_set_refuses_only_the_commercial_source(self, harness):
         """F9 (wave-2 review): an institutional and a commercial source in one
         start — the refusal names the commercial source only, and the text
         says which sources a sensitive project may use."""
@@ -1152,7 +1150,7 @@ class TestDataClassGate:
         )
         assert r.status_code == 200, r.text
 
-    def test_sensitive_project_userinfo_host_is_never_institutional(self, harness, monkeypatch):
+    def test_sensitive_project_userinfo_host_is_never_institutional(self, harness):
         """F7/F9: a source whose stored host carries userinfo is refused even
         when the allowlisted host appears after the '@' (fail closed)."""
         harness.pool.seed("alice", "sess-1")

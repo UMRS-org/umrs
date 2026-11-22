@@ -222,7 +222,7 @@ class TestUrlHost:
             ("https://api.rikyu.r-ccs.riken.jp@evil.example.com", False),
         ],
     )
-    def test_classification(self, monkeypatch, url, expected):
+    def test_classification(self, url, expected):
         assert is_institutional_url(url) is expected
 
 
@@ -294,7 +294,7 @@ class TestLeaseGateInstitutional:
 
 
 class TestConnectInfoAdvertisesAllowlist:
-    def test_declared_list_emitted(self, monkeypatch):
+    def test_declared_list_emitted(self):
         from umrs.api import ops
 
         result = ops.ops_connect_info(x_user_id=None)
@@ -307,7 +307,7 @@ class TestConnectInfoAdvertisesAllowlist:
         result = ops.ops_connect_info(x_user_id=None)
         assert result["institutional_provider_hosts"] == ["llm.example.jp"]
 
-    def test_response_model_keeps_the_field(self, monkeypatch):
+    def test_response_model_keeps_the_field(self):
         """The route runs under response_model=ConnectInfoResponse: a key the
         model does not declare is stripped before it reaches the client."""
         from umrs.api import ops
