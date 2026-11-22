@@ -909,7 +909,10 @@ def test_the_extraction_budget_is_per_job_not_per_document(monkeypatch):
     monkeypatch.setattr("umrs.knowledge.llm_chat.chat_completion", slow_chat)
     started = time.monotonic()
     result, store, *_rest = _run_job(monkeypatch, er_module=_er_module([]), llm="real")
-    assert time.monotonic() - started < 3.4  # 1 s job budget + one lite call (+ slack)
+    # ~2.5 s expected (1 s job budget + one 1.5 s lite call). The flags below
+    # prove the per-job budget; the clock is only a coarse bound, since a
+    # loaded hosted runner took 4.2 s (UMRS-org main 836ff576, 2026-11-22).
+    assert time.monotonic() - started < 10
     assert result.degraded and "budget exhausted" in result.degraded_reason
     assert "extract_job_budget_exhausted" in result.extract_notes
     sem = [i for r in store.rows if (i := str(getattr(r, "node_id", ""))).startswith("node-sem-")]
