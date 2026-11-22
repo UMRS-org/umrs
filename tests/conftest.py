@@ -156,21 +156,31 @@ _clone_database_for_xdist_worker()
 # `usage: __main__.py [-h] [-c CONFIG]` INTERNALERROR in full-suite runs.
 
 
-# U4 (ADR-117 §7.2): UMRS-org's core-only CI job runs without the umrs-r4
-# extension, r4-contracts, r4-mcp or the r4 client (all R4-side). The
-# test files that import either are not collected there; the header says how
-# many. Coarse on purpose for now: a file that mixes core and extension cases
-# drops its core cases in the core-only run until it is split (U4 follow-up).
-_EXTENSION_IMPORT = re.compile(r"^\s*(?:from|import)\s+(?:umrs_r4|r4_contracts|r4_mcp|r4)\b", re.M)
+# U4 (ADR-117 §7.2): UMRS-org's CI jobs run without some R4-side modules:
+# the core job without any of them, the extension job (U4-e) with umrs-r4 and
+# r4-contracts but without the r4 client and r4-mcp. A test file that imports
+# a module absent here is not collected (nor, transitively, the test files
+# importing it); the header names the modules and the count. In r4 CI every
+# one is importable (its pytest pythonpath adds r4/src and mcp-servers/src),
+# so nothing is left out there. Coarse on purpose: a file that mixes core and
+# extension cases drops its core cases until it is split (U4 follow-up).
+_R4_SIDE_MODULES = ("umrs_r4", "r4_contracts", "r4_mcp", "r4")
 
 
 _SIBLING_IMPORT = re.compile(r"^\s*from\s+(?:tests\.)?(test_\w+)\s+import\b", re.M)
 
 
-def _extension_importers(texts: dict[Path, str]) -> set[Path]:
-    """Test files that import umrs_r4 or r4_contracts, plus (transitively) the
-    test files that import one of those sibling test modules."""
-    ignored = {path for path, text in texts.items() if _EXTENSION_IMPORT.search(text)}
+def _absent_r4_side_modules() -> tuple[str, ...]:
+    import importlib.util
+
+    return tuple(m for m in _R4_SIDE_MODULES if importlib.util.find_spec(m) is None)
+
+
+def _extension_importers(texts: dict[Path, str], absent: tuple[str, ...]) -> set[Path]:
+    """Test files importing one of ``absent``, plus (transitively) the test
+    files that import one of those sibling test modules."""
+    pattern = re.compile(rf"^\s*(?:from|import)\s+(?:{'|'.join(absent)})\b", re.M)
+    ignored = {path for path, text in texts.items() if pattern.search(text)}
     while True:
         names = {path.stem for path in ignored}
         more = {
@@ -183,16 +193,14 @@ def _extension_importers(texts: dict[Path, str]) -> set[Path]:
         ignored |= more
 
 
-def _core_only_ignores() -> list[str]:
-    import importlib.util
-
-    if importlib.util.find_spec("umrs_r4") is not None:
+def _core_only_ignores(absent: tuple[str, ...]) -> list[str]:
+    if not absent:
         return []
     here = Path(__file__).resolve().parent
     texts = {
         path: path.read_text(encoding="utf-8", errors="replace") for path in here.rglob("test_*.py")
     }
-    return sorted(str(path.relative_to(here)) for path in _extension_importers(texts))
+    return sorted(str(path.relative_to(here)) for path in _extension_importers(texts, absent))
 
 
 # U4: these read files of the r4 parent checkout (gateway sidecar, the
@@ -216,7 +224,8 @@ def _parent_tree_ignores() -> list[str]:
     return [] if (parent / "gateway").is_dir() else list(_PARENT_TREE_TESTS)
 
 
-_CORE_ONLY = _core_only_ignores()
+_ABSENT = _absent_r4_side_modules()
+_CORE_ONLY = _core_only_ignores(_ABSENT)
 _PARENT_ONLY = _parent_tree_ignores()
 collect_ignore = _CORE_ONLY + _PARENT_ONLY
 
@@ -224,7 +233,8 @@ collect_ignore = _CORE_ONLY + _PARENT_ONLY
 def pytest_report_header(config):
     parts = []
     if _CORE_ONLY:
-        parts.append(f"core-only run: {len(_CORE_ONLY)} extension test files not collected")
+        absent = ", ".join(_ABSENT)
+        parts.append(f"without {absent}: {len(_CORE_ONLY)} test files not collected")
     if _PARENT_ONLY:
         parts.append(f"standalone checkout: {len(_PARENT_ONLY)} r4-parent test files not collected")
     return "; ".join(parts) or None
