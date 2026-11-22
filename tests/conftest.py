@@ -4,10 +4,12 @@ Pytest configuration and fixtures for UMRS tests.
 
 import atexit
 import os
+import re
 import shutil
 import sys
 import tempfile
 from collections.abc import Generator
+from pathlib import Path
 
 import pytest
 
@@ -128,6 +130,23 @@ def _clone_database_for_xdist_worker() -> None:
     finally:
         conn.close()
     os.environ["POSTGRES_DB"] = clone
+    for name in ("UMRS_TEST_DB_URL", "UMRS_PROJECT_STORAGE_IT_PG_URI"):
+        _point_url_at_clone(name, template, clone)
+
+
+def _point_url_at_clone(name: str, template: str, clone: str) -> None:
+    """Re-point a DSN env var that names the template database at the clone.
+
+    The integration tests read these (U4: hosted CI sets them to the migrated
+    template); otherwise they bypass the clone and hold the template open,
+    which blocks the other workers' ``CREATE DATABASE ... TEMPLATE``.
+    """
+    from urllib.parse import urlsplit, urlunsplit
+
+    url = os.environ.get(name, "")
+    parts = urlsplit(url)
+    if parts.path.lstrip("/") == template:
+        os.environ[name] = urlunsplit(parts._replace(path=f"/{clone}"))
 
 
 _clone_database_for_xdist_worker()
@@ -135,6 +154,80 @@ _clone_database_for_xdist_worker()
 # Demo/onboarding files that wrap argparse at module scope: collecting them
 # at test time makes pytest's argument parser abort with SystemExit — see the
 # `usage: __main__.py [-h] [-c CONFIG]` INTERNALERROR in full-suite runs.
+
+
+# U4 (ADR-117 §7.2): UMRS-org's core-only CI job runs without the umrs-r4
+# extension, r4-contracts, r4-mcp or the r4 client (all R4-side). The
+# test files that import either are not collected there; the header says how
+# many. Coarse on purpose for now: a file that mixes core and extension cases
+# drops its core cases in the core-only run until it is split (U4 follow-up).
+_EXTENSION_IMPORT = re.compile(r"^\s*(?:from|import)\s+(?:umrs_r4|r4_contracts|r4_mcp|r4)\b", re.M)
+
+
+_SIBLING_IMPORT = re.compile(r"^\s*from\s+(?:tests\.)?(test_\w+)\s+import\b", re.M)
+
+
+def _extension_importers(texts: dict[Path, str]) -> set[Path]:
+    """Test files that import umrs_r4 or r4_contracts, plus (transitively) the
+    test files that import one of those sibling test modules."""
+    ignored = {path for path, text in texts.items() if _EXTENSION_IMPORT.search(text)}
+    while True:
+        names = {path.stem for path in ignored}
+        more = {
+            path
+            for path, text in texts.items()
+            if path not in ignored and names & set(_SIBLING_IMPORT.findall(text))
+        }
+        if not more:
+            return ignored
+        ignored |= more
+
+
+def _core_only_ignores() -> list[str]:
+    import importlib.util
+
+    if importlib.util.find_spec("umrs_r4") is not None:
+        return []
+    here = Path(__file__).resolve().parent
+    texts = {
+        path: path.read_text(encoding="utf-8", errors="replace") for path in here.rglob("test_*.py")
+    }
+    return sorted(str(path.relative_to(here)) for path in _extension_importers(texts))
+
+
+# U4: these read files of the r4 parent checkout (gateway sidecar, the
+# hatch registry, the e2e compose, the parent's HPC runner); a standalone
+# umrs checkout (UMRS-org CI) has none. r4 CI still runs them.
+_PARENT_TREE_TESTS = (
+    "test_h1r_memberships_sign_parity.py",
+    "test_mcp_manifest.py",
+    "test_mini_rivault_definition.py",
+    "test_mini_rivault_egress.py",
+    "test_otel_boot.py",
+    "test_presigned_ttl_edges.py",
+    "test_sidecar_sign_parity.py",
+    "test_slurm_orchestration_authority.py",
+    "test_ttl_clamp.py",
+)
+
+
+def _parent_tree_ignores() -> list[str]:
+    parent = Path(__file__).resolve().parents[2]
+    return [] if (parent / "gateway").is_dir() else list(_PARENT_TREE_TESTS)
+
+
+_CORE_ONLY = _core_only_ignores()
+_PARENT_ONLY = _parent_tree_ignores()
+collect_ignore = _CORE_ONLY + _PARENT_ONLY
+
+
+def pytest_report_header(config):
+    parts = []
+    if _CORE_ONLY:
+        parts.append(f"core-only run: {len(_CORE_ONLY)} extension test files not collected")
+    if _PARENT_ONLY:
+        parts.append(f"standalone checkout: {len(_PARENT_ONLY)} r4-parent test files not collected")
+    return "; ".join(parts) or None
 
 
 def pytest_addoption(parser):

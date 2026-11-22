@@ -90,7 +90,11 @@ class _NoCommit:
 
 
 def _apply(cur) -> None:
-    cur.execute("CREATE ROLE umrs_infer NOLOGIN")  # the grant leg runs too
+    # the grant leg runs too; roles are cluster-wide, so a migrated server has it
+    cur.execute(
+        "DO $$ BEGIN CREATE ROLE umrs_infer NOLOGIN;"
+        " EXCEPTION WHEN duplicate_object THEN NULL; END $$"
+    )
     for name in ("0050_llm_usage_log.sql", "0053_llm_usage_log_reasoning_tokens.sql"):
         cur.execute((migrations.MIGRATIONS_DIR / name).read_text())
     cur.execute(MIGRATION.read_text())

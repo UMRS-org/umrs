@@ -61,6 +61,7 @@ from __future__ import annotations
 
 import dis
 import importlib
+import importlib.util
 import inspect
 import types
 import typing
@@ -965,8 +966,25 @@ def test_every_project_taking_route_is_guarded_or_allowlisted(routes):
     )
 
 
+# U4: the core-only run (no umrs-r4) mounts none of the extension's routes,
+# so their allowlist entries and vocabulary keys are checked only with it.
+_EXTENSION_PRESENT = importlib.util.find_spec("umrs_r4") is not None
+_EXTENSION_PREFIXES = (
+    "/umrs/companion/sessions",
+    "/umrs/companion/trust",
+    "/umrs/admin/sessions",
+    "/umrs/traces/plan-runs",
+)
+
+
+def _expected_entries(entries) -> set[str]:
+    if _EXTENSION_PRESENT:
+        return set(entries)
+    return {e for e in entries if not e.split(" ", 1)[-1].startswith(_EXTENSION_PREFIXES)}
+
+
 def test_allowlist_has_no_stale_entries(routes):
-    stale = sorted(set(ALLOWLIST) - set(unguarded_project_routes(routes)))
+    stale = sorted(_expected_entries(ALLOWLIST) - set(unguarded_project_routes(routes)))
     assert not stale, f"guarded or gone now; remove from ALLOWLIST: {stale}"
 
 
@@ -1065,6 +1083,8 @@ def test_vocabulary_names_real_functions():
         *_IDENTITY_CALLS,
         *MEMBERSHIP_VERIFIERS,
     ]
+    if not _EXTENSION_PRESENT:
+        keys = [key for key in keys if not key.startswith("umrs_r4.")]
     missing = [key for key in keys if key != HMAC_KEYWORD and not _importable(key)]
     assert not missing, f"no such function: {missing}"
 

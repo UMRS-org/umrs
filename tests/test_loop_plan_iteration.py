@@ -121,6 +121,7 @@ def _api():
 
 
 def test_the_start_route_refuses_a_plan_iteration_before_creating_anything(_api):
+    pytest.importorskip("umrs_r4", reason="needs the umrs-r4 extension (core-only run)")
     client, loop_api = _api
     resp = client.post(
         "/umrs/loops",

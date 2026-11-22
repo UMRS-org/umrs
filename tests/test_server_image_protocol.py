@@ -12,6 +12,7 @@ smoke script every test here fails.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import re
@@ -19,6 +20,8 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+import pytest
 
 UMRS_ROOT = Path(__file__).resolve().parents[1]
 DOCKERFILE = UMRS_ROOT / "docker" / "Dockerfile.server"
@@ -82,6 +85,10 @@ def _run_check(pythonpath: list[str]) -> subprocess.CompletedProcess[str]:
     )
 
 
+@pytest.mark.skipif(
+    importlib.util.find_spec("r4_contracts") is None,
+    reason="the smoke subprocess needs r4-contracts installed, as the image has it (core-only run)",
+)
 def test_smoke_alias_check_passes_and_reports_the_pinned_sha() -> None:
     done = _run_check([str(UMRS_ROOT / "protocol" / "src")])
     assert done.returncode == 0, done.stderr

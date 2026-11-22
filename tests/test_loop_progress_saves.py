@@ -24,6 +24,7 @@ def _stored(loop_id: str = "loop-1") -> ResearchLoop:
         status=LoopStatus.RUNNING,
         phase=LoopPhase.EXPERIMENT_EXECUTION,
         current_iteration=3,
+        created_at="2026-10-19T10:00:00+00:00",  # set at creation (loop.py)
     )
     loop.total_hypotheses_tested = 12
     loop.total_experiments_run = 6
@@ -36,7 +37,12 @@ def _stored(loop_id: str = "loop-1") -> ResearchLoop:
 def _route_copy(loop_id: str, status: LoopStatus) -> ResearchLoop:
     """The stop/pause route's view: the same loop read earlier, control change
     only, all progress fields stale (before the runner's latest work)."""
-    stale = ResearchLoop(loop_id=loop_id, project_id="demo", research_goal="alloy X")
+    stale = ResearchLoop(
+        loop_id=loop_id,
+        project_id="demo",
+        research_goal="alloy X",
+        created_at="2026-10-19T10:00:00+00:00",
+    )
     stale.status = status
     stale.completed_at = "2026-10-19T12:00:00+00:00" if status == LoopStatus.STOPPED else ""
     return stale
@@ -115,7 +121,7 @@ class TestPsycopg2Lane:
 
         conn = psycopg2.connect(db_url)
         try:
-            store = LoopStore(sync_pool=conn)
+            store = LoopStore(None, sync_pool=conn)
             store.save(_stored())
             store.save_preserving_progress(_route_copy("loop-1", LoopStatus.STOPPED))
             got = store.get("loop-1")

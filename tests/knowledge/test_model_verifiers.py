@@ -289,8 +289,7 @@ class TestTerminologyConsistencyVerifier:
 
         # No llm_client → verifier probes r4.Client, which we block.
         v = TerminologyConsistencyVerifier(llm_client=None)
-        with patch("r4.Client") as mock_client_cls:
-            mock_client_cls.side_effect = ImportError("no r4")
+        with patch.dict("sys.modules", {"r4": None}):  # r4 unavailable (U4: no r4 needed)
             assert v.can_run(PROJECT_ID) is False
 
             art = _artifact("art-001", kind="document")
@@ -485,8 +484,7 @@ class TestUnsupportedClaimVerifier:
         )
 
         v = UnsupportedClaimVerifier(llm_client=None, rag_query=None)
-        with patch("r4.Client") as mock_client_cls:
-            mock_client_cls.side_effect = ImportError("no r4")
+        with patch.dict("sys.modules", {"r4": None}):  # r4 unavailable (U4: no r4 needed)
             assert v.can_run(PROJECT_ID) is False
 
             art = _artifact("art-001", kind="document")
@@ -752,10 +750,7 @@ class TestFigureLegibilityVerifier:
 
         # Patch r4.vision import to simulate unavailability.
         v = FigureLegibilityVerifier(vision_client=None)
-        with patch(
-            "r4.vision.VisionClient",
-            side_effect=ImportError("no vision"),
-        ):
+        with patch.dict("sys.modules", {"r4": None, "r4.vision": None}):  # U4: no r4 needed
             assert v.can_run(PROJECT_ID) is False
 
             art = _artifact("art-001", kind="document")

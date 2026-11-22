@@ -35,6 +35,7 @@ def test_every_extension_type_is_a_reserved_job_type_value():
 
 
 def test_r4_registers_the_frontend_session_lane():
+    pytest.importorskip("umrs_r4", reason="needs the umrs-r4 extension (core-only run)")
     ctx = load_extensions(("r4",))
     reg = ctx.job_types["frontend_session"]
     assert reg.build_lane.__name__ == "build_frontend_session_lane"
