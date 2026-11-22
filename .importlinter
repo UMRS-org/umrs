@@ -1,0 +1,87 @@
+# UMRS internal import boundaries (SI-01), checked by import-linter in the
+# `imports` CI job (ADR-117 plan §7.2, wave U4-g). Run from the repo root:
+#   pip install import-linter==2.16 && PYTHONPATH=src lint-imports --no-cache
+#
+# Ported from r4's tools/import_boundary_validator.py
+# (UMRS_INTERNAL_BOUNDARY_RULES) with the SAME effective policy:
+# - Direct imports only: r4's AST checker never follows import chains, so
+#   every contract sets allow_indirect_imports = True.
+# - `if TYPE_CHECKING:` imports never count (exclude_type_checking_imports).
+# - Function-level (lazy) imports count, except under rules with
+#   allow_lazy=True. r4 has two `jobs` rules, one strict and one with
+#   allow_lazy=True; rules are evaluated independently and their findings
+#   summed, so the strict one wins and lazy imports under jobs/ are forbidden.
+#   The only allow_lazy rule with effect is `knowledge`; import-linter cannot
+#   tell a lazy import from a module-level one, so each tolerated lazy import
+#   is listed in ignore_imports below (module pair granularity).
+# - A line marked `# noqa: boundary` is exempt in r4; such lines are listed in
+#   ignore_imports with the reason from the marker.
+# - umrs.knowledge_graph is in r4's rules but not in this tree (r4 skips a
+#   missing root); import-linter rejects a missing module, so it is left out.
+#   Add it back here if the package returns (tests/test_import_contracts.py).
+# Unmatched ignores fail the run (import-linter's default): delete an entry
+# when its import goes away.
+
+[importlinter]
+# umrs.security has no __init__.py (a namespace portion inside the regular
+# package umrs); grimp only walks it when it is named as a root of its own.
+root_packages =
+    umrs
+    umrs.security
+exclude_type_checking_imports = True
+
+[importlinter:contract:foundation]
+name = Foundation packages must not import umrs.api or umrs.server
+type = forbidden
+source_modules =
+    umrs.model_registry
+    umrs.mcp
+    umrs.rag
+    umrs.pipeline_sdk
+    umrs.orchestrator
+    umrs.jobs
+    umrs.security
+    umrs.shared
+    umrs.inference
+    umrs.skills
+    umrs.recipes
+forbidden_modules =
+    umrs.api
+    umrs.server
+allow_indirect_imports = True
+ignore_imports =
+    # noqa: boundary — lazy fallback (function-level import in r4's tree)
+    umrs.inference.embeddings -> umrs.server.sql
+
+[importlinter:contract:knowledge-satellites]
+name = Leaf satellite stores must not import umrs.knowledge, umrs.api or umrs.server (ADR-024)
+type = forbidden
+source_modules =
+    umrs.knowledge_model
+    umrs.scientific_memory
+    umrs.evidence
+forbidden_modules =
+    umrs.knowledge
+    umrs.api
+    umrs.server
+allow_indirect_imports = True
+
+[importlinter:contract:knowledge]
+name = knowledge (composition layer, ADR-024) must not import umrs.api or umrs.server
+type = forbidden
+source_modules =
+    umrs.knowledge
+forbidden_modules =
+    umrs.api
+    umrs.server
+allow_indirect_imports = True
+ignore_imports =
+    # reason=composition-site lazy imports (ingest meta-store fallback)
+    # owner=agent-debug added=2026-09-05 expires=2026-12 (r4 allow_lazy=True);
+    # every entry below is a function-level import today.
+    umrs.knowledge.events_sse -> umrs.api._scope_identity
+    umrs.knowledge.ingest -> umrs.api.catalog_store
+    umrs.knowledge.umrs_workflow_port -> umrs.server.workflow_registry_handler
+    umrs.knowledge.umrs_workflow_port -> umrs.server.hpc_user_work
+    umrs.knowledge.umrs_workflow_port -> umrs.server.run_intent_admission
+    umrs.knowledge.umrs_workflow_port -> umrs.server.workflow_execution_registry

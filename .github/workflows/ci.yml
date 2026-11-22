@@ -66,6 +66,24 @@ jobs:
       - name: Complexity ratchet (threshold 9, ratchets/complexity_baseline.json)
         run: python ratchets/complexity_baseline.py check src tests
 
+  imports:
+    name: Import boundaries (import-linter)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      # SI-01 layering, ported from r4's tools/import_boundary_validator.py
+      # (U4-g, plan §7.2): contracts in .importlinter. grimp parses the source
+      # statically, so umrs only has to be findable (PYTHONPATH=src); nothing
+      # is installed or imported.
+      - name: Install import-linter
+        run: pip install import-linter==2.16
+      - name: Contracts (.importlinter)
+        run: PYTHONPATH=src lint-imports --no-cache
+
   test-core:
     # core: no R4-side module installed. r4-ext (U4-e): core + the umrs-r4
     # extension + r4-contracts; the r4 client and r4-mcp stay absent, so the
@@ -245,12 +263,13 @@ jobs:
   ci-success:
     name: ci-success
     if: always()
-    needs: [lint, test-protocol, test-core, image]
+    needs: [lint, imports, test-protocol, test-core, image]
     runs-on: ubuntu-latest
     steps:
       - name: Every required job passed
         run: |
           test "${{ needs.lint.result }}" = success
+          test "${{ needs.imports.result }}" = success
           test "${{ needs.test-protocol.result }}" = success
           test "${{ needs.test-core.result }}" = success
           test "${{ needs.image.result }}" = success
