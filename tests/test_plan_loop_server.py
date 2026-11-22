@@ -263,6 +263,28 @@ class TestTheRound:
         assert loop.iterations[0].results["plan"]["status"] == "cancelled"
 
 
+def _human_answers(decision: str, stop: threading.Event, decided: list[str]) -> None:
+    """A human answering this test's plan_run intent, and only that one.
+
+    The inbox is module-global. The old helper decided the first pending
+    item for alice and polled up to 4 s with a 5 s join: on a loaded xdist
+    worker it outlived its test and rejected the next test's plan gate
+    (UMRS-org main eb3daacc, r4-ext). Answer only plan_run intents, and stop
+    when the test sets ``stop``.
+    """
+    while not stop.is_set():
+        mine = [
+            p
+            for p in tool_approvals.pending(user_id="alice")
+            if p["action"].get("kind") == plan_iteration.PLAN_RUN
+        ]
+        if mine:
+            tool_approvals.decide(mine[0]["id"], decision, decided_by="alice")
+            decided.append(mine[0]["action"]["kind"])
+            return
+        time.sleep(0.02)
+
+
 class TestTheGate:
     def test_a_plan_run_is_a_cost_action(self):
         assert ask_policy.action_trigger_classes({"kind": plan_iteration.PLAN_RUN}) == {"cost"}
@@ -270,41 +292,49 @@ class TestTheGate:
     def test_ask_mode_parks_on_the_inbox_until_a_human_decides(self):
         host = FakeHost([{"review": PICKED}])
         decided: list[str] = []
-
-        def human():
-            for _ in range(200):
-                pending = tool_approvals.pending(user_id="alice")
-                if pending:
-                    assert host.starts == []  # nothing ran while it waited
-                    tool_approvals.decide(pending[0]["id"], "once", decided_by="alice")
-                    decided.append(pending[0]["action"]["kind"])
-                    return
-                time.sleep(0.02)
-
-        thread = threading.Thread(target=human)
+        stop = threading.Event()
+        thread = threading.Thread(target=_human_answers, args=("once", stop, decided))
         thread.start()
-        loop = _drive(_loop(mode="ask", max_iterations=1), host)
-        thread.join(5)
+        try:
+            loop = _drive(_loop(mode="ask", max_iterations=1), host)
+        finally:
+            stop.set()
+            thread.join()
         assert decided == ["plan_run"] and len(host.starts) == 1
         assert _decisions(loop) == ["publish"]
 
     def test_a_humans_no_stops_the_loop_and_nothing_runs(self):
         host = FakeHost([{"review": PICKED}])
-
-        def human():
-            for _ in range(200):
-                pending = tool_approvals.pending(user_id="alice")
-                if pending:
-                    tool_approvals.decide(pending[0]["id"], "no", decided_by="alice")
-                    return
-                time.sleep(0.02)
-
-        thread = threading.Thread(target=human)
+        decided: list[str] = []
+        stop = threading.Event()
+        thread = threading.Thread(target=_human_answers, args=("no", stop, decided))
         thread.start()
-        loop = _drive(_loop(mode="ask"), host)
-        thread.join(5)
+        try:
+            loop = _drive(_loop(mode="ask"), host)
+        finally:
+            stop.set()
+            thread.join()
+        assert decided == ["plan_run"]
         assert host.starts == [] and loop.iterations[0].status == "rejected"
         assert loop.metadata["state_reason"] == "approval_rejected:plan_run"
+
+    def test_the_human_never_answers_another_tests_intent(self):
+        """A foreign pending intent of the same user (a plan gate raised by
+        another test) stays pending: the helper answers its plan_run only."""
+        foreign = tool_approvals.request_approval(
+            "plan-run:other", 0, {"kind": "plan_gate", "gate": "g1"}, user_id="alice"
+        )
+        host = FakeHost([{"review": PICKED}])
+        decided: list[str] = []
+        stop = threading.Event()
+        thread = threading.Thread(target=_human_answers, args=("no", stop, decided))
+        thread.start()
+        try:
+            _drive(_loop(mode="ask"), host)
+        finally:
+            stop.set()
+            thread.join()
+        assert tool_approvals.get(foreign["id"])["status"] == "pending"
 
 
 class TestTheStartRoute:
