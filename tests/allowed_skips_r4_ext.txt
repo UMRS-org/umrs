@@ -6,7 +6,9 @@
 2 | could not import 'r4.hpc_signing'
 1 | could not import 'r4.curve_session'
 
-# files of other checkouts (r4 parent deploy tree, benchmark data, fixtures)
+# files of other checkouts (the r4 research-round template, r4 parent deploy
+# tree, benchmark data, fixtures)
+22 | the r4 research-round template is not reachable from this checkout
 1 | site.yaml not found at
 1 | benchmarks/retrieval not in this checkout
 1 | video_ai fixtures missing
@@ -16,10 +18,9 @@
 6 | kubernetes package not installed
 1 | live PG rehearsal needs DATABASE_URL
 
-# stale, follow-up owed (U4 report): the handler moved to
-# umrs.server.commands.export_embeddings (a1aa0320); these tests still import
-# server_umrs._handle_export_embeddings and skip on ImportError
+# stale, follow-up owed (as in tests/allowed_skips.txt)
 10 | Cannot import server_umrs (missing deps)
-# stale, follow-up owed: skip even with a database
 4 | Requires model registry (Postgres or catalog)
 1 | restart semantics only apply to PG mirror
+# stale, follow-up owed: skips although r4_contracts is installed here
+1 | Requires r4_contracts import path setup
