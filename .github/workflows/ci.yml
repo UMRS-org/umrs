@@ -148,6 +148,20 @@ jobs:
             | tee "$RUNNER_TEMP/second-run.txt"
           grep -q "Applied 0 migration" "$RUNNER_TEMP/second-run.txt"
 
+      # Plan §4 / §7.2: databases built on pre-merge `main` lack 0016/0018/0019,
+      # which the merged line adds below their last migration. Build one from
+      # the archived files and upgrade it (scripts/migration_upgrade_check.py).
+      - name: Upgrade from the pre-merge main schema
+        run: |
+          TAG=archive/main-pre-merge-2026-11
+          git fetch --no-tags --depth=1 origin "refs/tags/$TAG:refs/tags/$TAG"
+          mkdir -p "$RUNNER_TEMP/premain"
+          git archive "$TAG" src/umrs/migrations | tar -x -C "$RUNNER_TEMP/premain"
+          PGPASSWORD=test psql -h localhost -U test -d postgres -c "CREATE DATABASE umrs_upgrade"
+          python scripts/migration_upgrade_check.py \
+            postgresql://test:test@localhost:5432/umrs_upgrade \
+            "$RUNNER_TEMP/premain/src/umrs/migrations"
+
       - name: Core suite
         run: |
           mkdir -p "$RUNNER_TEMP/home" && chmod a-w "$RUNNER_TEMP/home"
