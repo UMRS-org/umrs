@@ -107,7 +107,8 @@ jobs:
           # The extras carry what requirements.txt does not (python-jose,
           # asyncpg, textual, ...); the CPU torch above satisfies theirs.
           pip install -e protocol -e "src[server,client,otel]"
-          pip install pytest pytest-asyncio pytest-xdist==3.8.0
+          # Pinned to the versions the r4 venv runs (asyncio_mode=auto below).
+          pip install pytest==9.1.1 pytest-asyncio==1.4.0 pytest-xdist==3.8.0
           python -c "import importlib.util as u; assert u.find_spec('umrs_r4') is None, 'core-only job must not see umrs_r4'"
 
       - name: Apply migrations to a fresh database
@@ -123,8 +124,8 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/home" && chmod a-w "$RUNNER_TEMP/home"
           export HOME="$RUNNER_TEMP/home"
-          python -m pytest tests/ -n 4 -q -p no:cacheprovider \
-            --ignore=tests/test_rag_pipeline.py -rs --junitxml="$RUNNER_TEMP/junit-core.xml"
+          python -m pytest tests/ -n 4 -q -p no:cacheprovider -o asyncio_mode=auto \
+            --ignore=tests/test_rag_pipeline.py -rfEs --junitxml="$RUNNER_TEMP/junit-core.xml"
 
       - name: JUnit (for the r4 agreement check, ADR-117 §7.3)
         if: always()

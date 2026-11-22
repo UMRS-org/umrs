@@ -20,6 +20,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 UMRS_ROOT = Path(__file__).resolve().parents[1]
 DOCKERFILE = UMRS_ROOT / "docker" / "Dockerfile.server"
 SMOKE = UMRS_ROOT / "docker" / "server-image" / "smoke.py"
@@ -83,6 +85,7 @@ def _run_check(pythonpath: list[str]) -> subprocess.CompletedProcess[str]:
 
 
 def test_smoke_alias_check_passes_and_reports_the_pinned_sha() -> None:
+    pytest.importorskip("r4_contracts", reason="the image installs r4-contracts (core-only run)")
     done = _run_check([str(UMRS_ROOT / "protocol" / "src")])
     assert done.returncode == 0, done.stderr
     assert done.stdout.strip() == json.loads(GATE_PINS.read_text())["sha256"]

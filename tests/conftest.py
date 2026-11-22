@@ -178,13 +178,39 @@ def _core_only_ignores() -> list[str]:
     return sorted(str(path.relative_to(here)) for path in _extension_importers(texts))
 
 
-collect_ignore = _core_only_ignores()
+# U4: these read files of the r4 parent checkout (gateway sidecar, the
+# hatch registry, the e2e compose, the parent's HPC runner); a standalone
+# umrs checkout (UMRS-org CI) has none. r4 CI still runs them.
+_PARENT_TREE_TESTS = (
+    "test_h1r_memberships_sign_parity.py",
+    "test_mcp_manifest.py",
+    "test_mini_rivault_definition.py",
+    "test_mini_rivault_egress.py",
+    "test_otel_boot.py",
+    "test_presigned_ttl_edges.py",
+    "test_sidecar_sign_parity.py",
+    "test_slurm_orchestration_authority.py",
+    "test_ttl_clamp.py",
+)
+
+
+def _parent_tree_ignores() -> list[str]:
+    parent = Path(__file__).resolve().parents[2]
+    return [] if (parent / "gateway").is_dir() else list(_PARENT_TREE_TESTS)
+
+
+_CORE_ONLY = _core_only_ignores()
+_PARENT_ONLY = _parent_tree_ignores()
+collect_ignore = _CORE_ONLY + _PARENT_ONLY
 
 
 def pytest_report_header(config):
-    if collect_ignore:
-        return f"core-only run: {len(collect_ignore)} extension test files not collected (umrs-r4 absent)"
-    return None
+    parts = []
+    if _CORE_ONLY:
+        parts.append(f"core-only run: {len(_CORE_ONLY)} extension test files not collected")
+    if _PARENT_ONLY:
+        parts.append(f"standalone checkout: {len(_PARENT_ONLY)} r4-parent test files not collected")
+    return "; ".join(parts) or None
 
 
 def pytest_addoption(parser):
