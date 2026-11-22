@@ -8,7 +8,7 @@
 
 # files of other checkouts (the r4 research-round template, r4 parent deploy
 # tree, benchmark data, fixtures)
-22 | the r4 research-round template is not reachable from this checkout
+23 | the r4 research-round template is not reachable from this checkout
 1 | site.yaml not found at
 1 | benchmarks/retrieval not in this checkout
 1 | video_ai fixtures missing
