@@ -223,15 +223,33 @@ def _file_digest(root: str, rel: str) -> str:
         return digest.hexdigest()
 
 
+#: Interpreter and desktop droppings that are never part of a bundle: the
+#: same set the r4 client leaves out of an upload (``r4/workflows.py``).
+#: An in-process run imports the bundle and writes ``__pycache__`` into the
+#: immutable version directory; counting it changed the digest, so every
+#: second run failed ``source_mismatch`` and an unchanged re-upload was
+#: refused ``version_exists`` (tutorial dry run 2026-11-23).
+_SKIP_DIRS = frozenset({"__pycache__"})
+_SKIP_FILES = frozenset({".DS_Store"})
+_SKIP_SUFFIXES = (".pyc", ".pyo")
+
+
+def _bundle_file(dirpath: str, filename: str) -> bool:
+    if filename in _SKIP_FILES or filename.endswith(_SKIP_SUFFIXES):
+        return False
+    full = os.path.join(dirpath, filename)
+    return os.path.isfile(full) and not os.path.islink(full)
+
+
 def tree_files(root: str) -> list[str]:
-    """Regular files under *root* as sorted relative POSIX paths (links and
-    special files are not part of a bundle)."""
+    """Regular files under *root* as sorted relative POSIX paths (links,
+    special files and bytecode caches are not part of a bundle)."""
     rows: list[str] = []
     for dirpath, dirnames, filenames in os.walk(root):
-        dirnames.sort()
+        dirnames[:] = sorted(d for d in dirnames if d not in _SKIP_DIRS)
         for filename in filenames:
-            full = os.path.join(dirpath, filename)
-            if os.path.isfile(full) and not os.path.islink(full):
+            if _bundle_file(dirpath, filename):
+                full = os.path.join(dirpath, filename)
                 rows.append(os.path.relpath(full, root).replace(os.sep, "/"))
     return sorted(rows)
 

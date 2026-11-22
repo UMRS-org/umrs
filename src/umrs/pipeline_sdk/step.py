@@ -178,6 +178,52 @@ def call_with_deadline(
 # ── Step execution context ───────────────────────────────────────────────────
 
 
+_MISSING_OBJECT_CODES = frozenset({"NoSuchKey", "404", "NotFound"})
+
+
+class StepObjectMissing(FileNotFoundError, KeyError):
+    """A step asked for an object its bucket does not hold. The message names
+    the key and the bucket; before, the S3 client's ``NoSuchKey ... The
+    specified key does not exist.`` named neither (tutorial dry run, f2).
+    A ``FileNotFoundError`` and a ``KeyError`` (the in-memory store's
+    error), with the client's ``response`` kept, so existing handlers match.
+    """
+
+    def __init__(self, key: str, bucket: str, response: Any = None) -> None:
+        super().__init__(f"no key '{key}' in bucket '{bucket}'")
+        self.key = key
+        self.bucket = bucket
+        self.response = response or {"Error": {"Code": "NoSuchKey"}}
+
+    def __str__(self) -> str:
+        return str(self.args[0])
+
+
+def _missing_object(exc: Exception) -> bool:
+    """A missing-object error, except the staged lane's own refusal (it
+    names the key already, with its hint)."""
+    from .staged_s3 import StagedS3Error
+
+    if isinstance(exc, StagedS3Error):
+        return False
+    if isinstance(exc, KeyError):
+        return True
+    response = getattr(exc, "response", None)
+    error = response.get("Error") if isinstance(response, dict) else None
+    return isinstance(error, dict) and str(error.get("Code")) in _MISSING_OBJECT_CODES
+
+
+def _read_object(s3: Any, bucket: str, key: str) -> bytes:
+    try:
+        obj = s3.get_object(Bucket=bucket, Key=key)
+    except Exception as exc:
+        if _missing_object(exc):
+            response = getattr(exc, "response", None)
+            raise StepObjectMissing(key, bucket, response) from exc
+        raise
+    return obj["Body"].read()
+
+
 @dataclass
 class StepContext:
     """Execution context passed to :meth:`Step.run`.
@@ -240,9 +286,7 @@ class StepContext:
 
         Defaults to :attr:`input_bucket` (source/trigger objects).
         """
-        bkt = bucket or self.input_bucket
-        obj = self.s3.get_object(Bucket=bkt, Key=key)
-        return obj["Body"].read()
+        return _read_object(self.s3, bucket or self.input_bucket, key)
 
     def download_parent_bytes(self, key: str, bucket: str | None = None) -> bytes:
         """Download a parent-step artifact.
@@ -256,8 +300,7 @@ class StepContext:
             raise ValueError(
                 "No parent_output_bucket/output_bucket available for parent artifact download"
             )
-        obj = self.s3.get_object(Bucket=bkt, Key=key)
-        return obj["Body"].read()
+        return _read_object(self.s3, bkt, key)
 
     def download_numpy(self, key: str, bucket: str | None = None) -> np.ndarray:
         """Download a ``.npy`` file from S3 and return a NumPy array."""

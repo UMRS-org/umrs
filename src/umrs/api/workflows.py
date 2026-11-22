@@ -59,6 +59,7 @@ from ..server.workflow_registry_handler import (
     _resolve_workflow_catalog_entry,
     _workflow_run_context,
     adopt_workflow,
+    catalog_steps,
     commit_workflow_run,
     ensure_catalog_layout,
     handle_workflow_command,
@@ -352,7 +353,9 @@ def _describe_workflow_entry(
         "scope": entry.get("scope", "user"),
         "user_id": entry.get("user_id", ""),
         "parameter_schema": _workflow_parameter_schema(workflow_json),
-        "steps": entry.get("steps", []),
+        # The version's own workflow.json first: rows registered before the
+        # DAG edges were kept still describe them.
+        "steps": catalog_steps(workflow_json) or entry.get("steps", []),
         "requirements": entry.get("requirements", []),
         # W4: declared event subscriptions (additive; empty by default)
         "triggers": workflow_json.get("triggers", []),

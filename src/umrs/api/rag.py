@@ -716,8 +716,14 @@ async def _upload_via_central(
     """Dual-corpus dwell default: central ingest owns uploads (own gates)."""
     from .knowledge_upload import knowledge_upload
 
+    # Called as a plain function, so every FastAPI default must be passed:
+    # a ``Form(None)`` default object reaching the route body was a 500.
     result = await knowledge_upload(
-        request=request, file=file, graph_id=None, project_id=project_id
+        request=request,
+        file=file,
+        graph_id=None,
+        provenance=None,
+        project_id=project_id,
     )
     return UploadResponse(
         document_id=result.get("job_id", ""),

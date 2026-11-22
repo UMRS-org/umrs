@@ -48,6 +48,7 @@ import sys
 import tempfile
 import threading
 import time
+import traceback
 import uuid
 from collections import deque
 from dataclasses import dataclass, field
@@ -229,6 +230,19 @@ def _load_step_class(entrypoint: str) -> type[Step]:
     return cls
 
 
+def _exception_text(exc: BaseException) -> str:
+    """``Type: message (at file:line in function)``: the type and the frame
+    that raised. ``str(StopIteration())`` is empty, so the bare message left
+    a failed step with no error at all (tutorial dry run 2026-11-23)."""
+    message = str(exc)
+    text = f"{type(exc).__name__}: {message}" if message else type(exc).__name__
+    frames = traceback.extract_tb(exc.__traceback__)
+    if not frames:
+        return text
+    last = frames[-1]
+    return f"{text} (at {os.path.basename(last.filename)}:{last.lineno} in {last.name})"
+
+
 def _drive_lifecycle(
     cls: type[Step],
     config: dict[str, Any],
@@ -239,7 +253,7 @@ def _drive_lifecycle(
     try:
         instance.setup(config)
     except Exception as exc:
-        raise StepExecutionError("setup", str(exc)) from exc
+        raise StepExecutionError("setup", _exception_text(exc)) from exc
     try:
         result = instance.run(ctx)
     except Exception as exc:
@@ -250,7 +264,7 @@ def _drive_lifecycle(
             instance.teardown()
         except Exception as t_exc:  # noqa: BLE001
             logger.warning("teardown after run() failure raised: %s", t_exc)
-        raise StepExecutionError("run", str(exc)) from exc
+        raise StepExecutionError("run", _exception_text(exc)) from exc
     try:
         instance.teardown()
     except Exception as exc:  # noqa: BLE001

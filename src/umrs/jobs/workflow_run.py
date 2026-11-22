@@ -112,7 +112,11 @@ class WorkflowRunStatusChecker:
                 )
             return AttemptCheckResult.succeeded(metrics=metrics, commit=True)
         if status == "failed":
-            return AttemptCheckResult.failed(data.get("error") or "workflow failed")
+            # Terminal: the run's own verdict, never a whole-run requeue.
+            from .store import WORKFLOW_RUN_FAILED_PREFIX
+
+            reason = data.get("error") or "workflow failed"
+            return AttemptCheckResult.failed(f"{WORKFLOW_RUN_FAILED_PREFIX}{reason}")
         if status == "cancelled":
             return AttemptCheckResult.failed("workflow cancelled")
         return AttemptCheckResult.running(detail=f"workflow {status or 'running'}")

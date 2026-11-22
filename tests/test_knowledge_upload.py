@@ -144,7 +144,7 @@ class TestRagFacadeDwell:
 
         called = {}
 
-        async def fake_knowledge_upload(*, request, file, graph_id, project_id):
+        async def fake_knowledge_upload(*, request, file, graph_id, provenance, project_id):
             called["graph_id"] = graph_id
             called["project_id"] = project_id
             return {"job_id": "job-central-1"}
@@ -197,3 +197,39 @@ class TestRagFacadeDwell:
         file.read = AsyncMock(return_value=b"bytes")
         resp = asyncio.run(rag.upload_document(request, file, registry=None))
         assert resp.document_id == "doc-1"
+
+
+def test_rag_upload_through_the_real_central_upload_is_accepted(monkeypatch):
+    """POST /umrs/rag/upload → _upload_via_central → the REAL knowledge_upload.
+
+    The facade called knowledge_upload as a plain function without
+    ``provenance``, so the FastAPI ``Form(None)`` default object reached
+    ``json.loads`` and every rag upload was a 500 (tutorial dry run
+    2026-11-23). The facade test above monkeypatches knowledge_upload,
+    which hid it; this one does not.
+    """
+    from umrs.api import rag
+    from umrs.orchestrator.endpoint_registry import EndpointRegistry, get_registry
+
+    monkeypatch.delenv("UMRS_RAG_UPLOAD_FACADE", raising=False)
+    _app(monkeypatch)  # installs the S3/graph/governance/runtime fakes
+    monkeypatch.setattr(rag, "_require_rag_scope", lambda *_a, **_k: ("u-1", "proj-9"))
+    app = FastAPI()
+    app.include_router(rag.router)
+    app.dependency_overrides[get_registry] = EndpointRegistry
+    client = TestClient(app, raise_server_exceptions=False)
+    resp = client.post(
+        "/umrs/rag/upload",
+        files={"file": ("note.pdf", io.BytesIO(b"hello"), "application/pdf")},
+        headers={"x-user-id": "u-1"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "queued-central"
+    assert resp.json()["document_id"] == "job-central-1"
+
+
+def test_form_provenance_ignores_a_non_string():
+    from umrs.api.knowledge_upload import _form_provenance
+
+    assert _form_provenance(object()) is None  # type: ignore[arg-type]
+    assert _form_provenance("") is None
