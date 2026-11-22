@@ -13,9 +13,8 @@ import uuid
 
 import pytest
 from hpc_ledger_pg import delete_ledger_rows, execute, ledger_pool_or_skip
-from umrs.hpc_accounts.usage_ledger import ACCESS_MODES, COLUMNS, LANES, METHODS, SOURCES
-
 from umrs import migrations
+from umrs.hpc_accounts.usage_ledger import ACCESS_MODES, COLUMNS, LANES, METHODS, SOURCES
 
 MIGRATION = migrations.MIGRATIONS_DIR / "0138_hpc_usage_ledger.sql"
 

@@ -14,9 +14,8 @@ import os
 import re
 
 import pytest
-from umrs.api.llm_usage import _INSERT_SQL_VENUE
-
 from umrs import migrations
+from umrs.api.llm_usage import _INSERT_SQL_VENUE
 
 MIGRATION = migrations.MIGRATIONS_DIR / "0126_llm_usage_log_venue.sql"
 

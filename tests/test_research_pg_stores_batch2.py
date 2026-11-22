@@ -14,7 +14,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-
 from umrs import embeddings_api as emb_mod
 from umrs import knowledge_model as km_mod
 from umrs import tenants as tenants_mod

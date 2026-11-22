@@ -44,6 +44,25 @@ jobs:
       - name: Test (stdlib-only package)
         run: python -m pytest protocol/tests -q -p no:cacheprovider
 
+  lint:
+    name: Lint and complexity ratchets
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      # ADR-052 ratchets, moved from r4 (U4, plan §7.2). The whole tree is
+      # checked every run (seconds): a new finding or a new over-threshold
+      # function fails; baselined residue may only shrink. ruff is r4's pin.
+      - name: Install ruff
+        run: pip install ruff==0.16.6
+      - name: Lint ratchet (ratchets/lint_baseline.json)
+        run: python ratchets/lint_baseline.py check src tests
+      - name: Complexity ratchet (threshold 9, ratchets/complexity_baseline.json)
+        run: python ratchets/complexity_baseline.py check src tests
+
   test-core:
     name: Core suite (no extension)
     runs-on: ubuntu-latest
@@ -117,6 +136,7 @@ jobs:
           pip install -e protocol -e "src[server,client,otel]"
           # Pinned to the versions the r4 venv runs (asyncio_mode=auto below).
           pip install pytest==9.1.1 pytest-asyncio==1.4.0 pytest-xdist==3.8.0
+          pip install ruff==0.16.6  # the ratchet tools' own tests run ruff
           python -c "import importlib.util as u; assert u.find_spec('umrs_r4') is None, 'core-only job must not see umrs_r4'"
 
       - name: Apply migrations to a fresh database
@@ -151,10 +171,11 @@ jobs:
   ci-success:
     name: ci-success
     if: always()
-    needs: [test-protocol, test-core]
+    needs: [lint, test-protocol, test-core]
     runs-on: ubuntu-latest
     steps:
       - name: Every required job passed
         run: |
+          test "${{ needs.lint.result }}" = success
           test "${{ needs.test-protocol.result }}" = success
           test "${{ needs.test-core.result }}" = success

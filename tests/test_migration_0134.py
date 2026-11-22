@@ -14,9 +14,8 @@ import re
 from typing import Any
 
 import pytest
-from umrs.hpc_accounts.store import ACCOUNT_COLUMNS, ACCOUNT_STATUSES, GATE_PROBES
-
 from umrs import migrations
+from umrs.hpc_accounts.store import ACCOUNT_COLUMNS, ACCOUNT_STATUSES, GATE_PROBES
 
 MIGRATION = migrations.MIGRATIONS_DIR / "0134_site_accounts.sql"
 

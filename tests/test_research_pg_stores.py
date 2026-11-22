@@ -11,7 +11,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-
 from umrs import evidence as evidence_mod
 from umrs import experiment_registry as expreg_mod
 from umrs import scientific_memory as sm_mod

@@ -24,6 +24,7 @@ from unittest.mock import patch
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from umrs import workflow_plans
 from umrs.jobs.models import Job, JobStatus, RestartPolicy
 from umrs.jobs.store import DuplicateJobError
 from umrs.workflow_plans import (
@@ -36,7 +37,6 @@ from umrs.workflow_plans import (
     verify_plan,
 )
 
-from umrs import workflow_plans
 from umrs_protocol.handshake_hmac import sign_claims
 
 SECRET = "plan-test-handshake"

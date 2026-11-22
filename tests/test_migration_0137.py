@@ -14,9 +14,8 @@ import uuid
 
 import pytest
 from hpc_ledger_pg import execute, ledger_pool_or_skip
-from umrs.hpc_accounts.grants import COLUMNS, ENDED_REASONS, GATE_CANCELS, INPUTS_MODES, STATUSES
-
 from umrs import migrations
+from umrs.hpc_accounts.grants import COLUMNS, ENDED_REASONS, GATE_CANCELS, INPUTS_MODES, STATUSES
 
 MIGRATION = migrations.MIGRATIONS_DIR / "0137_hpc_grants.sql"
 

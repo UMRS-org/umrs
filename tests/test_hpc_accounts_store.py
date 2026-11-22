@@ -13,14 +13,13 @@ from collections.abc import Iterator
 from typing import Any
 
 import pytest
+from umrs import migrations
 from umrs.hpc_accounts.store import (
     ACCOUNT_VIEW,
     LINK_COLUMNS,
     InMemorySiteAccountStore,
     SiteAccountStore,
 )
-
-from umrs import migrations
 
 _VERIFIED = {
     "site_login": "alice1",

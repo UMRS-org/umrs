@@ -305,13 +305,12 @@ class _FakePool:
 
 @pytest.fixture
 def dash(monkeypatch):
+    from umrs import platform_notifications
     from umrs.api import web_dashboard
     from umrs.server.workflow_execution_registry import (
         get_execution_registry,
         reset_execution_registry_for_tests,
     )
-
-    from umrs import platform_notifications
 
     jobs = _FakeJobStore([_job("job-a", "proj-a", "alice"), _job("job-b", "proj-b", "bob")])
     models = _FakeModelStore(
