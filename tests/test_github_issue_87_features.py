@@ -1,7 +1,5 @@
 """Tests for Job TTL and download notification features (GitHub Issue #87)."""
 
-import pytest
-
 
 class TestJobTTL:
     """Test Job TTL field in Job model."""
@@ -132,16 +130,12 @@ class TestJobTTLSchemaVersion:
 
 
 class TestJobSpecTTLField:
-    """Test JobSpec and JobCreateRequest TTL fields (integration test).
+    """Test JobSpec and JobCreateRequest TTL fields.
 
-    Note: These tests require r4_contracts to be installed.
-    Skip if not available.
+    (U4: was skipped unconditionally for "r4_contracts import path setup";
+    umrs.api.jobs has not imported r4_contracts since U3 S5.)
     """
 
-    @pytest.mark.skipif(
-        True,  # Temporarily skip — requires full PYTHONPATH setup
-        reason="Requires r4_contracts import path setup",
-    )
     def test_job_create_request_ttl_fields(self):
         """Test JobCreateRequest has ttl_seconds field."""
         from umrs.api.jobs import JobCreateRequest, JobSpec

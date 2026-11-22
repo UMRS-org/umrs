@@ -19,8 +19,4 @@
 1 | live PG rehearsal needs DATABASE_URL
 
 # stale, follow-up owed (as in tests/allowed_skips.txt)
-10 | Cannot import server_umrs (missing deps)
 4 | Requires model registry (Postgres or catalog)
-1 | restart semantics only apply to PG mirror
-# stale, follow-up owed: skips although r4_contracts is installed here
-1 | Requires r4_contracts import path setup
