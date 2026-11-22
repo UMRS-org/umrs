@@ -1,0 +1,145 @@
+# UMRS CI on GitHub-hosted runners (ADR-117 §7.2, U4).
+#
+# No secret and no self-hosted runner: the repository is public, so this runs
+# fork code; GPU, HPC and host-bound tests stay in the r4/r4-ops pipelines.
+# Real services from day one: Postgres 15 + pgvector (the production major)
+# and SeaweedFS (the production S3 backend, ADR-055).
+#
+# U4-a (this file): protocol tests, the core suite with the umrs-r4 extension
+# NOT installed (tests/conftest.py leaves the extension test files out and says
+# how many), a fresh-database migration check, and the one required check
+# `ci-success`. Still to come (U4-b..): lint ratchets moved from r4, the skip
+# gate (tests/allowed_skips.txt), the extension job, the pre-merge-main schema
+# upgrade path and the image build.
+name: UMRS CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: umrs-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.11"
+
+jobs:
+  test-protocol:
+    name: umrs-protocol tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install umrs-protocol
+        run: pip install -e protocol pytest
+      - name: Test (stdlib-only package)
+        run: python -m pytest protocol/tests -q -p no:cacheprovider
+
+  test-core:
+    name: Core suite (no extension)
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    services:
+      postgres:
+        image: pgvector/pgvector:pg15
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: umrs_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U test" --health-interval 5s
+          --health-timeout 5s --health-retries 20
+    env:
+      POSTGRES_HOST: localhost
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: test
+      POSTGRES_PASSWORD: test
+      POSTGRES_DB: umrs_test
+      S3_BACKEND: seaweedfs
+      S3_ENDPOINT_URL: http://localhost:9000
+      S3_IAM_ENDPOINT_URL: http://localhost:8111
+      S3_ACCESS_KEY: seaweedadmin
+      S3_SECRET_KEY: seaweedadmin
+      UMRS_S3_CONFORMANCE_ENDPOINT: http://localhost:9000
+      UMRS_S3_CONFORMANCE_IAM_ENDPOINT: http://localhost:8111
+      UMRS_S3_CONFORMANCE_ACCESS_KEY: seaweedadmin
+      UMRS_S3_CONFORMANCE_SECRET_KEY: seaweedadmin
+      UMRS_S3_CONFORMANCE_BUCKET: umrs-files
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: src/requirements.txt
+
+      - name: Start SeaweedFS (S3 + IAM, the production backend)
+        run: |
+          mkdir -p "$RUNNER_TEMP/seaweed" && touch "$RUNNER_TEMP/seaweed/.env"
+          S3_ROOT_USER=seaweedadmin S3_BUCKET=umrs-files bash -c \
+            'source deploy/_common/render_seaweedfs_iam.sh; render_seaweedfs_iam "$RUNNER_TEMP/seaweed"'
+          docker run -d --name ci-seaweed -p 9000:9000 -p 8111:8111 \
+            -e AWS_ACCESS_KEY_ID=seaweedadmin -e AWS_SECRET_ACCESS_KEY=seaweedadmin \
+            -v "$RUNNER_TEMP/seaweed/seaweedfs/iam.json:/etc/seaweedfs/iam.json:ro" \
+            docker.io/chrislusf/seaweedfs:4.47 \
+            server -dir=/data -ip=127.0.0.1 -ip.bind=0.0.0.0 \
+            -volume.max=0 -volume.index=leveldb \
+            -s3 -s3.port=9000 -s3.iam -s3.iam.config=/etc/seaweedfs/iam.json \
+            -iam -iam.port=8111
+          timeout 90 bash -c "until curl -sf http://localhost:9000/status; do sleep 2; done"
+
+      - name: Install core (CPU torch, no extension)
+        run: |
+          python -m pip install --upgrade pip
+          # CPU wheels, as the server image does (Dockerfile.server).
+          pip install --index-url https://download.pytorch.org/whl/cpu torch torchvision
+          pip install -r src/requirements.txt
+          pip install --no-deps -e src -e protocol
+          pip install pytest pytest-asyncio pytest-xdist==3.8.0
+          python -c "import importlib.util as u; assert u.find_spec('umrs_r4') is None, 'core-only job must not see umrs_r4'"
+
+      - name: Apply migrations to a fresh database
+        run: python -m umrs.migrations --db-url "postgresql://test:test@localhost:5432/umrs_test"
+
+      - name: Migrations are complete and idempotent
+        run: |
+          python -m umrs.migrations --db-url "postgresql://test:test@localhost:5432/umrs_test" \
+            | tee "$RUNNER_TEMP/second-run.txt"
+          grep -q "Applied 0 migration" "$RUNNER_TEMP/second-run.txt"
+
+      - name: Core suite
+        run: |
+          mkdir -p "$RUNNER_TEMP/home" && chmod a-w "$RUNNER_TEMP/home"
+          export HOME="$RUNNER_TEMP/home"
+          python -m pytest tests/ -n 4 -q -p no:cacheprovider \
+            --ignore=tests/test_rag_pipeline.py -rs --junitxml="$RUNNER_TEMP/junit-core.xml"
+
+      - name: JUnit (for the r4 agreement check, ADR-117 §7.3)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-core
+          path: ${{ runner.temp }}/junit-core.xml
+          retention-days: 14
+        continue-on-error: true
+
+  ci-success:
+    name: ci-success
+    if: always()
+    needs: [test-protocol, test-core]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every required job passed
+        run: |
+          test "${{ needs.test-protocol.result }}" = success
+          test "${{ needs.test-core.result }}" = success
