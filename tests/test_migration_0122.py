@@ -16,7 +16,6 @@ import re
 from typing import Any
 
 import pytest
-
 from umrs import migrations
 
 MIGRATION = migrations.MIGRATIONS_DIR / "0122_knowledge_honest_writes.sql"

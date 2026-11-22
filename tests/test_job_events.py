@@ -23,6 +23,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from umrs import platform_notifications
 from umrs.jobs import job_events
 from umrs.jobs.models import Job, JobAttempt, JobStatus, JobType
 from umrs.jobs.reconciler import Reconciler, ReconcileResult
@@ -33,7 +34,6 @@ from umrs.jobs.store import (
 )
 from umrs.platform_notifications import NotificationStore
 
-from umrs import platform_notifications
 from umrs_protocol.handshake_hmac import sign_claims
 
 SECRET = "job-events-secret"

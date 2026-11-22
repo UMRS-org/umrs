@@ -1,0 +1,37 @@
+# Ruff settings for the umrs test tree (U4, plan §7.2).
+#
+# Until U4 these files took the r4 parent's root pyproject.toml (the nearest
+# config inside the r4 checkout), and a standalone umrs checkout had none, so
+# UMRS-org CI linted tests with ruff's defaults. This file is the nearest
+# config in both layouts and reproduces the parent's resolved settings for
+# this tree exactly (same rules, ignores and first-party list), so the
+# ratchets/lint_baseline.json fingerprints match in r4 and in UMRS-org.
+target-version = "py310"
+line-length = 100
+# r4 resolved first-party from its own root, where neither `umrs` nor the
+# tests' sibling helpers live: keep both third-party, as there.
+src = []
+
+[lint]
+select = ["E", "W", "F", "I", "B", "C4", "UP", "ARG", "SIM"]
+ignore = [
+    "E501",   # line too long (handled by formatter)
+    "B008",   # function calls in argument defaults (FastAPI dependencies)
+    "B009",   # getattr with a constant attribute value
+    "ARG001", # unused function argument (fixtures injected by name)
+]
+
+[lint.per-file-ignores]
+"**/__init__.py" = ["F401"]
+"**/conftest.py" = ["ARG001"]
+
+[lint.isort]
+known-first-party = [
+    "r4",
+    "r4_mcp",
+    "gateway",
+    "r4_contracts",
+    "r4_teamengine_spi",
+    "r4_engine_langgraph",
+    "umrs_protocol",
+]

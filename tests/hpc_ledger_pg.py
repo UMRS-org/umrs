@@ -11,7 +11,6 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-
 from umrs import migrations
 
 NEW_MIGRATIONS = ("0137_hpc_grants.sql", "0138_hpc_usage_ledger.sql")

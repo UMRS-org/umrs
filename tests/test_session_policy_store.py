@@ -17,6 +17,7 @@ from typing import Any
 
 import pytest
 from tests.fake_pg_pool import FakePool
+from umrs import migrations
 from umrs.session_policy import (
     LimitsCache,
     PolicyError,
@@ -25,8 +26,6 @@ from umrs.session_policy import (
     effective_limits_cached,
     effective_limits_for,
 )
-
-from umrs import migrations
 
 MIGRATION = migrations.MIGRATIONS_DIR / "0125_session_policy.sql"
 

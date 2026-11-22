@@ -16,10 +16,9 @@ import re
 from typing import Any
 
 import pytest
+from umrs import migrations
 from umrs.knowledge.retrieval import graph_lane
 from umrs.knowledge.retrieval.types import RetrieveSpec
-
-from umrs import migrations
 
 MIGRATION = migrations.MIGRATIONS_DIR / "0121_knowledge_nodes_semantic_label_fts.sql"
 

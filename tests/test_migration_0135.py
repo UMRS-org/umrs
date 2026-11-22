@@ -13,9 +13,8 @@ import re
 from typing import Any
 
 import pytest
-from umrs.hpc_accounts.store import LINK_COLUMNS, LINK_STATUSES
-
 from umrs import migrations
+from umrs.hpc_accounts.store import LINK_COLUMNS, LINK_STATUSES
 
 MIGRATION = migrations.MIGRATIONS_DIR / "0135_project_site_allocations.sql"
 ACCOUNTS = migrations.MIGRATIONS_DIR / "0134_site_accounts.sql"

@@ -17,10 +17,9 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from umrs import migrations
 from umrs.knowledge.retrieval import lexical
 from umrs.knowledge.retrieval.types import RetrieveSpec
-
-from umrs import migrations
 
 MIGRATION = migrations.MIGRATIONS_DIR / "0120_knowledge_chunk_search_text.sql"
 
