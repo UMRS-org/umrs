@@ -104,7 +104,9 @@ jobs:
           # CPU wheels, as the server image does (Dockerfile.server).
           pip install --index-url https://download.pytorch.org/whl/cpu torch torchvision
           pip install -r src/requirements.txt
-          pip install --no-deps -e src -e protocol
+          # The extras carry what requirements.txt does not (python-jose,
+          # asyncpg, textual, ...); the CPU torch above satisfies theirs.
+          pip install -e protocol -e "src[server,client,otel]"
           pip install pytest pytest-asyncio pytest-xdist==3.8.0
           python -c "import importlib.util as u; assert u.find_spec('umrs_r4') is None, 'core-only job must not see umrs_r4'"
 

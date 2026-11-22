@@ -140,11 +140,11 @@ _clone_database_for_xdist_worker()
 
 
 # U4 (ADR-117 §7.2): UMRS-org's core-only CI job runs without the umrs-r4
-# extension (and without r4-contracts, which only the extension needs). The
+# extension, r4-contracts, r4-mcp or the r4 client (all R4-side). The
 # test files that import either are not collected there; the header says how
 # many. Coarse on purpose for now: a file that mixes core and extension cases
 # drops its core cases in the core-only run until it is split (U4 follow-up).
-_EXTENSION_IMPORT = re.compile(r"^\s*(?:from|import)\s+(?:umrs_r4|r4_contracts)\b", re.M)
+_EXTENSION_IMPORT = re.compile(r"^\s*(?:from|import)\s+(?:umrs_r4|r4_contracts|r4_mcp|r4)\b", re.M)
 
 
 _SIBLING_IMPORT = re.compile(r"^\s*from\s+(?:tests\.)?(test_\w+)\s+import\b", re.M)
@@ -173,8 +173,7 @@ def _core_only_ignores() -> list[str]:
         return []
     here = Path(__file__).resolve().parent
     texts = {
-        path: path.read_text(encoding="utf-8", errors="replace")
-        for path in here.rglob("test_*.py")
+        path: path.read_text(encoding="utf-8", errors="replace") for path in here.rglob("test_*.py")
     }
     return sorted(str(path.relative_to(here)) for path in _extension_importers(texts))
 
