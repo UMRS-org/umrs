@@ -18,6 +18,3 @@
 6 | opt-in: UMRS_STEP_PODMAN_TESTS=1 and rootless podman
 6 | kubernetes package not installed
 1 | live PG rehearsal needs DATABASE_URL
-
-# stale, follow-up owed: skip even with a database
-4 | Requires model registry (Postgres or catalog)

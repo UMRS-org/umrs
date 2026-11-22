@@ -12,10 +12,12 @@ Run with:
 """
 
 import asyncio
+import contextlib
 import os
 
 # Test imports
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -30,6 +32,56 @@ _EGRESS_DECLARED = {
     "MCP_CUSTOM_IMAGE": "localhost/mcp-runner:test",
     "MCP_CUSTOM_COMMAND": "mcp-runner",
 }
+
+
+def _registry_entry(name: str, storage_ref: str, huggingface_id: str | None = None):
+    """A real ModelEntry, as the durable model store would return it."""
+    from umrs.model_registry.models import ModelEntry, ModelScope
+
+    return ModelEntry(
+        model_id=f"model-{name}",
+        name=name,
+        scope=ModelScope.SYSTEM,
+        storage_ref=storage_ref,
+        huggingface_id=huggingface_id,
+    )
+
+
+def _fake_site():
+    """A minimal site config: one partition, one serving image."""
+    return SimpleNamespace(
+        name="test-site",
+        scheduler=SimpleNamespace(partition="test-gpu"),
+        runtime=SimpleNamespace(rivault_dir="/images/test.sif"),
+        partition_profiles={},
+    )
+
+
+@contextlib.contextmanager
+def _hermetic_provision(entry):
+    """Stub every out-of-process lookup EndpointProvisionBackend.submit_job makes.
+
+    The registry lookup and certification check (both Postgres in
+    production), the roster and site files, and preflight probes are
+    replaced; DeploymentSpec.from_registry and env generation run for real.
+    """
+    from umrs.orchestrator.preflight import PreflightResult
+
+    preflight = AsyncMock(return_value=PreflightResult(passed=True, checks=[]))
+    with (
+        patch("umrs.jobs.adapters._resolve_model_entry", return_value=entry),
+        patch(
+            "umrs.jobs.adapters._check_active_certification",
+            return_value={"cert_id": "cert-test", "smoke_test_passed": True},
+        ),
+        patch("umrs.jobs.adapters._resolve_roster_defaults", return_value=None),
+        patch(
+            "umrs.orchestrator.site_config.load_site_config",
+            return_value=_fake_site(),
+        ),
+        patch("umrs.orchestrator.preflight.PreflightValidator.run_all", new=preflight),
+    ):
+        yield
 
 
 class MockConnection:
@@ -533,9 +585,6 @@ class TestAdapters:
         assert result.metrics["target_job_id"] == "slurm-123"
         assert result.metrics["requested_job_id"] == "job-endpoint-123"
 
-    @pytest.mark.skip(
-        reason="Requires model registry (Postgres or catalog). Run with mocked store."
-    )
     def test_endpoint_provision_backend_submit(self):
         """Test EndpointProvisionBackend submit_job."""
         from umrs.jobs import (
@@ -612,7 +661,10 @@ class TestAdapters:
         )
 
         # Patch _determine_target_host to avoid module import issues
-        with patch.object(backend, "_determine_target_host", return_value="localhost"):
+        with (
+            _hermetic_provision(_registry_entry("test-model", "/models/test")),
+            patch.object(backend, "_determine_target_host", return_value="localhost"),
+        ):
             # Submit
             backend_ref = asyncio.run(backend.submit_job(job, attempt))
 
@@ -621,9 +673,6 @@ class TestAdapters:
             mock_orchestrator.submit_job.assert_called_once()
             mock_registry.register.assert_called_once()
 
-    @pytest.mark.skip(
-        reason="Requires model registry (Postgres or catalog). Run with mocked store."
-    )
     def test_endpoint_provision_backend_merges_env_vars(self):
         """EndpointProvisionBackend should preserve caller env overrides."""
         from umrs.jobs import (
@@ -695,14 +744,7 @@ class TestAdapters:
 
         with (
             patch.object(backend, "_determine_target_host", return_value="localhost"),
-            patch(
-                "umrs.jobs.adapters._resolve_model_entry",
-                return_value=MagicMock(
-                    name="test-model",
-                    storage_ref="/models/test",
-                    runtime_config=MagicMock(model_family="llm"),
-                ),
-            ),
+            _hermetic_provision(_registry_entry("test-model", "/models/test")),
         ):
             asyncio.run(backend.submit_job(job, attempt))
 
@@ -858,9 +900,6 @@ class TestAdapters:
         registered_metadata = mock_registry.register.call_args.kwargs["metadata"]
         assert registered_metadata["max_model_len"] == 262144
 
-    @pytest.mark.skip(
-        reason="Requires model registry (Postgres or catalog). Run with mocked store."
-    )
     def test_endpoint_provision_backend_translates_mounts(self):
         """Durable endpoint jobs should translate mount intent to launch env."""
         from umrs.jobs import (
@@ -931,6 +970,7 @@ class TestAdapters:
         with (
             patch.object(backend, "_determine_target_host", return_value="pending"),
             patch.dict(os.environ, _EGRESS_DECLARED),
+            _hermetic_provision(_registry_entry("test-model", "/models/test")),
         ):
             asyncio.run(backend.submit_job(job, attempt))
 
@@ -943,9 +983,6 @@ class TestAdapters:
         assert env["EGRESS_DOMAIN_ALLOWLIST"] == "api.example.com"
         assert "RIVAULT_MCP_MOUNTS_JSON" in env
 
-    @pytest.mark.skip(
-        reason="Requires model registry (Postgres or catalog). Run with mocked store."
-    )
     def test_endpoint_provision_backend_resolves_registered_model_path(self):
         """EndpointProvisionBackend should resolve catalog-backed models when only the name is provided."""
         from umrs.jobs import (
@@ -1009,21 +1046,7 @@ class TestAdapters:
         )
 
         with (
-            patch(
-                "umrs.jobs.adapters._resolve_model_entry",
-                return_value=MagicMock(
-                    name="qwen3-8b",
-                    storage_ref="/models/qwen3-8b",
-                    runtime_config=MagicMock(model_family="llm"),
-                ),
-            ),
-            patch(
-                "umrs.jobs.adapters._resolve_registered_model",
-                return_value=MagicMock(
-                    storage_ref="/models/qwen3-8b",
-                    huggingface_id="Qwen/Qwen3-8B",
-                ),
-            ),
+            _hermetic_provision(_registry_entry("qwen3-8b", "/models/qwen3-8b", "Qwen/Qwen3-8B")),
             patch.object(backend, "_determine_target_host", return_value="pending"),
         ):
             asyncio.run(backend.submit_job(job, attempt))
