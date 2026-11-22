@@ -64,9 +64,22 @@ jobs:
         run: python ratchets/complexity_baseline.py check src tests
 
   test-core:
-    name: Core suite (no extension)
+    # core: no R4-side module installed. r4-ext (U4-e): core + the umrs-r4
+    # extension + r4-contracts; the r4 client and r4-mcp stay absent, so the
+    # files importing them are not collected (tests/conftest.py).
+    name: Suite (${{ matrix.variant }})
     runs-on: ubuntu-latest
     timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: core
+            paths: tests/
+            allowlist: tests/allowed_skips.txt
+          - variant: r4-ext
+            paths: tests/ packages/umrs-r4/tests/
+            allowlist: tests/allowed_skips_r4_ext.txt
     services:
       postgres:
         image: pgvector/pgvector:pg15
@@ -125,7 +138,7 @@ jobs:
             -iam -iam.port=8111
           timeout 90 bash -c "until curl -sf http://localhost:9000/status; do sleep 2; done"
 
-      - name: Install core (CPU torch, no extension)
+      - name: Install core (CPU torch)
         run: |
           python -m pip install --upgrade pip
           # CPU wheels, as the server image does (Dockerfile.server).
@@ -137,7 +150,20 @@ jobs:
           # Pinned to the versions the r4 venv runs (asyncio_mode=auto below).
           pip install pytest==9.1.1 pytest-asyncio==1.4.0 pytest-xdist==3.8.0
           pip install ruff==0.16.6  # the ratchet tools' own tests run ruff
-          python -c "import importlib.util as u; assert u.find_spec('umrs_r4') is None, 'core-only job must not see umrs_r4'"
+
+      - name: Assert no extension (core)
+        if: matrix.variant == 'core'
+        run: python -c "import importlib.util as u; assert u.find_spec('umrs_r4') is None, 'core-only job must not see umrs_r4'"
+
+      # r4-contracts is not on any index; the public R4 export carries it.
+      # Pinned to a commit whose r4-contracts tree equals the private one
+      # (f83f6b07); --no-deps because umrs-protocol comes from protocol/ above.
+      - name: Install the umrs-r4 extension (r4-ext)
+        if: matrix.variant == 'r4-ext'
+        run: |
+          pip install --no-deps "r4-contracts @ git+https://github.com/R-CCS-HPBD/r4@63607f1f80160db912c82b8d8afb892e6730bb7b#subdirectory=r4-contracts"
+          pip install --no-deps -e packages/umrs-r4
+          python -c "import umrs_r4, r4_contracts.loop_plan; from importlib.metadata import entry_points as e; assert 'r4' in {x.name for x in e(group='umrs.extensions')}"
 
       - name: Apply migrations to a fresh database
         run: python -m umrs.migrations --db-url "postgresql://test:test@localhost:5432/umrs_test"
@@ -152,6 +178,7 @@ jobs:
       # which the merged line adds below their last migration. Build one from
       # the archived files and upgrade it (scripts/migration_upgrade_check.py).
       - name: Upgrade from the pre-merge main schema
+        if: matrix.variant == 'core'
         run: |
           TAG=archive/main-pre-merge-2026-11
           git fetch --no-tags --depth=1 origin "refs/tags/$TAG:refs/tags/$TAG"
@@ -162,23 +189,24 @@ jobs:
             postgresql://test:test@localhost:5432/umrs_upgrade \
             "$RUNNER_TEMP/premain/src/umrs/migrations"
 
-      - name: Core suite
+      - name: Suite
         run: |
           mkdir -p "$RUNNER_TEMP/home" && chmod a-w "$RUNNER_TEMP/home"
           export HOME="$RUNNER_TEMP/home"
-          python -m pytest tests/ -n 4 -q -p no:cacheprovider -o asyncio_mode=auto \
-            --ignore=tests/test_rag_pipeline.py -rfEs --junitxml="$RUNNER_TEMP/junit-core.xml"
+          python -m pytest ${{ matrix.paths }} -n 4 -q -p no:cacheprovider -o asyncio_mode=auto \
+            --ignore=tests/test_rag_pipeline.py -rfEs \
+            --junitxml="$RUNNER_TEMP/junit-${{ matrix.variant }}.xml"
 
-      - name: Skip gate (tests/allowed_skips.txt, which only shrinks)
+      - name: Skip gate (the variant's allowlist, which only shrinks)
         if: success() || failure()
-        run: python scripts/skip_gate.py "$RUNNER_TEMP/junit-core.xml"
+        run: python scripts/skip_gate.py "$RUNNER_TEMP/junit-${{ matrix.variant }}.xml" ${{ matrix.allowlist }}
 
       - name: JUnit (for the r4 agreement check, ADR-117 §7.3)
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: junit-core
-          path: ${{ runner.temp }}/junit-core.xml
+          name: junit-${{ matrix.variant }}
+          path: ${{ runner.temp }}/junit-${{ matrix.variant }}.xml
           retention-days: 14
         continue-on-error: true
 
