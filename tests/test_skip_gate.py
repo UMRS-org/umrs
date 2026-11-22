@@ -62,11 +62,23 @@ def test_allowlist_only_shrinks(tmp_path: Path) -> None:
     assert "allowlist only shrinks: lower 1 -> 0 for 'k'" in done.stdout
 
 
+def _committed_rows() -> list[tuple[str, str]]:
+    lines = (ROOT / "tests" / "allowed_skips.txt").read_text().splitlines()
+    kept = [line for line in lines if line.strip() and not line.startswith("#")]
+    return [(count.strip(), prefix.strip()) for count, _, prefix in map(_split_row, kept)]
+
+
+def _split_row(line: str) -> tuple[str, str, str]:
+    return line.partition("|")
+
+
+def test_committed_allowlist_rows_are_well_formed() -> None:
+    rows = _committed_rows()
+    assert rows
+    for count, prefix in rows:
+        assert count.isdigit() and prefix, (count, prefix)
+
+
 def test_committed_allowlist_lists_no_db_or_s3_skip() -> None:
-    rows = [
-        line.partition("|")
-        for line in (ROOT / "tests" / "allowed_skips.txt").read_text().splitlines()
-        if line.strip() and not line.startswith("#")
-    ]
-    assert rows and all(count.strip().isdigit() and prefix.strip() for count, _, prefix in rows)
-    assert not any("db-url" in prefix.lower() or "S3" in prefix for _, _, prefix in rows)
+    prefixes = [prefix for _, prefix in _committed_rows()]
+    assert not [p for p in prefixes if "db-url" in p.lower() or "S3" in p]
