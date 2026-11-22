@@ -14,16 +14,14 @@ requires-python = ">=3.10"
 # shared config loaders used by both client and server.
 # ``umrs-protocol`` (this repo's ``protocol/``) is the stdlib-only wire
 # protocol, handshake signing, error codes and HPC gate (ADR-117 D-2).
-# ``r4-contracts`` is now an alias layer over it for those modules
-# (``r4_contracts.<m> is umrs_protocol.<m>``) plus the stdlib-only DTOs umrs
-# still imports by that name until U3 S5; foundation modules (skills, recipes,
-# security, jobs/provenance) import it at module load. Neither is published
-# (PyPI holds only 0.0.0 name reservations): from a source checkout install
-# both editable alongside umrs: ``pip install -e ../protocol -e ../../r4-contracts``.
+# Core imports no ``r4_contracts`` since U3 S5 (the umrs-r4 extension depends
+# on it, ADR-117 U3a D9), so it is no longer a core dependency (U3 S6g).
+# ``umrs-protocol`` is not published (PyPI holds only a 0.0.0 name
+# reservation): from a source checkout install it editable alongside umrs:
+# ``pip install -e ../protocol``.
 dependencies = [
     "jsonschema>=4.18",  # referencing (ADR-105 S1 validation imports it)
     "umrs-protocol>=0.2.0rc4",
-    "r4-contracts>=0.1.0",
 ]
 
 [project.optional-dependencies]

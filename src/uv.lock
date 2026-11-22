@@ -5542,23 +5542,6 @@ wheels = [
 ]
 
 [[package]]
-name = "r4-contracts"
-version = "0.2.0rc4"
-source = { editable = "../../r4-contracts" }
-dependencies = [
-    { name = "umrs-protocol", marker = "python_full_version >= '3.11.5'" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.0" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.4" },
-    { name = "umrs-protocol", specifier = ">=0.2.0rc4" },
-]
-provides-extras = ["dev"]
-
-[[package]]
 name = "rapidocr"
 version = "3.10.0"
 source = { registry = "https://pypi.org/simple" }
@@ -7630,7 +7613,6 @@ version = "0.2.0rc4"
 source = { editable = "." }
 dependencies = [
     { name = "jsonschema", marker = "python_full_version >= '3.11.5'" },
-    { name = "r4-contracts", marker = "python_full_version >= '3.11.5'" },
     { name = "umrs-protocol", marker = "python_full_version >= '3.11.5'" },
 ]
 
@@ -7786,7 +7768,6 @@ requires-dist = [
     { name = "python-pptx", marker = "extra == 'server'", specifier = ">=1.0" },
     { name = "pyyaml", marker = "extra == 'client'" },
     { name = "pyzmq", marker = "extra == 'client-full'" },
-    { name = "r4-contracts", editable = "../../r4-contracts" },
     { name = "requests", marker = "extra == 'client-full'" },
     { name = "rich", marker = "extra == 'client'", specifier = ">=13.0" },
     { name = "scikit-learn", marker = "extra == 'server'" },
