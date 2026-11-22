@@ -41,6 +41,14 @@ READY_ENV = {
 # ── snapshot pool fake (only the helper SQL shapes) ─────────────────────────
 
 
+@pytest.fixture(autouse=True)
+def _site_declares_rikyu(monkeypatch):
+    """U3 S6e: no institutional host is packaged any more; these tests run as
+    a site that declares RIKEN's Rikyu (as umrs-front and the stand-alone
+    stack do). A test that deletes or overrides the variable still wins."""
+    monkeypatch.setenv("UMRS_INSTITUTIONAL_PROVIDER_HOSTS", "api.rikyu.r-ccs.riken.jp")
+
+
 class _Cursor:
     def __init__(self, table: dict, recorded: list, projects: dict | None = None):
         self._table = table
@@ -1058,7 +1066,6 @@ class TestDataClassGate:
         """ADR-062 amendment (2026-10-15): an institutional host (the site's
         allowlist — Rikyu by default) is NOT public for the venue-start gate,
         even though the pushed source's provider_kind is."""
-        monkeypatch.delenv("UMRS_INSTITUTIONAL_PROVIDER_HOSTS", raising=False)
         harness.pool.seed("alice", "sess-1")
         harness.pool.projects = {"proj-s": "sensitive"}
         harness.service._sealed = FakeSealed(
@@ -1103,7 +1110,6 @@ class TestDataClassGate:
         """F9 (wave-2 review): an institutional and a commercial source in one
         start — the refusal names the commercial source only, and the text
         says which sources a sensitive project may use."""
-        monkeypatch.delenv("UMRS_INSTITUTIONAL_PROVIDER_HOSTS", raising=False)
         harness.pool.seed("alice", "sess-1")
         harness.pool.projects = {"proj-s": "sensitive"}
         rikyu = _meta("rikyu-main", allow_host="https://api.rikyu.r-ccs.riken.jp")
@@ -1149,7 +1155,6 @@ class TestDataClassGate:
     def test_sensitive_project_userinfo_host_is_never_institutional(self, harness, monkeypatch):
         """F7/F9: a source whose stored host carries userinfo is refused even
         when the allowlisted host appears after the '@' (fail closed)."""
-        monkeypatch.delenv("UMRS_INSTITUTIONAL_PROVIDER_HOSTS", raising=False)
         harness.pool.seed("alice", "sess-1")
         harness.pool.projects = {"proj-s": "sensitive"}
         harness.service._sealed = FakeSealed(

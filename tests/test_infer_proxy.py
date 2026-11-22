@@ -7,11 +7,20 @@ import socket
 from datetime import datetime, timedelta, timezone
 
 import httpx
+import pytest
 from httpx import ASGITransport
 from umrs.infer_proxy.app import create_app
 from umrs.infer_proxy.leases import check_lease, extract_session_token, token_hash
 from umrs.jobs.secret_broker import SecretLease
 from umrs.security.seal import generate_recipient_keypair, seal_credential
+
+
+@pytest.fixture(autouse=True)
+def _site_declares_rikyu(monkeypatch):
+    """U3 S6e: no institutional host is packaged any more; these tests run as
+    a site that declares RIKEN's Rikyu (as umrs-front and the stand-alone
+    stack do). A test that deletes or overrides the variable still wins."""
+    monkeypatch.setenv("UMRS_INSTITUTIONAL_PROVIDER_HOSTS", "api.rikyu.r-ccs.riken.jp")
 
 
 def _stream_response(
@@ -487,7 +496,6 @@ class TestSourceClassGate:
     # wave-2 review: the admission was only unit-tested at the helper).
 
     def test_sensitive_admits_institutional_source_end_to_end(self, monkeypatch):
-        monkeypatch.delenv("UMRS_INSTITUTIONAL_PROVIDER_HOSTS", raising=False)
         resp, seen, broker = self._chat(
             monkeypatch,
             lease=_lease(project="proj-s"),

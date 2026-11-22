@@ -35,11 +35,13 @@ PUBLIC_PROVIDER_KINDS = frozenset(
 # (Rikyu first). A sensitive project may use it; commercial and other
 # public providers stay refused. Membership comes from this allowlist the
 # SITE keeps, never from a user label: UMRS_INSTITUTIONAL_PROVIDER_HOSTS
-# (comma/space separated) replaces the packaged default; empty = none.
+# (comma/space separated). Unset or empty = none: U3 S6e removed the packaged
+# RIKEN default (api.rikyu.r-ccs.riken.jp); a site declares its own hosts
+# (umrs-front: the inventory; the stand-alone stack: its compose file).
 # Every process that runs a gate must see the same value — on umrs-front
 # the deploy role passes the one .env line to the servers and umrs-infer
 # (tests/test_institutional_allowlist_parity.py).
-DEFAULT_INSTITUTIONAL_PROVIDER_HOSTS = frozenset({"api.rikyu.r-ccs.riken.jp"})
+DEFAULT_INSTITUTIONAL_PROVIDER_HOSTS: frozenset[str] = frozenset()
 
 _HTTP_SCHEMES = ("http", "https")
 _LABEL = re.compile(r"^[a-z0-9_]([a-z0-9_-]*[a-z0-9_])?$")
@@ -161,8 +163,8 @@ def _parse_allowlist(raw: str) -> frozenset[str]:
 def institutional_provider_hosts() -> frozenset[str]:
     """The site's institutional-provider allowlist (bare host names).
 
-    Unset → the packaged default; set but empty → no hosts; otherwise the
-    listed hosts replace the default. Entries are normalized to bare
+    Unset or empty → no hosts (no site default in code, U3 S6e); otherwise
+    exactly the listed hosts. Entries are normalized to bare
     lowercase hosts; an unusable entry is ignored with a warning.
     """
     raw = os.environ.get("UMRS_INSTITUTIONAL_PROVIDER_HOSTS")

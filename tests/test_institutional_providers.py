@@ -27,12 +27,22 @@ from umrs.shared.project_data_class import (
 RIKYU = "api.rikyu.r-ccs.riken.jp"
 
 
+@pytest.fixture(autouse=True)
+def _site_declares_rikyu(monkeypatch):
+    """U3 S6e: no institutional host is packaged any more; these tests run as
+    a site that declares RIKEN's Rikyu (as umrs-front and the stand-alone
+    stack do). A test that deletes or overrides the variable still wins."""
+    monkeypatch.setenv("UMRS_INSTITUTIONAL_PROVIDER_HOSTS", "api.rikyu.r-ccs.riken.jp")
+
+
 class TestAllowlist:
-    def test_default_is_rikyu(self, monkeypatch):
+    def test_unset_means_no_institutional_hosts(self, monkeypatch):
+        # U3 S6e: no site default in code; RIKEN's Rikyu is now declared by
+        # the sites (umrs-front inventory, stand-alone compose).
         monkeypatch.delenv("UMRS_INSTITUTIONAL_PROVIDER_HOSTS", raising=False)
         hosts = institutional_provider_hosts()
-        assert hosts == DEFAULT_INSTITUTIONAL_PROVIDER_HOSTS
-        assert RIKYU in hosts
+        assert hosts == DEFAULT_INSTITUTIONAL_PROVIDER_HOSTS == frozenset()
+        assert RIKYU not in hosts
 
     def test_env_replaces_the_default(self, monkeypatch):
         monkeypatch.setenv("UMRS_INSTITUTIONAL_PROVIDER_HOSTS", "llm.example.jp, other.example.jp")
@@ -213,7 +223,6 @@ class TestUrlHost:
         ],
     )
     def test_classification(self, monkeypatch, url, expected):
-        monkeypatch.delenv("UMRS_INSTITUTIONAL_PROVIDER_HOSTS", raising=False)
         assert is_institutional_url(url) is expected
 
 
@@ -265,9 +274,7 @@ class TestLeaseGateInstitutional:
     def _refused(self, monkeypatch, allow_host, project="proj-s", env=None):
         from umrs.infer_proxy.app import _source_class_refused
 
-        if env is None:
-            monkeypatch.delenv("UMRS_INSTITUTIONAL_PROVIDER_HOSTS", raising=False)
-        else:
+        if env is not None:  # else: the site-declared list (module fixture)
             monkeypatch.setenv("UMRS_INSTITUTIONAL_PROVIDER_HOSTS", env)
         lease = SimpleNamespace(project=project)
         return _source_class_refused(_FakePool({project: "sensitive"}), lease, _full(allow_host))
@@ -287,10 +294,9 @@ class TestLeaseGateInstitutional:
 
 
 class TestConnectInfoAdvertisesAllowlist:
-    def test_default_list_emitted(self, monkeypatch):
+    def test_declared_list_emitted(self, monkeypatch):
         from umrs.api import ops
 
-        monkeypatch.delenv("UMRS_INSTITUTIONAL_PROVIDER_HOSTS", raising=False)
         result = ops.ops_connect_info(x_user_id=None)
         assert result["institutional_provider_hosts"] == [RIKYU]
 
@@ -306,7 +312,6 @@ class TestConnectInfoAdvertisesAllowlist:
         model does not declare is stripped before it reaches the client."""
         from umrs.api import ops
 
-        monkeypatch.delenv("UMRS_INSTITUTIONAL_PROVIDER_HOSTS", raising=False)
         result = ops.ops_connect_info(x_user_id=None)
         parsed = ops.ConnectInfoResponse(**result)
         assert parsed.institutional_provider_hosts == [RIKYU]
