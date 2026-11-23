@@ -360,6 +360,8 @@ STEP_CONTRACT_VERSION = "1"
 #: Exit codes of the job script: 75 = transient, 78 = configuration.
 _EX_TEMPFAIL = 75
 _EX_CONFIG = 78
+#: The watchdog stopped the step (as a pod SIGKILL would end: 128 + 9).
+_EX_STOPPED = 137
 _ARCHIVE_PART_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 _RUN_TAG_RE = re.compile(r"[A-Za-z0-9._-]{1,64}")
 #: What the step container may write to the job's Slurm log (Lustre): the
@@ -1024,13 +1026,59 @@ def _staged_pids_lines(job: StagedJob) -> list[str]:
 
 
 def _watch_stop(condition: str, why: str) -> list[str]:
-    """``if condition`` then name *why* in the log and kill the pod."""
+    """``if condition`` then stop the pod (``_step_watch_kill``: the stop
+    marker first, then *why* in the log, then the kill)."""
     return [
         f"        if {condition}; then",
-        f"            printf '[umrs-step] FATAL: %s\\n' \"{why}; the step was stopped\" >&2",
-        '            podman kill "${_step_ctr}" >/dev/null 2>&1',
+        f'            _step_watch_kill "{why}; the step was stopped"',
         "            return",
         "        fi",
+    ]
+
+
+def _watch_kill_lines(job: StagedJob) -> list[str]:
+    """A stop is recorded before the kill, in ``log/`` (no pod mounts it), and
+    the kill is retried until it lands: a pod not created yet, or one that
+    exits 0 between the check and the kill, must not end the job COMPLETED
+    (CI flake 2026-11-23: the kill missed, the step ran on and exited 0).
+    The run lines turn the marker into a failed job (:func:`_staged_run_lines`).
+    The FATAL line follows the marker: a watchdog the run lines end before
+    it recorded the stop has logged nothing, so the log never names a stop
+    the exit code does not report (review of f410eb45)."""
+    return [
+        f"_step_stop={shlex.quote(job.workdir + '/log/watchdog.stop')}",
+        'rm -f -- "${_step_stop}"',
+        "_step_watch_kill() {",
+        '    : > "${_step_stop}"',
+        "    printf '[umrs-step] FATAL: %s\\n' \"$1\" >&2",
+        '    until podman kill "${_step_ctr}" >/dev/null 2>&1; do',
+        f"        sleep {int(job.watch_seconds)} </dev/null >/dev/null 2>&1 || return",
+        "    done",
+        "}",
+    ]
+
+
+def _staged_run_lines(job: StagedJob) -> list[str]:
+    """The pod, unless the watchdog already stopped the step; the job's exit
+    code is the pod's (``pipefail``), and :data:`_EX_STOPPED` whenever the
+    watchdog stopped it, whatever the pod returned. The watchdog is ended
+    (TERM: an async subshell keeps no trap of ours) and reaped before the
+    marker is read, so a stop it decides on while the pod exits is either
+    recorded, and fails the job, or never happens."""
+    stopped = '[[ ! -e "${_step_stop}" ]]'
+    why = "the watchdog stopped the step"
+    return [
+        _or_fatal(stopped, _EX_STOPPED, f"{why} before it ran"),
+        "set +e",
+        " ".join(staged_podman_argv(job)) + " 2>&1 | _step_log >&2",
+        "_step_rc=$?",
+        'kill "${_step_watch_pid}" 2>/dev/null',
+        'wait "${_step_watch_pid}" 2>/dev/null',
+        '_step_watch_pid=""',
+        "set -e",
+        _or_fatal(stopped, _EX_STOPPED, f"{why} (pod exit ${{_step_rc}})"),
+        'exit "${_step_rc}"',
+        "",
     ]
 
 
@@ -1073,6 +1121,7 @@ def _staged_watch_lines(job: StagedJob) -> list[str]:
     hidden = r"-type d \( ! -readable -o ! -executable \) -print -quit"
     cap = int(job.max_out_entries)
     return [
+        *_watch_kill_lines(job),
         "_step_watch() {",
         "    set +eo pipefail",
         "    local stats used entries hidden avail",
@@ -1142,7 +1191,8 @@ def render_staged_job_script(job: StagedJob) -> str:
     """The staged step's sbatch script (build spec §7). Nothing interpolated
     is echoed and every value from Python is quoted or validated. The pod's
     stdout and stderr go capped to ``log/slurm.err`` (the tail the server
-    reads); the job's exit code is the pod's (``pipefail``)."""
+    reads); the job's exit code is the pod's (``pipefail``), never 0 once
+    the watchdog stopped the step."""
     lines = _staged_directives(job) + _staged_prologue(job)
     lines += _staged_venue_lines(job.venue_script)
     lines += _staged_image_lines(job.image, job.image_archive_dir)
@@ -1150,7 +1200,7 @@ def render_staged_job_script(job: StagedJob) -> str:
     lines += _staged_seccomp_lines(job)
     lines += _staged_pids_lines(job) + _staged_stale_lines() + _staged_watch_lines(job)
     lines += _staged_gpu_lines(job) + _staged_endpoint_lines(job)
-    lines += [" ".join(staged_podman_argv(job)) + " 2>&1 | _step_log >&2", ""]
+    lines += _staged_run_lines(job)
     return "\n".join(lines)
 
 
