@@ -1,0 +1,156 @@
+{
+  "plan_version": 1,
+  "name": "research-round",
+  "description": "One research round with the design's four research roles: the planner (RL) formulates testable hypotheses from the objective and the project's knowledge, the experimenter (ED) designs a protocol for each, the analyst (DA) assesses each design's analysis plan, and reviewer (PR) judges score the designs. A near-tie between the best designs raises competing_hypotheses (ADR-066) to a human instead of picking. Read-only: nothing is submitted or run.",
+  "params": {
+    "objective": {"type": "string", "required": true, "description": "the research objective of this round"},
+    "context": {"type": "string", "default": "", "description": "what is known so far (prior rounds, constraints)"},
+    "max_hypotheses": {"type": "integer", "default": 3, "min": 1, "max": 4},
+    "judges": {"type": "integer", "default": 3, "min": 1, "max": 5},
+    "margin": {"type": "number", "default": 1, "min": 0, "max": 5, "description": "scores within this of the best are a near-tie"},
+    "producer_model": {"type": "string", "default": null, "description": "the model the planner, experimenter and analyst run on (default: the session's)"},
+    "reviewer_model": {"type": "string", "default": null, "description": "a different model for the reviewers; the plan warns when it equals the producer model"}
+  },
+  "agents": {
+    "planner": {
+      "instructions": {"ref": "research_role:RL"},
+      "tools": ["knowledge_query", "file_read", "grep_search", "glob_search", "list_dir"],
+      "model": "{{params.producer_model}}",
+      "max_tool_rounds": 6
+    },
+    "experimenter": {
+      "instructions": {"ref": "research_role:ED"},
+      "tools": ["knowledge_query", "file_read", "grep_search", "glob_search", "list_dir"],
+      "model": "{{params.producer_model}}",
+      "max_tool_rounds": 6
+    },
+    "analyst": {
+      "instructions": {"ref": "research_role:DA"},
+      "tools": ["knowledge_query", "file_read", "grep_search"],
+      "model": "{{params.producer_model}}",
+      "max_tool_rounds": 4
+    },
+    "reviewer": {
+      "instructions": {"ref": "research_role:PR"},
+      "tools": ["knowledge_query", "file_read", "grep_search"],
+      "model": "{{params.reviewer_model}}",
+      "max_tool_rounds": 4,
+      "reviews": ["planner", "experimenter", "analyst"]
+    }
+  },
+  "concurrency": 4,
+  "budget": {"max_tokens": 800000, "max_agents": 40, "max_wallclock_sec": 3600},
+  "phases": [
+    {
+      "id": "plan",
+      "title": "Formulate hypotheses",
+      "steps": [
+        {
+          "id": "hypotheses",
+          "kind": "agent",
+          "use": "planner",
+          "label": "planner",
+          "prompt": "Research objective: {{params.objective}}\nWhat is known so far: {{params.context}}\nUse the project's knowledge (knowledge_query) before you decide. Formulate at most {{params.max_hypotheses}} testable hypotheses, each with a one-paragraph rationale grounded in what you read (cite passages as [n]) and the observation that would test it.",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "hypotheses": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 4,
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "statement": {"type": "string", "maxLength": 400},
+                    "rationale": {"type": "string", "maxLength": 1200},
+                    "test": {"type": "string", "maxLength": 600}
+                  },
+                  "required": ["statement", "rationale", "test"]
+                }
+              }
+            },
+            "required": ["hypotheses"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "design",
+      "title": "Design and assess experiments",
+      "steps": [
+        {
+          "id": "designs",
+          "kind": "map",
+          "over": "steps.hypotheses.output.hypotheses",
+          "max_items": "{{params.max_hypotheses}}",
+          "label": "experimenter",
+          "stages": [
+            {
+              "kind": "agent",
+              "use": "experimenter",
+              "prompt": "Research objective: {{params.objective}}\nHypothesis to test:\n{{item|json}}\nDesign one experiment that could refute it: the protocol, the controls and baselines, the resources it needs, and the outcome that would count against the hypothesis.",
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "hypothesis": {"type": "string", "maxLength": 400},
+                  "protocol": {"type": "string", "maxLength": 2000},
+                  "controls": {"type": "string", "maxLength": 800},
+                  "resources": {"type": "string", "maxLength": 400},
+                  "refuting_outcome": {"type": "string", "maxLength": 600}
+                },
+                "required": ["hypothesis", "protocol", "controls", "resources", "refuting_outcome"]
+              }
+            }
+          ]
+        },
+        {
+          "id": "analysis",
+          "kind": "map",
+          "over": "steps.designs.output",
+          "max_items": "{{params.max_hypotheses}}",
+          "label": "analyst",
+          "stages": [
+            {
+              "kind": "agent",
+              "use": "analyst",
+              "prompt": "Assess the analysis plan of this experiment design:\n{{item|json}}\nWhich statistical test fits, what effect size and sample would make it conclusive, and which confounders or assumptions threaten it?",
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "test": {"type": "string", "maxLength": 400},
+                  "power": {"type": "string", "maxLength": 600},
+                  "threats": {"type": "string", "maxLength": 1200}
+                },
+                "required": ["test", "power", "threats"]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "review",
+      "title": "Judge the designs",
+      "steps": [
+        {
+          "id": "review",
+          "kind": "pattern",
+          "pattern": "judge_panel",
+          "over": "steps.designs.output",
+          "max_items": "{{params.max_hypotheses}}",
+          "judges": "{{params.judges}}",
+          "margin": "{{params.margin}}",
+          "use": "reviewer",
+          "label": "reviewer",
+          "prompt": "Research objective: {{params.objective}}\nScore this experiment design (design {{item_index}}) from 0 (unsound) to 10 (rigorous and decisive) for methodological and statistical validity:\n{{item|json}}\nThe analyst's assessments of every design, in design order (this design's is entry {{item_index}}):\n{{steps.analysis.output|json}}"
+        }
+      ]
+    }
+  ],
+  "output": {
+    "hypotheses": "steps.hypotheses.output.hypotheses",
+    "designs": "steps.designs.output",
+    "analysis": "steps.analysis.output",
+    "decision": "steps.review.output"
+  }
+}

@@ -16,6 +16,10 @@ ADR-117 D-2 moves the UMRS-owned contract modules into ``umrs_protocol``
 The modules ADR-117 U3a D9 leaves in r4-contracts until U3 S5 (``loop_plan``,
 ``team_engine``, ``taint``) carry ``# floor: U3-S5``; nothing else may.
 UMRS-org CI replaces this test with import-linter contracts in U4.
+
+2026-11-24 (U2 exit): the allowlist is empty and the fence requires it; the
+last consumer (test_plan_loop_server.py) moved to packages/umrs-r4/tests,
+where r4_contracts is a declared dependency (D9).
 """
 
 from __future__ import annotations
@@ -133,12 +137,6 @@ def test_floor_marks_only_on_u3_s5_modules(listed: list[tuple[str, bool]]) -> No
     assert not wrong, f"'{FLOOR_MARK}' belongs on loop_plan/team_engine/taint rows only: {wrong}"
 
 
-def test_scan_finds_the_known_consumers(scanned: set[str]) -> None:
-    """Sanity: the scanner sees the remaining test consumer (function-local
-    imports are pinned by the parametrized scanner cases below)."""
-    assert "tests/test_plan_loop_server.py::r4_contracts.loop_plan" in scanned
-
-
 def test_core_src_imports_no_r4_contracts(scanned: set[str]) -> None:
     """U3 S5: the plan-run cluster (the last floor users) left for umrs_r4."""
     assert not sorted(e for e in scanned if e.startswith("src/"))
@@ -151,10 +149,11 @@ def test_protocol_and_handshake_hmac_have_moved(scanned: set[str]) -> None:
     assert not leftovers, f"protocol/HMAC imports still use r4_contracts: {leftovers}"
 
 
-def test_u2_exit_only_floor_imports_remain(scanned: set[str]) -> None:
-    """U2 exit (spec §restated): every remaining r4_contracts import is a U3-S5 floor."""
-    leftovers = sorted(entry for entry in scanned if not _is_floor_target(entry))
-    assert not leftovers, f"non-floor r4_contracts imports remain: {leftovers}"
+def test_u2_exit_the_allowlist_is_empty(scanned: set[str], listed: list[tuple[str, bool]]) -> None:
+    """U2 exit (ADR-117 plan U2): no r4_contracts import is left in core src or
+    tests, floors included; the last consumer moved to packages/umrs-r4/tests."""
+    assert not listed, f"the allowlist must stay empty after U2: {[e for e, _ in listed]}"
+    assert not sorted(scanned), f"r4_contracts imports in core: {sorted(scanned)}"
 
 
 # ── the scanner ─────────────────────────────────────────────────────────────
