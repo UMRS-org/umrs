@@ -28,6 +28,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Any, Protocol
 
+from umrs.hosts import INLINE_HOST_ID, HostRuntime
 from umrs.session_policy import (
     PolicyRuleStore,
     WebChoice,
@@ -106,7 +107,7 @@ class FrontendVenueService:
         config: FrontendVenueConfig,
         broker: Any,
         store: VenueSessionStore,
-        provisioner: Any,
+        provisioner: HostRuntime,
         pool: Any,
         sealed_store: Any | None = None,
         job_store: JobSubmitter | None = None,
@@ -120,6 +121,11 @@ class FrontendVenueService:
         self.config = config
         self.broker = broker
         self.store = store
+        # ADR-098 D-2/D-3 (SH-H0): the host runtime the sandbox runs on —
+        # today the inline one (FrontendPodmanProvisioner = core
+        # InlineHostRuntime + the r4 worker spec). It provisions on the
+        # durable job's claim (frontend_session_backend), not in ``_launch``;
+        # this service only tears down on stop.
         self.provisioner = provisioner
         self.pool = pool
         self._sealed = sealed_store
@@ -867,9 +873,10 @@ class FrontendVenueService:
 
 IDEMPOTENCY_KEY_MAX = 64  # jobs.idempotency_key VARCHAR(64)
 
-# The session host every sandbox runs on today: the API's own podman host.
-# RS-2 (umrs-sessiond) replaces it with the host registry's id.
-SESSION_HOST = "local"
+# The session host every sandbox runs on today: the API's own podman host
+# (ADR-098 inline mode). SH-H1a's host registry gives the inline front this
+# id; SH-H2 placement replaces the constant with the placed host's id.
+SESSION_HOST = INLINE_HOST_ID
 
 # Worker-reported runtime fields an admin view leaves out: the live
 # assistant text and tool lines are the user's conversation, not control data.
