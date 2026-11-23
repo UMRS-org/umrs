@@ -3127,13 +3127,6 @@ def _registry_chat_candidates(project_id: str) -> list[Any]:
     return registry_rows(project_id, "chat")
 
 
-def _wanted_model_names(wanted: str) -> set[str]:
-    """``wanted`` plus the models an ADR-106 role alias serves (ADR-116 D-2)."""
-    from umrs.orchestrator.registry_route import wanted_names
-
-    return wanted_names(wanted)
-
-
 def _extract_chat_endpoint(project_id: str) -> tuple[str, str] | None:
     """(base_url, model) for semantic extraction, or None when none is usable.
 

@@ -156,6 +156,13 @@ def test_llm_discovery_admits_non_sensitive_and_self_deployed(pool, registry):
     assert llm_api._discover_endpoint(registry, "p-sens", "local-m").job_id == "j-self"
 
 
+def test_llm_discovery_skips_a_refused_pick_for_the_self_deployed_replica(pool, registry):
+    _row(registry, "p-sens", "j-pub", _PUBLIC)
+    _row(registry, "p-sens", "j-self", _SELF)
+    registry.get_by_job_id("j-self").active_requests = 3
+    assert llm_api._discover_endpoint(registry, "p-sens", "gpt-x").job_id == "j-self"
+
+
 def test_llm_failover_never_picks_a_public_replica(pool, registry):
     _row(registry, "p-sens", "j-self", _SELF)
     _row(registry, "p-sens", "j-pub", _PUBLIC)

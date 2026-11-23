@@ -293,7 +293,9 @@ def _discover_endpoint(
     name, the variant-suffixed, served-name and pool-variant fallbacks, a
     role alias (ADR-106 D-1), and endpoints shared with the caller (ADR-078).
     A pick the project's ADR-062 class refuses (a public passthrough row for
-    a sensitive project) is skipped (DEC-063 gated resolver, 2026-11-24).
+    a sensitive project) is replaced by the least-loaded admitted replica of
+    the same model and variant, else skipped (DEC-063 gated resolver,
+    2026-11-24).
 
     Raises HTTPException if no endpoint is available.
     """
@@ -314,10 +316,26 @@ def _discover_endpoint(
     refused = None
     for strategy in strategies:
         endpoint = strategy()
-        if endpoint and gate_rows([endpoint], project_id):
-            return endpoint
+        pick = _admitted_pick(registry, project_id, caller, endpoint)
+        if pick:
+            return pick
         refused = refused or endpoint
     _raise_unavailable(project_id, model, refused)
+
+
+def _admitted_pick(
+    registry: EndpointRegistry,
+    project_id: str,
+    caller: EndpointCaller | None,
+    endpoint: RegisteredEndpoint | None,
+) -> RegisteredEndpoint | None:
+    """The strategy's pick when the ADR-062 class admits it; else the
+    least-loaded admitted replica of the same model and variant, so a refused
+    public row does not hide the project's own replica (DEC-063, 2026-11-24)."""
+    if endpoint is None or gate_rows([endpoint], project_id):
+        return endpoint
+    rows = _routable_rows(registry, project_id, caller, (endpoint.model,))
+    return _least_loaded([ep for ep in rows if ep.variant == endpoint.variant])
 
 
 def _raise_unavailable(project_id: str, model: str, refused: object) -> NoReturn:

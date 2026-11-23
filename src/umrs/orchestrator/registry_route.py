@@ -1,10 +1,10 @@
-"""One gated registry resolver for every server consumer (DEC-063, gap D-63).
+"""One gated registry resolver for server consumers (DEC-063, gap D-63).
 
 Before this module each server consumer picked endpoint-registry rows on its
 own (chat and llm discovery, knowledge extraction, the agentic executor,
 perception), and only umrs-infer's site source applied the ADR-062 class
 gate: a sensitive project could reach a public-passthrough row through every
-other consumer. Every consumer now passes its rows through here:
+other consumer. Those five consumers now pass their rows through here:
 
 * :func:`gate_rows` drops the public rows a sensitive project may not use
   (the class is read only when a public row is present, so the usual path
@@ -25,6 +25,15 @@ which the llm proxy and umrs-infer must not pay.
 Hosted and self-hosted UMRS behave alike: the gate reads only the row and
 the project's ``data_class``; a stand-alone project that the site creates
 ``non_sensitive`` keeps every row it registers.
+
+Not yet gated (2026-11-24 review, a follow-up slice): the batch-inference and
+model-eval ``_resolve_ready_endpoint`` pickers, the vision candidate pick and
+``GET /endpoints/active`` still read registry rows directly.
+
+The gate fails open on purpose, as umrs-infer does: with no Postgres
+configured (no ``DB_HOST``/``DATABASE_URL``), no project row, or a failed
+lookup the class is ``""`` and every row is admitted. The stand-alone
+compose sets ``DB_HOST``, so this applies only to a front with no database.
 """
 
 from __future__ import annotations
