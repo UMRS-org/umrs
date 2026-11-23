@@ -74,7 +74,7 @@ def _rows_for(text: str, params) -> list[tuple]:
     if "COUNT(*)" in text:
         return [(1,)]
     if "FROM mcp_tools t" in text:
-        return [("focus", "d", {}, "lab-scope")]
+        return [("focus", "d", {}, "lab-scope", "srv-1")]
     if "FROM mcp_tools WHERE server_id" in text:
         return []
     return [] if "missing" in (params or ()) else [_SERVER_ROW]

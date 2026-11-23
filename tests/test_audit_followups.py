@@ -165,11 +165,12 @@ class _FakeMCPStore:
                     "description": "",
                     "inputSchema": {},
                     "server": s.name,
+                    "server_id": s.server_id,
                 }
             )
         return out
 
-    def get_server_by_name(self, name):
+    def get_server_by_name(self, name, **_scope):
         for s in self._servers:
             if s.name == name:
                 return s
@@ -336,7 +337,7 @@ class TestMCPMutationScoping:
         from fastapi.testclient import TestClient
 
         store = self.store
-        store.unregister_server = lambda name: True
+        store.unregister_server = lambda name, **_scope: True
         resp = TestClient(self.app).delete(
             f"{MCP_PREFIX}/servers/proj-b-tools", headers={"X-Project-ID": "proj-a"}
         )
@@ -346,7 +347,7 @@ class TestMCPMutationScoping:
         monkeypatch.setenv("UMRS_AUTH_MODE", "mvp")
         from fastapi.testclient import TestClient
 
-        self.store.unregister_server = lambda name: True
+        self.store.unregister_server = lambda name, **_scope: True
         resp = TestClient(self.app).delete(
             f"{MCP_PREFIX}/servers/proj-a-tools", headers={"X-Project-ID": "proj-a"}
         )
@@ -356,7 +357,7 @@ class TestMCPMutationScoping:
         monkeypatch.setenv("UMRS_AUTH_MODE", "mvp")
         from fastapi.testclient import TestClient
 
-        self.store.unregister_server = lambda name: True
+        self.store.unregister_server = lambda name, **_scope: True
         resp = TestClient(self.app).delete(
             f"{MCP_PREFIX}/servers/default-rag", headers={"X-Project-ID": "proj-a"}
         )

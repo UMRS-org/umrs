@@ -53,13 +53,14 @@ class DuplicateMCPServerError(MCPServerStoreError):
 
 
 class MCPServerOwnershipError(MCPServerStoreError):
-    """Raised when a guarded registration would rebind another owner's name.
+    """Raised when a guarded registration would rebind another owner's row.
 
-    Names are unique across the registry. A guarded upsert (``owner_guard``)
-    updates an existing row only when it is bound to the same project; a
-    global row or another project's row is left untouched (2026-11-23 hunt
-    #26: any project could rebind the global or another project's server to
-    its own URL by registering the same name).
+    Names are unique per project (migration 0140: the key is
+    ``(COALESCE(TRIM(project_id), ''), name)``), so a registration only ever
+    conflicts with its own project's row; the guard stays as a second check
+    on the upsert. Before, names were registry-unique and the upsert rebound
+    an existing row to the registering project: any project could take over
+    the global or another project's server (2026-11-23 hunt #26).
     """
 
 
@@ -71,18 +72,48 @@ _OWNER_GUARD = (
 )
 
 
+# The registry key (migration 0140): NULL and '' (and padding) mean global.
+_PROJECT_KEY = "COALESCE(TRIM(project_id), '')"
+
+
+def _name_lookup(name: str, project_id: str | None) -> tuple[str, list[str]]:
+    """WHERE + ORDER BY (and params) picking one row for ``name``.
+
+    A project caller sees its own row first, then the global one; another
+    project's row with the same name is never picked. ``None`` (admin,
+    internal callers) prefers the global row, then the most recent.
+    """
+    if project_id is None:
+        return (
+            f"name = %s ORDER BY ({_PROJECT_KEY} = '') DESC, updated_at DESC",
+            [name],
+        )
+    project = project_id.strip()
+    where = f"name = %s AND {_PROJECT_KEY} IN ('', %s) ORDER BY ({_PROJECT_KEY} = %s) DESC"
+    return where, [name, project, project]
+
+
 def _tool_lookup_filter(
     tool_name: str, server_name: str | None, visible_project: str | None
 ) -> tuple[str, list[str]]:
-    """WHERE clause + params for ``get_server_for_tool``."""
+    """WHERE ... ORDER BY + params for ``get_server_for_tool``.
+
+    Tool names collide across servers (e.g. a user's hatch copy of a default
+    package), and since migration 0140 a project's server may share its name
+    with a global one: the caller's own project's row is picked first, then
+    a healthy, most recently registered one (2026-09-25: two stale July
+    entries on dead ports shared names with the default set).
+    """
     clauses, params = ["t.name = %s"], [tool_name]
+    order = "(s.status = 'healthy') DESC, s.updated_at DESC"
     if server_name:
         clauses.append("s.name = %s")
         params.append(server_name)
     if visible_project is not None:
         clauses.append("COALESCE(TRIM(s.project_id), '') IN ('', %s)")
-        params.append(visible_project)
-    return " AND ".join(clauses), params
+        order = f"(COALESCE(TRIM(s.project_id), '') = %s) DESC, {order}"
+        params += [visible_project, visible_project]
+    return f"{' AND '.join(clauses)} ORDER BY {order}", params
 
 
 class MCPServerStore:
@@ -247,7 +278,7 @@ class MCPServerStore:
                     %s, %s, %s, %s,
                     %s, %s, %s, %s, NOW(), NOW()
                 )
-                ON CONFLICT (name) DO UPDATE SET
+                ON CONFLICT ((COALESCE(TRIM(project_id), '')), name) DO UPDATE SET
                     version = EXCLUDED.version,
                     url = EXCLUDED.url,
                     transport = EXCLUDED.transport,
@@ -285,8 +316,8 @@ class MCPServerStore:
             row = cur.fetchone()
             if row is None:  # the owner guard refused the update
                 raise MCPServerOwnershipError(
-                    f"MCP server name {name!r} belongs to another project "
-                    "or to the global registry"
+                    f"MCP server {name!r} of project {project_id!r} "
+                    "is bound to another owner"
                 )
             actual_server_id = row[0]
 
@@ -383,24 +414,29 @@ class MCPServerStore:
 
         return self._run(_select)
 
-    def get_server_by_name(self, name: str) -> MCPServer:
+    def get_server_by_name(self, name: str, *, project_id: str | None = None) -> MCPServer:
         """
-        Get a server by name.
+        Get a server by name, as ``project_id`` sees it.
+
+        Names are unique per project (migration 0140): a project caller gets
+        its own row, else the global one; ``None`` prefers the global row.
 
         Raises:
             MCPServerNotFoundError: If server not found.
         """
+        where, params = _name_lookup(name, project_id)
 
         def _select(cur) -> MCPServer:
             cur.execute(
-                """
+                f"""
                 SELECT server_id, name, version, url, transport, status,
                        description, auth_type, auth_config, metadata,
                        registered_by, project_id, placement, trust_class,
                        created_at, updated_at
-                FROM mcp_servers WHERE name = %s
+                FROM mcp_servers WHERE {where}
+                LIMIT 1
                 """,
-                (name,),
+                params,
             )
             row = cur.fetchone()
             if not row:
@@ -454,18 +490,27 @@ class MCPServerStore:
 
         return self._run(_select)
 
-    def unregister_server(self, name: str) -> bool:
+    def unregister_server(self, name: str, *, project_id: str | None = None) -> bool:
         """
         Unregister a server by name. Tools are cascade-deleted.
+
+        ``project_id`` deletes only that project's own row (never the global
+        one or another project's); ``None`` deletes the row
+        ``get_server_by_name(name)`` resolves (the global one first).
 
         Returns:
             True if deleted, False if not found.
         """
+        if project_id is None:
+            where, params = _name_lookup(name, None)
+            where = f"server_id = (SELECT server_id FROM mcp_servers WHERE {where} LIMIT 1)"
+        else:
+            where, params = f"name = %s AND {_PROJECT_KEY} = %s", [name, project_id.strip()]
 
         def _delete(cur):
             cur.execute(
-                "DELETE FROM mcp_servers WHERE name = %s RETURNING server_id",
-                (name,),
+                f"DELETE FROM mcp_servers WHERE {where} RETURNING server_id",
+                params,
             )
             return cur.fetchone()
 
@@ -527,7 +572,8 @@ class MCPServerStore:
             if server_name:
                 cur.execute(
                     """
-                    SELECT t.name, t.description, t.input_schema, s.name as server_name
+                    SELECT t.name, t.description, t.input_schema, s.name as server_name,
+                           s.server_id
                     FROM mcp_tools t
                     JOIN mcp_servers s ON t.server_id = s.server_id
                     WHERE s.name = %s
@@ -538,7 +584,8 @@ class MCPServerStore:
             else:
                 cur.execute(
                     """
-                    SELECT t.name, t.description, t.input_schema, s.name as server_name
+                    SELECT t.name, t.description, t.input_schema, s.name as server_name,
+                           s.server_id
                     FROM mcp_tools t
                     JOIN mcp_servers s ON t.server_id = s.server_id
                     ORDER BY t.name
@@ -552,6 +599,7 @@ class MCPServerStore:
                     if isinstance(row[2], dict)
                     else json.loads(row[2]),
                     "server": row[3],
+                    "server_id": row[4],
                 }
                 for row in cur.fetchall()
             ]
@@ -586,12 +634,6 @@ class MCPServerStore:
                 FROM mcp_servers s
                 JOIN mcp_tools t ON t.server_id = s.server_id
                 WHERE {where}
-                -- Tool names collide across servers (e.g. a user's hatch copy
-                -- of a default package): prefer a healthy, most recently
-                -- registered server instead of an arbitrary row (2026-09-25:
-                -- two stale July entries on dead ports shared names with the
-                -- default set).
-                ORDER BY (s.status = 'healthy') DESC, s.updated_at DESC
                 LIMIT 1
                 """,
                 params,

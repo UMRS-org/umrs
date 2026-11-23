@@ -65,6 +65,7 @@ class MockMCPStore:
                         "description": t.description,
                         "inputSchema": t.input_schema,
                         "server": s.name,
+                        "server_id": s.server_id,
                     }
                 )
         return tools

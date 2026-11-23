@@ -346,13 +346,31 @@ def _enforce_registration_scope(
 def _owner_guarded(request: Request) -> bool:
     """Non-admin callers may update only a server row their project owns.
 
-    Names are registry-unique, and the upsert rebound an existing row to the
-    caller: any project could take over another project's server or a global
-    one by registering its name (2026-11-23 hunt #26). Admins (and the mvp
-    anonymous path, as for unregister) keep the rebind.
+    Names are unique per project (migration 0140), so a project's
+    registration writes its own row and never another project's or the
+    global one (2026-11-23 hunt #26: the registry-wide upsert let any project
+    take them over). The guard stays as a second check on the upsert.
     """
     scope = _caller_scope(request)
     return not (scope.is_admin or scope.anonymous)
+
+
+def _caller_project(request: Request) -> str | None:
+    """The project a by-name lookup resolves for; None for unrestricted callers.
+
+    Names are unique per project (migration 0140): a project caller's name
+    reads its own row, else the global one.
+    """
+    scope = _caller_scope(request)
+    return None if scope.is_admin or scope.anonymous else scope.project_id
+
+
+def _server_by_id_or_name(store, request: Request, server_id_or_name: str):
+    if server_id_or_name.startswith("mcp-"):
+        return store.get_server(server_id_or_name)
+    return store.get_server_by_name(
+        server_id_or_name, project_id=_caller_project(request)
+    )
 
 
 def _store_register(store, req: ServerRegistrationRequest, owner_guard: bool):
@@ -384,9 +402,8 @@ def _store_register(store, req: ServerRegistrationRequest, owner_guard: bool):
             detail={
                 "error": "scope_denied",
                 "message": (
-                    f"MCP server {req.name!r} belongs to another project or "
-                    "to the global registry; pick another name (global "
-                    "servers are admin-only)."
+                    f"MCP server {req.name!r} is bound to another owner; "
+                    "global servers are admin-only."
                 ),
             },
         ) from exc
@@ -421,8 +438,9 @@ async def register_server(
     """
     Register or update an MCP server.
 
-    If a server with the same name exists, it is updated (upsert); a
-    non-admin caller may update only its own project's server.
+    A server with the same name in the same project (or the global registry,
+    for admins) is updated (upsert); names are unique per project, so a
+    project never writes another project's or the global server.
     """
     req = _enforce_registration_scope(request, req)
 
@@ -448,10 +466,7 @@ async def get_server(request: Request, server_id_or_name: str) -> ServerResponse
     unrestricted = scope.is_admin or scope.anonymous
     store = _get_store()
     try:
-        if server_id_or_name.startswith("mcp-"):
-            server = store.get_server(server_id_or_name)
-        else:
-            server = store.get_server_by_name(server_id_or_name)
+        server = _server_by_id_or_name(store, request, server_id_or_name)
     except MCPServerNotFoundError:
         raise_typed(
             PlatformError.mcp("not_found", f"Server not found: {server_id_or_name}")
@@ -470,10 +485,7 @@ def _enforce_unregister_scope(store, request: Request, server_id_or_name: str) -
     if scope.is_admin or scope.anonymous:
         return
     try:
-        if server_id_or_name.startswith("mcp-"):
-            server = store.get_server(server_id_or_name)
-        else:
-            server = store.get_server_by_name(server_id_or_name)
+        server = _server_by_id_or_name(store, request, server_id_or_name)
     except MCPServerNotFoundError:
         return
     bound = (getattr(server, "project_id", None) or "").strip()
@@ -499,7 +511,9 @@ async def unregister_server(request: Request, server_id_or_name: str) -> dict[st
     if server_id_or_name.startswith("mcp-"):
         deleted = store.unregister_server_by_id(server_id_or_name)
     else:
-        deleted = store.unregister_server(server_id_or_name)
+        deleted = store.unregister_server(
+            server_id_or_name, project_id=_caller_project(request)
+        )
 
     if not deleted:
         raise_typed(
@@ -530,8 +544,11 @@ async def list_tools(
     scope = _caller_scope(request)
     unrestricted = scope.is_admin or scope.anonymous
     store = _get_store()
-    visible_names = {
-        s.name
+    # By server id: names are unique per project (migration 0140), so a
+    # visible global server's name no longer vouches for a foreign
+    # project's server of the same name.
+    visible_ids = {
+        s.server_id
         for s in store.list_servers()
         if _server_visible(s, scope.project_id, unrestricted)
     }
@@ -544,7 +561,7 @@ async def list_tools(
             server=t["server"],
         )
         for t in tools
-        if t["server"] in visible_names
+        if t.get("server_id") in visible_ids
     ]
 
 
