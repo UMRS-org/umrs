@@ -341,6 +341,7 @@ case "$1" in
     if [[ -f "$state/run_script" ]]; then source "$state/run_script"; fi
     exit "$(cat "$state/run_rc" 2>/dev/null || echo 0)" ;;
   kill)
+    : > "$state/kill_tried"
     if [[ -f "$state/run_pid" ]]; then kill "$(cat "$state/run_pid")"; rm "$state/run_pid"; exit 0; fi
     exit 1 ;;
   pull) echo "PULLED" >> "$state/podman.log"; exit 0 ;;
@@ -382,11 +383,13 @@ def node(tmp_path):
         "WD": str(wd),
     }
 
-    def run_script(**overrides) -> subprocess.CompletedProcess:
+    def run_script(*, after: str = "", insert: str = "", **overrides) -> subprocess.CompletedProcess:
         script = render_staged_job_script(
             _job(workdir=str(wd), image_archive_dir=str(archive_dir), venue_script=str(venue),
                  **overrides)
         )  # fmt: skip
+        if after:  # a fixed ordering: *insert* runs right after the line *after*
+            script = script.replace(f"\n{after}\n", f"\n{after}\n{insert}\n", 1)
         return subprocess.run(
             ["bash", "-c", script], env=env, capture_output=True, text=True, timeout=60
         )
@@ -781,6 +784,71 @@ def test_the_watchdog_counts_a_preallocated_file_at_its_allocated_size(node):
     proc = node["run"](watch_seconds=1, max_out_bytes=100_000)
     assert proc.returncode != 0
     assert "out/ and reply/ passed their caps" in proc.stderr
+
+
+# ── a watchdog stop is never a COMPLETED job (CI flake 2026-11-23) ──────────
+
+#: The step's trigger for each stop reason: (script, run overrides).
+STOP_REASONS = {
+    "bytes": ('head -c 5000 /dev/zero > "$WD/out/flood"', {"max_out_bytes": 4096}),
+    "entries": ('for i in $(seq 1 40); do : > "$WD/out/f$i"; done', {"max_out_entries": 20}),
+    "hidden": ('mkdir "$WD/out/h"; chmod 0300 "$WD/out/h"', {}),
+    "floor": (":", {"min_free_bytes": 10**18}),
+}
+#: Wait (bounded) until the watchdog has tried its kill.
+WAIT_FOR_KILL = (
+    'for _ in $(seq 1 300); do [[ -e "$FAKE_STATE/kill_tried" ]] && break; sleep 0.1; done'
+)
+
+
+@pytest.fixture
+def stop_run(node):
+    (node["state"] / "have_id").write_text("f" * 64)
+    yield node
+    hidden = node["wd"] / "out" / "h"
+    if hidden.exists():
+        hidden.chmod(0o700)
+
+
+@pytest.mark.parametrize("reason", sorted(STOP_REASONS))
+def test_a_step_that_exits_0_as_the_watchdog_stops_it_fails_the_job(stop_run, reason):
+    # The pod is gone before the kill lands (no run_pid: the kill misses), and
+    # the step exits 0 only after the watchdog fired: the old script ended 0.
+    trigger, overrides = STOP_REASONS[reason]
+    (stop_run["state"] / "run_script").write_text(f"{trigger}\n{WAIT_FOR_KILL}\nexit 0\n")
+    proc = stop_run["run"](watch_seconds=1, **overrides)
+    assert proc.returncode == 137, proc.stderr
+    assert "the step was stopped" in proc.stderr
+    assert "the watchdog stopped the step (pod exit 0)" in proc.stderr
+
+
+def test_a_watchdog_stop_before_the_pod_starts_runs_no_step(stop_run):
+    # The floor trips while the job still prepares: the step must not start.
+    (stop_run["state"] / "run_script").write_text("exit 0\n")
+    proc = stop_run["run"](
+        watch_seconds=1, min_free_bytes=10**18, after="_step_watch_pid=$!", insert=WAIT_FOR_KILL
+    )
+    assert proc.returncode == 137, proc.stderr
+    assert "the watchdog stopped the step before it ran" in proc.stderr
+    assert _step_runs(stop_run["log"]()) == []
+
+
+def test_the_watchdog_retries_a_kill_that_missed_until_it_lands(stop_run):
+    # The first kill comes before the pod exists; a later one stops it.
+    (stop_run["state"] / "run_script").write_text(
+        f'head -c 5000 /dev/zero > "$WD/out/flood"\n{WAIT_FOR_KILL}\n'
+        'echo $$ > "$FAKE_STATE/run_pid"\nexec sleep 30\n'
+    )
+    proc = stop_run["run"](watch_seconds=1, max_out_bytes=4096)
+    assert proc.returncode == 137, proc.stderr
+    assert not (stop_run["state"] / "run_pid").exists()  # a kill landed
+
+
+def test_a_stale_stop_marker_never_fails_a_good_step(stop_run):
+    (stop_run["wd"] / "log" / "watchdog.stop").write_text("")
+    (stop_run["state"] / "run_script").write_text("exit 0\n")
+    proc = stop_run["run"](watch_seconds=1)
+    assert proc.returncode == 0, proc.stderr
 
 
 def test_the_watchdog_checks_the_floor_before_it_walks_the_tree(node):
