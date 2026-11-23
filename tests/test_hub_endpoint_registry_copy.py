@@ -10,6 +10,7 @@ with venue 17th, JSONB metadata re-serialised, errors exit 1 masked.
 from __future__ import annotations
 
 import contextlib
+import os
 from datetime import datetime
 from pathlib import Path
 
@@ -326,3 +327,66 @@ def test_migration_0118_creates_the_marker_table_and_seals_the_four_fronts():
     for venue in ("rccs-front", "ai4s", "bdrt-front", "octopus-front"):
         assert f"('{venue}'," in sql
     assert "ON CONFLICT (venue) DO NOTHING" in sql
+
+
+# ── S-D47a: the copy keeps working once the hub is keyed (venue, job_id) ───
+# ``ON CONFLICT (job_id)`` needs a unique index on job_id alone; migration
+# 0141 removes it, so the old INSERT raised on the re-keyed hub table.
+
+_MIGRATIONS = Path(hub_copy.__file__).parent
+_PG_SCHEMAS = (f"s_d47a_hub_{os.getpid()}", f"s_d47a_src_{os.getpid()}")
+_HUB_MIGRATIONS = (
+    "0117_hub_endpoint_registry.sql",
+    "0118_hub_registry_copy_markers.sql",
+    "0141_s_d47a_endpoint_registry_venue_key.sql",
+)
+
+
+def _pg(schema):
+    import psycopg2
+
+    return psycopg2.connect(os.environ["UMRS_TEST_DB_URL"], options=f"-c search_path={schema}")
+
+
+def _pg_exec(conn, text):
+    with conn.cursor() as cur:
+        cur.execute(text)
+        rows = cur.fetchall() if cur.description is not None else []
+    conn.commit()
+    return rows
+
+
+@pytest.fixture()
+def pg_hub_and_source():
+    if not os.environ.get("UMRS_TEST_DB_URL"):
+        pytest.skip("UMRS_TEST_DB_URL is not set")
+    admin = _pg("public")
+    for schema in _PG_SCHEMAS:
+        _pg_exec(admin, f"DROP SCHEMA IF EXISTS {schema} CASCADE; CREATE SCHEMA {schema}")
+    conns = [_pg(schema) for schema in _PG_SCHEMAS]
+    yield conns
+    for conn in conns:
+        conn.close()
+    for schema in _PG_SCHEMAS:
+        _pg_exec(admin, f"DROP SCHEMA IF EXISTS {schema} CASCADE")
+    admin.close()
+
+
+def test_pg_copy_into_the_venue_keyed_hub_keeps_the_other_venues_row(pg_hub_and_source):
+    hub, src = pg_hub_and_source
+    for name in _HUB_MIGRATIONS:
+        _pg_exec(hub, (_MIGRATIONS / name).read_text())
+    _pg_exec(src, (_MIGRATIONS / "0117_hub_endpoint_registry.sql").read_text())
+    insert = (
+        "INSERT INTO endpoint_registry (job_id, project_id, model, host, port, status, "
+        "backend, created_at, venue) VALUES ('4242', 'p', 'm', '{h}', 1, 'ready', "
+        "'slurm-remote', now(), '{v}')"
+    )
+    _pg_exec(hub, insert.format(h="node-rccs", v="rccs-front"))
+    _pg_exec(src, insert.format(h="node-new", v=""))
+    result = copy_endpoints(
+        hub, venue="new-front", open_source=lambda: contextlib.nullcontext(src)
+    )
+    assert (result.status, result.inserted) == ("copied", 1)
+    rows = _pg_exec(hub, "SELECT venue, host FROM endpoint_registry ORDER BY venue")
+    assert rows == [("new-front", "node-new"), ("rccs-front", "node-rccs")]

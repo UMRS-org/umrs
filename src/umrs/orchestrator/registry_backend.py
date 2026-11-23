@@ -141,6 +141,23 @@ def _reader_venue() -> str:
     return venue
 
 
+class RegistryVenueConflictError(RuntimeError):
+    """A save met another venue's row with the same job_id (S-D47a).
+
+    Raised only while ``endpoint_registry`` is still keyed on ``job_id``
+    alone; the row of the other venue is left untouched.
+    """
+
+    def __init__(self, job_id: str, venue: str) -> None:
+        super().__init__(
+            f"endpoint_registry already holds job_id={job_id!r} for another "
+            f"venue; refused to take it over for venue={venue!r} (apply "
+            "migration 0141 to key the registry on (venue, job_id))"
+        )
+        self.job_id = job_id
+        self.venue = venue
+
+
 class RegistryReadOnlyError(RuntimeError):
     """A write reached a read-only registry backend."""
 
@@ -298,6 +315,12 @@ class PostgresBackend(RegistryBackend):
         );
         CREATE INDEX idx_registry_project ON endpoint_registry(project_id);
         CREATE INDEX idx_registry_status ON endpoint_registry(status);
+
+    ``_migrate_schema`` adds ``variant``, ``backend_job_id`` and ``venue``.
+    The shared hub table (ADR-060 U-1, migration 0117) is re-keyed
+    ``PRIMARY KEY (venue, job_id)`` by migration 0141 (S-D47a); the
+    constraint keeps the name ``endpoint_registry_pkey``, which
+    :meth:`save` names as its conflict arbiter.
     """
 
     def __init__(
@@ -566,7 +589,17 @@ class PostgresBackend(RegistryBackend):
         )
 
     def save(self, endpoint: RegisteredEndpoint) -> None:
-        """Save or update an endpoint (venue-stamped when venue-scoped)."""
+        """Save or update an endpoint (venue-stamped when venue-scoped).
+
+        Venue-guarded upsert (S-D47a, DEC-D47): the arbiter is the primary
+        key by name, so one statement serves both table shapes. Keyed
+        ``(venue, job_id)`` (migration 0141) two venues sharing a job_id
+        keep two rows. Still keyed ``job_id`` alone (migration not yet
+        applied, or a per-cluster table) a conflicting row of ANOTHER
+        venue is never rewritten: the guarded update touches nothing and
+        :class:`RegistryVenueConflictError` names the collision. Before,
+        ``DO UPDATE SET venue = EXCLUDED.venue`` took the row over.
+        """
         self._refuse_write("save")
         conn = self._get_connection()
         with conn.cursor() as cur:
@@ -580,7 +613,7 @@ class PostgresBackend(RegistryBackend):
                 ) VALUES (
                     %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
                 )
-                ON CONFLICT (job_id) DO UPDATE SET
+                ON CONFLICT ON CONSTRAINT endpoint_registry_pkey DO UPDATE SET
                     project_id = EXCLUDED.project_id,
                     model = EXCLUDED.model,
                     host = EXCLUDED.host,
@@ -594,8 +627,8 @@ class PostgresBackend(RegistryBackend):
                     error_message = EXCLUDED.error_message,
                     consecutive_failures = EXCLUDED.consecutive_failures,
                     metadata = EXCLUDED.metadata,
-                    backend_job_id = EXCLUDED.backend_job_id,
-                    venue = EXCLUDED.venue
+                    backend_job_id = EXCLUDED.backend_job_id
+                WHERE endpoint_registry.venue = EXCLUDED.venue
                 """,
                 (
                     endpoint.job_id,
@@ -617,6 +650,8 @@ class PostgresBackend(RegistryBackend):
                     self._venue,
                 ),
             )
+            if cur.rowcount == 0:
+                raise RegistryVenueConflictError(endpoint.job_id, self._venue)
         logger.debug(f"Saved endpoint {endpoint.job_id} to Postgres")
 
     def load(self, project_id: str, model: str) -> RegisteredEndpoint | None:

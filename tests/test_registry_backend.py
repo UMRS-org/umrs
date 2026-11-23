@@ -1,7 +1,11 @@
 """Unit tests for registry backend auto-detection."""
 
+import os
+from datetime import datetime
+from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from umrs.orchestrator.registry_backend import InMemoryBackend, get_backend
 
 
@@ -252,3 +256,199 @@ def test_get_backend_explicit_memory_still_wins_over_shared(monkeypatch):
     monkeypatch.setenv("UMRS_REGISTRY_BACKEND", "memory")
     monkeypatch.setenv("UMRS_ENDPOINT_REGISTRY_SHARED", "1")
     assert isinstance(get_backend(), InMemoryBackend)
+
+
+# ── S-D47a (DEC-D47): registry keyed (venue, job_id), venue-guarded upsert ──
+# 0117 keyed the hub table on job_id alone and save() upserted with
+# ``ON CONFLICT (job_id) DO UPDATE SET ..., venue = EXCLUDED.venue``: a second
+# venue registering the same Slurm id took the first venue's row over, and
+# the first venue's janitor then reaped its live job as an orphan.
+
+_MIGRATIONS = Path(__file__).resolve().parents[1] / "src" / "umrs" / "migrations"
+_M0117 = _MIGRATIONS / "0117_hub_endpoint_registry.sql"
+_M0141 = _MIGRATIONS / "0141_s_d47a_endpoint_registry_venue_key.sql"
+
+
+def _endpoint(job_id="4242", host="node-a"):
+    from umrs.orchestrator.endpoint_registry import EndpointStatus, RegisteredEndpoint
+
+    return RegisteredEndpoint(
+        job_id=job_id,
+        project_id="default",
+        model="m",
+        host=host,
+        port=8000,
+        status=EndpointStatus.READY,
+        backend="slurm-remote",
+        created_at=datetime(2026, 11, 24, 9, 0),
+    )
+
+
+def test_save_names_the_primary_key_and_never_rewrites_another_venue():
+    backend = _venue_conn("rccs-front")
+    backend.save(_endpoint())
+    sql, _ = backend._conn.queries[-1]
+    assert "ON CONFLICT ON CONSTRAINT endpoint_registry_pkey" in sql
+    assert "WHERE endpoint_registry.venue = EXCLUDED.venue" in sql
+    assert "venue = EXCLUDED.venue," not in sql and "ON CONFLICT (job_id)" not in sql
+
+
+class _ZeroRowCursor(_RecordingCursor):
+    """The guarded upsert met another venue's row: nothing written."""
+
+    def execute(self, query, params=None):
+        super().execute(query, params)
+        self.rowcount = 0
+
+
+def test_save_that_touches_no_row_is_refused_by_name():
+    from umrs.orchestrator import registry_backend
+
+    backend = _venue_conn("octopus-front")
+    backend._conn.cursor = lambda: _ZeroRowCursor(backend._conn)
+    refused = getattr(registry_backend, "RegistryVenueConflictError", None)
+    assert refused is not None  # old code: silently took the row over
+    with pytest.raises(refused, match="job_id='4242'"):
+        backend.save(_endpoint())
+
+
+def test_migration_0141_swaps_the_key_after_a_duplicate_precheck():
+    sql = _M0141.read_text()
+    assert "PRIMARY KEY (venue, job_id)" in sql
+    assert "ADD CONSTRAINT endpoint_registry_pkey" in sql
+    assert "HAVING count(*) > 1" in sql and "RAISE EXCEPTION" in sql
+    assert "CONCURRENTLY" not in sql.upper()  # one migration transaction
+
+
+# ── real Postgres (UMRS_TEST_DB_URL; CI's DB-backed job sets it) ───────────
+
+_SCHEMA = f"s_d47a_{os.getpid()}"
+
+
+def _pg_connect(schema: str = _SCHEMA):
+    import psycopg2
+
+    return psycopg2.connect(
+        os.environ["UMRS_TEST_DB_URL"], options=f"-c search_path={schema}"
+    )
+
+
+def _run_sql(conn, text: str) -> list:
+    with conn.cursor() as cur:
+        cur.execute(text)
+        rows = cur.fetchall() if cur.description is not None else []
+    conn.commit()
+    return rows
+
+
+@pytest.fixture()
+def pg_schema():
+    if not os.environ.get("UMRS_TEST_DB_URL"):
+        pytest.skip("UMRS_TEST_DB_URL is not set")
+    admin = _pg_connect("public")
+    _run_sql(admin, f"DROP SCHEMA IF EXISTS {_SCHEMA} CASCADE; CREATE SCHEMA {_SCHEMA}")
+    opened: list = []
+
+    def connect():
+        conn = _pg_connect()
+        opened.append(conn)
+        return conn
+
+    yield connect
+    for conn in opened:
+        conn.close()
+    _run_sql(admin, f"DROP SCHEMA IF EXISTS {_SCHEMA} CASCADE")
+    admin.close()
+
+
+def _venue_backend(connect, venue: str):
+    from umrs.orchestrator.registry_backend import PostgresBackend
+
+    backend = PostgresBackend.__new__(PostgresBackend)
+    backend._venue, backend.read_only = venue, False
+    backend._conn = connect()
+    backend._conn.autocommit = True
+    backend._get_connection = lambda: backend._conn
+    return backend
+
+
+def _hub_table(connect, *, keyed: bool):
+    conn = connect()
+    _run_sql(conn, _M0117.read_text())
+    if keyed:
+        _run_sql(conn, _M0141.read_text())
+    return conn
+
+
+def _primary_key(conn) -> list:
+    return _run_sql(
+        conn,
+        "SELECT a.attname FROM pg_constraint c "
+        "CROSS JOIN LATERAL unnest(c.conkey) WITH ORDINALITY AS k(n, o) "
+        "JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = k.n "
+        "WHERE c.conrelid = 'endpoint_registry'::regclass AND c.contype = 'p' "
+        "ORDER BY k.o",
+    )
+
+
+def test_pg_two_venues_with_one_job_id_keep_both_rows(pg_schema):
+    conn = _hub_table(pg_schema, keyed=True)
+    rccs = _venue_backend(pg_schema, "rccs-front")
+    octo = _venue_backend(pg_schema, "octopus-front")
+    rccs.save(_endpoint(host="node-rccs"))
+    octo.save(_endpoint(host="node-octo"))
+    rccs.save(_endpoint(host="node-rccs-2"))  # same-venue upsert still updates
+    rows = _run_sql(conn, "SELECT venue, host FROM endpoint_registry ORDER BY venue")
+    assert rows == [("octopus-front", "node-octo"), ("rccs-front", "node-rccs-2")]
+
+
+def test_pg_janitor_of_one_venue_never_selects_or_removes_the_other(pg_schema):
+    from umrs.orchestrator.endpoint_registry import EndpointRegistry
+
+    conn = _hub_table(pg_schema, keyed=True)
+    _venue_backend(pg_schema, "octopus-front").save(_endpoint(host="node-octo"))
+    rccs_backend = _venue_backend(pg_schema, "rccs-front")
+    rccs_backend.save(_endpoint(host="node-rccs"))
+    rccs = EndpointRegistry(backend=rccs_backend)  # boot load, venue-scoped
+    assert [e.host for e in rccs.list_all()] == ["node-rccs"]
+    rccs.remove("4242")
+    assert _run_sql(conn, "SELECT venue, host FROM endpoint_registry") == [
+        ("octopus-front", "node-octo")
+    ]
+
+
+def test_pg_unkeyed_table_refuses_the_cross_venue_takeover(pg_schema):
+    conn = _hub_table(pg_schema, keyed=False)  # code deployed, 0141 not yet
+    _venue_backend(pg_schema, "rccs-front").save(_endpoint(host="node-rccs"))
+    with pytest.raises(RuntimeError, match="another venue"):
+        _venue_backend(pg_schema, "octopus-front").save(_endpoint(host="node-octo"))
+    rows = _run_sql(conn, "SELECT venue, host FROM endpoint_registry")
+    assert rows == [("rccs-front", "node-rccs")]
+
+
+def test_pg_migration_0141_is_idempotent_and_keeps_rows(pg_schema):
+    conn = _hub_table(pg_schema, keyed=False)
+    _venue_backend(pg_schema, "rccs-front").save(_endpoint())
+    _run_sql(conn, _M0141.read_text())
+    _run_sql(conn, _M0141.read_text())
+    assert _primary_key(conn) == [("venue",), ("job_id",)]
+    assert _run_sql(conn, "SELECT venue, job_id FROM endpoint_registry") == [
+        ("rccs-front", "4242")
+    ]
+
+
+def test_pg_migration_0141_precheck_aborts_on_duplicates_and_changes_nothing(pg_schema):
+    import psycopg2
+
+    conn = _hub_table(pg_schema, keyed=False)
+    _run_sql(conn, "ALTER TABLE endpoint_registry DROP CONSTRAINT endpoint_registry_pkey")
+    insert = (
+        "INSERT INTO endpoint_registry (job_id, project_id, model, host, port, "
+        "status, backend, created_at, venue) VALUES "
+        "('7', 'p', 'm', 'h', 1, 'ready', 'b', now(), 'v')"
+    )
+    _run_sql(conn, f"{insert}; {insert}")
+    with pytest.raises(psycopg2.Error, match="S-D47a precheck"):
+        _run_sql(conn, _M0141.read_text())
+    conn.rollback()
+    assert _primary_key(conn) == []
