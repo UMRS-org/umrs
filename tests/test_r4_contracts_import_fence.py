@@ -13,13 +13,18 @@ ADR-117 D-2 moves the UMRS-owned contract modules into ``umrs_protocol``
   (a new import: use ``umrs_protocol`` once its family moved) and on a listed
   entry no longer found (stale: delete the row in the same commit).
 
-The modules ADR-117 U3a D9 leaves in r4-contracts until U3 S5 (``loop_plan``,
-``team_engine``, ``taint``) carry ``# floor: U3-S5``; nothing else may.
 UMRS-org CI replaces this test with import-linter contracts in U4.
 
 2026-11-24 (U2 exit): the allowlist is empty and the fence requires it; the
 last consumer (test_plan_loop_server.py) moved to packages/umrs-r4/tests,
-where r4_contracts is a declared dependency (D9).
+where r4_contracts is a declared dependency (D9). The ``# floor: U3-S5`` row
+marks (``loop_plan``, ``team_engine``, ``taint``) and their check went with the
+last floor row: an empty list has nothing to mark.
+
+Out of scope, on purpose: ``packages/`` (``umrs-r4`` declares r4-contracts)
+and ``docker/server-image/smoke.py``, whose ``check_protocol_alias`` imports
+``r4_contracts.hpc_gate`` to prove the r4 server image's alias IS the
+``umrs_protocol`` module; that image bundles r4-contracts.
 """
 
 from __future__ import annotations
@@ -33,8 +38,6 @@ UMRS_ROOT = Path(__file__).resolve().parents[1]
 SCAN_DIRS = ("src", "tests")
 ALLOWLIST = UMRS_ROOT / "tests" / "r4_contracts_import_allowlist.txt"
 PACKAGE = "r4_contracts"
-FLOOR_MARK = "# floor: U3-S5"
-FLOOR_MODULES = ("loop_plan", "team_engine", "taint")
 _DYNAMIC_IMPORTERS = frozenset({"importorskip", "import_module", "__import__"})
 
 
@@ -83,21 +86,14 @@ def scan_entries(root: Path = UMRS_ROOT) -> set[str]:
     return entries
 
 
-def read_allowlist(path: Path = ALLOWLIST) -> list[tuple[str, bool]]:
-    """``(entry, floor_marked)`` per non-comment line, in file order."""
+def read_allowlist(path: Path = ALLOWLIST) -> list[str]:
+    """The entry of each non-comment line (trailing ``#`` comment dropped), in file order."""
     rows = []
     for raw in path.read_text(encoding="utf-8").splitlines():
         line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        entry, _, comment = line.partition("#")
-        rows.append((entry.strip(), FLOOR_MARK in "#" + comment))
+        if line and not line.startswith("#"):
+            rows.append(line.partition("#")[0].strip())
     return rows
-
-
-def _is_floor_target(entry: str) -> bool:
-    module = entry.partition("::")[2].split(".")
-    return len(module) > 1 and module[1] in FLOOR_MODULES
 
 
 # ── the fence ───────────────────────────────────────────────────────────────
@@ -109,32 +105,26 @@ def scanned() -> set[str]:
 
 
 @pytest.fixture(scope="module")
-def listed() -> list[tuple[str, bool]]:
+def listed() -> list[str]:
     return read_allowlist()
 
 
-def test_no_unlisted_r4_contracts_import(scanned: set[str], listed: list[tuple[str, bool]]) -> None:
-    new = sorted(scanned - {entry for entry, _ in listed})
+def test_no_unlisted_r4_contracts_import(scanned: set[str], listed: list[str]) -> None:
+    new = sorted(scanned - set(listed))
     assert not new, (
         "new r4_contracts imports (import umrs_protocol for a moved module; the "
         f"allowlist only shrinks, ADR-117 D-2): {new}"
     )
 
 
-def test_no_stale_allowlist_entry(scanned: set[str], listed: list[tuple[str, bool]]) -> None:
-    stale = sorted({entry for entry, _ in listed} - scanned)
+def test_no_stale_allowlist_entry(scanned: set[str], listed: list[str]) -> None:
+    stale = sorted(set(listed) - scanned)
     assert not stale, f"allowlist rows no longer imported; delete them: {stale}"
 
 
-def test_allowlist_rows_unique(listed: list[tuple[str, bool]]) -> None:
-    entries = [entry for entry, _ in listed]
-    assert len(entries) == len(set(entries))
-    assert all("::" in entry for entry in entries)
-
-
-def test_floor_marks_only_on_u3_s5_modules(listed: list[tuple[str, bool]]) -> None:
-    wrong = [entry for entry, marked in listed if marked != _is_floor_target(entry)]
-    assert not wrong, f"'{FLOOR_MARK}' belongs on loop_plan/team_engine/taint rows only: {wrong}"
+def test_allowlist_rows_unique(listed: list[str]) -> None:
+    assert len(listed) == len(set(listed))
+    assert all("::" in entry for entry in listed)
 
 
 def test_core_src_imports_no_r4_contracts(scanned: set[str]) -> None:
@@ -149,10 +139,10 @@ def test_protocol_and_handshake_hmac_have_moved(scanned: set[str]) -> None:
     assert not leftovers, f"protocol/HMAC imports still use r4_contracts: {leftovers}"
 
 
-def test_u2_exit_the_allowlist_is_empty(scanned: set[str], listed: list[tuple[str, bool]]) -> None:
+def test_u2_exit_the_allowlist_is_empty(scanned: set[str], listed: list[str]) -> None:
     """U2 exit (ADR-117 plan U2): no r4_contracts import is left in core src or
     tests, floors included; the last consumer moved to packages/umrs-r4/tests."""
-    assert not listed, f"the allowlist must stay empty after U2: {[e for e, _ in listed]}"
+    assert not listed, f"the allowlist must stay empty after U2: {listed}"
     assert not sorted(scanned), f"r4_contracts imports in core: {sorted(scanned)}"
 
 
@@ -196,8 +186,6 @@ def test_allowlist_parser(tmp_path: Path) -> None:
         "# header\n\nsrc/a.py::r4_contracts.errors\nsrc/b.py::r4_contracts.loop_plan  # floor: U3-S5\n"
     )
     assert read_allowlist(path) == [
-        ("src/a.py::r4_contracts.errors", False),
-        ("src/b.py::r4_contracts.loop_plan", True),
+        "src/a.py::r4_contracts.errors",
+        "src/b.py::r4_contracts.loop_plan",
     ]
-    assert _is_floor_target("src/b.py::r4_contracts.team_engine.services")
-    assert not _is_floor_target("src/a.py::r4_contracts.errors")

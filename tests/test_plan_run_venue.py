@@ -698,7 +698,7 @@ class TestTheFoundationRules:
 class TestTheLoopPathNamesTheVenue:
     """Without the venue the loop route's refusal keeps its code and names
     what the site lacks; with it, a plan loop is checked before it exists
-    (slice 8b: tests/test_plan_loop_server.py runs one)."""
+    (slice 8b: packages/umrs-r4/tests/test_plan_loop_server.py runs one)."""
 
     @pytest.fixture
     def loops(self):
