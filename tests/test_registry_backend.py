@@ -266,7 +266,7 @@ def test_get_backend_explicit_memory_still_wins_over_shared(monkeypatch):
 
 _MIGRATIONS = Path(__file__).resolve().parents[1] / "src" / "umrs" / "migrations"
 _M0117 = _MIGRATIONS / "0117_hub_endpoint_registry.sql"
-_M0141 = _MIGRATIONS / "0141_s_d47a_endpoint_registry_venue_key.sql"
+_M0141 = _MIGRATIONS / "0141_endpoint_registry_venue_key.sql"
 
 
 def _endpoint(job_id="4242", host="node-a"):

@@ -338,7 +338,7 @@ _PG_SCHEMAS = (f"s_d47a_hub_{os.getpid()}", f"s_d47a_src_{os.getpid()}")
 _HUB_MIGRATIONS = (
     "0117_hub_endpoint_registry.sql",
     "0118_hub_registry_copy_markers.sql",
-    "0141_s_d47a_endpoint_registry_venue_key.sql",
+    "0141_endpoint_registry_venue_key.sql",
 )
 
 
