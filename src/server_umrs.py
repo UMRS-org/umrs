@@ -660,6 +660,12 @@ def main():
 
     drop_read_only_flag_in_owner()
 
+    # D66-KEY: no per-process plan key under several workers (or with
+    # UMRS_REQUIRE_PLAN_KEY=1): exits naming UMRS_SECRET_KEY; one worker warns.
+    from umrs.workflow_plans import enforce_plan_key_at_startup
+
+    enforce_plan_key_at_startup()
+
     # check if we have a correct configuration directory
     umrs_cfg_dir = check_umrs_config_directory()
     if umrs_cfg_dir:

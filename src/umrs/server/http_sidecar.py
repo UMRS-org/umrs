@@ -583,6 +583,16 @@ def _check_backend():
         return {"status": "unknown", "error": str(exc)[:120]}
 
 
+def _degraded_reasons(components: dict[str, dict[str, str]]) -> list[str]:
+    """The named reasons of non-critical degraded components (D66-KEY:
+    ``plan_key_ephemeral``); readiness stays ``ready`` with them."""
+    return [
+        str(component["reason"])
+        for component in components.values()
+        if component.get("status") == "degraded" and component.get("reason")
+    ]
+
+
 async def _readiness(request: Request):
     """Readiness probe — checks subsystem availability."""
     app = request.app
@@ -608,12 +618,18 @@ async def _readiness(request: Request):
 
     components["registry"] = _check_registry_readiness()
     components["backend"] = _check_backend()
+    # D66-KEY: a per-process plan key is degraded, not critical (one worker
+    # still signs and verifies its own plans); ``degraded`` names it.
+    from umrs.workflow_plans import plan_key_readiness
+
+    components["plan_key"] = plan_key_readiness()
 
     status = "degraded" if critical_failures else "ready"
     result = {
         "ready": status == "ready",
         "status": status,
         "components": components,
+        "degraded": _degraded_reasons(components),
     }
     if critical_failures:
         result["unavailable_required"] = critical_failures
