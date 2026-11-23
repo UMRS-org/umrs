@@ -12,7 +12,7 @@ import pytest
 from botocore.exceptions import ClientError
 from umrs.jobs import sts_federation
 from umrs.shared.storage import backends
-from umrs.shared.storage.backends.base import AdminEndpoint
+from umrs.shared.storage.backends.base import AdminEndpoint, ObjectStoreBackend
 from umrs.shared.storage.backends.minio import MinioBackend
 from umrs.shared.storage.backends.seaweedfs import (
     BUCKET_POLICY_PREFIX,
@@ -315,26 +315,13 @@ class TestMinioBackend:
         assert callable(minio_storage._prune_stale_user_files_s3cfg)
 
 
-# ------------------------------------------------- login-time self-healing --
-class TestUserS3cfgCurrency:
-    def test_seaweedfs_reports_dead_key_and_missing_file(self, tmp_path):
-        iam = _FakeIam(existing_users=("alice",))
-        admin = _admin_cfg(tmp_path)
-        user_cfg = tmp_path / "s3cfg_alice"
-        assert _backend(iam).user_s3cfg_is_current("alice", str(user_cfg), admin) is False
-        user_cfg.write_text("[default]\naccess_key = DEADKEY\nsecret_key = dead\n")
-        assert (
-            _backend(iam, user_key_valid=False).user_s3cfg_is_current("alice", str(user_cfg), admin)
-            is False
-        )
-        assert (
-            _backend(iam, user_key_valid=True).user_s3cfg_is_current("alice", str(user_cfg), admin)
-            is True
-        )
+# ------------------------------------------- DEC-016: no currency probe --
+class TestNoUserS3cfgCurrencyProbe:
+    """DEC-016 (2026-11-24): login-time s3cfg delivery is gone, so the
+    backends no longer offer a probe whose only caller handed keys out."""
 
-    def test_minio_trusts_the_file(self, tmp_path):
-        admin = _admin_cfg(tmp_path)
-        user_cfg = tmp_path / "s3cfg_alice"
-        assert MinioBackend().user_s3cfg_is_current("alice", str(user_cfg), admin) is False
-        user_cfg.write_text("[default]\naccess_key = alice\nsecret_key = s\n")
-        assert MinioBackend().user_s3cfg_is_current("alice", str(user_cfg), admin) is True
+    @pytest.mark.parametrize(
+        "cls", [ObjectStoreBackend, MinioBackend, SeaweedFSBackend]
+    )
+    def test_backend_has_no_user_s3cfg_is_current(self, cls):
+        assert not hasattr(cls, "user_s3cfg_is_current")

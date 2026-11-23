@@ -5776,85 +5776,6 @@ def _action_purge_remote_buckets(ctx):
     return 1 if errors else 0
 
 
-def _maybe_write_s3cfg_from_status(
-    parsed, user_cfg, configure_file=None, connection=None
-):
-    """Auto-write local s3cfg if the server delivered credentials in a reload status.
-
-    When *connection* carries a ``minio_url`` that differs from the
-    ``host_base`` inside the delivered content, the file is rewritten so the
-    client can reach MinIO directly (the server-generated s3cfg often contains
-    a localhost address that is unreachable from a remote client).
-    """
-    if not isinstance(parsed, dict) or not isinstance(user_cfg, dict):
-        return
-    # Prefer the original s3_configuration_file from the JSON config (before
-    # any profile auto-discovery override), so we write to the path the server
-    # knows about rather than an unrelated discovered s3cfg.
-    s3cfg_path = None
-    if configure_file:
-        try:
-            with open(os.path.expanduser(configure_file), encoding="utf-8") as _f:
-                orig = _json.load(_f)
-            s3cfg_path = orig.get("s3_configuration_file")
-        except Exception:
-            pass
-    if not s3cfg_path:
-        s3cfg_path = user_cfg.get("s3_configuration_file")
-    if not s3cfg_path:
-        return
-    expanded = os.path.expanduser(s3cfg_path)
-    if os.path.exists(expanded):
-        return  # already have a local s3cfg
-
-    # Look for s3cfg_content in any status entry (summary or summaries)
-    s3cfg_content = None
-    if "summary" in parsed and isinstance(parsed["summary"], dict):
-        s3cfg_content = parsed["summary"].get("s3cfg_content")
-    elif "summaries" in parsed and isinstance(parsed["summaries"], dict):
-        for _k, entry in parsed["summaries"].items():
-            if isinstance(entry, dict) and "s3cfg_content" in entry:
-                s3cfg_content = entry["s3cfg_content"]
-                break
-    if not s3cfg_content:
-        return
-
-    # Rewrite host_base/host_bucket if the profile's minio_url points
-    # elsewhere (e.g. remote host vs server-local 127.0.0.1).
-    profile_minio = getattr(connection, "minio_url", None) if connection else None
-    if profile_minio:
-        try:
-            from urllib.parse import urlparse
-
-            parsed_url = urlparse(profile_minio)
-            profile_host = parsed_url.hostname
-            profile_port = parsed_url.port
-            if profile_host:
-                target_host = (
-                    f"{profile_host}:{profile_port}" if profile_port else profile_host
-                )
-                import configparser as _cp
-
-                cfg = _cp.ConfigParser(inline_comment_prefixes=("#", ";"))
-                cfg.read_string(s3cfg_content)
-                if cfg.has_option("default", "host_base"):
-                    existing_host = cfg.get("default", "host_base").strip()
-                    if existing_host != target_host:
-                        s3cfg_content = s3cfg_content.replace(
-                            existing_host, target_host
-                        )
-        except Exception:
-            pass  # best-effort; write the original content
-
-    try:
-        os.makedirs(os.path.dirname(expanded), exist_ok=True)
-        with open(expanded, "w", encoding="utf-8") as f:
-            f.write(s3cfg_content)
-        print(f"\n{_green('✓')} S3 credentials written to: {expanded}")
-    except Exception as e:
-        print(f"\n{_red('⚠')} Failed to write S3 credentials to '{expanded}': {e}")
-
-
 def _action_status(ctx):
     args = ctx.args
     effective_username = args.username
@@ -5879,13 +5800,6 @@ def _action_status(ctx):
         else:
             print(format_status_text(parsed, status_target))
 
-        # Auto-write local s3cfg if the server delivered credentials
-        _maybe_write_s3cfg_from_status(
-            parsed,
-            ctx.user,
-            configure_file=ctx.configure_file,
-            connection=ctx.connection,
-        )
     except Exception as e:
         print(
             api_json(
@@ -5953,70 +5867,66 @@ def _action_status_all(ctx):
     return 0
 
 
-def _action_maintenance(ctx):
-    args = ctx.args
+def _load_local_user_config(ctx):
+    """Local user config for a reload upload; None when absent (best-effort)."""
+    if not (isinstance(ctx.user, dict) and ctx.config_state.user.valid):
+        return None
+    try:
+        cfg_path = Path(ctx.config_state.user.path).expanduser()
+        if cfg_path.is_file():
+            with open(cfg_path, encoding="utf-8") as f:
+                return _json.load(f)
+    except Exception:
+        pass  # best-effort; reload still proceeds without config upload
+    return None
 
-    # --- HTTP gateway path for reload ---
-    gateway_url = _get_gateway_url_from_ctx(ctx)
-    if gateway_url and args.action == "reload":
-        api_key = _get_api_key_from_profile(ctx)
-        # Include local user config in reload request so the server persists
-        # any locally-added experiences before re-reading its configuration.
-        user_config_json = None
-        if isinstance(ctx.user, dict) and ctx.config_state.user.valid:
-            try:
-                cfg_path = Path(ctx.config_state.user.path).expanduser()
-                if cfg_path.is_file():
-                    with open(cfg_path, encoding="utf-8") as f:
-                        user_config_json = _json.load(f)
-            except Exception:
-                pass  # best-effort; reload still proceeds without config upload
-        parsed = _http_reload(
-            gateway_url,
-            api_key,
-            user_config=user_config_json,
-            user_id=ctx.user.get("username") if isinstance(ctx.user, dict) else None,
+
+def _print_maintenance_accepted(args, parsed):
+    if args.output == "json":
+        print(api_json(action=args.action, accepted=True, output_format="json"))
+        return
+    print(f"{_green('✓')} {_bold(args.action)} accepted")
+    summary = parsed.get("summary", "")
+    if summary:
+        print(summary)
+
+
+def _print_maintenance_result(args, parsed, text_reject_msg):
+    if parsed.get("status") == "ok":
+        _print_maintenance_accepted(args, parsed)
+    elif args.output == "json":
+        print(
+            api_json(
+                status="error",
+                action=args.action,
+                accepted=False,
+                message=parsed.get("message", "rejected"),
+                output_format="json",
+            )
         )
-        if parsed.get("status") == "ok":
-            if args.output == "json":
-                print(api_json(action=args.action, accepted=True, output_format="json"))
-            else:
-                print(f"{_green('✓')} {_bold(args.action)} accepted")
-                summary = parsed.get("summary", "")
-                if summary:
-                    print(summary)
-            # After HTTP reload, try to fetch s3cfg via ZMQ status
-            if isinstance(ctx.user, dict) and ctx.control_mq is not None:
-                try:
-                    effective_username = ctx.user.get("username", "")
-                    if effective_username:
-                        status_api = UMRSControlAPI(ctx.control_mq, effective_username)
-                        status_parsed = status_api.request_status("all")
-                        _maybe_write_s3cfg_from_status(
-                            status_parsed,
-                            ctx.user,
-                            configure_file=ctx.configure_file,
-                            connection=ctx.connection,
-                        )
-                except Exception:
-                    pass  # s3cfg delivery is best-effort
-        else:
-            if args.output == "json":
-                print(
-                    api_json(
-                        status="error",
-                        action=args.action,
-                        accepted=False,
-                        message=parsed.get("message", "rejected"),
-                        output_format="json",
-                    )
-                )
-            else:
-                msg = parsed.get("message") or parsed.get("error") or "rejected"
-                print(f"{_red('✗')} {_bold(args.action)} rejected: {msg}")
-        return 0
+    else:
+        print(f"{_red('✗')} {_bold(args.action)} rejected: {text_reject_msg}")
 
-    # --- ZMQ path (original) ---
+
+def _http_maintenance_reload(ctx, gateway_url):
+    # DEC-016 (2026-11-24): no follow-up STATUS fetch for s3cfg after reload.
+    api_key = _get_api_key_from_profile(ctx)
+    # Include local user config in reload request so the server persists
+    # any locally-added experiences before re-reading its configuration.
+    user_config_json = _load_local_user_config(ctx)
+    parsed = _http_reload(
+        gateway_url,
+        api_key,
+        user_config=user_config_json,
+        user_id=ctx.user.get("username") if isinstance(ctx.user, dict) else None,
+    )
+    msg = parsed.get("message") or parsed.get("error") or "rejected"
+    _print_maintenance_result(ctx.args, parsed, msg)
+    return 0
+
+
+def _zmq_maintenance(ctx):
+    args = ctx.args
     client_id = (
         ctx.user.get("username") if isinstance(ctx.user, dict) else None
     ) or os.environ.get("UMRS_CLIENT_ID", "_")
@@ -6030,37 +5940,7 @@ def _action_maintenance(ctx):
     )
     try:
         parsed = api.maintenance(args.action)
-        if parsed.get("status") == "ok":
-            if args.output == "json":
-                print(api_json(action=args.action, accepted=True, output_format="json"))
-            else:
-                print(f"{_green('✓')} {_bold(args.action)} accepted")
-                summary = parsed.get("summary", "")
-                if summary:
-                    print(summary)
-            # After successful reload, auto-write s3cfg if delivered
-            if args.action == "reload" and isinstance(ctx.user, dict):
-                _maybe_write_s3cfg_from_status(
-                    parsed,
-                    ctx.user,
-                    configure_file=ctx.configure_file,
-                    connection=ctx.connection,
-                )
-        else:
-            if args.output == "json":
-                print(
-                    api_json(
-                        status="error",
-                        action=args.action,
-                        accepted=False,
-                        message=parsed.get("message", "rejected"),
-                        output_format="json",
-                    )
-                )
-            else:
-                print(
-                    f"{_red('✗')} {_bold(args.action)} rejected: {parsed.get('message', '')}"
-                )
+        _print_maintenance_result(args, parsed, parsed.get("message", ""))
     except Exception as e:
         if args.output == "json":
             print(
@@ -6076,6 +5956,13 @@ def _action_maintenance(ctx):
     finally:
         ctx.control_mq.close()
     return 0
+
+
+def _action_maintenance(ctx):
+    gateway_url = _get_gateway_url_from_ctx(ctx)
+    if gateway_url and ctx.args.action == "reload":
+        return _http_maintenance_reload(ctx, gateway_url)
+    return _zmq_maintenance(ctx)
 
 
 def _action_export_embeddings(ctx):
