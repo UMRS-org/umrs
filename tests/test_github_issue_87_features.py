@@ -198,3 +198,6 @@ def test_dashboard_static_ui_and_health_route():
     assert "UMRS Operations" in page.text
     assert health.status_code == 200
     assert health.json()["status"] in {"healthy", "degraded", "unhealthy"}
+    # Shutdown closed the a2l pool the lifespan opened (with a DB configured):
+    # it used to hold its connections for the rest of the worker's session.
+    assert getattr(app.state, "umrs_knowledge_asyncpg_pool", None) is None

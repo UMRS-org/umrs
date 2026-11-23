@@ -82,6 +82,32 @@ def pg_conn(request: pytest.FixtureRequest) -> Any:
         conn.close()
 
 
+# Every other index on knowledge_nodes that a bitmap path could take instead,
+# i.e. all but the constraint-backed ones (the primary key) and 0121's own.
+_COMPETING_INDEXES_SQL = (
+    "SELECT i.indexrelid::regclass::text FROM pg_index i"
+    " WHERE i.indrelid = 'knowledge_nodes'::regclass"
+    " AND i.indexrelid <> to_regclass(%s)"
+    " AND NOT EXISTS (SELECT 1 FROM pg_constraint c WHERE c.conindid = i.indexrelid)"
+)
+
+
+def _leave_only_the_label_index(cur: Any) -> None:
+    """Drop the competing indexes inside the test's (rolled-back) transaction.
+
+    With seqscan and indexscan off the planner still picks among bitmap paths
+    by cost, and the costs follow whatever statistics autovacuum last left on
+    the worker's knowledge_nodes: CI 2026-11-23 (UMRS-org run 45203275970)
+    took idx_node_type plus a filter instead of the label index. A committed
+    ``ANALYZE knowledge_nodes`` on the empty table reproduces it every time.
+    Without the alternatives, the plan names the label index exactly when the
+    lane's statement can use it, whatever the statistics say.
+    """
+    cur.execute(_COMPETING_INDEXES_SQL, (graph_lane.LABEL_INDEX,))
+    for (name,) in cur.fetchall():
+        cur.execute(f"DROP INDEX {name}")
+
+
 @pytest.mark.integration
 def test_0121_applies_and_the_link_statement_reaches_it(pg_conn: Any) -> None:
     spec = RetrieveSpec(queries=("q",), project_id="g121-it")
@@ -90,6 +116,7 @@ def test_0121_applies_and_the_link_statement_reaches_it(pg_conn: Any) -> None:
         cur.execute(MIGRATION.read_text())
         cur.execute("SELECT to_regclass(%s) IS NOT NULL", (graph_lane.LABEL_INDEX,))
         assert cur.fetchone()[0]
+        _leave_only_the_label_index(cur)
         cur.execute("SET LOCAL enable_seqscan = off")
         cur.execute("SET LOCAL enable_indexscan = off")
         sql = graph_lane._LINK_SQL.format(where=where)

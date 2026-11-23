@@ -665,6 +665,28 @@ async def _wire_a2l_recorder(application) -> None:
         )
 
 
+async def _close_a2l_recorder(application) -> None:
+    """Lifespan shutdown: close the pool :func:`_wire_a2l_recorder` opened.
+
+    Nothing closed it, so every app lifespan (each ``TestClient(app)`` in the
+    suite) left its connections open for the life of the process (CI
+    2026-11-23, ``too many clients``). The recorder goes back to Null: its
+    store would call a closed pool on a finished loop.
+    """
+    from umrs.a2l.recorder import NullA2lRecorder, configure_recorder
+
+    pool = getattr(application.state, "umrs_knowledge_asyncpg_pool", None)
+    if pool is None:
+        return
+    configure_recorder(NullA2lRecorder())
+    application.state.umrs_knowledge_asyncpg_pool = None
+    try:
+        await asyncio.wait_for(pool.close(), timeout=10)
+    except Exception:  # shutdown is best-effort; never mask the exit
+        logger.warning("a2l pool did not close cleanly; terminating", exc_info=True)
+        pool.terminate()
+
+
 def _upgrade_loop_store() -> None:
     """Durable loops: upgrade to psycopg2 persistence.
     Independent of the a2l pool (psycopg2 for thread safety).
@@ -1012,6 +1034,7 @@ def _create_app():
             stop_endpoint_relay()
             stop_janitor()
             logger.info("Scheduler service + janitor stopped via lifespan hook")
+            await _close_a2l_recorder(application)
 
     app = FastAPI(
         title="UMRS Endpoint Discovery API",

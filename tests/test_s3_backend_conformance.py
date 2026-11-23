@@ -57,6 +57,63 @@ def _denied(fn) -> str:
     raise AssertionError("operation was allowed but must be denied")
 
 
+# SeaweedFS stores identities in the filer and its S3 gateway picks up an IAM
+# API change asynchronously (filer metadata subscription). A data-plane call
+# made right after CreateAccessKey / PutUserPolicy / DeleteUser can still see
+# the old identity set: CI 2026-11-23 (UMRS-org run 45170945890) got
+# AccessDenied on the PutObject right after grant_bucket_access, and a local
+# SeaweedFS 4.47 throttled to 0.05 CPU fails 6 runs in 20 the same way (plus
+# InvalidAccessKeyId for the just-issued key). Production has no such
+# call-after-change within the server (the s3cfg goes to a remote client), so
+# the wait lives here: poll until the change is visible, bounded.
+_IAM_PROPAGATION_TIMEOUT_S = 15.0
+
+
+def _error_code(fn) -> str | None:
+    """Run *fn*; return its S3 error code, or None when it succeeds."""
+    from botocore.exceptions import ClientError
+
+    try:
+        fn()
+    except ClientError as exc:
+        return exc.response["Error"]["Code"]
+    return None
+
+
+def _settled_code(fn, settled, timeout: float = _IAM_PROPAGATION_TIMEOUT_S) -> str | None:
+    """Poll *fn* until ``settled(code)`` holds or *timeout* passes; return the last code."""
+    import time
+
+    deadline = time.monotonic() + timeout
+    code = _error_code(fn)
+    while not settled(code) and time.monotonic() < deadline:
+        time.sleep(0.1)
+        code = _error_code(fn)
+    return code
+
+
+def test_settled_code_polls_until_the_change_is_visible():
+    from botocore.exceptions import ClientError
+
+    answers = iter(["InvalidAccessKeyId", "AccessDenied", None])
+
+    def call():
+        code = next(answers)
+        if code:
+            raise ClientError({"Error": {"Code": code}}, "PutObject")
+
+    assert _settled_code(call, lambda code: code is None) is None
+
+
+def test_settled_code_gives_up_at_the_timeout():
+    from botocore.exceptions import ClientError
+
+    def call():
+        raise ClientError({"Error": {"Code": "AccessDenied"}}, "PutObject")
+
+    assert _settled_code(call, lambda code: code is None, timeout=0.2) == "AccessDenied"
+
+
 @pytest.fixture(scope="module")
 def admin():
     from umrs.shared.storage.s3_config import S3Config
@@ -272,20 +329,22 @@ def test_admin_plane_user_lifecycle(admin, backend_name, bucket, admin_s3cfg, tm
         )
         user = ucfg.get_client()
 
-        assert _denied(lambda: user.put_object(Bucket=bucket, Key="x", Body=b"1")) == "AccessDenied"
+        def put_granted():
+            return user.put_object(Bucket=bucket, Key="x", Body=b"1")
+
+        # Each step waits for SeaweedFS to apply the IAM change (see above).
+        key_known = _settled_code(put_granted, lambda code: code != "InvalidAccessKeyId")
+        assert key_known == "AccessDenied"
         backend.grant_bucket_access(username, bucket, admin_s3cfg)
-        assert (
-            user.put_object(Bucket=bucket, Key="x", Body=b"1")["ResponseMetadata"]["HTTPStatusCode"]
-            == 200
-        )
+        assert _settled_code(put_granted, lambda code: code is None) is None
         assert [o["Key"] for o in user.list_objects_v2(Bucket=bucket)["Contents"]] == ["x"]
         assert _denied(lambda: user.put_object(Bucket=other, Key="x", Body=b"1")) == "AccessDenied"
 
         backend.delete_user(username, admin_s3cfg)
-        assert _denied(lambda: user.list_objects_v2(Bucket=bucket)) in {
-            "InvalidAccessKeyId",
-            "AccessDenied",
-        }
+        gone = _settled_code(
+            lambda: user.list_objects_v2(Bucket=bucket), lambda code: code is not None
+        )
+        assert gone in {"InvalidAccessKeyId", "AccessDenied"}
     finally:
         backend.remove_bucket(other, admin_s3cfg)
 

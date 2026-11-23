@@ -70,6 +70,13 @@ def test_asyncpg_caller_server_settings_merge_and_win():
     assert "idle_in_transaction_session_timeout" in kwargs["server_settings"]
 
 
+def test_asyncpg_pools_open_one_connection_not_asyncpgs_ten():
+    # asyncpg's default min_size=10 pinned ten backends per pool from birth;
+    # four xdist workers' pools exhausted CI Postgres (run 45171800447).
+    assert asyncpg_pool_kwargs("graph-view")["min_size"] == 1
+    assert asyncpg_pool_kwargs("graph-view", min_size=4)["min_size"] == 4
+
+
 def test_statement_timeout_is_never_set():
     """Long migrations / CONCURRENTLY index builds must not be capped globally."""
     assert "statement_timeout" not in pg_connect_kwargs("x").get("options", "")
