@@ -4,8 +4,11 @@ fails loudly instead of silently.
 Without ``UMRS_SECRET_KEY`` plans are signed with a per-process random key,
 so a plan signed by one worker process fails its commit on another. Now:
 
-- several workers (``WEB_CONCURRENCY`` > 1) or ``UMRS_REQUIRE_PLAN_KEY=1``
-  without the key refuse server start, naming ``UMRS_SECRET_KEY``;
+- ``UMRS_REQUIRE_PLAN_KEY=1`` without the key refuses server start, naming
+  ``UMRS_SECRET_KEY``;
+- ``WEB_CONCURRENCY`` > 1 refuses start with or without the key: the
+  in-thread HTTP sidecar runs one uvicorn worker, and uvicorn would end that
+  thread instead (2026-11-24 refix);
 - one worker without the key keeps working (stand-alone), with a warning and
   readiness component ``plan_key`` degraded as ``plan_key_ephemeral``;
 - with the key, a plan signed in one process verifies in another.
@@ -71,10 +74,32 @@ def test_missing_key_refuses_under_workers_or_requirement(env):
 
 @pytest.mark.parametrize(
     "env",
-    [{}, {"WEB_CONCURRENCY": "1"}, {"WEB_CONCURRENCY": "junk"}, {"WEB_CONCURRENCY": "2", "UMRS_SECRET_KEY": KEY}],
+    [{}, {"WEB_CONCURRENCY": "1"}, {"UMRS_REQUIRE_PLAN_KEY": "1", "UMRS_SECRET_KEY": KEY}],
 )
 def test_single_worker_or_configured_key_is_allowed(env):
     assert plan_key_refusal(env) is None
+
+
+@pytest.mark.parametrize("workers", ["2", "junk"])
+def test_several_or_unreadable_workers_refuse_even_with_key(workers):
+    """The sidecar's uvicorn.run(app object) exits its thread on workers > 1
+    (and int() fails on junk): the key cannot make that serve plans."""
+    message = plan_key_refusal({"WEB_CONCURRENCY": workers, "UMRS_SECRET_KEY": KEY})
+    assert message and f"WEB_CONCURRENCY={workers}" in message
+    assert "one uvicorn worker" in message and "UMRS_REQUIRE_PLAN_KEY=1" in message
+
+
+async def _never_served_app(*_args) -> None:
+    """An ASGI app object; uvicorn exits before it would ever be called."""
+
+
+def test_uvicorn_refuses_workers_with_an_app_object(monkeypatch):
+    """The fact the refusal rests on: uvicorn.run over an app object (what
+    the sidecar passes) reads WEB_CONCURRENCY and exits instead of serving."""
+    uvicorn = pytest.importorskip("uvicorn")
+    monkeypatch.setenv("WEB_CONCURRENCY", "2")
+    with pytest.raises(SystemExit):
+        uvicorn.run(_never_served_app, host="127.0.0.1", port=0)
 
 
 def test_startup_refusal_is_a_system_exit_naming_the_key():

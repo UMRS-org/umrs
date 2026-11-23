@@ -20,11 +20,16 @@ signs: plans then do not survive a restart, nor reach another worker process.
 That fallback fails loudly (slice D66-KEY, decisions 2026-11-24): readiness
 reports the ``plan_key`` component degraded with ``plan_key_ephemeral``
 (:func:`plan_key_readiness`), and the server refuses to start without the key
-(:func:`enforce_plan_key_at_startup`) when more than one worker process serves
-plans (``WEB_CONCURRENCY`` > 1, the worker count uvicorn's and gunicorn's
-command lines read) or the operator demands a key (``UMRS_REQUIRE_PLAN_KEY=1``,
-for replicas behind one balancer). A single worker without the key keeps
-working, with a startup warning.
+(:func:`enforce_plan_key_at_startup`) when the operator demands a key
+(``UMRS_REQUIRE_PLAN_KEY=1``, for replicas behind one balancer). A single
+worker without the key keeps working, with a startup warning.
+
+Worker processes are not a mode: the HTTP sidecar runs exactly one in-thread
+uvicorn worker over an app object, and uvicorn reads ``WEB_CONCURRENCY``; at
+> 1 (or an unreadable value) it exits that thread and the daemon would run on
+without plans or ``/readiness``. So ``WEB_CONCURRENCY`` > 1 refuses start with
+or without the key (2026-11-24 refix; the first D66-KEY cut let it start when
+a key was set).
 """
 
 from __future__ import annotations
@@ -94,7 +99,7 @@ _process_key_lock = threading.Lock()
 PLAN_KEY_EPHEMERAL = "plan_key_ephemeral"
 #: ``1``/``true``/``yes`` makes a missing key a startup refusal.
 REQUIRE_PLAN_KEY_ENV = "UMRS_REQUIRE_PLAN_KEY"
-#: The worker-process count uvicorn's ``--workers`` and gunicorn read.
+#: uvicorn's worker count; the in-thread sidecar can run only one.
 WORKERS_ENV = "WEB_CONCURRENCY"
 
 
@@ -151,33 +156,45 @@ def _env_has_key(env: Mapping[str, str]) -> bool:
     return len(str(env.get("UMRS_SECRET_KEY", "")).strip()) >= MIN_SECRET_CHARS
 
 
-def _worker_count(env: Mapping[str, str]) -> int:
-    """``WEB_CONCURRENCY`` as an int; absent or unreadable reads as 1."""
+def _workers_refusal(env: Mapping[str, str]) -> str | None:
+    """Why ``WEB_CONCURRENCY`` stops start, or None: unset or <= 1 passes;
+    > 1 or unreadable refuses, key or no key, because the in-thread sidecar
+    cannot run several workers (uvicorn exits that thread instead)."""
+    raw = env.get(WORKERS_ENV)
+    if raw is None:
+        return None
     try:
-        return max(1, int(str(env.get(WORKERS_ENV, "")).strip() or "1"))
+        if int(str(raw)) <= 1:
+            return None
     except ValueError:
-        return 1
+        pass
+    return (
+        f"{WORKERS_ENV}={raw}: the in-thread HTTP sidecar runs exactly one "
+        "uvicorn worker, and uvicorn would end that thread, leaving the server "
+        "without plans or /readiness. Unset it (or set 1). For replicas behind "
+        f"one balancer set {REQUIRE_PLAN_KEY_ENV}=1 and one UMRS_SECRET_KEY "
+        "shared by every replica."
+    )
 
 
 def plan_key_refusal(environ: Mapping[str, str] | None = None) -> str | None:
-    """Why this server must not start, or None. Only a missing (or short)
-    ``UMRS_SECRET_KEY`` refuses, and only when several worker processes
-    serve plans or ``UMRS_REQUIRE_PLAN_KEY`` is set: a per-process key there
-    makes a plan signed by one worker fail its commit on another."""
+    """Why this server must not start, or None: ``WEB_CONCURRENCY`` > 1
+    (:func:`_workers_refusal`), or a missing (or short) ``UMRS_SECRET_KEY``
+    while ``UMRS_REQUIRE_PLAN_KEY`` is set: a per-process key there makes a
+    plan signed by one replica fail its commit on another."""
     env = os.environ if environ is None else environ
-    if _env_has_key(env):
-        return None
-    workers = _worker_count(env)
+    workers = _workers_refusal(env)
+    if workers:
+        return workers
     required = str(env.get(REQUIRE_PLAN_KEY_ENV, "")).strip().lower() in _TRUE_HINTS
-    if workers <= 1 and not required:
+    if _env_has_key(env) or not required:
         return None
-    why = f"{WORKERS_ENV}={workers}" if workers > 1 else f"{REQUIRE_PLAN_KEY_ENV}=1"
     return (
         f"UMRS_SECRET_KEY is not set (or shorter than {MIN_SECRET_CHARS} "
-        f"characters) and {why}: workflow plans would be signed with a "
-        "per-process key that other worker processes cannot verify, so their "
-        "commits would fail. Set UMRS_SECRET_KEY (one value shared by every "
-        "worker) and restart."
+        f"characters) and {REQUIRE_PLAN_KEY_ENV}=1: workflow plans would be "
+        "signed with a per-process key that other replicas cannot verify, so "
+        "their commits would fail. Set UMRS_SECRET_KEY (one value shared by "
+        "every replica) and restart."
     )
 
 

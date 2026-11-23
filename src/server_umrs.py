@@ -660,8 +660,8 @@ def main():
 
     drop_read_only_flag_in_owner()
 
-    # D66-KEY: no per-process plan key under several workers (or with
-    # UMRS_REQUIRE_PLAN_KEY=1): exits naming UMRS_SECRET_KEY; one worker warns.
+    # D66-KEY: WEB_CONCURRENCY > 1 (the sidecar runs one worker) or
+    # UMRS_REQUIRE_PLAN_KEY=1 without UMRS_SECRET_KEY exits; one worker warns.
     from umrs.workflow_plans import enforce_plan_key_at_startup
 
     enforce_plan_key_at_startup()
