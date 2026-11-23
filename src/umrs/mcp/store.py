@@ -52,6 +52,39 @@ class DuplicateMCPServerError(MCPServerStoreError):
     """Raised when registering a server with a duplicate name."""
 
 
+class MCPServerOwnershipError(MCPServerStoreError):
+    """Raised when a guarded registration would rebind another owner's name.
+
+    Names are unique across the registry. A guarded upsert (``owner_guard``)
+    updates an existing row only when it is bound to the same project; a
+    global row or another project's row is left untouched (2026-11-23 hunt
+    #26: any project could rebind the global or another project's server to
+    its own URL by registering the same name).
+    """
+
+
+# Upsert guard: update only a row already bound to the registering project
+# (NULL and '' both mean global). Unguarded keeps the admin path's rebind.
+_OWNER_GUARD = (
+    "WHERE COALESCE(TRIM(mcp_servers.project_id), '') = "
+    "COALESCE(TRIM(EXCLUDED.project_id), '')"
+)
+
+
+def _tool_lookup_filter(
+    tool_name: str, server_name: str | None, visible_project: str | None
+) -> tuple[str, list[str]]:
+    """WHERE clause + params for ``get_server_for_tool``."""
+    clauses, params = ["t.name = %s"], [tool_name]
+    if server_name:
+        clauses.append("s.name = %s")
+        params.append(server_name)
+    if visible_project is not None:
+        clauses.append("COALESCE(TRIM(s.project_id), '') IN ('', %s)")
+        params.append(visible_project)
+    return " AND ".join(clauses), params
+
+
 class MCPServerStore:
     """
     MCP Server Registry data access layer.
@@ -173,11 +206,17 @@ class MCPServerStore:
         project_id: str | None = None,
         placement: str = "local",
         trust_class: str = "local-safe",
+        owner_guard: bool = False,
     ) -> MCPServer:
         """
         Register or update an MCP server and its tools.
 
         If a server with the same name exists, it is updated (upsert).
+        ``owner_guard`` (every non-admin caller): the update applies only when
+        that row is bound to ``project_id``; otherwise nothing is written and
+        ``MCPServerOwnershipError`` is raised. The check is part of the
+        upsert itself, so a concurrent registration cannot slip between a
+        lookup and the write.
         Placement + trust class are validated (D-19/D-49: grammar, declared
         hosts, ADR-061 class map) before any write — a bad placement never
         reaches the registry.
@@ -222,6 +261,9 @@ class MCPServerStore:
                     placement = EXCLUDED.placement,
                     trust_class = EXCLUDED.trust_class,
                     updated_at = NOW()
+                """
+                + (_OWNER_GUARD if owner_guard else "")
+                + """
                 RETURNING server_id, created_at, updated_at
                 """,
                 (
@@ -241,6 +283,11 @@ class MCPServerStore:
                 ),
             )
             row = cur.fetchone()
+            if row is None:  # the owner guard refused the update
+                raise MCPServerOwnershipError(
+                    f"MCP server name {name!r} belongs to another project "
+                    "or to the global registry"
+                )
             actual_server_id = row[0]
 
             # Replace tools: delete old, insert new
@@ -511,19 +558,34 @@ class MCPServerStore:
 
         return self._run(_select)
 
-    def get_server_for_tool(self, tool_name: str) -> MCPServer | None:
-        """Find which server provides a given tool."""
+    def get_server_for_tool(
+        self,
+        tool_name: str,
+        *,
+        server_name: str | None = None,
+        visible_project: str | None = None,
+    ) -> MCPServer | None:
+        """Find which server provides a given tool.
+
+        ``server_name`` pins the server (tool names collide across servers;
+        ``mcp.<server>.<tool>`` names one). ``visible_project`` limits the
+        candidates to global servers and that project's own before the pick:
+        a later registration of the same tool name by another project used to
+        win the global LIMIT 1 and the caller's own tool read as not found
+        (2026-11-23 hunt #27). ``None`` keeps the unrestricted lookup.
+        """
+        where, params = _tool_lookup_filter(tool_name, server_name, visible_project)
 
         def _select(cur) -> MCPServer | None:
             cur.execute(
-                """
+                f"""
                 SELECT s.server_id, s.name, s.version, s.url, s.transport, s.status,
                        s.description, s.auth_type, s.auth_config, s.metadata,
                        s.registered_by, s.project_id, s.placement, s.trust_class,
                        s.created_at, s.updated_at
                 FROM mcp_servers s
                 JOIN mcp_tools t ON t.server_id = s.server_id
-                WHERE t.name = %s
+                WHERE {where}
                 -- Tool names collide across servers (e.g. a user's hatch copy
                 -- of a default package): prefer a healthy, most recently
                 -- registered server instead of an arbitrary row (2026-09-25:
@@ -532,7 +594,7 @@ class MCPServerStore:
                 ORDER BY (s.status = 'healthy') DESC, s.updated_at DESC
                 LIMIT 1
                 """,
-                (tool_name,),
+                params,
             )
             row = cur.fetchone()
             if not row:
