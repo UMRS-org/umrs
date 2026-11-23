@@ -501,8 +501,8 @@ async def get_graph_access(graph_id: str, request: Request) -> dict[str, Any]:
 # Any graph writer could replace the access list until 2026-11-24, so one
 # call exposed a sensitive project's graph to another project. Now an entry
 # the request ADDS that reaches outside the graph's project (another
-# project, a circle of another project, ``system``, a user who is not a live
-# member) needs the project owner or an admin AND a project whose
+# project, a circle of another project, a same-project circle whose roster
+# holds a non-member, ``system``, a user who is not a live member) needs the project owner or an admin AND a project whose
 # ``data_class`` is ``non_sensitive``. Narrowing, keeping the stored entries
 # and in-project audiences (the project itself, its circles, its members)
 # stay open to every writer. Project-less graphs (personal, system) keep
@@ -567,15 +567,35 @@ def _live_member(request: Request, user: str, project_id: str) -> bool:
     return project_id in (memberships or [])
 
 
+def _user_outside(request: Request, user: str, project_id: str, owner: str) -> bool:
+    """A user is inside only as the project owner or an ADR-097 live member."""
+    return user != owner and not _live_member(request, user, project_id)
+
+
+def _roster_outside(request: Request, ref: str, project_id: str, owner: str) -> bool:
+    """A same-project circle is inside only when every member of its active
+    roster is inside. Anyone may open a personal circle in any project and a
+    circle manager may add any user (KN-S4 review, 2026-11-24), so the
+    ``project/`` prefix alone proves nothing. An unreadable roster is outside."""
+    roster = _circle_roster(request, ref)
+    if roster is None:
+        return True
+    return any(_user_outside(request, user, project_id, owner) for user in roster)
+
+
 def _entry_outside(request: Request, entry: str, project_id: str, owner: str) -> bool:
     """Does one access entry reach readers outside the graph's project?"""
     from umrs.shared.access_scopes import parse_access_entry
 
     scope = parse_access_entry(entry)
-    if scope.kind in ("project", "circle"):
+    if scope.kind == "project":
         return scope.id.partition("/")[0] != project_id
+    if scope.kind == "circle":
+        if scope.id.partition("/")[0] != project_id:
+            return True
+        return _roster_outside(request, scope.id, project_id, owner)
     if scope.kind == "user":
-        return scope.id != owner and not _live_member(request, scope.id, project_id)
+        return _user_outside(request, scope.id, project_id, owner)
     return True  # system: every authenticated caller
 
 

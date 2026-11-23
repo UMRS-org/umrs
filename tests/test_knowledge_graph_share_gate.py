@@ -96,18 +96,43 @@ class TestNonOwnerWriter:
             _graph_row(),
             ("proj-a", "lab"),  # the circle exists
             ("alice", "sensitive"),  # project facts
+            [("alice",), ("carol",)],  # roster the gate checks: owner + member
             _NO_ROW,  # UPDATE
             updated,  # re-read
-            [("carol",), ("dave",)],  # roster
+            [("alice",), ("carol",)],  # roster for effective_readers
         ]
-        client, _ = _client(script)
+        client, pool = _client(script)
         resp = _put(client, ["circle:proj-a/lab"])
         assert resp.status_code == 200, resp.text
         readers = resp.json()["effective_readers"]
         assert readers["entries"] == [
-            {"scope": "circle:proj-a/lab", "kind": "circle", "users": ["carol", "dave"]}
+            {"scope": "circle:proj-a/lab", "kind": "circle", "users": ["alice", "carol"]}
         ]
         assert readers["tier"] == "live members of project proj-a"
+        roster_reads = [sql for sql, _ in pool.record if "FROM circle_members" in sql]
+        assert len(roster_reads) == 2  # the gate read the roster before the write
+
+    def test_in_project_circle_holding_an_outsider_is_outside(self):
+        """KN-S4 review: ``circle:proj-a/mallory`` (a personal circle anyone
+        may open) or a named circle a manager grew with an outsider is not
+        inside proj-a just because of its prefix."""
+        script = [
+            _graph_row(),
+            ("proj-a", "mallory"),  # the circle exists
+            ("alice", "sensitive"),  # project facts
+            [("mallory",)],  # roster: not a live member of proj-a
+        ]
+        client, pool = _client(script)
+        message = _refusal(_put(client, ["circle:proj-a/mallory"]))
+        assert "(circle:proj-a/mallory)" in message
+        assert not any("UPDATE knowledge_graphs" in sql for sql, _ in pool.record)
+
+    def test_in_project_circle_with_unreadable_roster_is_outside(self, monkeypatch):
+        """A roster that cannot be read fails closed."""
+        monkeypatch.setattr(knowledge_graphs, "_circle_roster", lambda *_: None)
+        client, _ = _client([_graph_row(), ("proj-a", "lab"), ("alice", "sensitive")])
+        message = _refusal(_put(client, ["circle:proj-a/lab"]))
+        assert "(circle:proj-a/lab)" in message
 
     def test_member_user_and_own_project_are_inside(self):
         updated = _graph_row(access=["user:carol", "project:proj-a"])
@@ -206,3 +231,74 @@ def test_unreadable_membership_is_outside(monkeypatch):
     assert knowledge_graphs._live_member(request, "carol", "proj-a") is False
     monkeypatch.setattr(projects, "live_memberships", lambda *_: ["proj-a"])
     assert knowledge_graphs._live_member(request, "carol", "proj-a") is True
+
+
+# ── Real Postgres (CI: UMRS_TEST_DB_URL on a migrated umrs_test) ─────────────
+#
+# The FakePool tests script every read; these run the gate's own SQL
+# (project facts, active-circle roster) against the migrated schema. Rows are
+# inserted in the test's transaction, which ``db_connection`` rolls back.
+# ``_live_member`` stays the ``members`` fixture: its real path reads the
+# user store, covered by ``test_unreadable_membership_is_outside``.
+
+
+class _OneConnPool:
+    def __init__(self, conn):
+        self._conn = conn
+
+    def getconn(self):
+        return self._conn
+
+    def putconn(self, conn):
+        del conn
+
+
+def _ns(**fields):
+    return type("NS", (), fields)()
+
+
+@pytest.fixture
+def pg_request(db_connection):
+    """kn-s4-a (sensitive, owner alice): an active circle of members, an
+    active circle holding mallory, and a retired circle holding mallory."""
+    cur = db_connection.cursor()
+    cur.execute(
+        "INSERT INTO projects (project_id, owner_id, data_class)"
+        " VALUES ('kn-s4-a', 'alice', 'sensitive')"
+    )
+    cur.execute(
+        "INSERT INTO circles (project_id, circle_id, owner_id, status) VALUES"
+        " ('kn-s4-a', 'lab', 'alice', 'active'), ('kn-s4-a', 'leak', 'bob', 'active'),"
+        " ('kn-s4-a', 'old', 'bob', 'retired')"
+    )
+    cur.execute(
+        "INSERT INTO circle_members (project_id, circle_id, user_id, added_by) VALUES"
+        " ('kn-s4-a', 'lab', 'carol', 'alice'), ('kn-s4-a', 'leak', 'mallory', 'bob'),"
+        " ('kn-s4-a', 'old', 'mallory', 'bob')"
+    )
+    return _ns(app=_ns(state=_ns(umrs_db_pool=_OneConnPool(db_connection))))
+
+
+@pytest.mark.integration
+@pytest.mark.usefixtures("members")
+class TestRealPostgres:
+    def test_facts_and_rosters_read_the_schema(self, pg_request):
+        facts = knowledge_graphs._project_share_facts(pg_request, "kn-s4-a")
+        assert facts == ("alice", "sensitive")
+        assert knowledge_graphs._circle_roster(pg_request, "kn-s4-a/lab") == ["carol"]
+        assert knowledge_graphs._circle_roster(pg_request, "kn-s4-a/old") == []
+
+    def test_member_circle_passes_and_outsider_circle_is_refused(self, members, pg_request):
+        from fastapi import HTTPException
+
+        members["carol"] = ["kn-s4-a"]
+        bob = _ns(user_id="bob", is_admin=False)
+        graph = _ns(graph_id="g-pg", project_id="kn-s4-a", access=[])
+        knowledge_graphs._enforce_share_gate(pg_request, graph, ["circle:kn-s4-a/lab"], bob)
+        knowledge_graphs._enforce_share_gate(pg_request, graph, ["circle:kn-s4-a/old"], bob)
+        with pytest.raises(HTTPException) as refused:
+            knowledge_graphs._enforce_share_gate(
+                pg_request, graph, ["circle:kn-s4-a/leak"], bob
+            )
+        assert refused.value.status_code == 403
+        assert "circle:kn-s4-a/leak" in str(refused.value.detail)
