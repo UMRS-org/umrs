@@ -310,7 +310,7 @@
           "enum": ["gres", "gpus"],
           "description": "How a step that needs a GPU asks Slurm for it when its partition profile sets no gpu_request: gres (--gres=gpu:<gpus>, default) or gpus (--gpus=<gpus>; RIKYU refuses --gres=gpu:N)"
         },
-        "workdir_root": { "type": "string" },
+        "workdir_root": { "type": "string", "description": "Parent of the per-step workdirs. Slurm lanes: a path the compute nodes see (UMRS_SLURM_WORKDIR_ROOT). kind podman: a path on this host, also exported as UMRS_STEP_WORKDIR (DEC-064-WD); in a containerised UMRS an identical host/container path. Empty keeps the system temp dir" },
         "remote_enabled": {
           "type": "boolean",
           "description": "The site's HPC lane may run uploaded step code (ADR-074); false refuses it by name unless uploaded_code is legacy_in_process"
