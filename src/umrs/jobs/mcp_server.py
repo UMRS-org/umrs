@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..mcp.project_scope import project_key, resolve_server_for_project
 from .models import Job, JobType
 from .monitor import AttemptCheckResult, BackendStatusChecker
 
@@ -25,16 +26,42 @@ _REF_PREFIX = "mcp_server|"
 
 
 def validate_mcp_server_spec(spec: dict) -> dict:
-    """spec: {server_id | server_name (one required), project_id}."""
+    """spec: {server_id | server_name (one required), project_id (required)}.
+
+    ``project_id`` is kept (ADR-098 D-11): names are unique per project
+    since migration 0140, so resolution is always (project_id, id|name).
+    Before 2026-11-24 the validator dropped it and a job could resolve
+    another project's server of the same name.
+    """
     if not isinstance(spec, dict):
         raise TypeError("mcp_server spec must be an object")
     server_id = str(spec.get("server_id") or "").strip()
     server_name = str(spec.get("server_name") or "").strip()
+    project_id = project_key(spec.get("project_id"))
     if not server_id and not server_name:
         raise ValueError("mcp_server spec requires server_id or server_name")
     if server_id and server_name:
         raise ValueError("mcp_server spec takes server_id or server_name, not both")
-    return {"server_id": server_id, "server_name": server_name}
+    if not project_id:
+        raise ValueError("mcp_server.project_required: mcp_server spec requires project_id")
+    return {"server_id": server_id, "server_name": server_name, "project_id": project_id}
+
+
+def _job_scoped_spec(job: Job) -> dict:
+    """The validated spec, refused when it names a project the job is not in."""
+    spec = validate_mcp_server_spec(dict(job.spec or {}))
+    if spec["project_id"] != project_key(getattr(job, "project_id", None)):
+        raise ValueError(
+            "mcp_server.project_mismatch: spec project_id differs from the job's project"
+        )
+    return spec
+
+
+def _registry_from(factory: Any) -> Any:
+    """The MCP store behind ``factory`` (a store or a zero-arg factory)."""
+    if callable(factory) and not hasattr(factory, "get_server"):
+        return factory()
+    return factory
 
 
 class McpServerBackend:
@@ -55,29 +82,20 @@ class McpServerBackend:
         return "mcp_server"
 
     async def submit_job(self, job: Job, attempt) -> str:
-        spec = validate_mcp_server_spec(dict(job.spec or {}))
+        spec = _job_scoped_spec(job)
         if self._registry_factory is None:
             return f"{_REF_PREFIX}degraded=no_registry"
-        registry = self._registry_factory
-        if callable(registry):
-            registry = registry() if not hasattr(registry, "get_server") else registry
-        server = self._resolve(registry, spec)
+        server = resolve_server_for_project(
+            _registry_from(self._registry_factory),
+            project_id=spec["project_id"],
+            server_id=spec["server_id"],
+            server_name=spec["server_name"],
+        )
         if server is None:
+            # Absent and another project's row refuse alike (no oracle).
             return f"{_REF_PREFIX}error=server_not_in_registry"
         attempt.metrics["mcp_server_id"] = str(getattr(server, "server_id", ""))
         return f"{_REF_PREFIX}id={getattr(server, 'server_id', '')}"
-
-    @staticmethod
-    def _resolve(registry: Any, spec: dict):
-        if spec["server_id"]:
-            try:
-                return registry.get_server(spec["server_id"])
-            except Exception:  # noqa: BLE001 — named degradation below
-                return None
-        try:
-            return registry.get_server_by_name(spec["server_name"])
-        except Exception:  # noqa: BLE001 — named degradation below
-            return None
 
 
 async def _probe_server(url: str) -> tuple[bool, str]:
@@ -106,16 +124,21 @@ class McpServerStatusChecker(BackendStatusChecker):
     def job_type(self) -> JobType:
         return JobType.MCP_SERVER
 
-    def _server_url(self, server_id: str) -> tuple[str, AttemptCheckResult | None]:
-        """The registered instance URL, or the named failure result."""
+    def _server_url(
+        self, server_id: str, project_id: str
+    ) -> tuple[str, AttemptCheckResult | None]:
+        """The registered instance URL, or the named failure result.
+
+        The row must still be visible to the job's project (ADR-098 D-11).
+        """
         if self._registry_factory is None:
             return "", AttemptCheckResult.failed("MCP registry unavailable")
-        registry = self._registry_factory
-        if callable(registry) and not hasattr(registry, "get_server"):
-            registry = registry()
-        try:
-            server = registry.get_server(server_id)
-        except Exception:  # noqa: BLE001 — named degradation below
+        server = resolve_server_for_project(
+            _registry_from(self._registry_factory),
+            project_id=project_id,
+            server_id=server_id,
+        )
+        if server is None:
             return "", AttemptCheckResult.failed(
                 f"MCP server {server_id!r} left the registry"
             )
@@ -133,7 +156,7 @@ class McpServerStatusChecker(BackendStatusChecker):
                 "mcp_server submitted without a registry-resolved instance"
             )
         server_id = ref[len(_REF_PREFIX) + len("id=") :]
-        url, refusal = self._server_url(server_id)
+        url, refusal = self._server_url(server_id, project_key(getattr(job, "project_id", None)))
         if refusal is not None:
             return refusal
         ok, detail = await _probe_server(url)
