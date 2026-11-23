@@ -106,6 +106,12 @@ def checked_access(
 # admin. ``user:``/``project:``/``system`` entries and circles of OTHER
 # projects are unchanged (each was named at write time). Unreadable
 # membership answers "outside" (fail closed).
+#
+# A graph with no project_id (a personal graph, or a legacy row with a NULL
+# project) has no "own project" circle, so every entry on it is judged as
+# named at write time, like a circle of another project: its owner chose the
+# circle and accepted that circle's managers. There is no project to be
+# inside of, so the gate has nothing to check (ADR-118 D-8 note, 2026-11-24).
 
 _INSIDERS_ATTR = "kn_s4b_insiders"
 
@@ -147,16 +153,25 @@ def _insider_cache(raw_request: Any) -> dict[tuple[str, str], bool]:
     return cache
 
 
+def user_in_project(raw_request: Any, user: str, project_id: str) -> bool:
+    """ADR-097 D-1: is *user* a live member (or owner) of *project_id*,
+    memoised per request. The ONE membership read of the knowledge gates:
+    the KN-S4 share gate, the KN-S4b read gate and ``effective_readers``."""
+    if not (user and project_id):
+        return False
+    cache = _insider_cache(raw_request)
+    key = (user, project_id)
+    if key not in cache:
+        cache[key] = _live_member(raw_request, user, project_id)
+    return cache[key]
+
+
 def project_insider(raw_request: Any, caller: ResourceCaller, project_id: str) -> bool:
     """Is the caller inside *project_id*: an admin, verified into it, or a
     live member (its owner included)?"""
     if caller.is_admin or (project_id and caller.project_id == project_id):
         return True
-    cache = _insider_cache(raw_request)
-    key = (caller.user_id, project_id)
-    if key not in cache:
-        cache[key] = _live_member(raw_request, caller.user_id, project_id)
-    return cache[key]
+    return user_in_project(raw_request, caller.user_id, project_id)
 
 
 def _own_project_circle(scope: Any, project_id: str) -> bool:

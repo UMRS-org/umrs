@@ -13,7 +13,7 @@ import pytest
 from fake_pg_pool import FakePool
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from umrs.api import knowledge_graphs
+from umrs.api import _access, knowledge_graphs
 from umrs.api.knowledge_graphs import router as graphs_router
 
 _URL = "/umrs/knowledge/graphs/g-abc/access"
@@ -58,13 +58,14 @@ def _put(client, access, user="bob", admin=False):
 @pytest.fixture
 def members(monkeypatch):
     """Live project members (ADR-097) the gate sees: user → projects."""
-    table: dict[str, list[str]] = {"bob": ["proj-a"], "carol": ["proj-a"]}
+    # live_memberships lists owned projects too: alice owns proj-a
+    table: dict[str, list[str]] = {"alice": ["proj-a"], "bob": ["proj-a"], "carol": ["proj-a"]}
 
     def fake(request, user, project_id):
         del request
         return project_id in table.get(user, [])
 
-    monkeypatch.setattr(knowledge_graphs, "_live_member", fake, raising=False)
+    monkeypatch.setattr(_access, "_live_member", fake, raising=False)
     return table
 
 
@@ -106,11 +107,44 @@ class TestNonOwnerWriter:
         assert resp.status_code == 200, resp.text
         readers = resp.json()["effective_readers"]
         assert readers["entries"] == [
-            {"scope": "circle:proj-a/lab", "kind": "circle", "users": ["alice", "carol"]}
+            {
+                "scope": "circle:proj-a/lab",
+                "kind": "circle",
+                "users": ["alice", "carol"],
+                "not_admitted": [],
+            }
         ]
         assert readers["tier"] == "live members of project proj-a"
         roster_reads = [sql for sql, _ in pool.record if "FROM circle_members" in sql]
         assert len(roster_reads) == 2  # the gate read the roster before the write
+
+    def test_effective_readers_name_own_project_outsiders_not_admitted(self):
+        """KN-S4b: a stored own-project circle that grew an outsider admits
+        only project insiders, so effective_readers must not list mallory as
+        a reader. A circle of another project keeps its whole roster."""
+        stored = ["circle:proj-a/lab", "circle:proj-b/lab"]
+        updated = _graph_row(access=stored)
+        script = [
+            _graph_row(access=stored),  # nothing added: no share-gate reads
+            ("proj-a", "lab"),  # the circles exist
+            ("proj-b", "lab"),
+            _NO_ROW,  # UPDATE
+            updated,  # re-read
+            [("carol",), ("mallory",)],  # proj-a/lab roster
+            [("dave",)],  # proj-b/lab roster
+        ]
+        client, _ = _client(script)
+        resp = _put(client, stored)
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["effective_readers"]["entries"] == [
+            {
+                "scope": "circle:proj-a/lab",
+                "kind": "circle",
+                "users": ["carol"],
+                "not_admitted": ["mallory"],
+            },
+            {"scope": "circle:proj-b/lab", "kind": "circle", "users": ["dave"]},
+        ]
 
     def test_in_project_circle_holding_an_outsider_is_outside(self):
         """KN-S4 review: ``circle:proj-a/mallory`` (a personal circle anyone
@@ -220,6 +254,13 @@ class _Pool:
         del conn
 
 
+def test_one_membership_read_for_both_gates():
+    """KN-S4 and KN-S4b share ``_access.user_in_project``: the share gate
+    keeps no second copy of the ADR-097 read."""
+    assert not hasattr(knowledge_graphs, "_live_member")
+    assert knowledge_graphs.user_in_project is _access.user_in_project
+
+
 def test_unreadable_membership_is_outside(monkeypatch):
     """ADR-097 live memberships unreadable (None) → not a member."""
     from umrs.api import projects
@@ -228,9 +269,9 @@ def test_unreadable_membership_is_outside(monkeypatch):
     request = type("R", (), {})()
     request.app = type("A", (), {})()
     request.app.state = type("S", (), {"umrs_db_pool": _Pool()})()
-    assert knowledge_graphs._live_member(request, "carol", "proj-a") is False
+    assert _access._live_member(request, "carol", "proj-a") is False
     monkeypatch.setattr(projects, "live_memberships", lambda *_: ["proj-a"])
-    assert knowledge_graphs._live_member(request, "carol", "proj-a") is True
+    assert _access._live_member(request, "carol", "proj-a") is True
 
 
 # ── Real Postgres (CI: UMRS_TEST_DB_URL on a migrated umrs_test) ─────────────
