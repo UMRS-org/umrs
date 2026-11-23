@@ -58,7 +58,11 @@ class _BrokenStore(PolicyRuleStore):
         raise ConnectionError("db down")
 
 
-def _harness(monkeypatch, *, env=None, store=None, quota_check=None):
+def _harness(monkeypatch, *, env=None, store=None, quota_check=None, tmp_path=None):
+    """The venue app over fakes. Other modules (test_quota_*) import this:
+    without ``tmp_path`` the session root is a tempfile dir, which the
+    conftest's per-test scratch tempdir removes after the test."""
+    root = tmp_path if tmp_path is not None else Path(tempfile.mkdtemp())
     monkeypatch.setenv("JWT_SECRET", SECRET)
     sink = _Sink()
     monkeypatch.setattr(audit_events, "_audit_store", sink)
@@ -71,7 +75,7 @@ def _harness(monkeypatch, *, env=None, store=None, quota_check=None):
         provisioner=FrontendPodmanProvisioner(
             broker,
             podman=FakePodman(),
-            session_root=Path(tempfile.mkdtemp(prefix="policy-venue-")),
+            session_root=root / "policy-venue",
         ),
         pool=pool,
         sealed_store=FakeSealed(
@@ -98,8 +102,8 @@ def _harness(monkeypatch, *, env=None, store=None, quota_check=None):
 
 
 @pytest.fixture
-def h(monkeypatch):
-    return _harness(monkeypatch)
+def h(monkeypatch, tmp_path):
+    return _harness(monkeypatch, tmp_path=tmp_path)
 
 
 def _start(h, headers=H, **body):
@@ -116,8 +120,8 @@ class TestTheChoiceAtStart:
         assert h.jobs.created == []
         assert h.service.store.get("sess-1") is None
 
-    def test_flag_off_restores_the_legacy_default(self, monkeypatch):
-        h = _harness(monkeypatch, env={"UMRS_SESSION_WEB_CHOICE_REQUIRED": "false"})
+    def test_flag_off_restores_the_legacy_default(self, monkeypatch, tmp_path):
+        h = _harness(monkeypatch, tmp_path=tmp_path, env={"UMRS_SESSION_WEB_CHOICE_REQUIRED": "false"})
         r = _start(h)
         assert r.status_code == 200, r.text
         assert r.json()["web_policy"] == "public"
@@ -137,10 +141,10 @@ class TestTheChoiceAtStart:
         status = h.client.get(BASE, headers=H).json()
         assert status["policy"] == row.policy
 
-    def test_a_choice_wider_than_a_cap_is_refused(self, monkeypatch):
+    def test_a_choice_wider_than_a_cap_is_refused(self, monkeypatch, tmp_path):
         store = PolicyRuleStore()
         store.put(PolicyRule("rccs", "user", "alice", "admin", {"web": {"allow": ["none"]}}))
-        h = _harness(monkeypatch, store=store)
+        h = _harness(monkeypatch, tmp_path=tmp_path, store=store)
         r = _start(h, web_policy="public")
         assert r.status_code == 403, r.text
         assert r.headers[CODE] == "sessionpolicy.widening_refused"
@@ -151,8 +155,8 @@ class TestTheChoiceAtStart:
         r = _start(h, web_policy="allowlist")
         assert (r.status_code, r.headers[CODE]) == (400, "sessionpolicy.invalid")
 
-    def test_unreadable_rules_fail_closed(self, monkeypatch):
-        h = _harness(monkeypatch, store=_BrokenStore())
+    def test_unreadable_rules_fail_closed(self, monkeypatch, tmp_path):
+        h = _harness(monkeypatch, tmp_path=tmp_path, store=_BrokenStore())
         r = _start(h, web_policy="none")
         assert r.status_code == 503, r.text
         assert r.headers[CODE] == "sessionpolicy.unavailable"
@@ -182,19 +186,19 @@ class TestTheChoiceAtStart:
 
 
 class TestTheStartCheck:
-    def test_the_hook_gets_a_start_check_with_the_policy(self, monkeypatch):
+    def test_the_hook_gets_a_start_check_with_the_policy(self, monkeypatch, tmp_path):
         seen: list[StartCheck] = []
-        h = _harness(monkeypatch, quota_check=seen.append)
+        h = _harness(monkeypatch, tmp_path=tmp_path, quota_check=seen.append)
         assert _start(h, web_policy="none", project="").status_code == 200
         (check,) = seen
         assert (check.owner, check.venue, check.session_id) == ("alice", "rccs", "sess-1")
         assert check.policy["web"]["mode"] == "none"
 
-    def test_a_refusing_hook_reserves_nothing(self, monkeypatch):
+    def test_a_refusing_hook_reserves_nothing(self, monkeypatch, tmp_path):
         def refuse(_check):
             raise HTTPException(status_code=429, detail="cap", headers={CODE: "quota.x"})
 
-        h = _harness(monkeypatch, quota_check=refuse)
+        h = _harness(monkeypatch, tmp_path=tmp_path, quota_check=refuse)
         r = _start(h, web_policy="none")
         assert r.status_code == 429
         assert h.jobs.created == []
@@ -202,7 +206,7 @@ class TestTheStartCheck:
 
 
 class TestPreview:
-    def test_preview_before_and_after_a_start(self, monkeypatch):
+    def test_preview_before_and_after_a_start(self, monkeypatch, tmp_path):
         store = PolicyRuleStore()
         store.put(
             PolicyRule(
@@ -213,7 +217,7 @@ class TestPreview:
                 {"web": {"domains": [".arxiv.org"], "suggested_domains": [".arxiv.org"]}},
             )
         )
-        h = _harness(monkeypatch, store=store)
+        h = _harness(monkeypatch, tmp_path=tmp_path, store=store)
         r = h.client.get(f"{BASE}/policy", headers=H)
         assert r.status_code == 200, r.text
         body = r.json()
@@ -232,8 +236,8 @@ class TestPreview:
     def test_preview_needs_an_identity(self, h):
         assert h.client.get(f"{BASE}/policy").status_code == 401
 
-    def test_preview_fails_closed(self, monkeypatch):
-        h = _harness(monkeypatch, store=_BrokenStore())
+    def test_preview_fails_closed(self, monkeypatch, tmp_path):
+        h = _harness(monkeypatch, tmp_path=tmp_path, store=_BrokenStore())
         r = h.client.get(f"{BASE}/policy", headers=H)
         assert (r.status_code, r.headers[CODE]) == (503, "sessionpolicy.unavailable")
 

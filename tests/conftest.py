@@ -68,10 +68,12 @@ os.environ.setdefault("UMRS_LEDGER_SWEEP_ENABLED", "false")
 # (.kb_exports/test-project/manifest.json, 14 mtime rewrites in two days).
 # Tests get one per-process scratch dir instead; production keeps the
 # operator-controlled default.
-os.environ.setdefault(
-    "UMRS_KB_EXPORT_DIR",
-    f"{os.environ.get('TMPDIR', '/tmp')}/umrs-test-kb-exports/{os.getpid()}",
-)
+if "UMRS_KB_EXPORT_DIR" not in os.environ:
+    os.environ["UMRS_KB_EXPORT_DIR"] = (
+        f"{os.environ.get('TMPDIR', '/tmp')}/umrs-test-kb-exports/{os.getpid()}"
+    )
+    # Ours, so ours to remove (it used to stay behind, one per process).
+    atexit.register(shutil.rmtree, os.environ["UMRS_KB_EXPORT_DIR"], True)
 
 # Per-worker database under pytest-xdist (2026-11-03). About 30 test files
 # TRUNCATE or DELETE in the CI test database, so parallel workers sharing it
@@ -290,6 +292,30 @@ def _restore_environ_between_tests() -> Generator:
     yield
     os.environ.clear()
     os.environ.update(snapshot)
+
+
+@pytest.fixture(autouse=True)
+def _scratch_tempdir_per_test(tmp_path_factory, monkeypatch) -> Generator:
+    """Every ``tempfile.*`` dir a test creates lands in a per-test scratch dir
+    that is removed after the test (2026-11-23).
+
+    /tmp (tmpfs, ~1M inodes) ran out of inodes: ~25,000 dirs from this
+    suite (venue-route-*, venue-rail-*, plan-venue-*, slurm-step-*, ...)
+    because tests called ``tempfile.mkdtemp`` without cleanup, and the step
+    executors under test keep their ``slurm-step-*`` workdir on
+    ``keep_workdir=True`` or an unknown sbatch outcome (deliberate in
+    production). The scratch dir is short (``/tmp/umrs-t-XXXX``) so unix
+    socket paths under it stay within the 108-byte limit. pytest's own base
+    temp is resolved first, so ``tmp_path`` never lands in the scratch dir.
+    Child processes still see the real TMPDIR. A dir something recreated
+    after teardown (a full run once left one, empty) goes at exit.
+    """
+    tmp_path_factory.getbasetemp()
+    scratch = tempfile.mkdtemp(prefix="umrs-t-")
+    atexit.register(shutil.rmtree, scratch, True)
+    monkeypatch.setattr(tempfile, "tempdir", scratch)
+    yield
+    shutil.rmtree(scratch, ignore_errors=True)
 
 
 # Tables the knowledge premise suites (adapters / blank_project_e2e /

@@ -10,8 +10,6 @@ from __future__ import annotations
 import asyncio
 import json
 import subprocess
-import tempfile
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -377,13 +375,13 @@ def _probe_routes(app: FastAPI) -> None:
 
 
 @pytest.fixture
-def harness(monkeypatch):
+def harness(monkeypatch, tmp_path):
     approvals = ChatTurnApprovalsStore()
     pool = _Pool()
     broker = SecretBroker()
     podman = FakePodman()
     provisioner = FrontendPodmanProvisioner(
-        broker, podman=podman, session_root=Path(tempfile.mkdtemp(prefix="venue-route-"))
+        broker, podman=podman, session_root=tmp_path / "venue-route"
     )
     jobs = FakeJobStore()
     service = FrontendVenueService(
@@ -658,7 +656,7 @@ class TestOwnerRoutes:
 
 
 @pytest.fixture
-def rail(harness):
+def rail(harness, tmp_path):
     captured = {}
 
     class _Podman(FakePodman):
@@ -670,7 +668,7 @@ def rail(harness):
     podman = _Podman()
     harness.podman = podman
     harness.service.provisioner = FrontendPodmanProvisioner(
-        harness.broker, podman=podman, session_root=Path(tempfile.mkdtemp(prefix="venue-rail-"))
+        harness.broker, podman=podman, session_root=tmp_path / "venue-rail"
     )
     harness.pool.seed(
         "alice",

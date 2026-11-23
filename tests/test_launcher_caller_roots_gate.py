@@ -19,7 +19,6 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-import tempfile
 from pathlib import Path
 
 import pytest
@@ -31,8 +30,8 @@ from umrs.orchestrator.caller_roots import (
 
 
 @pytest.fixture
-def sandbox():
-    base = Path(tempfile.mkdtemp(prefix="gate-root-"))
+def sandbox(tmp_path):
+    base = tmp_path / "gate-root"
     roots = {
         "home": base / "home" / "alice",
         "project": base / "shared" / "projects" / "proj-a",
