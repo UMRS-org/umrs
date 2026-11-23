@@ -41,23 +41,19 @@ from umrs_r4.venues.venue_sessions import VenueSessionStore
 
 from r4_contracts import loop_plan
 
-TEMPLATE = Path("/tmp/w-a92/r4/src/r4/teams/plan/templates/research-round.json")
+# The r4 client's research-round template, vendored (ADR-117 U2 exit): r4's
+# tests/test_research_round_vendored_parity.py keeps it byte-equal to
+# r4/src/r4/teams/plan/templates/research-round.json.
+TEMPLATE = Path(__file__).resolve().parent / "fixtures" / "research-round.json"
 
 
 def _doc() -> dict[str, Any]:
     """The research-round template as the r4 client resolves and sends it."""
-    candidates = [
-        TEMPLATE,
-        Path(__file__).resolve().parents[2] / "r4/src/r4/teams/plan/templates/research-round.json",
-    ]
-    for path in candidates:
-        if path.is_file():
-            doc = json.loads(path.read_text())
-            # the client resolves instruction references (r4 plan_sources)
-            for name, profile in doc.get("agents", {}).items():
-                profile["instructions"] = f"You are the {name}."
-            return doc
-    pytest.skip("the r4 research-round template is not reachable from this checkout")
+    doc = json.loads(TEMPLATE.read_text(encoding="utf-8"))
+    # the client resolves instruction references (r4 plan_sources)
+    for name, profile in doc.get("agents", {}).items():
+        profile["instructions"] = f"You are the {name}."
+    return doc
 
 
 PICKED = {

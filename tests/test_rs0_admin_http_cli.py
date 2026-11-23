@@ -58,6 +58,8 @@ ENDPOINT_COMMANDS = [
     ("session", "list"),
     ("session", "show", "sess-1"),
     ("session", "stop", "sess-1", "-y"),
+    ("session", "pause", "sess-1"),
+    ("session", "resume", "sess-1"),
 ]
 
 
@@ -145,3 +147,24 @@ def test_session_stop_posts_the_note(tmp_path, calls, capsys, monkeypatch):
     assert req.full_url == "http://umrs.test:8000/umrs/admin/sessions/a%2Fb/stop"
     assert json.loads(req.data) == {"note": "breach"}
     assert "session a/b: stopped" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("verb", ["pause", "resume"])
+def test_session_pause_resume_post_the_note(tmp_path, calls, capsys, monkeypatch, verb):
+    seen, replies = calls
+    monkeypatch.setenv("UMRS_ADMIN_JWT", FAKE_JWT)
+    replies.append({"state": verb + "d"})
+    assert _run(tmp_path, "session", verb, "a/b", "--note", "drain") == 0
+    req = seen[0]
+    assert req.get_method() == "POST"
+    assert req.full_url == f"http://umrs.test:8000/umrs/admin/sessions/a%2Fb/{verb}"
+    assert json.loads(req.data) == {"note": "drain"}
+    assert f"session a/b: {verb}d" in capsys.readouterr().out
+
+
+def test_session_pause_json_prints_the_reply(tmp_path, calls, capsys, monkeypatch):
+    _seen, replies = calls
+    monkeypatch.setenv("UMRS_ADMIN_JWT", FAKE_JWT)
+    replies.append({"state": "paused", "user_id": "alice"})
+    assert _run(tmp_path, "session", "pause", "sess-1", "--json") == 0
+    assert json.loads(capsys.readouterr().out) == {"state": "paused", "user_id": "alice"}

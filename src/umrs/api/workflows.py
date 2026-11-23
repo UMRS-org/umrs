@@ -18,7 +18,7 @@ import os
 import shutil
 import tempfile
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from itertools import islice
 from pathlib import Path
 from typing import Any, NoReturn
@@ -2060,6 +2060,7 @@ def _register_uploaded_workflow(
     workflow_json: dict[str, Any],
     scope: str,
     project_id: str,
+    provenance: dict[str, Any] | None = None,
 ) -> None:
     """Register the uploaded version in the catalog + governance ledger."""
     result = register_workflow(
@@ -2071,6 +2072,7 @@ def _register_uploaded_workflow(
         scope=scope,
         description=workflow_json.get("description", ""),
         source_sha256=outcome.source_sha256,
+        provenance=provenance,
     )
     if result.get("status") == "error":
         _typed_handler_error(result)
@@ -2090,6 +2092,19 @@ def _register_uploaded_workflow(
         project_id=project_id,
         tier=scope,
     )
+
+
+def _upload_provenance(raw: str | None) -> dict[str, Any] | None:
+    """The upload's ``provenance`` form field (ADR-108 D-6): the source
+    commit of the uploaded tree as the client reports it (repo, branch,
+    commit, dirty), cleaned and marked ``client_reported``. A missing or
+    malformed block is no provenance, never a failed upload."""
+    from umrs.knowledge.client_provenance import clean_provenance
+
+    try:
+        return clean_provenance(json.loads(raw or "null"))
+    except (TypeError, ValueError):
+        return None
 
 
 def _upload_message(workflow_name: str, notice: str | None) -> str:
@@ -2134,6 +2149,7 @@ async def upload_workflow(
     user_id: str | None = Form(None),
     workflow_name: str | None = Form(None),
     scope: str = Form("user"),
+    provenance: str | None = Form(None),
     x_user_id: str | None = Header(None),
     x_verified_project_id: str | None = Header(None),
     x_verified_is_admin: str | None = Header(None),
@@ -2145,7 +2161,9 @@ async def upload_workflow(
     carry a SemVer ``version`` (else ``workflows.invalid_version``); the
     version is stored once, immutably — the same bundle again answers 200
     ``unchanged``, other content under that version is 409
-    ``workflows.version_exists``."""
+    ``workflows.version_exists``. An optional ``provenance`` form field (a
+    JSON object: repo, branch, commit, dirty) is kept on the version record
+    (ADR-108 D-6); a malformed one is dropped."""
     _require_verified_workflow_identity(
         x_user_id, x_verified_project_id, x_verified_is_admin, x_verified_hmac
     )
@@ -2183,6 +2201,7 @@ async def upload_workflow(
         workflow_json=workflow_json,
         scope=scope,
         project_id=project_id,
+        provenance=_upload_provenance(provenance),
     )
     from .audit_events import emit_audit
 
@@ -2209,11 +2228,13 @@ def _run_workflow_payload(
     version: str | None = None,
     signed: tuple[str | None, str | None] = (None, None),
     grant_id: str | None = None,
+    scope: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """The RUN_WORKFLOW payload; a well-formed ``x-r4-session-id`` rides as
     ``_origin_session_id`` so the durable job carries ``spec.origin.session_id``
     (ADR-105 D-5). Absent or malformed: the payload is unchanged. *version*
-    is the version the trigger resolved (ADR-113 D-3)."""
+    is the version the trigger resolved (ADR-113 D-3). *scope* is the
+    verified work level of a scoped trigger (ADR-108 D-6), as ``_scope``."""
     from ..jobs.job_events import valid_session_id
 
     payload: dict[str, Any] = {
@@ -2230,6 +2251,8 @@ def _run_workflow_payload(
     payload.update({k: v for k, v in zip(("intent", "signature"), signed) if v})
     if grant_id:  # wave C: the standing grant the trigger names
         payload["grant_id"] = grant_id
+    if scope:  # ADR-108 D-6: the handler stamps it on the durable job spec
+        payload["_scope"] = dict(scope)
     return payload
 
 
@@ -2266,7 +2289,8 @@ async def trigger_workflow(
         x_user_id, x_verified_project_id, x_verified_is_admin, x_verified_hmac
     )
     resolved = _resolve_trigger(workflow_name, request, caller, memberships)
-    _refuse_unscoped_trigger(scope_request, resolved.name, resolved)
+    claims = _refuse_unscoped_trigger(scope_request, resolved.name, resolved)
+    resolved = replace(resolved, scope=_scope_stamp(claims))
     _refuse_hpc_user_work_trigger(workflow_name, resolved)
     if not resolved.signed[0]:
         _refuse_unplanned_trigger(workflow_name, resolved.project_id)
@@ -2360,14 +2384,30 @@ def _proposal_or_raise(
 
 def _refuse_unscoped_trigger(
     http_request: Request | None, workflow_name: str, resolved: _ResolvedTrigger
-) -> None:
-    """A scoped trigger needs ``workflow:<name>`` (or ``workflow:*``)."""
+) -> Any:
+    """A scoped trigger needs ``workflow:<name>`` (or ``workflow:*``).
+    Returns the request's verified scope claims (None when unscoped)."""
     if http_request is None:
-        return
+        return None
     from umrs.api.scope_tokens import require_grant, scope_of
 
     claims = scope_of(http_request, user=resolved.user_id, project=resolved.project_id)
     require_grant(claims, f"workflow:{workflow_name}")
+    return claims
+
+
+#: The verified scope claims a scoped run records (ADR-108 D-6): the work
+#: level's path and the repo/branch/commit it was issued for.
+_SCOPE_STAMP_FIELDS = ("path", "repo", "branch", "commit")
+
+
+def _scope_stamp(claims: Any) -> dict[str, str] | None:
+    """The scope a run records: the token's path and its repo, branch and
+    commit (the empty ones left out); None for an unscoped trigger."""
+    if claims is None:
+        return None
+    stamp = {key: str(getattr(claims, key, "") or "") for key in _SCOPE_STAMP_FIELDS}
+    return {key: value for key, value in stamp.items() if value} or None
 
 
 # ---------------------------------------------------------------------------
@@ -2425,6 +2465,9 @@ class _ResolvedTrigger:
     signed: tuple[str | None, str | None] = (None, None)
     #: ADR-112 wave C: the standing grant the trigger names, if any.
     grant_id: str | None = None
+    #: ADR-108 D-6: the verified scope of a scoped trigger (path, repo,
+    #: branch, commit), stamped on the durable job; None when unscoped.
+    scope: dict[str, str] | None = None
 
     @property
     def name(self) -> str:
@@ -2523,6 +2566,7 @@ def _dispatch_trigger(
             resolved.version,
             resolved.signed,
             resolved.grant_id,
+            resolved.scope,
         )
     )
     # Wave-6 F1: the durable trust bridge reflects the verified flag, never

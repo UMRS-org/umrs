@@ -266,7 +266,11 @@ class ReadinessApproveRequest(BaseModel):
 
 
 def _durable_node_payload(node: Any) -> dict[str, Any]:
-    """KnowledgeStore row → Studio/webview node shape (id/type/label aliases)."""
+    """KnowledgeStore row → Studio/webview node shape (id/type/label aliases).
+
+    D-35 read side (2026-11-24): carries the row's tier (``status``,
+    ``confidence``) so a proposed row is told apart from an established one.
+    """
     content = node.content if isinstance(node.content, dict) else {}
     label = node.label or node.node_id
     return {
@@ -278,6 +282,8 @@ def _durable_node_payload(node: Any) -> dict[str, Any]:
         "type": node.node_type,
         "node_type": node.node_type,
         "graph_id": node.graph_id,
+        "status": node.status,
+        "confidence": node.confidence,
         "created_at": node.created_at.isoformat() if node.created_at else None,
         "metadata": content,
     }
@@ -293,6 +299,8 @@ def _durable_edge_payload(edge: Any) -> dict[str, Any]:
         "from": edge.source_id,
         "to": edge.target_id,
         "label": edge.relation_type,
+        "status": edge.status,
+        "confidence": edge.confidence,
         "created_at": edge.created_at.isoformat() if edge.created_at else None,
     }
 
@@ -1335,6 +1343,21 @@ def _refuse_unsignable_export(body: ExportRequest) -> None:
     )
 
 
+def _audit_export(
+    event: str, request: Request, project_id: str, *, actor: str = "", **details: Any
+) -> None:
+    """ADR-088 W0 ``export.*``: ids and flags only (never the bundle content)."""
+    from umrs.audit.security_events import emit_security
+
+    emit_security(
+        event,
+        actor=actor or request.headers.get("x-user-id", ""),
+        project_id=project_id,
+        scope="project",
+        **details,
+    )
+
+
 @router.post("/export", response_model=dict[str, Any])
 async def export_knowledge(
     body: ExportRequest,
@@ -1348,6 +1371,13 @@ async def export_knowledge(
     refused, never silently exported.
     """
     if body.project_id != _get_project_id:
+        _audit_export(
+            "export.refused",
+            request,
+            _get_project_id,
+            reason="project_mismatch",
+            requested_project=body.project_id,
+        )
         raise_typed(
             PlatformError.knowledge(
                 "project_mismatch",
@@ -1403,6 +1433,16 @@ async def export_knowledge(
         )
 
         logger.info("Knowledge export queued: %s", job_id)
+        _audit_export(
+            "export.requested",
+            request,
+            body.project_id,
+            actor=submitter,
+            job_id=job_id,
+            include_raw=bool(body.include_raw),
+            chunk_text=bool(body.chunk_text),
+            allow_unsigned=bool(body.allow_unsigned),
+        )
         from umrs.knowledge.bundle_archive import export_archive_key
 
         return {

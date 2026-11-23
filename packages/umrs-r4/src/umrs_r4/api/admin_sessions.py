@@ -5,10 +5,14 @@
     GET  /umrs/admin/sessions/{sid}           one session of any owner
     POST /umrs/admin/sessions/{sid}/stop      stop it (the owner stop path,
                                               actor = the admin, cause = admin)
+    POST /umrs/admin/sessions/{sid}/pause     pause it between turns (the owner
+                                              pause path, audit actor = the admin)
+    POST /umrs/admin/sessions/{sid}/resume    resume a paused one (likewise)
 
 The routes sit on the existing ``FrontendVenueService`` (the owner routes'
-process-cached instance): no second session store, no new topology. Pause,
-resume and host drain are RS-2.
+process-cached instance): no second session store, no new topology. Host
+drain is RS-2. (2026-11-24: pause/resume landed here, closing the RS-0 P-4
+residual; before that this note listed them under RS-2.)
 
 Access: admin only, with the credentials the endpoint registry's admin
 routes already take (``endpoints._caller_is_admin``): an admin JWT bearer
@@ -38,7 +42,12 @@ from umrs.api.typed_errors import PlatformError, raise_typed
 from umrs.venues.session_audit import audit_venue
 
 from umrs_r4.api.companion_venue import _typed, _unexpected, get_venue_service
-from umrs_r4.venues.frontend_service import SESSION_HOST, VenueError
+from umrs_r4.venues.frontend_service import (
+    SESSION_HOST,
+    FrontendVenueService,
+    VenueError,
+    admin_view,
+)
 from umrs_r4.venues.venue_sessions import VALID_STATES
 
 router = APIRouter(prefix="/umrs/admin/sessions", tags=["admin-sessions"])
@@ -145,6 +154,59 @@ async def admin_stop_session(
     return await _guarded(
         "admin stop", service.admin_stop, session_id=session_id, admin=admin, note=note
     )
+
+
+@router.post("/{session_id}/pause", response_model=dict[str, Any])
+async def admin_pause_session(
+    session_id: str,
+    request: Request,
+    body: AdminStopBody | None = None,
+    admin: str = Depends(require_session_admin),
+) -> dict[str, Any]:
+    """Pause any user's session between turns (idempotent; audited as
+    ``venue.session.pause`` with actor = the admin, cause ``admin``).
+    # auth: admin(jwt|verified-admin)
+    """
+    return await _admin_verb(request, "pause", session_id, admin, body)
+
+
+@router.post("/{session_id}/resume", response_model=dict[str, Any])
+async def admin_resume_session(
+    session_id: str,
+    request: Request,
+    body: AdminStopBody | None = None,
+    admin: str = Depends(require_session_admin),
+) -> dict[str, Any]:
+    """Resume any user's paused session (409 unless paused; audited as
+    ``venue.session.resume`` with actor = the admin, cause ``admin``).
+    # auth: admin(jwt|verified-admin)
+    """
+    return await _admin_verb(request, "resume", session_id, admin, body)
+
+
+async def _admin_verb(
+    request: Request, verb: str, session_id: str, admin: str, body: AdminStopBody | None
+) -> dict[str, Any]:
+    service = get_venue_service(request)
+    note = (body.note if body else "").strip()
+    return await _guarded(
+        f"admin {verb}", _owner_verb_as_admin, service, verb, session_id, admin, note
+    )
+
+
+def _owner_verb_as_admin(
+    service: FrontendVenueService, verb: str, session_id: str, admin: str, note: str
+) -> dict[str, Any]:
+    """Run the owner pause/resume path on any owner's row, as the admin."""
+    row = service.store.get(session_id)
+    if row is None:
+        raise VenueError("not_found", "no venue runtime for this session")
+    label = f"admin {admin}" + (f": {note[:200]}" if note else "")
+    fn = service.pause if verb == "pause" else service.resume
+    out = fn(owner=row.user_id, session_id=session_id, actor=label, actor_id=admin)
+    out["user_id"] = row.user_id
+    out["project"] = service._job_project(row.job_id)  # noqa: SLF001 — same package
+    return admin_view(out)
 
 
 async def _guarded(verb: str, fn: Any, *args: Any, **kwargs: Any) -> Any:

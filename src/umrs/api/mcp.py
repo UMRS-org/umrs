@@ -718,6 +718,7 @@ async def call_tool(
     if not server:
         raise_typed(PlatformError.mcp("not_found", f"Tool not found: {request.tool}"))
     if (getattr(server, "trust_class", "") or "") == "trusted-host-only":
+        _audit_invoke_refused(http_request, server, request.tool, "trust_class_denied")
         raise_typed(
             PlatformError.mcp(
                 "trust_class_denied",
@@ -750,6 +751,28 @@ async def call_tool(
             isError=True,
             server=server.name,
         )
+
+
+def _audit_invoke_refused(http_request: Request, server: Any, tool: str, reason: str) -> None:
+    """ADR-088 W0: one ``mcp.invoke_refused`` row (ids and codes only, never
+    the call's arguments or metadata)."""
+    from umrs.audit.security_events import emit_security
+
+    try:
+        scope = _caller_scope(http_request)
+        actor, project = scope.user_id or "", scope.project_id or ""
+    except Exception:  # noqa: BLE001 - the refusal stands; the row has no actor
+        actor, project = "", ""
+    emit_security(
+        "mcp.invoke_refused",
+        actor=actor,
+        project_id=project,
+        scope="project",
+        server_id=getattr(server, "server_id", ""),
+        tool=tool,
+        reason=reason,
+        trust_class=getattr(server, "trust_class", "") or "",
+    )
 
 
 # =============================================================================

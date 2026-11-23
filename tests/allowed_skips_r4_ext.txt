@@ -6,9 +6,8 @@
 2 | could not import 'r4.hpc_signing'
 1 | could not import 'r4.curve_session'
 
-# files of other checkouts (the r4 research-round template, r4 parent deploy
-# tree, benchmark data, fixtures)
-23 | the r4 research-round template is not reachable from this checkout
+# files of other checkouts (r4 parent deploy tree, benchmark data, fixtures;
+# the research-round template is vendored since U2 exit, 2026-11-24)
 1 | site.yaml not found at
 1 | benchmarks/retrieval not in this checkout
 1 | video_ai fixtures missing

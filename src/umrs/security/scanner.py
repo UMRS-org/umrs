@@ -60,6 +60,31 @@ _NETWORK_PATTERNS = [
 ]
 
 
+def _audit_findings(target_kind: str, result: ScanResult) -> None:
+    """ADR-088 W0: one ``scanner.finding`` row when a scan found anything.
+
+    Counts per severity and the finding categories only: never a message,
+    a location's text, a command or a prompt (they quote the scanned input).
+    """
+    if not result.findings:
+        return
+    from umrs.audit.security_events import emit_security
+
+    def count(*levels: SeverityLevel) -> int:
+        return sum(1 for f in result.findings if f.severity in levels)
+
+    emit_security(
+        "scanner.finding",
+        outcome="error" if result.has_errors else "success",
+        target_kind=target_kind,
+        target_name=result.target_name,
+        errors=count(SeverityLevel.ERROR, SeverityLevel.CRITICAL),
+        warnings=count(SeverityLevel.WARNING),
+        infos=count(SeverityLevel.INFO),
+        categories=[f.category for f in result.findings],
+    )
+
+
 class RecipeScanner:
     """Scan recipe definitions for security issues."""
 
@@ -72,6 +97,7 @@ class RecipeScanner:
         for i, step in enumerate(steps):
             self._scan_step(step, i, result)
 
+        _audit_findings("recipe", result)
         return result
 
     def _scan_step(self, step: dict[str, Any], index: int, result: ScanResult) -> None:
@@ -210,6 +236,7 @@ class SkillScanner:
                     )
                 )
 
+        _audit_findings("skill", result)
         return result
 
     def _scan_mcp_config(self, mcp: dict[str, Any], result: ScanResult) -> None:

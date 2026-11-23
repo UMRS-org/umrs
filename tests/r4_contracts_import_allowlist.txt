@@ -8,4 +8,6 @@
 # U2.x family 1 (protocol + handshake_hmac) migrated 2026-11-20; 85 rows removed.
 # U3 S5 (2026-11-22): the plan-run cluster moved to umrs_r4 (which depends on
 # r4-contracts, D9); core src has no r4_contracts import left.
-tests/test_plan_loop_server.py::r4_contracts.loop_plan  # floor: U3-S5
+# U2 exit (2026-11-24): the last row (tests/test_plan_loop_server.py::
+# r4_contracts.loop_plan) left with its file for packages/umrs-r4/tests.
+# Empty, and test_u2_exit_the_allowlist_is_empty keeps it so: add no row.

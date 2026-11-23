@@ -5645,6 +5645,14 @@ def _job_extract_mode(job: Any, explicit: str | None = None) -> str:
     return normalize_mode(explicit or spec.get("extract_mode"), "full")
 
 
+def _run_scope_path(job: Any) -> dict[str, str]:
+    """ADR-108 D-6: a scoped run's ``scope_path`` rides into the ingest of
+    its outputs, so ``attach_scope_path`` stamps each artifact with it."""
+    spec = getattr(job, "spec", None)
+    path = spec.get("scope_path") if isinstance(spec, dict) else None
+    return {"scope_path": str(path)} if path else {}
+
+
 def _enqueue_ingest_job(
     deduped: list[dict[str, Any]],
     bucket: str,
@@ -5689,6 +5697,7 @@ def _enqueue_ingest_job(
                 "bucket": bucket,
                 "project_id": project_id,
                 "extract_mode": extract_mode or auto_extract_mode(),
+                **_run_scope_path(job),
             },
             priority=job.priority,
             max_attempts=3,

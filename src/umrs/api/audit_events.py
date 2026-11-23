@@ -136,6 +136,22 @@ def emit_audit(
         except Exception:
             logger.debug("Audit persistent write failed", exc_info=True)
 
+    _derive_security_events(record)
+
+
+def _derive_security_events(record: dict[str, Any]) -> None:
+    """ADR-088 W0: an ``*access_changed`` row that grants ``system`` also
+    writes ``admin.access_system`` (after the row it derives from). Never
+    raises; the derived family is not itself an ``access_changed`` row."""
+    if not str(record.get("event", "")).endswith("access_changed"):
+        return
+    try:
+        from umrs.audit.security_events import derive_access_system
+
+        derive_access_system(record)
+    except Exception:  # audit never fails the change it reports
+        logger.debug("derived security audit failed", exc_info=True)
+
 
 def query_audit_events(
     *,

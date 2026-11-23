@@ -575,6 +575,19 @@ def fetch_url(
     Returns:
         FetchResult with content, or ``content=None`` and a named error.
     """
+    result = _fetch_checked(url, allow_domains, timeout, block_patterns, deny_networks)
+    _audit_denied(url, result)
+    return result
+
+
+def _fetch_checked(
+    url: str,
+    allow_domains: list[str] | None,
+    timeout: int | None,
+    block_patterns: list[str] | None,
+    deny_networks: list[str] | None,
+) -> FetchResult:
+    """``fetch_url`` without its audit row (the policy and the scan)."""
     domains = [str(d) for d in allow_domains] if allow_domains else []
     denied, bad = parse_networks(deny_networks or [])
     refusal = _policy_refusal(domains, bad)
@@ -593,6 +606,53 @@ def fetch_url(
             error=f"content blocked: {scan.blocked_reason}",
         )
     return fetched
+
+
+# A refusal's text -> the reason code of its ``egress.denied`` row (the text
+# itself, which can name an address, never reaches the audit stream).
+_DENIAL_REASONS: tuple[tuple[str, str], ...] = (
+    ("allow_domains is empty", "allowlist_empty"),
+    ("unparseable denied network", "policy_unparseable"),
+    ("(http/https only)", "scheme"),
+    ("invalid URL", "invalid_url"),
+    ("ingest allowlist", "not_listed"),
+    ("cannot resolve", "unresolvable"),
+    ("resolved to no address", "unresolvable"),
+    ("resolves to a", "address_refused"),
+    ("80/443 only", "port"),
+    ("redirect", "redirect"),
+    ("content too large", "too_large"),
+    ("truncated body", "truncated"),
+    ("took longer", "timeout"),
+)
+
+
+def denial_reason(error: str | None) -> str:
+    """The ``egress.denied`` reason code of a fetch error, or ``""`` when the
+    error is not a policy refusal (a network fault, an HTTP status)."""
+    text = error or ""
+    if text.startswith("content blocked"):
+        return "content_blocked"
+    if not text.startswith("egress blocked"):
+        return ""
+    return next((code for marker, code in _DENIAL_REASONS if marker in text), "other")
+
+
+def _audit_denied(url: str, result: FetchResult) -> None:
+    """ADR-088 W0: one ``egress.denied`` row per refused fetch: the host and
+    the reason code, never the path, the query, the content or an address."""
+    reason = denial_reason(result.error)
+    if not reason:
+        return
+    from urllib.parse import urlparse
+
+    from umrs.audit.security_events import emit_security
+
+    try:
+        host = urlparse(url).hostname or ""
+    except ValueError:
+        host = ""
+    emit_security("egress.denied", host=host, reason=reason)
 
 
 def _policy_refusal(domains: list[str], bad_networks: list[str]) -> str:

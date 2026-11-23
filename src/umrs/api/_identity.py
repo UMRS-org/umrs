@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from typing import NoReturn
 
 from fastapi import HTTPException, Request, status
 
@@ -76,8 +77,26 @@ def warn_legacy_params_once(feature: str) -> None:
     )
 
 
-def _reject_401(detail: str) -> None:
+def _reject_401(detail: str, request: Request | None = None, reason: str = "") -> NoReturn:
+    """401, written first as ``auth.failed`` (ADR-088 W0): the reason code
+    and the route family only (no header value, no path beyond two segments)."""
+    from umrs.audit.security_events import emit_security
+
+    emit_security(
+        "auth.failed",
+        surface="umrs",
+        reason=reason or "unauthenticated",
+        route=_route_of(request),
+    )
     raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=detail)
+
+
+def _route_of(request: Request | None) -> str:
+    """The request path, or "" for a request without one (a bare scope)."""
+    try:
+        return request.url.path if request is not None else ""
+    except (KeyError, AttributeError):
+        return ""
 
 
 def _verify_handshake(
@@ -97,7 +116,9 @@ def _verify_handshake(
         project_id=project_id,
         is_admin=is_admin,
     ):
-        _reject_401("Gateway-verified identity signature rejected")
+        _reject_401(
+            "Gateway-verified identity signature rejected", request, "bad_signature"
+        )
 
 
 def request_identity(
@@ -121,13 +142,21 @@ def request_identity(
         )
 
     if _strict_mode():
-        _reject_401("Missing X-Verified-Project-ID header (Gateway must set this)")
+        _reject_401(
+            "Missing X-Verified-Project-ID header (Gateway must set this)",
+            request,
+            "missing_verified_identity",
+        )
 
     if legacy_project:
         return CallerIdentity(user_id=user_id, project_id=legacy_project, legacy=True)
 
     if require_project:
-        _reject_401("Missing X-Project-ID header (auth sidecar must set this)")
+        _reject_401(
+            "Missing X-Project-ID header (auth sidecar must set this)",
+            request,
+            "missing_project",
+        )
 
     return CallerIdentity(user_id=user_id, anonymous=True)
 

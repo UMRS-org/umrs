@@ -7,7 +7,9 @@ auth baseline); this directory is outside that conftest's reach.
 import atexit
 import os
 import shutil
+import sys
 import tempfile
+from pathlib import Path
 
 # One pytest session may also load umrs/tests/conftest.py (both directories
 # on one command line); its scratch HOME then stays, never a second one.
@@ -30,3 +32,10 @@ if not _INHERITED:
 # The suites were written against the historic mvp baseline; strict cases opt
 # in per test with monkeypatch.setenv("UMRS_AUTH_MODE", "strict").
 os.environ.setdefault("UMRS_AUTH_MODE", "mvp")
+
+# The core suite's fakes (test_companion_venue_routes, test_plan_run_venue)
+# serve the tests that moved here (ADR-117 U2 exit). Appended, never
+# prepended: a run collecting umrs/tests too imports the same modules.
+_CORE_TESTS = str(Path(__file__).resolve().parents[3] / "tests")
+if _CORE_TESTS not in sys.path:
+    sys.path.append(_CORE_TESTS)
