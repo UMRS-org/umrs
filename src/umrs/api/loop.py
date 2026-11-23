@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field
 
 from umrs.knowledge import loop_hosting, loop_iteration_kinds
 from umrs.knowledge.loop import (
+    CATALOG_PIN_KEY,
     OWNER_PROJECT_KEY,
     SERVER_OWNED_METADATA,
     AutonomousResearchLoop,
@@ -133,7 +134,7 @@ def _resolve_loop_catalog(request: Any) -> dict[str, Any]:
     finally:
         pool.putconn(conn)
     pin = {"catalog_id": row["catalog_id"], "version": row["version"], "requested": ref}
-    return {"catalog_pin": pin}
+    return {CATALOG_PIN_KEY: pin}
 
 
 def _checkpoint_store():

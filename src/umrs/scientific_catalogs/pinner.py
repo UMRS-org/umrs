@@ -71,6 +71,16 @@ def _project_row(store: Any, project_id: str, catalog_id: str) -> dict[str, Any]
     return row
 
 
+def _pinnable_row(store: Any, project_id: str, catalog_id: str) -> dict[str, Any]:
+    """The named row when it is in ``project_id`` and not retired."""
+    row = _project_row(store, project_id, catalog_id)
+    if row.get("status") == "retired":
+        raise CatalogPinRefused(
+            CATALOG_RETIRED, f"catalog {catalog_id} is retired; finding pins skipped"
+        )
+    return row
+
+
 def _version_row(store: Any, row: dict[str, Any], version: str) -> dict[str, Any]:
     for candidate in store.versions(project_id=row["project_id"], name=row["name"]):
         if candidate.get("version") == version:
@@ -84,9 +94,13 @@ def _version_row(store: Any, row: dict[str, Any], version: str) -> dict[str, Any
 def pin_target(store: Any, project_id: str, catalog_id: str = "") -> str:
     """The catalog id findings pin onto: the loop's named one, else the
     single active catalog of the project (fallback), else ``""`` (none or
-    several: nothing to pin, never a guess)."""
+    several: nothing to pin, never a guess).
+
+    A named catalog is checked again at every pin, not trusted from the
+    loop record: it must still be in ``project_id`` and not retired, else
+    CatalogPinRefused (and no fallback to another catalog)."""
     if catalog_id:
-        return catalog_id
+        return _pinnable_row(store, project_id, catalog_id)["catalog_id"]
     catalogs = store.list(project_id=project_id)
     return catalogs[0]["catalog_id"] if len(catalogs) == 1 else ""
 

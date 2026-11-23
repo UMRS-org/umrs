@@ -31,7 +31,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from . import finding_ingest
-from .loop import LoopIteration, LoopStatus, ResearchLoop
+from .loop import CATALOG_PIN_KEY, LoopIteration, LoopStatus, ResearchLoop
 
 logger = logging.getLogger(__name__)
 
@@ -134,8 +134,10 @@ def _pin_real_findings(loop: ResearchLoop, iteration: LoopIteration) -> None:
 def _call_pinner(pinner: Any, loop: ResearchLoop, pins: list[tuple[str, str]]) -> None:
     """DEC-D39 (S-D39b): pass the loop's pinned catalog (``catalog_pin`` on
     its metadata, set at start) when it has one; without one the pinner
-    falls back to the project's single active catalog."""
-    pinned = (loop.metadata or {}).get("catalog_pin") or {}
+    falls back to the project's single active catalog. The pinner checks
+    the named id again (same project, not retired) and raises when it is
+    not; the caller logs that as a skipped pin, never a fallback."""
+    pinned = (loop.metadata or {}).get(CATALOG_PIN_KEY) or {}
     catalog_id = str(pinned.get("catalog_id") or "")
     if catalog_id:
         pinner(loop.project_id, pins, catalog_id)

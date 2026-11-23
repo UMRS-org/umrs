@@ -126,6 +126,24 @@ def test_unpinnable_catalogs_are_refused_by_name(ref: str, reason: str) -> None:
     assert err.value.reason == reason
 
 
+@pytest.mark.parametrize(
+    ("named", "reason"),
+    [
+        ("sc-other", pinner.CATALOG_NOT_FOUND),  # another project's catalog
+        ("sc-old", pinner.CATALOG_RETIRED),  # retired after the loop started
+        ("sc-gone", pinner.CATALOG_NOT_FOUND),
+    ],
+)
+def test_a_named_pin_never_writes_outside_the_project_or_onto_retired(
+    named: str, reason: str
+) -> None:
+    store = _chain()
+    with pytest.raises(pinner.CatalogPinRefused) as err:
+        pinner.pin_findings(store, "p1", [("f-1", "n")], catalog_id=named)
+    assert err.value.reason == reason
+    assert all(not r["provenance"].get("pins") for r in store.rows.values())
+
+
 # ── loop hosting passes the loop's pin to the pinner ───────────────────────
 
 
@@ -330,3 +348,43 @@ def test_pg_two_active_catalogs_and_a_named_version_pin_there(pg_store) -> None:
     pins = {c: pg_store.get(c)["provenance"].get("pins", []) for c in (v1, v2, other)}
     assert [p["ref"] for p in pins[v2]] == ["f-1"]
     assert pins[v1] == pins[other] == []
+
+
+def test_driver_state_write_cannot_repoint_the_catalog_pin(_api) -> None:
+    """2026-11-24 review: ``catalog_pin`` is server-owned; a driver's
+    ``PUT /state`` cannot repoint it, nor add one to an unpinned loop."""
+    client, loop_api, _store, _pool = _api
+    pinned = _start(client, catalog="sc-b").json()["loop_id"]
+    unpinned = _start(client).json()["loop_id"]
+    foreign = {"catalog_pin": {"catalog_id": "sc-foreign"}, "note": "kept"}
+    for loop_id in (pinned, unpinned):
+        resp = client.put(f"/umrs/loops/{loop_id}/state", json={"metadata": foreign})
+        assert resp.status_code == 200, resp.text
+    assert loop_api.get_loop(pinned).metadata["catalog_pin"]["catalog_id"] == "sc-b"
+    assert loop_api.get_loop(pinned).metadata["note"] == "kept"
+    assert "catalog_pin" not in loop_api.get_loop(unpinned).metadata
+
+
+def test_hosting_logs_a_refused_named_pin_and_does_not_fall_back(caplog) -> None:
+    from umrs.knowledge.loop_hosting import HostingWiring, _pin_real_findings, configure
+
+    store = _chain()
+    configure(
+        HostingWiring(
+            store=lambda: None,
+            engine_factory=lambda: lambda: None,
+            agent_executor=lambda _pid: None,
+            checkpoint_store=lambda: None,
+            finding_sink=lambda: None,
+            catalog_pinner=lambda: lambda pid, pins, cid="": pinner.pin_findings(
+                store, pid, pins, cid
+            ),
+        )
+    )
+    try:
+        loop, it = _loop_with_finding({"catalog_pin": {"catalog_id": "sc-other"}})
+        _pin_real_findings(loop, it)
+    finally:
+        configure(None)
+    assert "finding pin skipped" in caplog.text
+    assert all(not r["provenance"].get("pins") for r in store.rows.values())
