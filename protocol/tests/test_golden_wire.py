@@ -133,8 +133,13 @@ def test_error_code_header() -> None:
 
 
 def test_known_error_codes_superset() -> None:
-    """Codes are append-only: additions pass, a removal or status change fails."""
-    live = errors.known_error_codes()
+    """Codes are append-only: additions pass, a removal or status change fails.
+
+    A retired code (DEC-H10, 2026-11-24) leaves the live catalog but stays
+    decodable until umrs-protocol 1.0, so the golden set is checked against
+    ``decodable_error_codes()`` (live plus ``RETIRED_CODES``).
+    """
+    live = errors.decodable_error_codes()
     missing = sorted(set(ERRS["known_error_codes"]) - set(live))
     changed = {
         code: (status, live[code])
