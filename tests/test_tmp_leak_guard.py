@@ -15,10 +15,13 @@ import subprocess
 import sys
 from pathlib import Path
 
-import umrs
+import umrs.server.slurm_step_executor as _step
 
 TESTS_DIR = Path(__file__).resolve().parent
-SRC_DIR = Path(umrs.__file__).resolve().parents[1]
+# From a real module file: under the r4 parent repo ``umrs`` can resolve
+# as a namespace package (the submodule dir on sys.path), whose __file__
+# is None (r4 CI, 2026-11-24). src/umrs/server/x.py -> src.
+SRC_DIR = Path(_step.__file__).resolve().parents[2]
 
 CHILD = '''
 import tempfile
