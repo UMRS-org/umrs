@@ -82,6 +82,67 @@ def pg_conn(request: pytest.FixtureRequest) -> Any:
         conn.close()
 
 
+# Every other index on knowledge_nodes that a bitmap path could take instead,
+# i.e. all but the constraint-backed ones (the primary key) and 0121's own.
+_COMPETING_INDEXES_SQL = (
+    "SELECT i.indexrelid::regclass::text FROM pg_index i"
+    " WHERE i.indrelid = 'knowledge_nodes'::regclass"
+    " AND i.indexrelid <> to_regclass(%s)"
+    " AND NOT EXISTS (SELECT 1 FROM pg_constraint c WHERE c.conindid = i.indexrelid)"
+)
+
+
+def _leave_only_the_label_index(cur: Any) -> None:
+    """Drop the competing indexes inside the test's (rolled-back) transaction.
+
+    With seqscan and indexscan off the planner still picks among bitmap paths
+    by cost, and the costs follow whatever statistics autovacuum last left on
+    the worker's knowledge_nodes: CI 2026-11-23 (UMRS-org run 45203275970)
+    took idx_node_type plus a filter instead of the label index. A committed
+    ``ANALYZE knowledge_nodes`` on the empty table reproduces it every time.
+    Without the alternatives, the plan names the label index exactly when the
+    lane's statement can use it, whatever the statistics say.
+    """
+    cur.execute(_COMPETING_INDEXES_SQL, (graph_lane.LABEL_INDEX,))
+    for (name,) in cur.fetchall():
+        cur.execute(f"DROP INDEX {name}")
+
+
+def _label_index_conditions(plan: str) -> list[str]:
+    """The ``Index Cond`` lines under each bitmap scan of ``LABEL_INDEX``.
+
+    With the competing indexes gone, the planner can still scan the whole
+    partial index on its ``node_id LIKE`` predicate alone (review 2026-11-24:
+    an index on a different text-search config passed that way). Only an
+    ``Index Cond`` carrying the lane's ``to_tsvector`` match proves the link
+    statement's label match reaches the index.
+    """
+    conditions: list[str] = []
+    scan_indent = None
+    for line in plan.splitlines():
+        indent = len(line) - len(line.lstrip())
+        if f"Bitmap Index Scan on {graph_lane.LABEL_INDEX}" in line:
+            scan_indent = indent
+        elif scan_indent is not None and indent > scan_indent and "Index Cond:" in line:
+            conditions.append(line.strip())
+        elif scan_indent is not None and indent <= scan_indent:
+            scan_indent = None
+    return conditions
+
+
+def test_label_index_conditions_reads_only_the_label_scan() -> None:
+    plan = (
+        f"  ->  Bitmap Index Scan on {graph_lane.LABEL_INDEX}  (cost=0.00..1.00)\n"
+        "        Index Cond: (to_tsvector('english'::regconfig, x) @@ $8)\n"
+        "  ->  Bitmap Index Scan on idx_other  (cost=0.00..1.00)\n"
+        "        Index Cond: (node_type = 'concept'::text)\n"
+        f"  ->  Bitmap Index Scan on {graph_lane.LABEL_INDEX}  (cost=0.00..3986.00)\n"
+    )
+    assert _label_index_conditions(plan) == [
+        "Index Cond: (to_tsvector('english'::regconfig, x) @@ $8)"
+    ]
+
+
 @pytest.mark.integration
 def test_0121_applies_and_the_link_statement_reaches_it(pg_conn: Any) -> None:
     spec = RetrieveSpec(queries=("q",), project_id="g121-it")
@@ -90,9 +151,12 @@ def test_0121_applies_and_the_link_statement_reaches_it(pg_conn: Any) -> None:
         cur.execute(MIGRATION.read_text())
         cur.execute("SELECT to_regclass(%s) IS NOT NULL", (graph_lane.LABEL_INDEX,))
         assert cur.fetchone()[0]
+        _leave_only_the_label_index(cur)
         cur.execute("SET LOCAL enable_seqscan = off")
         cur.execute("SET LOCAL enable_indexscan = off")
         sql = graph_lane._LINK_SQL.format(where=where)
         cur.execute("EXPLAIN " + sql, ["zeolite adsorption", *params, *params, 8])
         plan = "\n".join(row[0] for row in cur.fetchall())
     assert f"Bitmap Index Scan on {graph_lane.LABEL_INDEX}" in plan, plan
+    conditions = _label_index_conditions(plan)
+    assert any("to_tsvector" in condition for condition in conditions), plan

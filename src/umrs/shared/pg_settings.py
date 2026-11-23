@@ -40,6 +40,9 @@ ENV_IDLE_IN_TX_TIMEOUT_MS = "UMRS_PG_IDLE_IN_TX_TIMEOUT_MS"
 
 DEFAULT_APP_NAME_PREFIX = "umrs"
 DEFAULT_IDLE_IN_TX_TIMEOUT_MS = 600_000  # 10 minutes
+# One connection at pool creation (create_pool still fails fast on a bad DSN),
+# more on demand; asyncpg's eager default of 10 is what exhausted CI slots.
+ASYNCPG_POOL_MIN_SIZE = 1
 
 # Postgres NAMEDATALEN is 64 → application_name is silently truncated at 63.
 _APP_NAME_MAX_LEN = 63
@@ -97,7 +100,15 @@ def asyncpg_pool_kwargs(component: str, **overrides: Any) -> dict[str, Any]:
     ``overrides`` are passed through; a caller-supplied ``server_settings``
     dict is merged on top of the hygiene settings (caller wins per key) so
     construction sites that already forward ``**kwargs`` stay compatible.
+
+    ``min_size`` defaults to :data:`ASYNCPG_POOL_MIN_SIZE` (caller wins).
+    asyncpg's own default is 10, opened eagerly by ``create_pool``: every
+    pool (graph view, knowledge adapters, a2l recorder, …) pinned ten idle
+    backends from birth, and four test workers' pools ran the CI Postgres
+    out of its 100 slots (UMRS-org run 45171800447, 2026-11-23). The pool
+    still grows on demand up to ``max_size`` (default 10) and drops idle
+    connections back to ``min_size``.
     """
     settings = asyncpg_server_settings(component)
     settings.update(overrides.pop("server_settings", None) or {})
-    return {**overrides, "server_settings": settings}
+    return {"min_size": ASYNCPG_POOL_MIN_SIZE, **overrides, "server_settings": settings}
