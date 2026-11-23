@@ -36,9 +36,8 @@ from umrs.knowledge.graph_registry import (
     GraphRegistryStore,
     graph_id_is_default,
 )
-from umrs.shared.access_scopes import access_admits
 
-from ._access import checked_access, resource_caller
+from ._access import checked_access, graph_access_admits, resource_caller
 from ._access import graph_read_allowed as _graph_read_allowed
 from ._knowledge_mutation_guard import (
     AGENT_ACTOR,
@@ -63,18 +62,19 @@ def _registry(request: Request) -> GraphRegistryStore:
     return GraphRegistryStore(pool)
 
 
-def _shared_read_admits(
-    request: Request, stored_access: Any, scope: CallerScope
-) -> bool:
+def _shared_read_admits(request: Request, graph: Any, scope: CallerScope) -> bool:
     """ADR-080: does the row's access list admit this caller (beyond the tier
-    ladder)? Group membership resolves lazily against the request pool."""
+    ladder)? Circle membership resolves lazily against the request pool; a
+    circle of the graph's own project admits only a project insider (KN-S4b)."""
     caller = resource_caller(
         request,
         user_id=scope.user_id,
         project_id=scope.project_id,
         is_admin=scope.is_admin,
     )
-    return access_admits(stored_access, caller)
+    return graph_access_admits(
+        request, project_id=graph.project_id, stored_access=graph.access, caller=caller
+    )
 
 
 def _stored_project(
@@ -191,7 +191,7 @@ def _shared_visible_graphs(
     for shared in registry.list_shared_graphs(status=status):
         if shared.graph_id in seen:
             continue
-        if _shared_read_admits(request, shared.access, scope):
+        if _shared_read_admits(request, shared, scope):
             out.append(shared)
             seen.add(shared.graph_id)
     return out

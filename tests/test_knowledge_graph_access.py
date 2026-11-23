@@ -101,7 +101,12 @@ class TestSharedGraphReads:
         resp = client.get("/umrs/knowledge/graphs/g-abc", headers=_headers("heidi", "proj-b"))
         assert resp.status_code == 404
 
-    def test_circle_scope_via_active_membership(self):
+    def test_circle_scope_via_active_membership(self, monkeypatch):
+        from umrs.api import _access
+
+        # KN-S4b (2026-11-24): a circle of the graph's own project admits a
+        # live project member only (tests/test_knowledge_graph_circle_read_gate.py)
+        monkeypatch.setattr(_access, "_live_member", lambda _r, user, _pid: user == "carol")
         shared = _graph_row(access=["circle:proj-a/lab"])
         # resolve; then the lazy circles lookup admits; then the ontology block
         client, pool = _client([shared, [("proj-a/lab",)], []])
