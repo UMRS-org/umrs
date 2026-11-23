@@ -1,0 +1,42 @@
+# gitleaks configuration for .github/workflows/security.yml (ADR-117 §7.2, U4).
+#
+# The default rule set, plus an allowlist for the false positives the first
+# HEAD-tree scan found (2026-11-24: 11 findings, all triaged below). Add an
+# entry only for a triaged line, with its reason.
+#
+# History is out of scope on purpose: the known SEC-MU7 history (credentials
+# committed before the repository went public) fails a full-history scan
+# until the P4 scrub; the workflow scans the HEAD tree and PR commits only.
+
+[extend]
+useDefault = true
+
+# One global allowlist matched against the whole LINE (regexTarget = "line"),
+# so each entry covers one triaged line shape and nothing else: a real
+# credential, even in the same file, does not have these shapes and still
+# fails the scan. ("[[allowlists]]" with targetRules needs a newer gitleaks;
+# this form reads the same on the pinned 8.30.1 and on older local binaries.)
+[allowlist]
+description = "triaged false positives, first HEAD-tree scan 2026-11-24"
+regexTarget = "line"
+regexes = [
+  # Test fixtures: readable HMAC secrets such as SECRET = "c2-llm-body-secret"
+  # (test_c2_llm_bad_body, test_h10b_followups, test_h1r_skills_grants_identity,
+  # test_k1_contributions_pg).
+  '''^\s*_?SECRET = "[a-z0-9]+(-[a-z0-9]+)*-secret"\s*$''',
+  # test_workflow_plans: the KEY_1 / KEY_2 plan keys.
+  '''^\s*KEY_[12] = "plan-key-(one|two)-0123456789"\s*$''',
+  # test_k1b_review: a redaction sample the reviewer must flag.
+  '''^\s*\("\{'api_key': 'a1b2c3d4e5f6g7h8'\}", "api_key"\),\s*$''',
+  # test_seal: an attribute comparison, no value at all.
+  '''^\s*assert blob1\.seal_key_id == blob2\.seal_key_id\s*$''',
+  # test_intake_gate: a PEM header with the body "XYZ", fed to the intake gate
+  # to prove it refuses private keys. The private-key rule matches lazily up to
+  # the next "KEY-----" (a second fixture, line 119), so the finding spans many
+  # lines: (?m) anchors this entry to its first line, the fixture itself.
+  '''(?m)^\s*dec = gate\.inspect\(_doc\("id\.pem", "-----BEGIN PRIVATE KEY-----\\nXYZ"\)\)\s*$''',
+  # deploy/*/pool-*.yaml: a Hugging Face model name under VLLM_TOKENIZER; the
+  # generic rule reads "TOKEN" in the key as a credential name. The exact name,
+  # not a character class: a token pasted under that key must still fire.
+  '''^\s*VLLM_TOKENIZER:\s*"Qwen3\.6-35B-A3B-NVFP4"\s*$''',
+]

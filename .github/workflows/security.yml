@@ -1,0 +1,140 @@
+# UMRS security scans on GitHub-hosted runners (ADR-117 §7.2, U4).
+#
+# Three independent jobs, weekly and on every PR:
+#   pip-audit    known advisories against the committed lock (src/uv.lock)
+#   secret-scan  gitleaks on the HEAD tree, plus a PR's own commits
+#   codeql       CodeQL for Python (free on a public repository)
+#
+# Same rules as ci.yml: the repository is public and runs fork code, so there
+# is no secret and no self-hosted runner. Permissions are read-only except
+# `security-events: write` on the CodeQL job, which uploads its results.
+#
+# Not a required check: ci.yml's `ci-success` does not wait for these jobs,
+# and nothing here is named ci-success. Whether a security job becomes required
+# is a branch-protection decision for the repository owner.
+#
+# Secret-scan scope: never the full history. The SEC-MU7 history (credentials
+# committed before the repository went public, rotated) fails a full-history
+# scan until the P4 scrub, so the scan reads the HEAD tree and, on a PR, only
+# the commits the PR adds. Triaged false positives: .gitleaks.toml.
+#
+# The r4 repository's security-weekly keeps scanning its own tree; the umrs
+# half moves here (U6 tail, plan §7.2).
+name: UMRS Security
+
+on:
+  pull_request:
+  push:
+    branches: [main]   # CodeQL needs main's results to compare PRs against
+  schedule:
+    - cron: '41 4 * * 1'   # Mondays 04:41 UTC: new advisories against an unchanged lock
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: umrs-security-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  pip-audit:
+    name: pip-audit (src/uv.lock)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install uv and pip-audit (pinned)
+        run: pip install uv==0.9.5 pip-audit==2.9.0
+      # The lock, not an installed environment: every extra, with hashes, and
+      # without the first-party local packages (umrs-protocol is not on an
+      # index). --frozen reads the lock as committed and never re-resolves.
+      - name: Export the lock to hashed requirements
+        run: |
+          uv export --project src --frozen --all-extras --no-emit-project --no-emit-local \
+            --format requirements-txt -o "$RUNNER_TEMP/umrs-lock.txt"
+          grep -c '==' "$RUNNER_TEMP/umrs-lock.txt"
+      # A finding fails the job. Accepted advisories go below, each with its
+      # reason; first triage 2026-11-24 (OSV, the lock at umrs a4ca841a).
+      #   No fix released (accepted, exposure reviewed):
+      #     GHSA-3qf3-8w2g-rqmx python-jose: algorithm confusion via DER public
+      #       keys. umrs pins the algorithm per path (RS256 only for a JWKS kid,
+      #       HS256 with the shared secret otherwise, shared/auth.py), and no
+      #       JWKS issuer is connected. Follow-up: move to PyJWT.
+      #     GHSA-wj6h-64fc-37mp ecdsa: Minerva timing on P-256 signing; umrs
+      #       never signs with ecdsa (python-jose's transitive dependency).
+      #     GHSA-w8v5-vhqr-4h9v diskcache: unsafe pickle; the cache directory
+      #       is the process's own, never user-supplied.
+      #   Fixed upstream, pending the next lock refresh (deps lane):
+      #     GHSA-3fx2-cqw9-xr3c langgraph 1.2.14 / langgraph-sdk 0.4.6
+      #     GHSA-54p9-h82j-f925 multidict 6.9.1
+      #     GHSA-mf5v-w3w3-f6cg, GHSA-xcq7-p3pf-p88h opentelemetry-api 1.45.2
+      #     GHSA-h35f-9h28-mq5c, GHSA-xmj3-9gf7-h52w setuptools 84.1.0
+      #     GHSA-5cjw-f85j-cv6r, GHSA-pcg2-g6cj-q92c, GHSA-pw9p-v7r6-gx4p,
+      #       GHSA-r4j5-9xpp-3985 tornado 6.6.1
+      - name: Audit
+        run: |
+          accepted=(
+            GHSA-3qf3-8w2g-rqmx GHSA-wj6h-64fc-37mp GHSA-w8v5-vhqr-4h9v
+            GHSA-3fx2-cqw9-xr3c GHSA-54p9-h82j-f925
+            GHSA-mf5v-w3w3-f6cg GHSA-xcq7-p3pf-p88h
+            GHSA-h35f-9h28-mq5c GHSA-xmj3-9gf7-h52w
+            GHSA-5cjw-f85j-cv6r GHSA-pcg2-g6cj-q92c GHSA-pw9p-v7r6-gx4p GHSA-r4j5-9xpp-3985
+          )
+          ignore=()
+          for id in "${accepted[@]}"; do ignore+=(--ignore-vuln "$id"); done
+          pip-audit -r "$RUNNER_TEMP/umrs-lock.txt" --require-hashes --disable-pip \
+            --vulnerability-service osv --progress-spinner off --desc on "${ignore[@]}"
+
+  secret-scan:
+    name: Secret scan (HEAD tree, PR commits)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GITLEAKS_VERSION: "8.30.1"
+      GITLEAKS_SHA256: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # A PR scan reads the range base..head, so it needs both commits.
+          fetch-depth: ${{ github.event_name == 'pull_request' && '0' || '1' }}
+      - name: Install gitleaks (pinned, checksum-verified)
+        run: |
+          tgz="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -fsSL -o "$RUNNER_TEMP/$tgz" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${tgz}"
+          echo "${GITLEAKS_SHA256}  $RUNNER_TEMP/$tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/$tgz" -C "$RUNNER_TEMP" gitleaks
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+      # The files as they are at this commit (for a PR, the merge result).
+      # --redact keeps any finding's value out of the public log.
+      - name: Scan the HEAD tree
+        run: gitleaks dir . --config .gitleaks.toml --redact --no-banner
+      # A PR's own commits: a secret added in one commit and removed in a
+      # later one is gone from the tree but still published by the merge.
+      - name: Scan the PR's commits
+        if: github.event_name == 'pull_request'
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: gitleaks git . --log-opts="--no-merges ${BASE}..${HEAD}" --config .gitleaks.toml --redact --no-banner
+
+  codeql:
+    name: CodeQL (Python)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      security-events: write   # the results upload, this job only
+    steps:
+      - uses: actions/checkout@v5
+      - uses: github/codeql-action/init@v4
+        with:
+          languages: python
+          build-mode: none
+      - uses: github/codeql-action/analyze@v4
+        with:
+          category: /language:python
