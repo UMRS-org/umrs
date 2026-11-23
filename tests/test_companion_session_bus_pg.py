@@ -37,6 +37,7 @@ _SCHEMA = (
     "0079_companion_trust_session_cascade.sql",
     "0080_companion_session_snapshots.sql",
     "0084_companion_session_registry.sql",
+    "0142_sh_j1_companion_snapshot_revision.sql",
 )
 
 pytestmark = pytest.mark.skipif(_db_url() is None, reason="no CI-shape Postgres")

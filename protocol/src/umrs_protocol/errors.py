@@ -324,6 +324,8 @@ COMPANIONSESSIONS_ERRORS = {
     "companionsessions.replay_conflict": 409,
     "companionsessions.invalid_reply": 400,
     "companionsessions.inbox_full": 409,
+    # ADR-057 D-7 (SH-J1): a snapshot write whose base_revision is stale.
+    "companionsessions.revision_conflict": 409,
 }
 
 # Remote-session (frontend venue) runtime routes — start/status/stop for the

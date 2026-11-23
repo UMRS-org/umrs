@@ -94,13 +94,15 @@ class _Cursor:
         self.rows = []
         self.rowcount = 0
         if normalized.startswith("select s.session_id, s.name, s.payload"):
-            self._detail(tuple(params))
+            self._detail(tuple(params), with_revision="s.revision" in normalized)
         elif normalized.startswith("select venue, state, lease_id from companion_venue_sessions"):
             self._venue(tuple(params))
         elif normalized.startswith("select s.name, s.payload, s.venue, s.state"):
             self._bus_lock(tuple(params))
         elif normalized.startswith("select payload from companion_session_snapshots"):
             self._payload(normalized, tuple(params))
+        elif normalized.startswith("select payload, revision from companion_session_snapshots"):
+            self._lock(tuple(params))
         elif normalized.startswith("insert into companion_session_snapshots"):
             self._insert(tuple(params))
         elif normalized.startswith("update companion_session_snapshots"):
@@ -110,11 +112,12 @@ class _Cursor:
         else:
             raise AssertionError(f"unexpected SQL: {normalized[:120]}")
 
-    def _detail(self, params: tuple[Any, ...]) -> None:
+    def _detail(self, params: tuple[Any, ...], *, with_revision: bool) -> None:
+        # snapshot_detail_row reads s.revision (SH-J1); the child detail does not.
         uid, sid = params
         row = self.pool.table.get((uid, sid))
         if row is not None:
-            self.row = (
+            detail = (
                 sid,
                 row["name"],
                 row["payload"],
@@ -123,6 +126,7 @@ class _Cursor:
                 row["state"],
                 None,
             )
+            self.row = (*detail, row.get("revision", 0)) if with_revision else detail
 
     def _venue(self, params: tuple[Any, ...]) -> None:
         uid, sid = params
@@ -142,20 +146,29 @@ class _Cursor:
         if row is not None:
             self.row = (row["payload"],)
 
+    def _lock(self, params: tuple[Any, ...]) -> None:
+        """The upsert's row lock: SELECT payload, revision ... FOR UPDATE."""
+        row = self.pool.table.get(params)
+        if row is not None:
+            self.row = (row["payload"], row.get("revision", 0))
+
     def _insert(self, params: tuple[Any, ...]) -> None:
         uid, sid, name, payload, marker, venue, state = params
         existing = self.pool.table.get((uid, sid))
         if existing is not None and existing["update_marker"] > marker:
             self.rowcount = 0
             return
+        revision = (existing or {}).get("revision", 0) + 1
         self.pool.table[(uid, sid)] = {
             "name": name,
             "payload": payload,
             "update_marker": marker,
             "venue": venue,
             "state": state,
+            "revision": revision,
         }
         self.rowcount = 1
+        self.row = (revision,)  # RETURNING revision
 
     def _update(self, params: tuple[Any, ...]) -> None:
         if len(params) == 3:
@@ -187,7 +200,17 @@ class _Cursor:
                 continue
             if "agent_id = %s" in sql and metadata.get("agent_id") != params[1]:
                 continue
-            rows.append((sid, row["name"], row["update_marker"], row["venue"], row["state"], None))
+            rows.append(
+                (
+                    sid,
+                    row["name"],
+                    row["update_marker"],
+                    row["venue"],
+                    row["state"],
+                    None,
+                    row.get("revision", 0),
+                )
+            )
         rows.sort(key=lambda row: row[2], reverse=True)
         self.rows = rows[:limit]
 

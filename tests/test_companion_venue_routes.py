@@ -68,6 +68,7 @@ class _Cursor:
         ("select s.session_id, s.name, s.payload, s.venue, s.state", "_bus_list"),
         ("select s.session_id, s.name, s.payload", "_detail"),
         ("select payload from companion_session_snapshots", "_payload"),
+        ("select payload, revision from companion_session_snapshots", "_lock"),
         ("update companion_session_snapshots set venue", "_set_venue"),
         ("update companion_session_snapshots set payload", "_set_payload"),
         ("insert into companion_session_snapshots", "_insert"),
@@ -123,12 +124,18 @@ class _Cursor:
             row["venue"],
             row["state"],
             None,
+            row.get("revision", 0),
         )
 
     def _payload(self, params):
         uid, sid = params
         row = self._table.get((uid, sid))
         self._row = (row["payload"],) if row else None
+
+    def _lock(self, params):
+        """The upsert's row lock: SELECT payload, revision ... FOR UPDATE."""
+        row = self._table.get(tuple(params))
+        self._row = (row["payload"], row.get("revision", 0)) if row else None
 
     def _set_venue(self, params):
         venue, state, uid, sid = params
@@ -149,6 +156,7 @@ class _Cursor:
         existing = self._table.get((uid, sid)) or {}
         if existing and existing["marker"] > marker:
             self.rowcount = 0
+            self._row = None
             return
         self._table[(uid, sid)] = {
             "name": name,
@@ -156,8 +164,10 @@ class _Cursor:
             "marker": marker,
             "venue": venue or existing.get("venue", "local"),
             "state": state or existing.get("state", ""),
+            "revision": existing.get("revision", 0) + 1,
         }
         self.rowcount = 1
+        self._row = (self._table[(uid, sid)]["revision"],)  # RETURNING revision
 
     def fetchone(self):
         return self._row

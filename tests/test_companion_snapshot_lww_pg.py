@@ -47,7 +47,11 @@ def conn():
 
     connection = psycopg2.connect(_db_url())
     with connection.cursor() as cur:
-        for name in ("0080_companion_session_snapshots.sql", "0084_companion_session_registry.sql"):
+        for name in (
+            "0080_companion_session_snapshots.sql",
+            "0084_companion_session_registry.sql",
+            "0142_sh_j1_companion_snapshot_revision.sql",
+        ):
             cur.execute((_MIGRATIONS / name).read_text())
         cur.execute("DELETE FROM companion_session_snapshots WHERE user_id = %s", (_USER,))
     connection.commit()

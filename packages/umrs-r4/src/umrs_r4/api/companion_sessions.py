@@ -18,7 +18,7 @@ import re
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from umrs.api.typed_errors import PlatformError, raise_typed
 
@@ -121,6 +121,9 @@ class SessionSnapshotBody(BaseModel):
     payload: str = Field(default="")
     venue: str = Field(default="")  # '' = absent; clients declare at PUT.
     state: str = Field(default="")
+    # ADR-057 D-7: the revision this write was based on. Set → compare-and-
+    # swap (typed 409 when stale); absent → legacy marker LWW (deprecated).
+    base_revision: int | None = Field(default=None, ge=0)
 
 
 # ── Auth + pool helpers ────────────────────────────────────────────────────
@@ -183,7 +186,7 @@ def snapshot_detail_row(conn: Any, uid: str, session_id: str) -> dict[str, Any] 
         cur.execute(
             """
             SELECT s.session_id, s.name, s.payload, s.update_marker,
-                   s.venue, s.state, a.archived_at
+                   s.venue, s.state, a.archived_at, s.revision
             FROM companion_session_snapshots s
             LEFT JOIN companion_session_archives a
                 ON a.session_id = s.session_id
@@ -194,7 +197,7 @@ def snapshot_detail_row(conn: Any, uid: str, session_id: str) -> dict[str, Any] 
         row = cur.fetchone()
     if row is None:
         return None
-    sid, name, payload, updated, venue, state, archived_at = row
+    sid, name, payload, updated, venue, state, archived_at, revision = row
     return {
         "session_id": sid,
         "name": name,
@@ -203,6 +206,7 @@ def snapshot_detail_row(conn: Any, uid: str, session_id: str) -> dict[str, Any] 
         "venue": venue,
         "state": "archived" if archived_at else state,
         "archived_at": str(archived_at) if archived_at else "",
+        "revision": int(revision),
     }
 
 
@@ -234,51 +238,171 @@ def upsert_snapshot_row(
     updated_at: str,
     venue: str,
     state: str,
+    base_revision: int | None = None,
 ) -> bool:
-    """LWW upsert of one ordinary mirrored snapshot (never a forged child)."""
-    if subagent_payload_kind(payload) == "subagent":
+    """Write one ordinary mirrored snapshot; True when it applied.
+
+    Thin bool form of :func:`write_snapshot_row` for callers that do not
+    need the revision.
+    """
+    body = SessionSnapshotBody(
+        name=name,
+        payload=payload,
+        updated_at=updated_at,
+        venue=venue,
+        state=state,
+        base_revision=base_revision,
+    )
+    return bool(write_snapshot_row(conn, uid, session_id, body)["applied"])
+
+
+def write_snapshot_row(
+    conn: Any, uid: str, session_id: str, body: SessionSnapshotBody
+) -> dict[str, Any]:
+    """Write one ordinary mirrored snapshot (never a forged child).
+
+    ADR-057 D-7: with ``base_revision`` the write is a compare-and-swap on the
+    row's ``revision`` (typed 409 ``companionsessions.revision_conflict`` when
+    stale); without it the legacy ``update_marker`` LWW decides (deprecated,
+    supported). Every applied write bumps ``revision``. Answers
+    ``{"applied", "revision"}``; ``revision`` is the row's after the call.
+    """
+    if subagent_payload_kind(body.payload) == "subagent":
         raise_typed(
             PlatformError.companionvenue(
                 "conflict", "subagent snapshots require the bound venue rail"
             )
         )
-    venue = _validate_venue(venue) if venue else ""
-    state = _validate_stored_state(state)
+    venue = _validate_venue(body.venue) if body.venue else ""
+    state = _validate_stored_state(body.state)
+    base = body.base_revision
     with conn.cursor() as cur:
-        # Lock the row and keep its server-owned queue (see _with_server_queue);
-        # queue_mutate_row takes the same lock, so neither write loses the other.
-        cur.execute(
-            """
-            SELECT payload FROM companion_session_snapshots
-            WHERE user_id = %s AND session_id = %s
-            FOR UPDATE
-            """,
-            (uid, session_id),
-        )
-        stored = cur.fetchone()
-        if stored is not None and subagent_payload_kind(stored[0]) == "subagent":
-            conn.rollback()
-            raise_typed(
-                PlatformError.companionvenue(
-                    "conflict", "ordinary snapshots cannot replace a bound subagent"
-                )
-            )
+        stored = _lock_snapshot(conn, cur, uid, session_id)
+        current = int(stored[1]) if stored is not None else 0
+        _refuse_stale_base(conn, base, current, body.payload)
+        payload = body.payload
         if stored is not None:
             payload = _with_server_queue(payload, stored[0])
-        cur.execute(
-            _UPSERT_SNAPSHOT_SQL,
-            (uid, session_id, name, payload, updated_at, venue, state),
-        )
-        applied = cur.rowcount > 0
+        params = (uid, session_id, body.name, payload, body.updated_at, venue, state)
+        written = _execute_write(conn, cur, params, base)
         conn.commit()
-    return applied
+    applied = written is not None
+    _observe_snapshot_write(payload, base, "applied" if applied else "stale")
+    return {"applied": applied, "revision": int(written[0]) if applied else current}
 
 
-_UPSERT_SNAPSHOT_SQL = """
+def _execute_write(conn: Any, cur: Any, params: tuple[Any, ...], base: int | None) -> Any:
+    """Run the legacy LWW or the CAS upsert; the written row's ``(revision,)``."""
+    if base is None:
+        cur.execute(_UPSERT_SNAPSHOT_SQL, params)
+    else:
+        cur.execute(_CAS_UPSERT_SNAPSHOT_SQL, (*params, base))
+    written = cur.fetchone() if cur.rowcount > 0 else None
+    if written is None and base is not None:
+        # Lost the insert race of two first writes: the other one holds it.
+        conn.rollback()
+        uid, session_id, payload = params[0], params[1], params[3]
+        _refuse_stale_base(conn, base, _row_revision(cur, uid, session_id), payload)
+    return written
+
+
+def _lock_snapshot(conn: Any, cur: Any, uid: str, session_id: str) -> Any:
+    """Lock the row; refuse an ordinary write over a bound subagent child.
+
+    The lock keeps the row's server-owned queue (see _with_server_queue) and
+    its revision still: queue_mutate_row takes the same lock, so neither
+    write loses the other, and the CAS compares against a revision nobody
+    else moves meanwhile.
+    """
+    cur.execute(
+        """
+        SELECT payload, revision FROM companion_session_snapshots
+        WHERE user_id = %s AND session_id = %s
+        FOR UPDATE
+        """,
+        (uid, session_id),
+    )
+    stored = cur.fetchone()
+    if stored is not None and subagent_payload_kind(stored[0]) == "subagent":
+        conn.rollback()
+        raise_typed(
+            PlatformError.companionvenue(
+                "conflict", "ordinary snapshots cannot replace a bound subagent"
+            )
+        )
+    return stored
+
+
+def _row_revision(cur: Any, uid: str, session_id: str) -> int:
+    cur.execute(
+        "SELECT revision FROM companion_session_snapshots"
+        " WHERE user_id = %s AND session_id = %s",
+        (uid, session_id),
+    )
+    row = cur.fetchone()
+    return int(row[0]) if row is not None else 0
+
+
+# The current revision of a refused CAS write (ADR-057 D-7).
+REVISION_HEADER = "x-companion-session-revision"
+
+
+def _refuse_stale_base(conn: Any, base: int | None, current: int, payload: str) -> None:
+    """Typed 409 when a CAS write's base is not the stored revision.
+
+    The current revision rides ``x-companion-session-revision`` next to the
+    typed code header (the body stays a plain message, like every typed
+    error), so the client fetches that revision and keeps its own write as a
+    conflict copy.
+    """
+    if base is None or base == current:
+        return
+    conn.rollback()
+    _observe_snapshot_write(payload, base, "conflict")
+    error = PlatformError.companionsessions(
+        "revision_conflict",
+        f"revision conflict: base_revision {base}, current revision {current}",
+        base_revision=base,
+        current_revision=current,
+    )
+    parts = error.to_http_parts()
+    parts["headers"] = {**parts["headers"], REVISION_HEADER: str(current)}
+    raise HTTPException(**parts)
+
+
+# Payload-size metric (SH-D1): whole-blob PUTs stay until this shows they cost
+# too much; then a per-turn append journal is worth building. Labels are
+# low-cardinality constants (mode: cas|legacy, outcome: applied|stale|conflict).
+def _payload_histogram() -> Any:
+    try:
+        from prometheus_client import Histogram
+    except ImportError:  # pragma: no cover - metrics are optional
+        return None
+    return Histogram(
+        "umrs_companion_snapshot_payload_bytes",
+        "Companion session snapshot PUT payload size (whole-blob journal writes)",
+        ["mode", "outcome"],
+        buckets=(1e3, 1e4, 1e5, 2.5e5, 5e5, 1e6, 2.5e6, 5e6, 1e7),
+    )
+
+
+_PAYLOAD_BYTES = _payload_histogram()
+
+
+def _observe_snapshot_write(payload: str, base: int | None, outcome: str) -> None:
+    if _PAYLOAD_BYTES is None:
+        return
+    mode = "legacy" if base is None else "cas"
+    _PAYLOAD_BYTES.labels(mode=mode, outcome=outcome).observe(len(payload.encode("utf-8")))
+
+
+# One column list: the legacy LWW and the CAS write differ only in WHERE.
+_UPSERT_SNAPSHOT_HEAD = """
                 INSERT INTO companion_session_snapshots
-                    (user_id, session_id, name, payload, update_marker, venue, state)
+                    (user_id, session_id, name, payload, update_marker, venue, state,
+                     revision)
                 VALUES (%s, %s, %s, %s, %s,
-                        COALESCE(NULLIF(%s, ''), 'local'), %s)
+                        COALESCE(NULLIF(%s, ''), 'local'), %s, 1)
                 ON CONFLICT (user_id, session_id) DO UPDATE SET
                     name = EXCLUDED.name,
                     payload = EXCLUDED.payload,
@@ -291,7 +415,22 @@ _UPSERT_SNAPSHOT_SQL = """
                         WHEN EXCLUDED.state <> '' THEN EXCLUDED.state
                         ELSE companion_session_snapshots.state
                     END,
+                    revision = companion_session_snapshots.revision + 1,
                     updated_at = now()
+"""
+
+_CAS_UPSERT_SNAPSHOT_SQL = (
+    _UPSERT_SNAPSHOT_HEAD
+    + """
+                -- ADR-057 D-7: the stored revision decides; markers are display-only.
+                WHERE companion_session_snapshots.revision = %s
+                RETURNING revision
+                """
+)
+
+_UPSERT_SNAPSHOT_SQL = (
+    _UPSERT_SNAPSHOT_HEAD
+    + """
                 -- F3 audit fix: comparing raw strings mixed naive-vs-tz-aware writer classes;
                 -- timestamptz normalizes both (epoch fallback for empty/unparseable rows).
                 -- A naive marker reads as UTC, but clients wrote naive LOCAL time until
@@ -319,7 +458,9 @@ _UPSERT_SNAPSHOT_SQL = """
                     NULLIF(trim(EXCLUDED.update_marker), '')::timestamptz,
                     'epoch'::timestamptz
                 )
+                RETURNING revision
                 """
+)
 
 
 # ── Routes ─────────────────────────────────────────────────────────────────
@@ -329,7 +470,11 @@ _UPSERT_SNAPSHOT_SQL = """
 async def put_session_snapshot(
     session_id: str, body: SessionSnapshotBody, request: Request
 ) -> dict[str, Any]:
-    """Mirror one client session state. Newer updates supersede older ones.
+    """Mirror one client session state (ADR-057 D-7 revision CAS).
+
+    With ``base_revision``: applies only on the stored revision, else typed
+    409 ``companionsessions.revision_conflict``. Without it: newer markers
+    supersede older ones (legacy LWW). Answers the row's ``revision``.
     # auth: verified
     """
     uid = _uid(request)
@@ -338,19 +483,10 @@ async def put_session_snapshot(
     # means absent, not 'local'. Local clients always declare 'local'.
     conn = pool.getconn()
     try:
-        applied = upsert_snapshot_row(
-            conn,
-            uid,
-            session_id,
-            name=body.name,
-            payload=body.payload,
-            updated_at=body.updated_at,
-            venue=body.venue or "",
-            state=body.state,
-        )
+        written = write_snapshot_row(conn, uid, session_id, body)
     finally:
         pool.putconn(conn)
-    return {"status": "ok", "applied": applied}
+    return {"status": "ok", **written}
 
 
 # ── Turn accessor (ADR-057 D-2) ────────────────────────────────────────────
@@ -798,7 +934,7 @@ async def get_session_snapshot(session_id: str, request: Request) -> dict[str, A
             cur.execute(
                 """
                 SELECT s.session_id, s.name, s.payload, s.update_marker,
-                       s.venue, s.state, a.archived_at
+                       s.venue, s.state, a.archived_at, s.revision
                 FROM companion_session_snapshots s
                 LEFT JOIN companion_session_archives a
                     ON a.session_id = s.session_id
@@ -811,7 +947,7 @@ async def get_session_snapshot(session_id: str, request: Request) -> dict[str, A
         pool.putconn(conn)
     if row is None:
         raise_typed(PlatformError.companionsessions("not_found", "snapshot not found"))
-    sid, name, payload, updated, venue, state, archived_at = row
+    sid, name, payload, updated, venue, state, archived_at, revision = row
     payload = without_subagent_event_log(payload)
     return {
         "session_id": sid,
@@ -821,6 +957,7 @@ async def get_session_snapshot(session_id: str, request: Request) -> dict[str, A
         "venue": venue,
         "state": "archived" if archived_at else state,
         "archived_at": str(archived_at) if archived_at else "",
+        "revision": int(revision),
     }
 
 
@@ -1001,10 +1138,13 @@ async def list_session_snapshots(
         parent_session_id,
         agent_id,
     )
+    # A literal % in a parameterised query is %%: psycopg2 read '{%' as a
+    # placeholder, so on Postgres every listing raised IndexError from
+    # 2026-11-10 (6aad2005) to 2026-11-24 (SH-J1); the fakes never formatted.
     project_clause = ""
     if project:
         project_clause = (
-            " AND payload LIKE '{%'"
+            " AND payload LIKE '{%%'"
             " AND COALESCE(payload::jsonb -> 'metadata' -> 'config' ->> 'project_id',"
             "             payload::jsonb -> 'metadata' ->> 'project_id') = %s"
         )
@@ -1016,14 +1156,15 @@ async def list_session_snapshots(
             cur.execute(
                 f"""
                 SELECT session_id, name, update_marker, venue, computed_state,
-                       archived_at
+                       archived_at, revision
                 FROM (
                     SELECT s.session_id, s.name, s.update_marker, s.venue, s.state,
+                           s.revision,
                            s.payload, a.archived_at,
                            CASE WHEN a.session_id IS NOT NULL THEN 'archived'
                                 ELSE s.state END AS computed_state,
                            CASE
-                               WHEN s.payload LIKE '{{%'
+                               WHEN s.payload LIKE '{{%%'
                                     AND jsonb_typeof(s.payload::jsonb -> 'metadata') = 'object'
                                THEN COALESCE(
                                    s.payload::jsonb -> 'metadata' ->> 'session_kind',
@@ -1056,8 +1197,9 @@ async def list_session_snapshots(
             "venue": venue_value,
             "state": computed_state,
             "archived_at": str(archived_at) if archived_at else "",
+            "revision": int(revision),
         }
-        for sid, name, upd, venue_value, computed_state, archived_at in rows
+        for sid, name, upd, venue_value, computed_state, archived_at, revision in rows
     ]
     snapshots = _with_child_summaries(snapshots, child_summaries)
     return {"snapshots": snapshots, "count": len(snapshots)}

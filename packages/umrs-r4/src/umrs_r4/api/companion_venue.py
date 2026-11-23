@@ -70,7 +70,7 @@ from umrs_r4.api.companion_sessions import (
     _pool,
     _uid,
     snapshot_detail_row,
-    upsert_snapshot_row,
+    write_snapshot_row,
 )
 from umrs_r4.venues.frontend_service import FrontendVenueService, VenueError
 
@@ -421,25 +421,25 @@ async def rail_put_snapshot(
     request: Request,
     principal: RailPrincipal = Depends(rail_principal),
 ) -> dict[str, Any]:
-    """Worker mirror (LWW). Venue is pinned to ``frontend`` — never body-chosen.
+    """Worker mirror. Venue is pinned to ``frontend`` — never body-chosen.
+
+    Same write as the owner route (ADR-057 D-7): ``base_revision`` makes it
+    a compare-and-swap (typed 409 ``companionsessions.revision_conflict``
+    when stale); without it the legacy marker LWW decides.
     # auth: lease-token
     """
     pool = _pool(request)
     conn = pool.getconn()
     try:
-        applied = upsert_snapshot_row(
+        written = write_snapshot_row(
             conn,
             principal.owner,
             session_id,
-            name=body.name,
-            payload=body.payload,
-            updated_at=body.updated_at,
-            venue="frontend",
-            state=body.state,
+            body.model_copy(update={"venue": "frontend"}),
         )
     finally:
         pool.putconn(conn)
-    return {"status": "ok", "applied": applied}
+    return {"status": "ok", **written}
 
 
 @router.put(

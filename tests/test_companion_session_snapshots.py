@@ -89,10 +89,11 @@ class _FakeCursor:
 
     # -- insert (upsert) ----------------------------------------------------
     def _exec_insert(self, params):
-        uid, sid, name, payload, marker, venue, state = params
+        # Legacy LWW (7 params); the SH-J1 CAS write appends base_revision.
+        uid, sid, name, payload, marker, venue, state = params[:7]
         venue = venue or "local"
         existing = self._table.get((uid, sid))
-        if existing is None or existing["update_marker"] <= marker:
+        if self._insert_wins(existing, marker, params[7:]):
             previous = existing or {}
             self._table[(uid, sid)] = {
                 "name": name,
@@ -100,16 +101,32 @@ class _FakeCursor:
                 "update_marker": marker,
                 "venue": venue if venue else previous.get("venue", "local"),
                 "state": state if state else previous.get("state", ""),
+                "revision": previous.get("revision", 0) + 1,
             }
             self.rowcount = 1
+            self._row = (self._table[(uid, sid)]["revision"],)  # RETURNING revision
         else:
             self.rowcount = 0
+            self._row = None
+
+    @staticmethod
+    def _insert_wins(existing, marker, base) -> bool:
+        if existing is None:
+            return True
+        if base:
+            return existing.get("revision", 0) == base[0]
+        return existing["update_marker"] <= marker
 
     # -- detail select ------------------------------------------------------
     def _exec_get_payload(self, params, *, owner_first: bool = False):
         uid, sid = params if owner_first else params[::-1]
         row = self._table.get((uid, sid))
         self._row = (row["payload"],) if row else None
+
+    def _exec_lock_snapshot(self, params):
+        """The upsert's row lock: SELECT payload, revision ... FOR UPDATE."""
+        row = self._table.get(tuple(params))
+        self._row = (row["payload"], row.get("revision", 0)) if row else None
 
     def _exec_get(self, params):
         uid, sid = params
@@ -126,6 +143,7 @@ class _FakeCursor:
                 row.get("venue", "local"),
                 row.get("state", ""),
                 "ts" if archived else None,
+                row.get("revision", 0),
             )
 
     def _exec_bus_lock(self, params):
@@ -189,7 +207,17 @@ class _FakeCursor:
             )
             if matched is not None:
                 venue, computed = matched
-                rows.append((sid, row["name"], row["update_marker"], venue, computed, archived_at))
+                rows.append(
+                    (
+                        sid,
+                        row["name"],
+                        row["update_marker"],
+                        venue,
+                        computed,
+                        archived_at,
+                        row.get("revision", 0),
+                    )
+                )
         rows.sort(key=lambda r: r[2], reverse=True)
         self._result = rows[:limit]
 
@@ -227,6 +255,7 @@ class _FakeCursor:
             ("select s.name, s.payload, s.venue, s.state", self._exec_bus_lock),
             ("select s.session_id, s.name, s.payload, s.venue, s.state", self._exec_bus_list),
             ("select s.session_id", self._exec_get),
+            ("select payload, revision from companion_session_snapshots", self._exec_lock_snapshot),
             ("select payload from companion_session_snapshots", self._exec_get_payload_for(sql_l)),
             ("update companion_session_snapshots set payload", self._exec_update_payload),
             ("select session_id, name, update_marker, venue", lambda p: self._exec_list(sql_l, p)),
