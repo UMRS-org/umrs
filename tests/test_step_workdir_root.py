@@ -6,7 +6,7 @@ sibling step container. Before slice S-D64-1 (2026-11-24) ``PodmanExecutor``
 always called a bare ``tempfile.mkdtemp`` and ignored the knob, so a
 containerised UMRS (the stand-alone stack) could not put the workdir on an
 identical host/container path. Unset keeps the old behaviour; a configured
-root that is not a directory refuses by name.
+root that is not an absolute directory refuses by name.
 """
 
 from __future__ import annotations
@@ -118,6 +118,21 @@ def test_missing_root_refuses_by_name_before_podman(monkeypatch, tmp_path, fake)
     assert info.value.phase == "setup"
     assert "UMRS_STEP_WORKDIR" in str(info.value)
     assert fake.calls == 0
+
+
+def test_relative_root_refuses_by_name_before_podman(monkeypatch, tmp_path, fake):
+    # A relative root passed isdir() against the cwd, and podman then read
+    # the relative -v source as a named volume and failed far from the cause.
+    (tmp_path / "relroot").mkdir()
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("UMRS_STEP_WORKDIR", "relroot")
+    with pytest.raises(StepExecutionError) as info:
+        _run(PodmanExecutor(image="img"))
+    assert info.value.phase == "setup"
+    assert "UMRS_STEP_WORKDIR" in str(info.value)
+    assert "absolute" in str(info.value)
+    assert fake.calls == 0
+    assert list((tmp_path / "relroot").iterdir()) == []
 
 
 def test_built_podman_executor_reads_the_env(monkeypatch, tmp_path, fake):

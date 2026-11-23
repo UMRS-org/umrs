@@ -318,27 +318,39 @@ def _check_payload_cap(payload_size: int) -> None:
         )
 
 
+def _workdir_refusal(root: str) -> str | None:
+    """Why a configured step workdir root is unusable, or None when it is fine."""
+    if not os.path.isabs(root):
+        # A relative root resolves against the process cwd, and podman reads
+        # a relative ``-v`` source as a named volume and fails far from here.
+        return "is not an absolute path"
+    if not os.path.isdir(root):
+        return "is not a directory on this host"
+    return None
+
+
 def step_workdir(prefix: str, root: str | None = None) -> str:
     """Create a per-step working directory for a local podman lane.
 
     DEC-064-WD / ADR-091 D-5: ``root`` (``None`` reads ``UMRS_STEP_WORKDIR``,
     which the site's ``step_executor.workdir_root`` exports for
     ``kind: podman``) is the parent; empty keeps the system temp dir. A
-    configured root that is not a directory refuses by name rather than
-    silently falling back: a sibling container would otherwise mount a
-    path the podman host cannot see.
+    configured root must be an absolute path to an existing directory; any
+    other root refuses by name rather than silently falling back: a sibling
+    container would otherwise mount a path the podman host cannot see.
     """
     if root is None:
         root = os.environ.get(STEP_WORKDIR_ENV, "")
     root = root.strip()
     if not root:
         return tempfile.mkdtemp(prefix=prefix)
-    if not os.path.isdir(root):
+    refusal = _workdir_refusal(root)
+    if refusal:
         raise StepExecutionError(
             "setup",
-            f"{STEP_WORKDIR_ENV} (step_executor.workdir_root)={root!r} is not "
-            "a directory on this host; create it (an identical host/container "
-            "path when UMRS runs in a container) or unset it",
+            f"{STEP_WORKDIR_ENV} (step_executor.workdir_root)={root!r} "
+            f"{refusal}; create it as an absolute directory (an identical "
+            "host/container path when UMRS runs in a container) or unset it",
         )
     return tempfile.mkdtemp(prefix=prefix, dir=root)
 
