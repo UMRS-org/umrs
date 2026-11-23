@@ -76,17 +76,25 @@ def test_removal_is_scheduled_for_protocol_1_0() -> None:
         assert errors.RETIRED_CODES == {}, "umrs-protocol 1.0 deletes RETIRED_CODES"
 
 
+RETIRED_PREFIXES = tuple(f"{family}." for family in RETIRED_FAMILIES)
+
+
 def _raises_retired(node: ast.AST) -> bool:
-    """A ``PlatformError.pipelines(...)``/``.verification(...)`` call or a retired literal."""
+    """Any ``.pipelines(...)``/``.verification(...)`` call or a retired-family string.
+
+    The owner is not checked, so ``errors.PlatformError.pipelines(...)`` and an
+    aliased ``PE.verification(...)`` count. Any string constant that starts with
+    a retired family prefix counts, which covers f-string pieces
+    (``f"pipelines.{name}"``) and concatenation (``"verification." + name``).
+    Not caught: a code assembled at runtime from separate pieces such as
+    ``"verification" + ".forbidden"``.
+    """
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
-        return node.value in errors.RETIRED_CODES
-    if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
-        return False
-    owner = node.func.value
+        return node.value.startswith(RETIRED_PREFIXES)
     return (
-        node.func.attr in RETIRED_FAMILIES
-        and isinstance(owner, ast.Name)
-        and owner.id == "PlatformError"
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr in RETIRED_FAMILIES
     )
 
 
@@ -111,3 +119,27 @@ def test_no_server_code_raises_a_retired_code() -> None:
 def test_fence_detects_a_retired_raise() -> None:
     tree = ast.parse('raise_typed(PlatformError.pipelines("not_found", "m"))\nx = "verification.forbidden"')
     assert sum(_raises_retired(node) for node in ast.walk(tree)) == 2
+
+
+def _flagged(source: str) -> int:
+    return sum(_raises_retired(node) for node in ast.walk(ast.parse(source)))
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        'errors.PlatformError.pipelines("not_found", "m")',
+        'PE.verification("forbidden", "m")',
+        'PlatformError(code=f"pipelines.{name}", message="m")',
+        'PlatformError(code="verification." + name, message="m")',
+        'HTTPException(409, headers={"X-Code": "pipelines." + suffix})',
+        'PlatformError(code="pipelines.not_found", message="m")',
+    ],
+)
+def test_fence_catches_bypass_forms(source: str) -> None:
+    assert _flagged(source) >= 1
+
+
+def test_fence_ignores_live_codes() -> None:
+    source = 'PlatformError.jobs("not_found", "m")\nx = "jobs.not_found"\ny = f"workflows.{name}"'
+    assert _flagged(source) == 0
