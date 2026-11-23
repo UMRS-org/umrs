@@ -1333,8 +1333,10 @@ def _resolve_gateway_url_source(
 
     ``--no-gateway-url`` > ``--gateway-url`` (validated by argparse) >
     ``$UMRS_<VENUE>_PUBLIC_GATEWAY_URL`` when ``--venue`` names one >
-    ``$UMRS_PUBLIC_GATEWAY_URL`` > none. A per-venue value that is present but
-    invalid yields no URL: falling back could embed another venue's URL.
+    ``$UMRS_PUBLIC_GATEWAY_URL`` > none. With ``--venue`` the single URL is a
+    fallback only where no other venue's key is set (see
+    ``_venue_gateway_url_source``); a per-venue value that is present but
+    invalid yields no URL.
     """
     if getattr(args, "no_gateway_url", False):
         return None, None
@@ -1343,15 +1345,56 @@ def _resolve_gateway_url_source(
         return explicit, None
     venue = getattr(args, "venue", None)
     if venue:
-        name = venue_gateway_url_env(venue)
-        present, url = _env_gateway_url(name, unset)
-        if present:
-            return url, name if url else None
+        return _venue_gateway_url_source(venue, unset)
     _, url = _env_gateway_url(PUBLIC_GATEWAY_URL_ENV, unset)
-    if url and venue:
+    return url, PUBLIC_GATEWAY_URL_ENV if url else None
+
+
+# Any per-venue key UMRS_<VENUE>_PUBLIC_GATEWAY_URL (never the single-URL key,
+# which has no <VENUE> part and so does not match).
+_VENUE_GATEWAY_URL_KEY_RE = re.compile(r"^UMRS_[A-Z0-9_]+_PUBLIC_GATEWAY_URL$")
+
+
+def _other_venue_gateway_keys(own: str) -> list[str]:
+    """The set per-venue gateway URL keys in the environment other than *own*."""
+    return sorted(
+        key
+        for key, value in os.environ.items()
+        if key != own and value.strip() and _VENUE_GATEWAY_URL_KEY_RE.match(key)
+    )
+
+
+def _venue_gateway_url_source(venue: str, unset: str) -> tuple[str | None, str | None]:
+    """``(url, env var)`` for ``--venue`` *venue* (S-D47c; review fix 2026-11-24).
+
+    ``$UMRS_<VENUE>_PUBLIC_GATEWAY_URL`` when present (invalid: no URL). When it
+    is unset, ``$UMRS_PUBLIC_GATEWAY_URL`` serves only a true single-URL server.
+    If any other venue's key is set, that single URL belongs to some venue:
+    every fleet container sees all keys through ``env_file: .env`` and its
+    single URL is its own site's, and the converge drops a .env line that
+    breaks the URL rule, so an invalid venue line arrives here as unset. The
+    token then gets no URL, never another venue's.
+    """
+    name = venue_gateway_url_env(venue)
+    present, url = _env_gateway_url(name, unset)
+    if present:
+        return url, name if url else None
+    others = _other_venue_gateway_keys(name)
+    if others:
         print(
-            f"note: ${venue_gateway_url_env(venue)} is unset; venue {venue!r} "
-            f"uses ${PUBLIC_GATEWAY_URL_ENV}={url}",
+            f"warning: ${name} is unset while other venues' URLs are set "
+            f"({', '.join('$' + key for key in others)}); not using "
+            f"${PUBLIC_GATEWAY_URL_ENV} for venue {venue!r}; {unset}. "
+            f"Mint with --gateway-url {_GATEWAY_URL_EXAMPLE} (replaced by the "
+            f"venue's public gateway URL) or set ${name}",
+            file=sys.stderr,
+        )
+        return None, None
+    _, url = _env_gateway_url(PUBLIC_GATEWAY_URL_ENV, unset)
+    if url:
+        print(
+            f"note: ${name} is unset; venue {venue!r} uses "
+            f"${PUBLIC_GATEWAY_URL_ENV}={url} (no other venue URL is set)",
             file=sys.stderr,
         )
     return url, PUBLIC_GATEWAY_URL_ENV if url else None

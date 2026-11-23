@@ -102,17 +102,53 @@ def test_no_gateway_url_beats_the_venue(tmp_path: Path, capsys: pytest.CaptureFi
     assert "gateway_url" not in _mint(tmp_path, capsys, "--venue", "octopus", "--no-gateway-url")
 
 
-def test_unset_venue_line_falls_back_with_a_note(
+def _mint_venue(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], venue: str
+) -> tuple[dict, str]:
+    argv = ["token", "generate-jwt", "--user", "alice", "--project", "p1", "--json"]
+    assert _run(tmp_path, *argv, "--venue", venue) == 0
+    captured = capsys.readouterr()
+    return json.loads(captured.out)["claims"], captured.err
+
+
+def test_unset_venue_line_on_a_single_url_server_falls_back_with_a_note(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(PUBLIC_GATEWAY_URL_ENV, RCCS_URL)  # the only URL key
+    claims, err = _mint_venue(tmp_path, capsys, "octopus")
+    assert claims["gateway_url"] == RCCS_URL
+    assert f"${OCTOPUS_ENV} is unset" in err
+    assert f"${PUBLIC_GATEWAY_URL_ENV}={RCCS_URL} (no other venue URL is set)" in err
+
+
+# Review fix (2026-11-24): on the fleet each container's single URL is its own
+# site's and every venue key arrives through env_file: .env; the converge
+# drops an invalid line, so an unset venue key must not borrow that URL.
+@pytest.mark.parametrize("venue", ["octopus", "octopus-front", "Octopus", "octopus.front"])
+def test_unset_venue_line_never_takes_another_venues_url(
+    venue: str,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(PUBLIC_GATEWAY_URL_ENV, RCCS_URL)
+    monkeypatch.setenv(RCCS_ENV, RCCS_URL)
+    claims, err = _mint_venue(tmp_path, capsys, venue)
+    assert "gateway_url" not in claims
+    assert f"${RCCS_ENV}" in err
+    assert "--gateway-url https://HOST/SITE" in err
+
+
+def test_user_add_without_venue_line_prints_the_example(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv(PUBLIC_GATEWAY_URL_ENV, RCCS_URL)
-    argv = ["token", "generate-jwt", "--user", "alice", "--project", "p1", "--json"]
-    assert _run(tmp_path, *argv, "--venue", "octopus") == 0
-    captured = capsys.readouterr()
-    claims = json.loads(captured.out)["claims"]
-    assert claims["gateway_url"] == RCCS_URL
-    assert f"${OCTOPUS_ENV} is unset" in captured.err
-    assert PUBLIC_GATEWAY_URL_ENV in captured.err
+    monkeypatch.setenv(RCCS_ENV, RCCS_URL)
+    assert _run(tmp_path, "user", "add", "dave", "--project", "p1", "--venue", "octopus") == 0
+    out = capsys.readouterr().out
+    assert RCCS_URL not in out
+    mint = next(line.strip() for line in out.splitlines() if "generate-jwt" in line)
+    assert mint.endswith("--gateway-url https://HOST/SITE")
 
 
 def test_invalid_venue_line_never_falls_back(
