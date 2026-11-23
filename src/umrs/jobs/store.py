@@ -227,10 +227,29 @@ def _policy_refusal_marker(attempt_id: str, exit_reason: str | None) -> bool:
     return True
 
 
+#: The exit-reason prefix of a workflow run that ended failed on its own
+#: verdict (``WorkflowRunStatusChecker``): its steps already used their
+#: per-step retries, so a requeue reran the whole DAG up to 4 times and the
+#: status flapped failed/submitted (tutorial dry run 2026-11-23). A
+#: submission failure (``backend_submission_failed:``) or a lost record is
+#: infrastructure and still retries under the job's ``max_attempts``.
+WORKFLOW_RUN_FAILED_PREFIX = "workflow_run_failed: "
+
+
+def _run_verdict_marker(attempt_id: str, exit_reason: str | None) -> bool:
+    if not (exit_reason or "").startswith(WORKFLOW_RUN_FAILED_PREFIX):
+        return False
+    logger.warning(f"Attempt {attempt_id}: workflow run failed — terminal, no requeue")
+    return True
+
+
 def _terminal_exit_reason(attempt_id: str, exit_reason: str | None) -> bool:
-    """Whether *exit_reason* forbids a requeue (budget or policy marker)."""
-    return _budget_exhausted_marker(attempt_id, exit_reason) or _policy_refusal_marker(
-        attempt_id, exit_reason
+    """Whether *exit_reason* forbids a requeue (budget, policy or run-verdict
+    marker)."""
+    return (
+        _budget_exhausted_marker(attempt_id, exit_reason)
+        or _policy_refusal_marker(attempt_id, exit_reason)
+        or _run_verdict_marker(attempt_id, exit_reason)
     )
 
 

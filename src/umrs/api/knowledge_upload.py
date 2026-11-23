@@ -316,8 +316,8 @@ def _form_provenance(raw: str | None) -> dict[str, Any] | None:
 
     from umrs.knowledge.client_provenance import clean_provenance
 
-    if not raw:
-        return None
+    if not isinstance(raw, str) or not raw:
+        return None  # absent, or a framework default object (plain call)
     try:
         return clean_provenance(json.loads(raw))
     except ValueError:

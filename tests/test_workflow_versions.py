@@ -416,6 +416,80 @@ def test_a_dispatch_of_changed_files_fails_by_name(tmp_path, monkeypatch):
     assert refused.value.code == "workflows.source_mismatch"
 
 
+def _dispatch_run(one, execution_id: str):
+    """A durable dispatch of version 1.0.0 as the job backend sends it."""
+    from umrs.server.workflow_execution_registry import get_execution_registry
+
+    record, _path, _steps = wrh._launch_workflow_from_catalog(
+        workflow_name="wf",
+        client_id="alice",
+        params={},
+        execution_id=execution_id,
+        durable_job_id=f"job-{execution_id}",
+        source_path=one.dest,
+        workflow_version="1.0.0",
+        source_sha256=one.source_sha256,
+    )
+    get_execution_registry().join(record.execution_id, timeout=10)
+    return record
+
+
+def _run_leaves_bytecode(record, *, source_path, **_kw):
+    """What an in-process run's import does to the version directory."""
+    cache = Path(source_path, "__pycache__")
+    cache.mkdir(exist_ok=True)
+    (cache / "steps.cpython-311.pyc").write_bytes(b"\x00bytecode")
+    Path(source_path, ".DS_Store").write_bytes(b"finder")
+    record.update(status="succeeded")
+
+
+def test_a_second_run_and_an_unchanged_reupload_ignore_bytecode(tmp_path, monkeypatch):
+    """Before: the first run's ``__pycache__`` changed the version digest, so
+    the second run failed source_mismatch and the unchanged re-upload was
+    refused version_exists (tutorial dry run 2026-11-23)."""
+    from umrs.server import workflow_runner
+
+    monkeypatch.setattr(workflow_runner, "run_workflow_record", _run_leaves_bytecode)
+    one = _upload(tmp_path, "1.0.0")
+    assert _dispatch_run(one, "wf-first").status == "succeeded"
+    again = fh.upload_workflow_bundle("alice", _bundle(tmp_path, "1.0.0"), "wf")
+    assert again.ok and again.unchanged, again.message
+    assert again.source_sha256 == one.source_sha256
+    second = _dispatch_run(one, "wf-second")
+    assert (second.status, second.error) == ("succeeded", None)
+
+
+def test_a_durable_dispatch_of_changed_files_fails_the_run_by_name(tmp_path):
+    """Before: the refusal was a scheduler submission failure, retried and
+    named only in the server log; the run showed failed with no error."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from umrs.jobs.store import _terminal_exit_reason
+    from umrs.jobs.workflow_run import WorkflowRunStatusChecker
+
+    one = _upload(tmp_path, "1.0.0")
+    Path(one.dest, "steps.py").write_text("TAMPERED = 1\n")
+    record = _dispatch_run(one, "wf-tampered")
+    assert record.status == "failed"
+    assert record.error.startswith("workflows.source_mismatch: ")
+    assert "no longer match" in record.error
+    job = SimpleNamespace(spec={"execution_id": "wf-tampered"})
+    result = asyncio.run(WorkflowRunStatusChecker().check_status(SimpleNamespace(), job))
+    assert result.status == "failed" and "source_mismatch" in result.exit_reason
+    assert _terminal_exit_reason("a-1", result.exit_reason) is True
+
+
+def test_a_failed_run_is_terminal_a_submission_failure_still_retries():
+    """Before: WORKFLOW_RUN's max_attempts 4 requeued a run whose steps had
+    failed (status flapped failed/submitted, the whole DAG reran)."""
+    from umrs.jobs.store import WORKFLOW_RUN_FAILED_PREFIX, _terminal_exit_reason
+
+    assert _terminal_exit_reason("a-1", f"{WORKFLOW_RUN_FAILED_PREFIX}step rank failed")
+    assert not _terminal_exit_reason("a-1", "backend_submission_failed: wedged")
+    assert not _terminal_exit_reason("a-1", "worker lost")
+
+
 def test_the_durable_backend_passes_the_pin_on(monkeypatch):
     import asyncio
     from types import SimpleNamespace
@@ -563,3 +637,29 @@ def test_adopt_registers_the_files_under_a_stable_name(tmp_path, monkeypatch):
     assert [f["name"] for f in fired] == ["cnn"]  # the old name's triggers are off
     with pytest.raises(PermissionError):
         wrh.adopt_workflow("cnn-v0.2.9", "x", "1.0.0", caller="bob", is_admin=False)
+
+
+# ── describe carries the DAG ──────────────────────────────────────────────
+
+_FAN_OUT = [
+    {"name": "search_low", "entrypoint": "steps:S1", "depends_on": [], "description": "low"},
+    {"name": "search_high", "entrypoint": "steps:S1", "depends_on": []},
+    {"name": "rank", "entrypoint": "steps:S1", "depends_on": ["search_low", "search_high"]},
+]
+
+
+def test_the_describe_carries_depends_on_and_description(tmp_path):
+    """Before: the row kept name and entrypoint only, so ``workflow show
+    --graph`` and ``watch`` put the gather step at the first level."""
+    from umrs.api.workflows import _describe_workflow_entry
+
+    _upload(tmp_path, "1.0.0", steps=_FAN_OUT)
+    entry = wrh.resolve_workflow_version("wf", "alice").entry
+    rank = {"name": "rank", "entrypoint": "steps:S1", "description": ""}
+    rank["depends_on"] = ["search_low", "search_high"]
+    assert entry["steps"][2] == rank
+    assert entry["steps"][0]["description"] == "low"
+    assert entry["steps"][0]["depends_on"] == []
+    legacy = {**entry, "steps": [{"name": s["name"], "entrypoint": "steps:S1"} for s in _FAN_OUT]}
+    described = _describe_workflow_entry(legacy)["steps"]
+    assert described[2]["depends_on"] == ["search_low", "search_high"]

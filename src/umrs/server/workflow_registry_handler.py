@@ -20,6 +20,7 @@ import json
 import logging
 import os
 import threading
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
@@ -177,6 +178,27 @@ def _save_catalog(catalog: dict[str, Any]) -> None:
 _NAME_LEVEL_FIELDS = ("access", "trigger_version", "triggers_disabled", "adopted_as")
 
 
+def _step_meta(step: dict[str, Any]) -> dict[str, Any]:
+    depends_on = step.get("depends_on")
+    return {
+        "name": step.get("name", ""),
+        "entrypoint": step.get("entrypoint", ""),
+        "depends_on": list(depends_on) if isinstance(depends_on, list) else [],
+        "description": step.get("description", ""),
+    }
+
+
+def catalog_steps(workflow_json: dict[str, Any]) -> list[dict[str, Any]]:
+    """The steps a catalog row and the describe carry: name, entrypoint, the
+    DAG edges and the description. Before, only name and entrypoint were
+    kept, so ``r4 workflow show --graph`` / ``watch`` put every step at the
+    first level (tutorial dry run 2026-11-23)."""
+    steps = workflow_json.get("steps")
+    if not isinstance(steps, list):
+        return []
+    return [_step_meta(step) for step in steps if isinstance(step, dict)]
+
+
 def _catalog_entry(
     workflow_name: str,
     version: str,
@@ -188,10 +210,7 @@ def _catalog_entry(
     source_sha256: str | None,
 ) -> dict[str, Any]:
     """A catalog row as :func:`register_workflow` writes it."""
-    steps_meta = [
-        {"name": step.get("name", ""), "entrypoint": step.get("entrypoint", "")}
-        for step in workflow_json.get("steps", [])
-    ]
+    steps_meta = catalog_steps(workflow_json)
     return {
         "name": workflow_name,
         "version": version,
@@ -1155,6 +1174,54 @@ def _endpoint_prelaunch(
     return _prelaunch
 
 
+@dataclass(frozen=True)
+class _DispatchPin:
+    """What a dispatch runs: the run's identity and the pinned version."""
+
+    workflow_name: str
+    client_id: str
+    params: dict[str, Any]
+    execution_id: str | None
+    durable_job_id: str | None
+    workflow_version: str | None
+    source_sha256: str | None
+
+
+def _refused_durable_dispatch(pin: _DispatchPin, source_path: str) -> Any:
+    """Check the pinned digest (ADR-113 D-4). A direct call raises the
+    :class:`WorkflowVersionError`; a durable dispatch instead registers the
+    run as failed with that error, so ``workflow status`` and ``logs`` name
+    it and the monitor ends the job (before: a scheduler submission failure,
+    retried and visible only in the server log). None when the files match.
+    """
+    try:
+        check_pinned_source(
+            source_path, pin.source_sha256, pin.workflow_name, pin.workflow_version
+        )
+    except WorkflowVersionError as exc:
+        if not pin.durable_job_id:
+            raise
+        logger.warning("workflow dispatch refused: %s", exc)
+        return _failed_record(pin, f"{exc.code}: {exc}")
+    return None
+
+
+def _failed_record(pin: _DispatchPin, error: str) -> Any:
+    from umrs.server.workflow_execution_registry import get_execution_registry
+
+    record = get_execution_registry().create(
+        workflow_name=pin.workflow_name,
+        user_id=pin.client_id,
+        params=pin.params,
+        execution_id=pin.execution_id,
+        durable_job_id=pin.durable_job_id,
+        workflow_version=pin.workflow_version,
+        source_sha256=pin.source_sha256,
+    )
+    record.update(status="failed", error=error, finished_at=time.time())
+    return record
+
+
 def _launch_workflow_from_catalog(
     *,
     workflow_name: str,
@@ -1179,7 +1246,20 @@ def _launch_workflow_from_catalog(
     )
     # ADR-113 D-4: a dispatch (a retry, a re-dispatch after a restart) runs
     # only the files the trigger pinned.
-    check_pinned_source(source_path, source_sha256, workflow_name, workflow_version)
+    refused = _refused_durable_dispatch(
+        _DispatchPin(
+            workflow_name=workflow_name,
+            client_id=client_id,
+            params=params,
+            execution_id=execution_id,
+            durable_job_id=durable_job_id,
+            workflow_version=workflow_version,
+            source_sha256=source_sha256,
+        ),
+        source_path,
+    )
+    if refused is not None:
+        return refused, source_path, step_count
 
     logger.info(
         "Running workflow '%s' v%s for user '%s' with %d steps (params=%s, durable_job_id=%s)",

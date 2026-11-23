@@ -515,3 +515,42 @@ class TestResourceSpecExtra:
         rs = ResourceSpec()
         d = rs.to_dict()
         assert "extra" not in d
+
+
+# =========================================================================
+# A missing object names its key and bucket (tutorial dry run, f2)
+# =========================================================================
+
+
+class _NoSuchKey(Exception):
+    """botocore's ClientError shape: ``response['Error']['Code']``."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "An error occurred (NoSuchKey) when calling the GetObject operation: "
+            "The specified key does not exist."
+        )
+        self.response = {"Error": {"Code": "NoSuchKey"}}
+
+
+def _ctx_raising(exc: Exception) -> StepContext:
+    s3 = MagicMock()
+    s3.get_object.side_effect = exc
+    return StepContext(s3=s3, input_bucket="in-b", input_keys=[], output_bucket="out-b")
+
+
+class TestMissingObject:
+    def test_the_error_names_the_key_and_the_bucket(self):
+        """Before: the client's NoSuchKey text named neither."""
+        with pytest.raises(FileNotFoundError, match="no key 'picks.csv' in bucket 'in-b'") as err:
+            _ctx_raising(_NoSuchKey()).download_bytes("picks.csv")
+        assert err.value.response["Error"]["Code"] == "NoSuchKey"
+        assert isinstance(err.value, KeyError)
+
+    def test_parent_reads_and_the_in_memory_store_too(self):
+        with pytest.raises(FileNotFoundError, match="no key 'k' in bucket 'out-b'"):
+            _ctx_raising(KeyError("out-b/k")).download_parent_bytes("k")
+
+    def test_other_errors_pass_through(self):
+        with pytest.raises(PermissionError):
+            _ctx_raising(PermissionError("denied")).download_bytes("k")

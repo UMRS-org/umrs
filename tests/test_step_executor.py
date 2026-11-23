@@ -122,6 +122,34 @@ def test_inproc_executor_run_failure_classified():
     assert "boom in run" in excinfo.value.message
 
 
+class _EmptyIteratorStep(Step):
+    name = "empty_iterator"
+
+    def run(self, ctx: StepContext) -> StepResult:
+        return StepResult(extra={"top": next(iter(ctx.input_keys))})
+
+
+def test_inproc_executor_names_an_exception_with_an_empty_message():
+    """Before: ``str(StopIteration())`` is empty, so the step error read
+    ``run() raised: `` with no type and no place (tutorial dry run, f4)."""
+    with pytest.raises(StepExecutionError) as excinfo:
+        InProcessExecutor().execute(
+            entrypoint=f"{__name__}:_EmptyIteratorStep", config={}, ctx=_make_ctx()
+        )
+    message = excinfo.value.message
+    assert message.startswith("StopIteration (at test_step_executor.py:")
+    assert message.endswith(" in run)")
+    assert str(excinfo.value).startswith("run() raised: StopIteration")
+
+
+def test_inproc_executor_failure_names_the_exception_type():
+    with pytest.raises(StepExecutionError) as excinfo:
+        InProcessExecutor().execute(
+            entrypoint=f"{__name__}:_SetupFailStep", config={}, ctx=_make_ctx()
+        )
+    assert excinfo.value.message.startswith("ValueError: boom in setup (at ")
+
+
 def test_inproc_executor_bad_return_classified():
     executor = InProcessExecutor()
     with pytest.raises(StepExecutionError) as excinfo:
