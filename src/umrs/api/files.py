@@ -36,6 +36,13 @@ from fastapi import (
 )
 from pydantic import BaseModel, ConfigDict, Field
 
+from umrs.data_catalog.provenance import (
+    HashedObject,
+    Sha256Reader,
+    hashed,
+    provenance_row,
+    record_best_effort,
+)
 from umrs.shared.storage.s3_config import S3Config, get_s3_config
 from umrs.shared.storage.s3_presign import (
     generate_presigned_get,
@@ -149,6 +156,8 @@ class UploadResponse(BaseModel):
     size: int
     content_type: str | None = None
     filename: str | None = None
+    #: Server-computed SHA-256 of the stored bytes (ADR-115 D-2, MB-S2a).
+    sha256: str | None = None
 
 
 class PresignBatchRequest(BaseModel):
@@ -439,7 +448,7 @@ async def upload_file(
     # Streamed like the owned-bucket branch: `await file.read()` held the
     # whole upload in memory (2026-10-21: a 1 GiB upload, +1 GiB peak RSS).
     s3_client = config.get_client()
-    reader = _HashingReader(file.file)
+    reader = Sha256Reader(file.file)
     try:
         await asyncio.to_thread(
             s3_client.upload_fileobj,
@@ -464,6 +473,8 @@ async def upload_file(
     _charge_upload_quota(
         request, s3_client, bucket, object_key, (content_md5, reader.size), x_user_id
     )
+    stored = hashed(bucket, object_key, reader, content_type)
+    _record_upload(request, s3_client, stored, project_id, x_user_id)
 
     # The md5 stands in for the ETag (a multipart ETag differs); ingest
     # re-reads the live ETag when they disagree (data_catalog.ingest).
@@ -477,6 +488,7 @@ async def upload_file(
         size=reader.size,
         content_type=content_type,
         filename=file.filename,
+        sha256=reader.sha256.hexdigest(),
     )
 
 
@@ -855,20 +867,43 @@ def _raw_key(key: str) -> str:
     return cleaned
 
 
-class _HashingReader:
-    """File-like view that md5-hashes and counts what boto3 reads (streamed
-    uploads charge the disk ledger without holding the body in memory)."""
+def _record_upload(
+    request: Request,
+    s3_client: Any,
+    stored: HashedObject,
+    project_id: str | None,
+    x_user_id: str | None,
+) -> None:
+    """Provenance row (``local_upload``, server-hashed, so ``verified``) and
+    one ``data.upload`` audit row for an object this route just stored
+    (ADR-115 D-2/D-12, slice MB-S2a). Neither ever fails the upload: with no
+    database pool, or no ETag from the store, the object stays legacy."""
+    from umrs.audit.security_events import emit_data
 
-    def __init__(self, raw: Any) -> None:
-        self._raw = raw
-        self.md5 = hashlib.md5(usedforsecurity=False)
-        self.size = 0
-
-    def read(self, size: int = -1) -> bytes:
-        chunk = self._raw.read(size)
-        self.md5.update(chunk)
-        self.size += len(chunk)
-        return chunk
+    uploader = _header_str(x_user_id)
+    pool = getattr(request.app.state, "umrs_db_pool", None)
+    row = None
+    if pool is not None:  # no database: no row, and no ETag read for one
+        row = provenance_row(
+            s3_client,
+            stored,
+            "local_upload",
+            uploader=uploader,
+            project_id=project_id or None,
+        )
+    written = row is not None and record_best_effort(pool, row)
+    emit_data(
+        "data.upload",
+        actor=uploader or "",
+        project_id=project_id or "",
+        bucket=stored.bucket,
+        key=stored.key,
+        size=stored.size,
+        sha256=stored.sha256,
+        content_type=stored.content_type,
+        source_kind="local_upload",
+        provenance=written,
+    )
 
 
 async def _upload_to_owned_bucket(
@@ -883,7 +918,7 @@ async def _upload_to_owned_bucket(
     object_key = _raw_key(key or _safe_filename(file.filename or ""))
     content_type = file.content_type or "application/octet-stream"
     s3_client = bucket_store(bucket, project_id, get_s3_config()).get_client()
-    reader = _HashingReader(file.file)
+    reader = Sha256Reader(file.file)
     try:
         await asyncio.to_thread(
             s3_client.upload_fileobj,
@@ -904,6 +939,8 @@ async def _upload_to_owned_bucket(
         request, s3_client, bucket, object_key,
         (reader.md5.hexdigest(), reader.size), x_user_id,
     )
+    stored = hashed(bucket, object_key, reader, content_type)
+    _record_upload(request, s3_client, stored, project_id, x_user_id)
     if project_id:
         # W4: uploads into a personal/shared bucket must fire the same ingest
         # event as the project-namespaced path so `triggers: on: ingest` work.
@@ -923,6 +960,7 @@ async def _upload_to_owned_bucket(
         size=reader.size,
         content_type=content_type,
         filename=file.filename,
+        sha256=reader.sha256.hexdigest(),
     )
 
 

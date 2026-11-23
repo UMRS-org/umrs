@@ -2,7 +2,10 @@
 #
 # The default rule set, plus allowlists for the false positives a HEAD-tree
 # scan finds with the gitleaks the workflow pins (8.30.1). Add an entry only
-# for a triaged line, with its reason.
+# for a triaged line, with its reason. A new test fixture that merely looks
+# like a secret is split in the source instead (SECRET = "sk-" + "...", a JWT
+# joined at run time, PEM_HEADER in test_security_workflow_contract.py), and
+# that test fails on an unsplit JWT or PEM literal (2026-11-24).
 #
 # Triage with the pinned binary, never a local one: an unversioned local
 # gitleaks reported a different set (2026-11-24 review: it missed 3

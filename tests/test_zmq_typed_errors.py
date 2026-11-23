@@ -261,9 +261,11 @@ def test_jobs_404_carries_typed_header_byte_identical():
 
 
 def test_contract_pipelines_family_codes():
-    from umrs_protocol.errors import known_error_codes
+    # Retired (DEC-H10, 2026-11-24): out of the live catalog, still decodable.
+    from umrs_protocol.errors import decodable_error_codes, is_retired, known_error_codes
 
-    codes = known_error_codes()
+    codes = decodable_error_codes()
+    assert not any(code.startswith("pipelines.") for code in known_error_codes())
     expected = {
         "pipelines.not_found": 404,
         "pipelines.forbidden": 403,
@@ -273,6 +275,7 @@ def test_contract_pipelines_family_codes():
     }
     for code, status in expected.items():
         assert codes[code] == status, code
+        assert is_retired(code), code
 
 
 def test_contract_ops_family_codes():

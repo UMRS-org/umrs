@@ -7,6 +7,11 @@ zero-dependency contract for typed platform errors:
 - codes are namespaced, dot-separated, and append-only (removals need a
   major-version decision — consumers rely on codes for programmatic
   discrimination that message strings cannot carry);
+- a code whose routes are gone is *retired*, not removed (DEC-H10,
+  2026-11-24): it leaves the live catalog ``known_error_codes()`` and moves
+  to ``RETIRED_CODES``, stays decodable through ``decodable_error_codes()``
+  and ``PlatformError.from_dict``, and is deleted only at
+  ``RETIRED_CODES_REMOVED_IN`` (umrs-protocol 1.0);
 - ``message`` stays the human-facing detail string, byte-identical to the
   legacy string it replaces (additive: existing clients see no drift);
 - ``to_http_parts()`` projects the error into FastAPI-compatible kwargs with
@@ -81,6 +86,8 @@ JOBS_ERRORS = {
 
 PIPELINES_ERRORS = {
     # WP-16 round 2 (pipelines family conversion): additive only.
+    # RETIRED (DEC-H10, 2026-11-24): the /umrs/pipelines and /umrs/rag-profiles
+    # routes were deleted in hardening H-10.1 (2026-10-18); see RETIRED_CODES.
     "pipelines.not_found": 404,
     "pipelines.forbidden": 403,
     "pipelines.conflict": 409,
@@ -285,6 +292,8 @@ USERSOURCES_ERRORS = {
 }
 
 VERIFICATION_ERRORS = {
+    # RETIRED (DEC-H10, 2026-11-24): api/verification.py and its
+    # /umrs/verification/* routes were deleted in H-10.1; see RETIRED_CODES.
     "verification.unavailable": 503,
     "verification.forbidden": 403,
     "verification.bad_request": 400,
@@ -315,6 +324,8 @@ COMPANIONSESSIONS_ERRORS = {
     "companionsessions.replay_conflict": 409,
     "companionsessions.invalid_reply": 400,
     "companionsessions.inbox_full": 409,
+    # ADR-057 D-7 (SH-J1): a snapshot write whose base_revision is stale.
+    "companionsessions.revision_conflict": 409,
 }
 
 # Remote-session (frontend venue) runtime routes — start/status/stop for the
@@ -735,6 +746,7 @@ class PlatformError:
 
     @classmethod
     def pipelines(cls, name: str, message: str, **detail: Any) -> PlatformError:
+        """Retired family (DEC-H10): decode only; no route may raise it; removed at 1.0."""
         return cls(
             code=f"pipelines.{name}",
             message=message,
@@ -879,6 +891,7 @@ class PlatformError:
 
     @classmethod
     def verification(cls, name: str, message: str, **detail: Any) -> PlatformError:
+        """Retired family (DEC-H10): decode only; no route may raise it; removed at 1.0."""
         return cls(
             code=f"verification.{name}",
             message=message,
@@ -1319,10 +1332,28 @@ class PlatformError:
         )
 
 
+# Retired codes (DEC-H10, 2026-11-24). No mounted route raises them since
+# hardening H-10.1 deleted their routes (2026-10-18), so they are out of the
+# live catalog. A client or a self-hosted server on an older UMRS can still
+# send one, so they stay decodable until umrs-protocol 1.0 removes them.
+RETIRED_CODES: dict[str, int] = {**PIPELINES_ERRORS, **VERIFICATION_ERRORS}
+RETIRED_CODES_REMOVED_IN = "1.0"
+
+
+def is_retired(code: str) -> bool:
+    """True when ``code`` is retired: decodable, but never raised by a live route."""
+    return code in RETIRED_CODES
+
+
+def decodable_error_codes() -> dict[str, int]:
+    """Every code a client may still receive: the live catalog plus ``RETIRED_CODES``."""
+    return {**RETIRED_CODES, **known_error_codes()}
+
+
 # Convenience named constructors for the taxonomy's known members. Keeping
 # them in ONE table makes the append-only review point a one-file diff.
 def known_error_codes() -> dict[str, int]:
-    """Return the full code → default-status registry."""
+    """Return the live code → default-status registry (retired codes excluded)."""
     out: dict[str, int] = {}
     for fam in (
         SESSION_ERRORS,
@@ -1332,7 +1363,6 @@ def known_error_codes() -> dict[str, int]:
         PRESIGN_ERRORS,
         FILES_ERRORS,
         JOBS_ERRORS,
-        PIPELINES_ERRORS,
         OPS_ERRORS,
         WORKFLOWS_ERRORS,
         MODELS_ERRORS,
@@ -1353,7 +1383,6 @@ def known_error_codes() -> dict[str, int]:
         TRACES_ERRORS,
         KNOWLEDGEGRAPHS_ERRORS,
         KNOWLEDGE_ERRORS,
-        VERIFICATION_ERRORS,
         SECRETBROKER_ERRORS,
         COMPANIONSESSIONS_ERRORS,
         COMPANIONVENUE_ERRORS,

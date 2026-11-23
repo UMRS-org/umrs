@@ -46,7 +46,9 @@ class _Cursor:
     def execute(self, sql, params=None):
         sql_l = " ".join(sql.split()).lower()
         self._conn.sql.append(sql_l)
-        if sql_l.startswith("select payload"):
+        if sql_l.startswith("select payload, revision"):  # the upsert's row lock
+            self._conn.fetched = (self._conn.payload, 1) if self._conn.payload else None
+        elif sql_l.startswith("select payload"):
             self._conn.fetched = (self._conn.payload,) if self._conn.payload else None
         elif sql_l.startswith("update"):
             self._conn.payload = params[0]
@@ -54,6 +56,7 @@ class _Cursor:
         elif sql_l.startswith("insert"):
             self._conn.payload = params[3]
             self.rowcount = 1
+            self._conn.fetched = (2,)  # RETURNING revision
 
     def fetchone(self):
         return self._conn.fetched

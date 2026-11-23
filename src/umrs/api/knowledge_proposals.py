@@ -27,15 +27,14 @@ from typing import Any
 from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, Field
 
-from umrs.knowledge.access_scope import CallerScope, graph_readable, graph_writable
+from umrs.knowledge.access_scope import CallerScope, graph_writable
 from umrs.knowledge.graph_registry import (
     GraphRegistryStore,
     KnowledgeGraphMeta,
     ProposalStore,
 )
 
-from ..shared.access_scopes import access_admits
-from ._access import graph_meta_readable, resource_caller
+from ._access import graph_meta_readable, graph_read_allowed, resource_caller
 from ._knowledge_mutation_guard import AGENT_ACTOR, request_actor
 from .jobs import CallerIdentity, get_caller_identity
 from .typed_errors import PlatformError, raise_typed
@@ -154,17 +153,20 @@ def _stored_access(raw: Any) -> Any:
     return json.loads(raw) if isinstance(raw, str) else raw
 
 
-def _row_readable(row: dict[str, Any], scope: CallerScope, caller: Any) -> bool:
+def _row_readable(
+    request: Request, row: dict[str, Any], scope: CallerScope, caller: Any
+) -> bool:
     """``graph_meta_readable`` for a joined stats row, with one shared caller
     so the ADR-080 circle lookup runs at most once per request."""
-    if graph_readable(
+    return graph_read_allowed(
+        request,
         kind=row.get("kind") or "",
         project_id=row.get("project_id"),
         owner_id=row.get("owner_id") or "",
-        caller=scope,
-    ):
-        return True
-    return access_admits(_stored_access(row.get("access")), caller)
+        stored_access=_stored_access(row.get("access")),
+        scope=scope,
+        caller=caller,
+    )
 
 
 def _readable_stats(request: Request, identity: CallerIdentity) -> dict[str, Any]:
@@ -181,7 +183,7 @@ def _readable_stats(request: Request, identity: CallerIdentity) -> dict[str, Any
     )
     totals = {"accepted": 0, "declined": 0, "pending": 0}
     for row in _PerGraphStats(pool).per_graph_counts():
-        if _row_readable(row, scope, caller):
+        if _row_readable(request, row, scope, caller):
             for key in totals:
                 totals[key] += int(row.get(key) or 0)
     decided = totals["accepted"] + totals["declined"]

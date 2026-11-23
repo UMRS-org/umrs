@@ -36,9 +36,13 @@ from umrs.knowledge.graph_registry import (
     GraphRegistryStore,
     graph_id_is_default,
 )
-from umrs.shared.access_scopes import access_admits
 
-from ._access import checked_access, resource_caller
+from ._access import (
+    checked_access,
+    graph_access_admits,
+    resource_caller,
+    user_in_project,
+)
 from ._access import graph_read_allowed as _graph_read_allowed
 from ._knowledge_mutation_guard import (
     AGENT_ACTOR,
@@ -63,18 +67,19 @@ def _registry(request: Request) -> GraphRegistryStore:
     return GraphRegistryStore(pool)
 
 
-def _shared_read_admits(
-    request: Request, stored_access: Any, scope: CallerScope
-) -> bool:
+def _shared_read_admits(request: Request, graph: Any, scope: CallerScope) -> bool:
     """ADR-080: does the row's access list admit this caller (beyond the tier
-    ladder)? Group membership resolves lazily against the request pool."""
+    ladder)? Circle membership resolves lazily against the request pool; a
+    circle of the graph's own project admits only a project insider (KN-S4b)."""
     caller = resource_caller(
         request,
         user_id=scope.user_id,
         project_id=scope.project_id,
         is_admin=scope.is_admin,
     )
-    return access_admits(stored_access, caller)
+    return graph_access_admits(
+        request, project_id=graph.project_id, stored_access=graph.access, caller=caller
+    )
 
 
 def _stored_project(
@@ -191,7 +196,7 @@ def _shared_visible_graphs(
     for shared in registry.list_shared_graphs(status=status):
         if shared.graph_id in seen:
             continue
-        if _shared_read_admits(request, shared.access, scope):
+        if _shared_read_admits(request, shared, scope):
             out.append(shared)
             seen.add(shared.graph_id)
     return out
@@ -548,28 +553,11 @@ def _project_share_facts(request: Request, project_id: str) -> tuple[str, str]:
     return str(row[0] or ""), str(row[1] or "")
 
 
-def _live_member(request: Request, user: str, project_id: str) -> bool:
-    """ADR-097 D-1: is *user* a live member of *project_id*? Unreadable
-    memberships answer False: an unverifiable reader is outside."""
-    from .projects import ProjectStore, live_memberships
-
-    pool = getattr(request.app.state, "umrs_db_pool", None)
-    if pool is None or not user:
-        return False
-    conn = pool.getconn()
-    try:
-        memberships = live_memberships(ProjectStore(conn), user)
-    finally:
-        try:
-            conn.rollback()  # a read must not leave the conn idle in transaction
-        finally:
-            pool.putconn(conn)
-    return project_id in (memberships or [])
-
-
 def _user_outside(request: Request, user: str, project_id: str, owner: str) -> bool:
-    """A user is inside only as the project owner or an ADR-097 live member."""
-    return user != owner and not _live_member(request, user, project_id)
+    """A user is inside only as the project owner or an ADR-097 live member
+    (``_access.user_in_project``, the one membership read; unreadable is
+    outside)."""
+    return user != owner and not user_in_project(request, user, project_id)
 
 
 def _roster_outside(request: Request, ref: str, project_id: str, owner: str) -> bool:
@@ -663,7 +651,18 @@ def _circle_roster(request: Request, ref: str) -> list[str] | None:
     return None if rows is None else [str(r[0]) for r in rows]
 
 
-def _entry_readers(request: Request, entry: str) -> dict[str, Any]:
+def _circle_readers(request: Request, ref: str, project_id: str) -> dict[str, Any]:
+    """A circle entry's readers. On a circle of the graph's OWN project the
+    KN-S4b read gate admits only project insiders, so roster members outside
+    the project are listed as ``not_admitted``, not as readers."""
+    roster = _circle_roster(request, ref)
+    if roster is None or not project_id or ref.partition("/")[0] != project_id:
+        return {"users": roster}
+    admitted = [u for u in roster if user_in_project(request, u, project_id)]
+    return {"users": admitted, "not_admitted": [u for u in roster if u not in admitted]}
+
+
+def _entry_readers(request: Request, entry: str, project_id: str) -> dict[str, Any]:
     """Who one stored access entry admits (circle rosters resolved)."""
     from umrs.shared.access_scopes import parse_access_entry
 
@@ -672,7 +671,7 @@ def _entry_readers(request: Request, entry: str) -> dict[str, Any]:
     if scope.kind == "user":
         row["users"] = [scope.id]
     elif scope.kind == "circle":
-        row["users"] = _circle_roster(request, scope.id)
+        row.update(_circle_readers(request, scope.id, project_id))
     elif scope.kind == "project":
         row["audience"] = f"live members of project {scope.id}"
     else:
@@ -691,7 +690,9 @@ def _effective_readers(request: Request, graph: Any) -> dict[str, Any]:
         tier = f"its owner {graph.owner_id}"
     return {
         "tier": tier,
-        "entries": [_entry_readers(request, entry) for entry in graph.access],
+        "entries": [
+            _entry_readers(request, entry, graph.project_id or "") for entry in graph.access
+        ],
     }
 
 

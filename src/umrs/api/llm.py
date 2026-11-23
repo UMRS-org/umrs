@@ -19,7 +19,7 @@ import json
 import logging
 import os
 import re
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NoReturn
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
@@ -45,6 +45,7 @@ from umrs.orchestrator.endpoint_registry import (
     get_registry,
 )
 from umrs.orchestrator.provision_roster import is_role_alias, role_alias_models
+from umrs.orchestrator.registry_route import RegistryRouteRefused, gate_rows
 from umrs.server.correlation import get_request_id
 
 if TYPE_CHECKING:
@@ -241,8 +242,8 @@ def _routable_rows(
         and (ep.model in wanted or ep.metadata.get("served_model_name") in wanted)
     ]
     if caller is None:
-        return [ep for ep in rows if ep.project_id == project_id]
-    return usable_endpoints(rows, caller)
+        return gate_rows([ep for ep in rows if ep.project_id == project_id], project_id)
+    return gate_rows(usable_endpoints(rows, caller), project_id)
 
 
 def _least_loaded(rows: list[RegisteredEndpoint]) -> RegisteredEndpoint | None:
@@ -291,6 +292,10 @@ def _discover_endpoint(
     parsed variant suffix (e.g. "DeepSeek-V4-Pro-128k"), then the exact
     name, the variant-suffixed, served-name and pool-variant fallbacks, a
     role alias (ADR-106 D-1), and endpoints shared with the caller (ADR-078).
+    A pick the project's ADR-062 class refuses (a public passthrough row for
+    a sensitive project) is replaced by the least-loaded admitted replica of
+    the same model and variant, else skipped (DEC-063 gated resolver,
+    2026-11-24).
 
     Raises HTTPException if no endpoint is available.
     """
@@ -308,10 +313,37 @@ def _discover_endpoint(
         lambda: _alias_endpoint(registry, project_id, model, caller),
         lambda: _shared_fallback(registry, caller, model, base_model, variant),
     )
+    refused = None
     for strategy in strategies:
         endpoint = strategy()
-        if endpoint:
-            return endpoint
+        pick = _admitted_pick(registry, project_id, caller, endpoint)
+        if pick:
+            return pick
+        refused = refused or endpoint
+    _raise_unavailable(project_id, model, refused)
+
+
+def _admitted_pick(
+    registry: EndpointRegistry,
+    project_id: str,
+    caller: EndpointCaller | None,
+    endpoint: RegisteredEndpoint | None,
+) -> RegisteredEndpoint | None:
+    """The strategy's pick when the ADR-062 class admits it; else the
+    least-loaded admitted replica of the same model and variant, so a refused
+    public row does not hide the project's own replica (DEC-063, 2026-11-24)."""
+    if endpoint is None or gate_rows([endpoint], project_id):
+        return endpoint
+    rows = _routable_rows(registry, project_id, caller, (endpoint.model,))
+    return _least_loaded([ep for ep in rows if ep.variant == endpoint.variant])
+
+
+def _raise_unavailable(project_id: str, model: str, refused: object) -> NoReturn:
+    """No endpoint: named ``source_class_refused`` when the only matches were
+    public rows the project's ADR-062 class refuses (DEC-063, 2026-11-24)."""
+    if refused is not None:
+        exc = RegistryRouteRefused(project_id, model)
+        raise_typed(PlatformError.llm("unavailable", str(exc)), cause=exc)
     raise_typed(
         PlatformError.llm(
             "unavailable",
@@ -1231,6 +1263,8 @@ async def list_models(
         _endpoint_caller(request, caller),
         shared_only=True,
     )
+    # DEC-063: a sensitive project never lists a public passthrough row.
+    endpoints = gate_rows(endpoints, project_id)
 
     if not endpoints:
         return {"object": "list", "data": []}

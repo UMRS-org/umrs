@@ -19,6 +19,9 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = ROOT / ".github" / "workflows"
 SECURITY = WORKFLOWS / "security.yml"
+# A PEM header built from two parts, so this file holds no literal one for
+# gitleaks' private-key rule to start a match at.
+PEM_HEADER = "-----BEGIN " + "PRIVATE KEY-----"
 
 
 def _load(path: Path) -> dict:
@@ -202,7 +205,7 @@ def _intake_fixture_span() -> str:
     """What the private-key rule matches in test_intake_gate.py: the "XYZ"
     header, lazily up to the next "KEY-----" (the "secret.pem" fixture)."""
     source = (ROOT / "tests" / "test_intake_gate.py").read_text(encoding="utf-8")
-    start = source.index("-----BEGIN PRIVATE KEY-----\\nXYZ")
+    start = source.index(PEM_HEADER + "\\nXYZ")
     end = source.index("KEY-----", start + 64) + len("KEY-----")
     return source[start:end]
 
@@ -211,13 +214,59 @@ def test_gitleaks_pem_entry_covers_the_fixture_and_nothing_else() -> None:
     pattern = _pem_match_regex()
     span = _intake_fixture_span()
     assert pattern.search(span), "the triaged fixture is no longer allowlisted"
-    real = "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\n-----END PRIVATE KEY-----"
+    real = PEM_HEADER + "\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\n-----END PRIVATE KEY-----"
     cut = span.index("\n", span.index("assert dec.action"))
     # A real key between the two fixtures ends the lazy match at its own header.
     hidden = span[:cut] + "\n" + real.split("\n")[0]
     assert not pattern.search(hidden)
     assert not pattern.search(real)
     assert not pattern.search(span + "\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC")
+
+
+# Two gitleaks 8.30.1 default rules, transliterated from Go (\x60 is a
+# backtick). Both are deterministic (no entropy floor), so a Python scan finds
+# what the pinned binary finds: a fixture shaped like a JWT or a PEM private
+# key must be split in the source (see PEM_HEADER) or triaged in .gitleaks.toml
+# before it lands, or the "UMRS Security" workflow goes red on main.
+_GITLEAKS_SHAPES = {
+    "private-key": re.compile(
+        r"(?i)-----BEGIN[ A-Z0-9_-]{0,100}PRIVATE KEY(?: BLOCK)?-----"
+        r"[\s\S-]{64,}?KEY(?: BLOCK)?-----"
+    ),
+    "jwt": re.compile(
+        r"\b(ey[a-zA-Z0-9]{17,}\.ey[a-zA-Z0-9\/\\_-]{17,}\.(?:[a-zA-Z0-9\/\\_-]{10,}={0,2})?)"
+        r"(?:[\x60'\"\s;]|\\[nr]|$)"
+    ),
+}
+_SCANNED_DIRS = ("src", "tests", "packages", "protocol", "deploy", "scripts", "tools")
+_PEM_TRIAGED = ROOT / "tests" / "test_intake_gate.py"
+
+
+def _python_sources() -> list[Path]:
+    return sorted(p for d in _SCANNED_DIRS for p in (ROOT / d).rglob("*.py") if p.is_file())
+
+
+def _shape_hits(path: Path) -> list[str]:
+    source = path.read_text(encoding="utf-8", errors="replace")
+    rel = path.relative_to(ROOT)
+    return [
+        f"{rel}:{source.count(chr(10), 0, m.start()) + 1} {rule}"
+        for rule, pattern in _GITLEAKS_SHAPES.items()
+        if not (rule == "private-key" and path == _PEM_TRIAGED)
+        for m in pattern.finditer(source)
+    ]
+
+
+def test_no_python_source_holds_a_jwt_or_pem_shaped_literal() -> None:
+    hits = [hit for path in _python_sources() for hit in _shape_hits(path)]
+    assert not hits, f"split these fixtures or triage them in .gitleaks.toml: {hits}"
+
+
+def test_the_shape_scan_sees_the_triaged_pem_fixture() -> None:
+    source = _PEM_TRIAGED.read_text(encoding="utf-8")
+    assert _GITLEAKS_SHAPES["private-key"].search(source), "rule transliteration drifted"
+    jwt = ".".join(("eyJ" + "a" * 17, "eyJ" + "b" * 17, "c" * 10))
+    assert _GITLEAKS_SHAPES["jwt"].search(f'token = "{jwt}"')
 
 
 def test_codeql_scans_python_without_a_build(workflow: dict) -> None:

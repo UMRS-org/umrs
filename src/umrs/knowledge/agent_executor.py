@@ -174,21 +174,10 @@ class UmrsAgentIterationExecutor:
     ) -> dict[str, Any] | None:
         chat, model = self._chat, self._model
         if chat is None:
-            target = self._litellm_target()
-            if target is None:
-                return {
-                    "_error": "no READY chat endpoint in the registry "
-                    "and UMRS_AGENT_LITELLM_URL unset"
-                }
-            base_url, model = target
-            key = llm_chat.resolve_service_key()
-            chat = lambda messages, model, max_tokens: llm_chat.chat_completion(
-                messages,
-                model=model,
-                base_url=base_url,
-                api_key=key,
-                max_tokens=max_tokens,
-            )
+            resolved = self._registry_chat()
+            if isinstance(resolved, dict):
+                return resolved
+            chat, model = resolved
         try:
             content = chat(
                 self._messages(goal, graph, number),
@@ -199,39 +188,61 @@ class UmrsAgentIterationExecutor:
         except Exception as exc:  # noqa: BLE001 - digest-only iteration, keep loop durable
             return {"_error": str(exc)}
 
+    def _registry_chat(self) -> tuple[Callable[..., str], str] | dict[str, Any]:
+        """(chat callable, model) for this loop's turns, or the ``_error`` reply."""
+        from umrs.orchestrator.registry_route import RegistryRouteRefused
+
+        try:
+            target = self._litellm_target()
+        except RegistryRouteRefused as exc:
+            return {"_error": str(exc)}
+        if target is None:
+            return {
+                "_error": "no READY chat endpoint in the registry "
+                "and UMRS_AGENT_LITELLM_URL unset"
+            }
+        base_url, model = target
+        key = llm_chat.resolve_service_key()
+        chat = lambda messages, model, max_tokens: llm_chat.chat_completion(
+            messages,
+            model=model,
+            base_url=base_url,
+            api_key=key,
+            max_tokens=max_tokens,
+        )
+        return chat, model
+
     def _litellm_target(self) -> tuple[str, str] | None:
         """(base_url, model) for this loop's turns, or None when none is usable.
 
-        An explicit UMRS_AGENT_LITELLM_URL wins, so sites that configured it
-        keep their behaviour. Otherwise the project's chat endpoint comes from
-        the endpoint registry, the one internal inference API (ADR-068, gap
-        D-63), and a named model picks among the candidates. The old default,
-        http://127.0.0.1:11434, is the container itself inside one: every
-        agentic iteration failed there and was still marked completed.
+        An explicit UMRS_AGENT_LITELLM_URL wins (the resolver's one declared
+        exception, DEC-063), so sites that configured it keep their
+        behaviour. Otherwise the project's chat endpoint comes from the gated
+        registry resolver (ADR-068, gap D-63), and a named model picks among
+        the candidates; a sensitive project whose only rows are public
+        passthroughs raises ``RegistryRouteRefused`` (2026-11-24). The old
+        default, http://127.0.0.1:11434, is the container itself inside one:
+        every agentic iteration failed there and was still marked completed.
         """
-        explicit = os.getenv("UMRS_AGENT_LITELLM_URL", "").strip()
-        if explicit:
-            return explicit, self._model
-        from umrs.jobs.knowledge_adapters import (
-            _registry_chat_candidates,
-            _served_model_name,
-        )
+        from umrs.jobs.knowledge_adapters import _registry_chat_candidates
+        from umrs.orchestrator import registry_route
 
         project_id = str(getattr(self._project, "project_id", "") or "").strip()
+        explicit = registry_route.agent_url_exception(project_id)
+        if explicit:
+            return explicit, self._model
         if not project_id:
             # An empty project would make the registry lookup unfiltered:
             # every project's private endpoint would count as "own".
             return None
-        candidates = _registry_chat_candidates(project_id)
-        if self._wanted_model:
-            candidates = [
-                ep
-                for ep in candidates
-                if self._wanted_model in (ep.model, _served_model_name(ep))
-            ]
-        if not candidates:
+        endpoint = registry_route.resolve_registry_endpoint(
+            project_id,
+            self._wanted_model or None,
+            rows=_registry_chat_candidates(project_id),
+        )
+        if endpoint is None:
             return None
-        return candidates[0].litellm_url, _served_model_name(candidates[0])
+        return endpoint.litellm_url, registry_route.served_name(endpoint)
 
     @staticmethod
     def _parse_reply(text: str) -> dict[str, Any]:

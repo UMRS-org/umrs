@@ -11,7 +11,9 @@ the public-host pin of the pushed-source path.
 
 ADR-062: a row that is a public passthrough (``metadata.locality ==
 "public"`` or a public provider kind) is refused for a sensitive project;
-self-deployed rows are the sensitive project's own route.
+self-deployed rows are the sensitive project's own route. The predicate
+lives in ``umrs.shared.endpoint_locality`` (DEC-063, 2026-11-24), shared with
+the gated resolver every other server consumer uses.
 """
 
 from __future__ import annotations
@@ -21,7 +23,8 @@ import os
 import re
 from typing import Any
 
-from umrs.shared.project_data_class import PUBLIC_PROVIDER_KINDS
+# One definition of a public row for every seam (DEC-063): re-exported here.
+from umrs.shared.endpoint_locality import is_public_row
 
 MAX_SITE_BODY_BYTES = 32 * 1024 * 1024
 #: OpenAI-compatible verbs a site model serves to a sandbox.
@@ -92,14 +95,6 @@ def _selected(registry: Any, project: str, model: str) -> Any:
 def _served_as(registry: Any, project: str, model: str) -> Any:
     """The project's first ready row serving ``model`` under any of its names."""
     return next((ep for ep in _ready(registry, project) if model in _names(ep)), None)
-
-
-def is_public_row(endpoint: Any) -> bool:
-    metadata = getattr(endpoint, "metadata", None) or {}
-    return (
-        metadata.get("locality") == "public"
-        or metadata.get("provider_kind") in PUBLIC_PROVIDER_KINDS
-    )
 
 
 def request_model(body: bytes) -> tuple[dict[str, Any], str]:

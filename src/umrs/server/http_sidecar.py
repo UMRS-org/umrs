@@ -19,7 +19,7 @@ import os
 import pathlib
 import threading
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from fastapi import Request
 from fastapi.staticfiles import StaticFiles
@@ -77,20 +77,43 @@ def _build_db_pool(app):
         return None
 
 
-def _start_durable_runtime() -> None:
+def _start_durable_runtime() -> Any:
     """Start the process-owned durable jobs runtime (best-effort).
 
     ``start_durable_job_runtime_from_env()`` is a no-op when no orchestrator
     backend (Slurm/K8s/Docker) is detected. Without this call the durable-job
     dispatch scheduler never starts on this deployment and durable jobs
     (workflow_run, knowledge_*, data_ingestion) queue forever.
+
+    Returns the runtime this call started, which the lifespan stops on exit;
+    None when it reused the process's runtime (``server_umrs.py`` owns and
+    stops that one) or none started. Nothing stopped it before 2026-11-24:
+    every app lifespan (each ``TestClient(app)`` in the suite) left a live
+    runtime registered, and a later loop start in the same worker was
+    job-hosted on it (UMRS-org main run 45280814153).
     """
     try:
-        from umrs.server.durable_job_runtime import start_durable_job_runtime_from_env
+        from umrs.server.durable_job_runtime import (
+            get_runtime,
+            start_durable_job_runtime_from_env,
+        )
 
-        start_durable_job_runtime_from_env()
+        running = get_runtime()
+        started = start_durable_job_runtime_from_env()
     except Exception:
         logger.warning("Durable job runtime start skipped", exc_info=True)
+        return None
+    return None if started is running else started
+
+
+def _stop_durable_runtime(runtime: Any) -> None:
+    """Shut down the runtime this lifespan started (None: nothing to stop)."""
+    if runtime is None:
+        return
+    try:
+        runtime.shutdown()
+    except Exception:  # shutdown is best-effort; never mask the exit
+        logger.warning("Durable job runtime shutdown failed", exc_info=True)
 
 
 def _init_catalog_meta_store(db_pool):
@@ -1037,7 +1060,7 @@ def _create_app():
             logger.info("Endpoint walltime relay started via lifespan hook")
         if start_scheduler():
             logger.info("Scheduler service started via lifespan hook")
-        _start_durable_runtime()
+        durable_runtime = _start_durable_runtime()
         _rehydrate_loop_drivers()
         account_sweep = _start_account_sweep()
         _start_ledger_sweep()
@@ -1047,6 +1070,7 @@ def _create_app():
             if account_sweep is not None:
                 account_sweep.stop()
             stop_scheduler()
+            _stop_durable_runtime(durable_runtime)
             stop_endpoint_relay()
             stop_janitor()
             logger.info("Scheduler service + janitor stopped via lifespan hook")

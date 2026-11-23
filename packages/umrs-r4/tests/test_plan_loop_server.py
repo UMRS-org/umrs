@@ -332,6 +332,16 @@ class TestTheGate:
         assert tool_approvals.get(foreign["id"])["status"] == "pending"
 
 
+def _pin_thread_hosting(monkeypatch) -> None:
+    """These routes are thread-hosted: no process durable runtime.
+
+    The runtime is process-global; a runtime another test in the same xdist
+    worker left registered made the start route job-host the loop, and
+    ``register`` was never called (UMRS-org main run 45280814153).
+    """
+    monkeypatch.setattr("umrs.server.durable_job_runtime.get_runtime", lambda: None)
+
+
 class TestTheStartRoute:
     @pytest.fixture
     def loops(self, monkeypatch, tmp_path):
@@ -340,6 +350,7 @@ class TestTheStartRoute:
 
         for name, value in READY_ENV.items():
             monkeypatch.setenv(name, value)
+        _pin_thread_hosting(monkeypatch)
         loop_api.clear_loop_store()
         previous = loop_api._loop_engine
         loop_api._loop_engine = AutonomousResearchLoop(simulated=True)
@@ -538,6 +549,7 @@ class TestTheWebChoice:
         for name, value in READY_ENV.items():
             monkeypatch.setenv(name, value)
         monkeypatch.delenv("UMRS_SESSION_WEB_CHOICE_REQUIRED", raising=False)
+        _pin_thread_hosting(monkeypatch)
         loop_api.clear_loop_store()
         previous = loop_api._loop_engine
         loop_api._loop_engine = AutonomousResearchLoop(simulated=True)
