@@ -126,6 +126,16 @@ def test_an_upload_without_provenance_has_none(client) -> None:
     assert "provenance" not in _row("1.0.0")
 
 
+@pytest.mark.parametrize("again", [{"repo": "github.com/evil/x", "commit": "f" * 40}, None])
+def test_an_unchanged_reupload_keeps_the_first_provenance(client, again) -> None:
+    first = {"repo": "github.com/org/wf", "commit": COMMIT}
+    assert _upload(client, "1.0.0", json.dumps(first)).status_code == 202
+    response = _upload(client, "1.0.0", None if again is None else json.dumps(again))
+    assert response.json()["status"] == "unchanged", response.text
+    kept = _row("1.0.0")["provenance"]
+    assert (kept["repo"], kept["commit"]) == ("github.com/org/wf", COMMIT)
+
+
 # ── scoped trigger → durable spec → output ingest ─────────────────────────
 
 

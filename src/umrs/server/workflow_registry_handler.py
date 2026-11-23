@@ -276,7 +276,9 @@ def _version_conflict(
 def _reregistered(existing: dict[str, Any], entry: dict[str, Any]) -> dict[str, Any]:
     """The same (name, version, scope, owner) again. Versions are immutable
     (ADR-113 D-2): other files are refused by name; the same files are a
-    no-op (``unchanged``); a row without code (D-8) gets its files back."""
+    no-op (``unchanged``); a row without code (D-8) gets its files back.
+    An unchanged row also keeps the provenance (ADR-108 D-6) it was first
+    registered with: a re-upload never rewrites the recorded commit."""
     conflict = _version_conflict(existing, entry)
     if conflict is not None:
         return conflict
@@ -288,6 +290,7 @@ def _reregistered(existing: dict[str, Any], entry: dict[str, Any]) -> dict[str, 
     kept = {k: existing[k] for k in _NAME_LEVEL_FIELDS if k in existing}
     if unchanged:
         kept["registered_at"] = existing.get("registered_at")
+        entry = {k: v for k, v in entry.items() if k != "provenance"}
     existing.pop("code", None)
     existing.update(entry)
     existing.update(kept)
@@ -316,7 +319,7 @@ def register_workflow(
     is a no-op (``unchanged: true``). A new version inherits the name's
     access list and trigger pin (D-5, D-7). ``provenance`` is the upload's
     cleaned, client-reported source commit (ADR-108 D-6), kept on the row;
-    an unchanged re-registration keeps the row it first wrote.
+    an unchanged re-registration keeps the provenance it first recorded.
 
     Returns a dict with "status" ("ok" or "error") and details.
     """
