@@ -1343,6 +1343,21 @@ def _refuse_unsignable_export(body: ExportRequest) -> None:
     )
 
 
+def _audit_export(
+    event: str, request: Request, project_id: str, *, actor: str = "", **details: Any
+) -> None:
+    """ADR-088 W0 ``export.*``: ids and flags only (never the bundle content)."""
+    from umrs.audit.security_events import emit_security
+
+    emit_security(
+        event,
+        actor=actor or request.headers.get("x-user-id", ""),
+        project_id=project_id,
+        scope="project",
+        **details,
+    )
+
+
 @router.post("/export", response_model=dict[str, Any])
 async def export_knowledge(
     body: ExportRequest,
@@ -1356,6 +1371,13 @@ async def export_knowledge(
     refused, never silently exported.
     """
     if body.project_id != _get_project_id:
+        _audit_export(
+            "export.refused",
+            request,
+            _get_project_id,
+            reason="project_mismatch",
+            requested_project=body.project_id,
+        )
         raise_typed(
             PlatformError.knowledge(
                 "project_mismatch",
@@ -1411,6 +1433,16 @@ async def export_knowledge(
         )
 
         logger.info("Knowledge export queued: %s", job_id)
+        _audit_export(
+            "export.requested",
+            request,
+            body.project_id,
+            actor=submitter,
+            job_id=job_id,
+            include_raw=bool(body.include_raw),
+            chunk_text=bool(body.chunk_text),
+            allow_unsigned=bool(body.allow_unsigned),
+        )
         from umrs.knowledge.bundle_archive import export_archive_key
 
         return {

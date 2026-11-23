@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, NoReturn
 
 from fastapi import APIRouter, Depends, Header, status
 from pydantic import BaseModel, Field
@@ -80,32 +80,35 @@ class _JWTIdentity:
 # ---------------------------------------------------------------------------
 
 
+def _refuse_auth(code: str, message: str, cause: Exception | None = None) -> NoReturn:
+    """Typed auth refusal, written as ``auth.failed`` first (ADR-088 W0):
+    the reason code only, never the token or the validator's message."""
+    from umrs.audit.security_events import emit_security
+
+    from .typed_errors import raise_typed
+
+    emit_security("auth.failed", surface="zmq_session", reason=code, route="/umrs/zmq")
+    raise_typed(PlatformError.auth(code, message), cause=cause)
+
+
 def _extract_jwt_identity(authorization: str | None = Header(None)) -> _JWTIdentity:
     """Extract full identity (sub, email, projects, roles) from the JWT bearer token."""
     from umrs.shared.auth import JWTError, resolve_jwt_secret, validate_jwt
 
-    from .typed_errors import raise_typed
-
     if not authorization:
-        raise_typed(
-            PlatformError.auth("missing_header", "Missing Authorization header")
-        )
+        _refuse_auth("missing_header", "Missing Authorization header")
     parts = authorization.split()
     if len(parts) != 2 or parts[0].lower() != "bearer":
-        raise_typed(
-            PlatformError.auth(
-                "bad_scheme", "Authorization header must be 'Bearer <token>'"
-            )
-        )
+        _refuse_auth("bad_scheme", "Authorization header must be 'Bearer <token>'")
     token = parts[1]
     try:
         claims = validate_jwt(token, resolve_jwt_secret())
     except JWTError as exc:
-        raise_typed(PlatformError.auth("bad_token", str(exc)), cause=exc)
+        _refuse_auth("bad_token", str(exc), cause=exc)
 
     user_id = claims.get("sub") or claims.get("username") or claims.get("user_id")
     if not user_id:
-        raise_typed(PlatformError.auth("bad_token", "JWT missing 'sub' claim"))
+        _refuse_auth("bad_token", "JWT missing 'sub' claim")
 
     # Extract projects: support both list and single-value claim
     projects_claim = claims.get("projects") or claims.get("project_id")
@@ -311,7 +314,7 @@ async def revoke_session(
         raise_typed(
             PlatformError.session("forbidden", "Cannot revoke another user's session")
         )
-    provider.revoke(session_id)
+    provider.revoke(session_id, actor=user_id, cause="owner")
 
 
 @router.post(

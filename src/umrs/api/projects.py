@@ -783,7 +783,25 @@ def put_project_budget(
     policy = _plan_policy_update(body, budget)
     if policy is not None:
         budget = store.set_plan_policy(project_id, **policy)
+    _audit_budget_change(project_id, body, identity)
     return {"status": "ok", "budget": budget}
+
+
+def _audit_budget_change(project_id: str, body: BudgetBody, identity: CallerIdentity) -> None:
+    """ADR-088 W0 ``admin.quota_changed`` for a project budget write: which
+    fields were named and whether an admin wrote them (no values)."""
+    from umrs.audit.security_events import emit_security
+
+    emit_security(
+        "admin.quota_changed",
+        actor=identity.user_id or "",
+        project_id=project_id,
+        scope="project",
+        subject_kind="project",
+        subject=project_id,
+        fields=sorted(body.model_fields_set) or ["max_gpu_hours", "max_wall_clock_hours"],
+        by_admin=bool(identity.is_admin),
+    )
 
 
 # -- external storage binding (ADR-077, gap row D-17) -------------------------

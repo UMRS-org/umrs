@@ -27,10 +27,22 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
 CURVE_KEY_LEN = 40
+
+
+def _audit_session(event: str, *, actor: str, **details: Any) -> None:
+    """ADR-088 W0: one ``zmq.session_minted`` / ``zmq.session_revoked`` row.
+
+    Ids and counts only (never a key, a grant's email or an address); the
+    emitter's import is lazy (no ``umrs.api`` at load) and never raises.
+    """
+    from umrs.audit.security_events import emit_security
+
+    emit_security(event, actor=actor, scope="user", **details)
 
 
 @dataclass(frozen=True)
@@ -269,6 +281,15 @@ class SessionCredentialsProvider:
             user_id,
             effective_ttl,
         )
+        _audit_session(
+            "zmq.session_minted",
+            actor=user_id,
+            session_id=sid,
+            kind="account" if sid.startswith("account:") else "session",
+            ttl_seconds=int(effective_ttl),
+            max_gpus=entry.grants.max_gpus,
+            max_walltime_sec=entry.grants.max_walltime_sec,
+        )
         return entry
 
     def attach_account_records_source(self, source) -> None:
@@ -326,10 +347,11 @@ class SessionCredentialsProvider:
             self._account_sync_failures = 0
         logger.debug("D-03 live account-keystore sync: %d account key(s)", count)
 
-    def revoke(self, session_id: str) -> bool:
+    def revoke(self, session_id: str, *, actor: str = "", cause: str = "revoke") -> bool:
         """Revoke a single session by ID.
 
-        Returns ``True`` if the session existed and was removed.
+        Returns ``True`` if the session existed and was removed. ``actor``
+        (who asked) and ``cause`` go to the ``zmq.session_revoked`` row.
         """
         with self._lock:
             pubkey = self._by_session.get(session_id)
@@ -341,7 +363,14 @@ class SessionCredentialsProvider:
             else:
                 del self._by_session[session_id]
             logger.info("CURVE session revoked: session=%s", session_id)
-            return True
+        _audit_session(
+            "zmq.session_revoked",
+            actor=actor or (entry.user_id if entry is not None else ""),
+            session_id=session_id,
+            cause=cause,
+            count=1,
+        )
+        return True
 
     _ACCOUNT_KEY_TTL = 10 * 365 * 86400  # ~10 years: long-lived by D-03 design
 
@@ -393,14 +422,30 @@ class SessionCredentialsProvider:
         wanted = self._wanted_account_keys(records)
         disabled = self._disabled_users(records)
         with self._lock:
-            for entry in [e for e in self._by_key.values() if e.user_id in disabled]:
+            ended = [e for e in self._by_key.values() if e.user_id in disabled]
+            for entry in ended:
                 self._remove_entry_unlocked(entry)
-            for entry in self._stale_account_entries(wanted):
+            retired = self._stale_account_entries(wanted)
+            for entry in retired:
                 self._remove_entry_unlocked(entry)
             for key, user in wanted.items():
                 if key not in self._by_key:
                     self.register_account_key(key, user)
-            return len(wanted)
+        self._audit_removed(ended, "account_disabled")
+        self._audit_removed(retired, "account_key_retired")
+        return len(wanted)
+
+    @staticmethod
+    def _audit_removed(entries: list[SessionCurveEntry], cause: str) -> None:
+        """One ``zmq.session_revoked`` row per entry the sync removed."""
+        for entry in entries:
+            _audit_session(
+                "zmq.session_revoked",
+                actor="system",
+                session_id=entry.session_id,
+                cause=cause,
+                count=1,
+            )
 
     @staticmethod
     def _disabled_users(records) -> set[str]:
@@ -420,7 +465,7 @@ class SessionCredentialsProvider:
             and wanted.get(e.pubkey_z85) != e.user_id
         ]
 
-    def revoke_user(self, user_id: str) -> int:
+    def revoke_user(self, user_id: str, *, actor: str = "") -> int:
         """Revoke all sessions for a user.  Returns the count removed."""
         with self._lock:
             to_remove = [e for e in self._by_key.values() if e.user_id == user_id]
@@ -431,6 +476,13 @@ class SessionCredentialsProvider:
                 "CURVE sessions revoked for user %r: %d removed",
                 user_id,
                 len(to_remove),
+            )
+            _audit_session(
+                "zmq.session_revoked",
+                actor=actor or "system",
+                session_id=f"user:{user_id}",
+                cause="revoke_user",
+                count=len(to_remove),
             )
         return len(to_remove)
 

@@ -29,6 +29,54 @@ from umrs.shared.config import resolve_server_user_files_dir
 logger = logging.getLogger(__name__)
 
 
+def _audited_fields(record: Any) -> dict[str, Any]:
+    """The fields whose change is an ``admin.*`` security row (ADR-088 W0)."""
+    return {
+        "role": record.role,
+        "disabled": bool(record.disabled),
+        "quota": dict(record.quota or {}),
+    }
+
+
+def _audit_account_changes(username: str, before: dict[str, Any], record: Any) -> None:
+    """``admin.role_changed`` / ``admin.account_state_changed`` /
+    ``admin.quota_changed`` for what this update changed (never raises;
+    names and codes only: quota values and other fields stay out)."""
+    from umrs.audit.security_events import emit_security
+
+    after = _audited_fields(record)
+    if before["role"] != after["role"]:
+        emit_security(
+            "admin.role_changed",
+            actor="operator",
+            username=username,
+            old_role=before["role"],
+            new_role=after["role"],
+        )
+    if before["disabled"] != after["disabled"]:
+        emit_security(
+            "admin.account_state_changed",
+            actor="operator",
+            username=username,
+            disabled=after["disabled"],
+        )
+    changed = _changed_keys(before["quota"], after["quota"])
+    if changed:
+        emit_security(
+            "admin.quota_changed",
+            actor="operator",
+            subject_kind="user",
+            subject=username,
+            fields=changed,
+            by_admin=True,
+        )
+
+
+def _changed_keys(old: dict[str, Any], new: dict[str, Any]) -> list[str]:
+    keys = set(old).union(new)
+    return sorted(k for k in keys if old.get(k) != new.get(k))
+
+
 _VALID_USERNAME_RE = re.compile(r"^[a-z][a-z0-9._-]{1,62}$")
 
 VALID_ROLES = ("user", "admin", "service")
@@ -359,6 +407,7 @@ class UserStore:
     def update(self, username: str, **changes: Any) -> UserRecord:
         """Merge ``changes`` into the record. Unknown fields go to ``extras``."""
         record = self.get(username)
+        before = _audited_fields(record)
         for key, value in changes.items():
             if key in {"username"}:
                 raise UserStoreError("username is immutable; use rename()")
@@ -372,6 +421,7 @@ class UserStore:
                 record.extras[key] = value
         record.last_updated = _now_iso()
         self._write(self._path(username), record.to_json())
+        _audit_account_changes(username, before, record)
         return record
 
     def set_disabled(self, username: str, disabled: bool) -> UserRecord:
