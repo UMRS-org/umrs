@@ -17,7 +17,7 @@ MCP_SCHEMA_VERSION = 1
 CREATE_MCP_SERVERS_TABLE = """
 CREATE TABLE IF NOT EXISTS mcp_servers (
     server_id VARCHAR(64) PRIMARY KEY,
-    name VARCHAR(256) NOT NULL UNIQUE,
+    name VARCHAR(256) NOT NULL,
     version VARCHAR(32) NOT NULL DEFAULT '0.1.0',
     url TEXT NOT NULL,
     transport VARCHAR(32) NOT NULL DEFAULT 'http',
@@ -47,6 +47,9 @@ CREATE TABLE IF NOT EXISTS mcp_tools (
 
 CREATE_INDEXES = """
 CREATE INDEX IF NOT EXISTS idx_mcp_servers_name ON mcp_servers(name);
+-- Names are unique per project (migration 0140, hunt #26).
+CREATE UNIQUE INDEX IF NOT EXISTS mcp_servers_project_name_key
+    ON mcp_servers ((COALESCE(TRIM(project_id), '')), name);
 CREATE INDEX IF NOT EXISTS idx_mcp_servers_status ON mcp_servers(status);
 CREATE INDEX IF NOT EXISTS idx_mcp_servers_project ON mcp_servers(project_id) WHERE project_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_mcp_tools_server ON mcp_tools(server_id);

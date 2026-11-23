@@ -167,7 +167,7 @@ def test_invoke_refuses_trusted_host_only_server(monkeypatch):
     http_request = _admin_scope(monkeypatch, mcp_mod)
 
     class _Store:
-        def get_server_for_tool(self, _tool):
+        def get_server_for_tool(self, _tool, **_filters):
             return _ToolServer("lab-scope-server", "trusted-host-only")
 
     mcp_mod._store = _Store()
@@ -197,7 +197,7 @@ def test_invoke_allows_local_safe_and_front_end_servers(monkeypatch):
         def __init__(self, trust_class):
             self._cls = trust_class
 
-        def get_server_for_tool(self, _tool):
+        def get_server_for_tool(self, _tool, **_filters):
             return _ToolServer("any-server", self._cls)
 
     for cls in ("local-safe", "front-end"):

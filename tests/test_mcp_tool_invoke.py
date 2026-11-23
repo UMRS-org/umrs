@@ -48,7 +48,7 @@ class MockMCPStore:
     def list_servers(self, **kwargs):
         return self._servers
 
-    def get_server_for_tool(self, tool_name: str):
+    def get_server_for_tool(self, tool_name: str, **_filters):
         for s in self._servers:
             for t in s.tools:
                 if t.name == tool_name:
@@ -65,6 +65,7 @@ class MockMCPStore:
                         "description": t.description,
                         "inputSchema": t.input_schema,
                         "server": s.name,
+                        "server_id": s.server_id,
                     }
                 )
         return tools

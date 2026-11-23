@@ -27,6 +27,7 @@ from pydantic import BaseModel, Field
 
 from ..mcp.store import (
     MCPServerNotFoundError,
+    MCPServerOwnershipError,
     MCPServerStore,
 )
 from .typed_errors import PlatformError, raise_typed
@@ -228,6 +229,13 @@ class ToolCallRequest(BaseModel):
     """Request to invoke an MCP tool."""
 
     tool: str = Field(..., description="Tool name to invoke")
+    server: str | None = Field(
+        None,
+        description=(
+            "Server that provides the tool (optional). Tool names collide "
+            "across servers; mcp.<server>.<tool> names one of them."
+        ),
+    )
     arguments: dict[str, Any] = Field(
         default_factory=dict, description="Tool arguments"
     )
@@ -335,6 +343,72 @@ def _enforce_registration_scope(
     return req
 
 
+def _owner_guarded(request: Request) -> bool:
+    """Non-admin callers may update only a server row their project owns.
+
+    Names are unique per project (migration 0140), so a project's
+    registration writes its own row and never another project's or the
+    global one (2026-11-23 hunt #26: the registry-wide upsert let any project
+    take them over). The guard stays as a second check on the upsert.
+    """
+    scope = _caller_scope(request)
+    return not (scope.is_admin or scope.anonymous)
+
+
+def _caller_project(request: Request) -> str | None:
+    """The project a by-name lookup resolves for; None for unrestricted callers.
+
+    Names are unique per project (migration 0140): a project caller's name
+    reads its own row, else the global one.
+    """
+    scope = _caller_scope(request)
+    return None if scope.is_admin or scope.anonymous else scope.project_id
+
+
+def _server_by_id_or_name(store, request: Request, server_id_or_name: str):
+    if server_id_or_name.startswith("mcp-"):
+        return store.get_server(server_id_or_name)
+    return store.get_server_by_name(
+        server_id_or_name, project_id=_caller_project(request)
+    )
+
+
+def _store_register(store, req: ServerRegistrationRequest, owner_guard: bool):
+    """Write the registration; typed 400 / 403 for refused writes."""
+    from umrs.shared.venue_placement import PlacementError
+
+    try:
+        return store.register_server(
+            name=req.name,
+            url=req.url,
+            version=req.version,
+            transport=req.transport,
+            description=req.description,
+            auth_type=req.auth_type,
+            auth_config=req.auth_config,
+            metadata=req.metadata,
+            tools=req.tools,
+            project_id=req.project_id,
+            placement=req.placement,
+            trust_class=req.trust_class,
+            owner_guard=owner_guard,
+        )
+    except PlacementError as exc:
+        # D-19/D-49: undeclared host / bad class map → typed 400 with reason
+        raise_typed(PlatformError.mcp("bad_request", str(exc)), cause=exc)
+    except MCPServerOwnershipError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "error": "scope_denied",
+                "message": (
+                    f"MCP server {req.name!r} is bound to another owner; "
+                    "global servers are admin-only."
+                ),
+            },
+        ) from exc
+
+
 def _record_registration_audit(server, req: ServerRegistrationRequest) -> None:
     """Audit + resource registry emission for a completed registration."""
     from .audit_events import emit_audit
@@ -364,7 +438,9 @@ async def register_server(
     """
     Register or update an MCP server.
 
-    If a server with the same name exists, it is updated (upsert).
+    A server with the same name in the same project (or the global registry,
+    for admins) is updated (upsert); names are unique per project, so a
+    project never writes another project's or the global server.
     """
     req = _enforce_registration_scope(request, req)
 
@@ -376,27 +452,7 @@ async def register_server(
 
     check_quota(req.project_id or "", "mcp_servers")
 
-    store = _get_store()
-    # D-19/D-49: undeclared host / bad class map → typed 400 with reason
-    from umrs.shared.venue_placement import PlacementError
-
-    try:
-        server = store.register_server(
-            name=req.name,
-            url=req.url,
-            version=req.version,
-            transport=req.transport,
-            description=req.description,
-            auth_type=req.auth_type,
-            auth_config=req.auth_config,
-            metadata=req.metadata,
-            tools=req.tools,
-            project_id=req.project_id,
-            placement=req.placement,
-            trust_class=req.trust_class,
-        )
-    except PlacementError as exc:
-        raise_typed(PlatformError.mcp("bad_request", str(exc)), cause=exc)
+    server = _store_register(_get_store(), req, _owner_guarded(request))
     logger.info("Registered MCP server: %s (id=%s)", server.name, server.server_id)
     _record_registration_audit(server, req)
 
@@ -410,10 +466,7 @@ async def get_server(request: Request, server_id_or_name: str) -> ServerResponse
     unrestricted = scope.is_admin or scope.anonymous
     store = _get_store()
     try:
-        if server_id_or_name.startswith("mcp-"):
-            server = store.get_server(server_id_or_name)
-        else:
-            server = store.get_server_by_name(server_id_or_name)
+        server = _server_by_id_or_name(store, request, server_id_or_name)
     except MCPServerNotFoundError:
         raise_typed(
             PlatformError.mcp("not_found", f"Server not found: {server_id_or_name}")
@@ -432,10 +485,7 @@ def _enforce_unregister_scope(store, request: Request, server_id_or_name: str) -
     if scope.is_admin or scope.anonymous:
         return
     try:
-        if server_id_or_name.startswith("mcp-"):
-            server = store.get_server(server_id_or_name)
-        else:
-            server = store.get_server_by_name(server_id_or_name)
+        server = _server_by_id_or_name(store, request, server_id_or_name)
     except MCPServerNotFoundError:
         return
     bound = (getattr(server, "project_id", None) or "").strip()
@@ -461,7 +511,9 @@ async def unregister_server(request: Request, server_id_or_name: str) -> dict[st
     if server_id_or_name.startswith("mcp-"):
         deleted = store.unregister_server_by_id(server_id_or_name)
     else:
-        deleted = store.unregister_server(server_id_or_name)
+        deleted = store.unregister_server(
+            server_id_or_name, project_id=_caller_project(request)
+        )
 
     if not deleted:
         raise_typed(
@@ -492,8 +544,11 @@ async def list_tools(
     scope = _caller_scope(request)
     unrestricted = scope.is_admin or scope.anonymous
     store = _get_store()
-    visible_names = {
-        s.name
+    # By server id: names are unique per project (migration 0140), so a
+    # visible global server's name no longer vouches for a foreign
+    # project's server of the same name.
+    visible_ids = {
+        s.server_id
         for s in store.list_servers()
         if _server_visible(s, scope.project_id, unrestricted)
     }
@@ -506,7 +561,7 @@ async def list_tools(
             server=t["server"],
         )
         for t in tools
-        if t["server"] in visible_names
+        if t.get("server_id") in visible_ids
     ]
 
 
@@ -522,7 +577,7 @@ async def lookup_tool_server(
     return _server_to_response(server)
 
 
-def _visible_server_for_tool(request: Request, tool: str):
+def _visible_server_for_tool(request: Request, tool: str, server_name: str | None = None):
     """The server providing ``tool`` when the caller may see it, else None.
 
     Lookup and call took no identity: any caller found any project's tool and
@@ -530,12 +585,20 @@ def _visible_server_for_tool(request: Request, tool: str):
     2026-10-17). Strict mode now needs identity (401), and a project-bound
     server is visible to its project only, as in the listing (audit B9);
     another project's tool reads as not found.
+
+    The pick runs among the visible servers only (and on ``server_name``
+    when the caller names one): a global LIMIT 1 let another project's later
+    registration of the same tool name shadow the caller's own (hunt #27).
     """
     scope = _caller_scope(request)
-    server = _get_store().get_server_for_tool(tool)
+    unrestricted = scope.is_admin or scope.anonymous
+    server = _get_store().get_server_for_tool(
+        tool,
+        server_name=(server_name or "").strip() or None,
+        visible_project=None if unrestricted else scope.project_id,
+    )
     if server is None:
         return None
-    unrestricted = scope.is_admin or scope.anonymous
     return server if _server_visible(server, scope.project_id, unrestricted) else None
 
 
@@ -642,7 +705,8 @@ async def call_tool(
     """
     Invoke an MCP tool.
 
-    Looks up which server owns the tool, then proxies the call directly.
+    Looks up which server owns the tool (the named ``server`` when the
+    request gives one), then proxies the call directly.
     D-19 call-time trust enforcement: a trusted-host-only server is
     reachable only from its named trusted:<host> venue rail — no such
     rail exists yet (mcp is not in RAIL_GW_FAMILIES either), so every
@@ -650,7 +714,7 @@ async def call_tool(
     trusted-host venue lane lands, the rail's venue marker becomes the
     accepted path.
     """
-    server = _visible_server_for_tool(http_request, request.tool)
+    server = _visible_server_for_tool(http_request, request.tool, request.server)
     if not server:
         raise_typed(PlatformError.mcp("not_found", f"Tool not found: {request.tool}"))
     if (getattr(server, "trust_class", "") or "") == "trusted-host-only":

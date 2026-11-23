@@ -52,6 +52,70 @@ class DuplicateMCPServerError(MCPServerStoreError):
     """Raised when registering a server with a duplicate name."""
 
 
+class MCPServerOwnershipError(MCPServerStoreError):
+    """Raised when a guarded registration would rebind another owner's row.
+
+    Names are unique per project (migration 0140: the key is
+    ``(COALESCE(TRIM(project_id), ''), name)``), so a registration only ever
+    conflicts with its own project's row; the guard stays as a second check
+    on the upsert. Before, names were registry-unique and the upsert rebound
+    an existing row to the registering project: any project could take over
+    the global or another project's server (2026-11-23 hunt #26).
+    """
+
+
+# Upsert guard: update only a row already bound to the registering project
+# (NULL and '' both mean global). Unguarded keeps the admin path's rebind.
+_OWNER_GUARD = (
+    "WHERE COALESCE(TRIM(mcp_servers.project_id), '') = "
+    "COALESCE(TRIM(EXCLUDED.project_id), '')"
+)
+
+
+# The registry key (migration 0140): NULL and '' (and padding) mean global.
+_PROJECT_KEY = "COALESCE(TRIM(project_id), '')"
+
+
+def _name_lookup(name: str, project_id: str | None) -> tuple[str, list[str]]:
+    """WHERE + ORDER BY (and params) picking one row for ``name``.
+
+    A project caller sees its own row first, then the global one; another
+    project's row with the same name is never picked. ``None`` (admin,
+    internal callers) prefers the global row, then the most recent.
+    """
+    if project_id is None:
+        return (
+            f"name = %s ORDER BY ({_PROJECT_KEY} = '') DESC, updated_at DESC",
+            [name],
+        )
+    project = project_id.strip()
+    where = f"name = %s AND {_PROJECT_KEY} IN ('', %s) ORDER BY ({_PROJECT_KEY} = %s) DESC"
+    return where, [name, project, project]
+
+
+def _tool_lookup_filter(
+    tool_name: str, server_name: str | None, visible_project: str | None
+) -> tuple[str, list[str]]:
+    """WHERE ... ORDER BY + params for ``get_server_for_tool``.
+
+    Tool names collide across servers (e.g. a user's hatch copy of a default
+    package), and since migration 0140 a project's server may share its name
+    with a global one: the caller's own project's row is picked first, then
+    a healthy, most recently registered one (2026-09-25: two stale July
+    entries on dead ports shared names with the default set).
+    """
+    clauses, params = ["t.name = %s"], [tool_name]
+    order = "(s.status = 'healthy') DESC, s.updated_at DESC"
+    if server_name:
+        clauses.append("s.name = %s")
+        params.append(server_name)
+    if visible_project is not None:
+        clauses.append("COALESCE(TRIM(s.project_id), '') IN ('', %s)")
+        order = f"(COALESCE(TRIM(s.project_id), '') = %s) DESC, {order}"
+        params += [visible_project, visible_project]
+    return f"{' AND '.join(clauses)} ORDER BY {order}", params
+
+
 class MCPServerStore:
     """
     MCP Server Registry data access layer.
@@ -173,11 +237,17 @@ class MCPServerStore:
         project_id: str | None = None,
         placement: str = "local",
         trust_class: str = "local-safe",
+        owner_guard: bool = False,
     ) -> MCPServer:
         """
         Register or update an MCP server and its tools.
 
         If a server with the same name exists, it is updated (upsert).
+        ``owner_guard`` (every non-admin caller): the update applies only when
+        that row is bound to ``project_id``; otherwise nothing is written and
+        ``MCPServerOwnershipError`` is raised. The check is part of the
+        upsert itself, so a concurrent registration cannot slip between a
+        lookup and the write.
         Placement + trust class are validated (D-19/D-49: grammar, declared
         hosts, ADR-061 class map) before any write — a bad placement never
         reaches the registry.
@@ -208,7 +278,7 @@ class MCPServerStore:
                     %s, %s, %s, %s,
                     %s, %s, %s, %s, NOW(), NOW()
                 )
-                ON CONFLICT (name) DO UPDATE SET
+                ON CONFLICT ((COALESCE(TRIM(project_id), '')), name) DO UPDATE SET
                     version = EXCLUDED.version,
                     url = EXCLUDED.url,
                     transport = EXCLUDED.transport,
@@ -222,6 +292,9 @@ class MCPServerStore:
                     placement = EXCLUDED.placement,
                     trust_class = EXCLUDED.trust_class,
                     updated_at = NOW()
+                """
+                + (_OWNER_GUARD if owner_guard else "")
+                + """
                 RETURNING server_id, created_at, updated_at
                 """,
                 (
@@ -241,6 +314,11 @@ class MCPServerStore:
                 ),
             )
             row = cur.fetchone()
+            if row is None:  # the owner guard refused the update
+                raise MCPServerOwnershipError(
+                    f"MCP server {name!r} of project {project_id!r} "
+                    "is bound to another owner"
+                )
             actual_server_id = row[0]
 
             # Replace tools: delete old, insert new
@@ -336,24 +414,29 @@ class MCPServerStore:
 
         return self._run(_select)
 
-    def get_server_by_name(self, name: str) -> MCPServer:
+    def get_server_by_name(self, name: str, *, project_id: str | None = None) -> MCPServer:
         """
-        Get a server by name.
+        Get a server by name, as ``project_id`` sees it.
+
+        Names are unique per project (migration 0140): a project caller gets
+        its own row, else the global one; ``None`` prefers the global row.
 
         Raises:
             MCPServerNotFoundError: If server not found.
         """
+        where, params = _name_lookup(name, project_id)
 
         def _select(cur) -> MCPServer:
             cur.execute(
-                """
+                f"""
                 SELECT server_id, name, version, url, transport, status,
                        description, auth_type, auth_config, metadata,
                        registered_by, project_id, placement, trust_class,
                        created_at, updated_at
-                FROM mcp_servers WHERE name = %s
+                FROM mcp_servers WHERE {where}
+                LIMIT 1
                 """,
-                (name,),
+                params,
             )
             row = cur.fetchone()
             if not row:
@@ -407,18 +490,27 @@ class MCPServerStore:
 
         return self._run(_select)
 
-    def unregister_server(self, name: str) -> bool:
+    def unregister_server(self, name: str, *, project_id: str | None = None) -> bool:
         """
         Unregister a server by name. Tools are cascade-deleted.
+
+        ``project_id`` deletes only that project's own row (never the global
+        one or another project's); ``None`` deletes the row
+        ``get_server_by_name(name)`` resolves (the global one first).
 
         Returns:
             True if deleted, False if not found.
         """
+        if project_id is None:
+            where, params = _name_lookup(name, None)
+            where = f"server_id = (SELECT server_id FROM mcp_servers WHERE {where} LIMIT 1)"
+        else:
+            where, params = f"name = %s AND {_PROJECT_KEY} = %s", [name, project_id.strip()]
 
         def _delete(cur):
             cur.execute(
-                "DELETE FROM mcp_servers WHERE name = %s RETURNING server_id",
-                (name,),
+                f"DELETE FROM mcp_servers WHERE {where} RETURNING server_id",
+                params,
             )
             return cur.fetchone()
 
@@ -480,7 +572,8 @@ class MCPServerStore:
             if server_name:
                 cur.execute(
                     """
-                    SELECT t.name, t.description, t.input_schema, s.name as server_name
+                    SELECT t.name, t.description, t.input_schema, s.name as server_name,
+                           s.server_id
                     FROM mcp_tools t
                     JOIN mcp_servers s ON t.server_id = s.server_id
                     WHERE s.name = %s
@@ -491,7 +584,8 @@ class MCPServerStore:
             else:
                 cur.execute(
                     """
-                    SELECT t.name, t.description, t.input_schema, s.name as server_name
+                    SELECT t.name, t.description, t.input_schema, s.name as server_name,
+                           s.server_id
                     FROM mcp_tools t
                     JOIN mcp_servers s ON t.server_id = s.server_id
                     ORDER BY t.name
@@ -505,34 +599,44 @@ class MCPServerStore:
                     if isinstance(row[2], dict)
                     else json.loads(row[2]),
                     "server": row[3],
+                    "server_id": row[4],
                 }
                 for row in cur.fetchall()
             ]
 
         return self._run(_select)
 
-    def get_server_for_tool(self, tool_name: str) -> MCPServer | None:
-        """Find which server provides a given tool."""
+    def get_server_for_tool(
+        self,
+        tool_name: str,
+        *,
+        server_name: str | None = None,
+        visible_project: str | None = None,
+    ) -> MCPServer | None:
+        """Find which server provides a given tool.
+
+        ``server_name`` pins the server (tool names collide across servers;
+        ``mcp.<server>.<tool>`` names one). ``visible_project`` limits the
+        candidates to global servers and that project's own before the pick:
+        a later registration of the same tool name by another project used to
+        win the global LIMIT 1 and the caller's own tool read as not found
+        (2026-11-23 hunt #27). ``None`` keeps the unrestricted lookup.
+        """
+        where, params = _tool_lookup_filter(tool_name, server_name, visible_project)
 
         def _select(cur) -> MCPServer | None:
             cur.execute(
-                """
+                f"""
                 SELECT s.server_id, s.name, s.version, s.url, s.transport, s.status,
                        s.description, s.auth_type, s.auth_config, s.metadata,
                        s.registered_by, s.project_id, s.placement, s.trust_class,
                        s.created_at, s.updated_at
                 FROM mcp_servers s
                 JOIN mcp_tools t ON t.server_id = s.server_id
-                WHERE t.name = %s
-                -- Tool names collide across servers (e.g. a user's hatch copy
-                -- of a default package): prefer a healthy, most recently
-                -- registered server instead of an arbitrary row (2026-09-25:
-                -- two stale July entries on dead ports shared names with the
-                -- default set).
-                ORDER BY (s.status = 'healthy') DESC, s.updated_at DESC
+                WHERE {where}
                 LIMIT 1
                 """,
-                (tool_name,),
+                params,
             )
             row = cur.fetchone()
             if not row:
