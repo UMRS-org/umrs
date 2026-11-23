@@ -304,6 +304,7 @@ def register_workflow(
     description: str | None = None,
     *,
     source_sha256: str | None = None,
+    provenance: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Register one version of a workflow in the catalog.
 
@@ -313,7 +314,9 @@ def register_workflow(
     D-2): registering (name, version, scope, owner) again with other files
     is refused (``code: workflows.version_exists``), with the same files it
     is a no-op (``unchanged: true``). A new version inherits the name's
-    access list and trigger pin (D-5, D-7).
+    access list and trigger pin (D-5, D-7). ``provenance`` is the upload's
+    cleaned, client-reported source commit (ADR-108 D-6), kept on the row;
+    an unchanged re-registration keeps the row it first wrote.
 
     Returns a dict with "status" ("ok" or "error") and details.
     """
@@ -328,6 +331,8 @@ def register_workflow(
         description,
         digest,
     )
+    if provenance:
+        entry["provenance"] = dict(provenance)
     with _CATALOG_LOCK:
         catalog = _load_catalog()
         rows = catalog.setdefault("workflows", [])
@@ -1375,6 +1380,7 @@ def _submit_durable_workflow_run(
     workflow_version: str | None = None,
     source_sha256: str | None = None,
     intent: dict[str, str] | None = None,
+    scope: dict[str, str] | None = None,
 ) -> str:
     spec: dict[str, Any] = {
         "workflow_name": workflow_name,
@@ -1399,6 +1405,7 @@ def _submit_durable_workflow_run(
     from umrs.jobs.job_events import stamp_origin_session
 
     stamp_origin_session(spec, origin_session_id)
+    _stamp_scope(spec, scope)
     raw = job_backend.submit_workflow_run(
         client_id, _workflow_run_job_payload(params, spec, idempotency_key)
     )
@@ -1436,6 +1443,36 @@ def _submit_durable_workflow_run(
         # The idempotency key matched an existing job: no new run started.
         body["existing_run"] = True
     return _submit_answer(body, intent)
+
+
+#: The scope fields a run records (ADR-108 D-6), each bounded.
+_SCOPE_FIELDS = {"path": 600, "repo": 512, "branch": 255, "commit": 64}
+
+
+def _scope_record(scope: Any) -> dict[str, str]:
+    """The bounded, known string fields of a run's verified scope."""
+    if not isinstance(scope, dict):
+        return {}
+    out = {key: str(scope.get(key) or "")[:limit] for key, limit in _SCOPE_FIELDS.items()}
+    return {key: value for key, value in out.items() if value}
+
+
+def _stamp_scope(spec: dict[str, Any], scope: Any) -> None:
+    """ADR-108 D-6: a scoped run records its work level. ``scope_path`` is
+    the key the knowledge ingest of the run's outputs stamps on each
+    artifact (``attach_scope_path``); ``scope`` adds the repo, branch and
+    commit the scope token was issued for. Unscoped: *spec* is untouched."""
+    record = _scope_record(scope)
+    if record.get("path"):
+        spec["scope_path"] = record["path"]
+        spec["scope"] = record
+
+
+def _verified_scope(payload: dict[str, Any], identity_verified: bool) -> Any:
+    """The payload's ``_scope`` only on the server's own verified path (the
+    HTTP trigger puts it there from checked scope claims); a ZMQ client's
+    claim is ignored, as its ``_identity_verified`` is."""
+    return payload.get("_scope") if identity_verified else None
 
 
 def _existing_run(data: dict[str, Any], run_id: str, execution_id: str) -> bool:
@@ -1685,6 +1722,7 @@ def _handle_run_workflow(
             workflow_version=target.version,
             source_sha256=target.digest,
             intent=admission.intent_spec(),
+            scope=_verified_scope(payload, identity_verified),
         )
     return _run_in_process(
         target,
