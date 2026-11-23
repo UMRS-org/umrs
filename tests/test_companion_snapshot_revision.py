@@ -161,6 +161,69 @@ def test_base_on_an_absent_session_is_a_conflict(client):
     assert client.get("/umrs/companion/sessions/gone").status_code == 404
 
 
+def _rival_with_uncommitted_insert(conn: Any, turn: str) -> Any:
+    """A second connection in the test schema holding an uncommitted first insert."""
+    import psycopg2
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT current_schema()")
+        schema = cur.fetchone()[0]
+    rival = psycopg2.connect(_db_url())
+    with rival.cursor() as cur:
+        cur.execute(f"SET search_path TO {schema}")
+        cur.execute(
+            "INSERT INTO companion_session_snapshots (user_id, session_id, name, payload,"
+            " update_marker, revision) VALUES (%s, 'race', 'n', %s, '', 1)",
+            (_USER, _payload(turn)),
+        )
+    return rival
+
+
+def _wait_until_blocked_on_a_lock(rival: Any, pid: int) -> None:
+    import time
+
+    deadline = time.monotonic() + 10.0
+    while time.monotonic() < deadline:
+        with rival.cursor() as cur:
+            cur.execute("SELECT wait_event_type FROM pg_stat_activity WHERE pid = %s", (pid,))
+            row = cur.fetchone()
+        if row is not None and row[0] == "Lock":
+            return
+        time.sleep(0.05)
+    pytest.fail("our write never blocked on the rival's insert")
+
+
+def test_racing_first_inserts_end_in_one_write_and_a_conflict(client, conn):
+    """Two first writes (base 0) race: the loser's CAS upsert gets the typed 409.
+
+    The rival's uncommitted insert is invisible to our FOR UPDATE read, so our
+    upsert blocks on its unique-index entry; once the rival commits, ON
+    CONFLICT's CAS WHERE (revision = 0) refuses, and _execute_write's race
+    branch re-reads the revision and answers 409 instead of a silent no-op.
+    """
+    import threading
+
+    pid = conn.get_backend_pid()
+    rival = _rival_with_uncommitted_insert(conn, "rival")
+    answer: list[Any] = []
+    ours = threading.Thread(
+        target=lambda: answer.append(_put(client, "race", "ours", "2026-11-24T00:00:01Z", base=0))
+    )
+    try:
+        ours.start()
+        _wait_until_blocked_on_a_lock(rival, pid)
+        rival.commit()
+        ours.join(timeout=10.0)
+    finally:
+        rival.rollback()
+        rival.close()
+    assert answer, "our write never returned"
+    assert answer[0].status_code == 409
+    assert answer[0].headers["x-platform-error-code"] == "companionsessions.revision_conflict"
+    assert answer[0].headers["x-companion-session-revision"] == "1"
+    assert _messages(client, "race") == ["rival"]
+
+
 def test_negative_base_revision_is_a_validation_error(client):
     assert _put(client, "neg", "t", "2026-11-24T00:00:00+00:00", base=-1).status_code == 422
 
