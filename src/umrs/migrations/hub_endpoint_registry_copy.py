@@ -66,8 +66,11 @@ _INSERT = (
     + ", ".join(SOURCE_COLUMNS)
     + ", venue) VALUES ("
     + ", ".join(["%s"] * (len(SOURCE_COLUMNS) + 1))
-    + ") ON CONFLICT (job_id) DO NOTHING"
+    + ") ON CONFLICT DO NOTHING"
 )
+# No arbiter (S-D47a): any key collision is skipped, whether the hub table is
+# keyed ``job_id`` (pre-0141) or ``(venue, job_id)`` (0141). ``ON CONFLICT
+# (job_id)`` errors once the job_id-only unique index is gone.
 _SELECT = "SELECT " + ", ".join(SOURCE_COLUMNS) + " FROM endpoint_registry"
 
 #: Claim the venue's marker inside the copy transaction. A concurrent run

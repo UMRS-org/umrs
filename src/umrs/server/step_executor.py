@@ -301,6 +301,61 @@ def _payload_s3_key(
 
 
 # ----------------------------------------------------------------------
+# Shared podman-lane helpers
+# ----------------------------------------------------------------------
+
+STEP_WORKDIR_ENV = "UMRS_STEP_WORKDIR"
+
+
+def _check_payload_cap(payload_size: int) -> None:
+    """Hard cap: reject oversized payloads before touching storage."""
+    if payload_size > _PAYLOAD_MAX_BYTES:
+        raise StepExecutionError(
+            "setup",
+            f"payload size {payload_size} bytes exceeds hard cap "
+            f"({_PAYLOAD_MAX_BYTES} bytes); refactor the step to "
+            "pass large data via S3 keys, not parent_results",
+        )
+
+
+def _workdir_refusal(root: str) -> str | None:
+    """Why a configured step workdir root is unusable, or None when it is fine."""
+    if not os.path.isabs(root):
+        # A relative root resolves against the process cwd, and podman reads
+        # a relative ``-v`` source as a named volume and fails far from here.
+        return "is not an absolute path"
+    if not os.path.isdir(root):
+        return "is not a directory on this host"
+    return None
+
+
+def step_workdir(prefix: str, root: str | None = None) -> str:
+    """Create a per-step working directory for a local podman lane.
+
+    DEC-064-WD / ADR-091 D-5: ``root`` (``None`` reads ``UMRS_STEP_WORKDIR``,
+    which the site's ``step_executor.workdir_root`` exports for
+    ``kind: podman``) is the parent; empty keeps the system temp dir. A
+    configured root must be an absolute path to an existing directory; any
+    other root refuses by name rather than silently falling back: a sibling
+    container would otherwise mount a path the podman host cannot see.
+    """
+    if root is None:
+        root = os.environ.get(STEP_WORKDIR_ENV, "")
+    root = root.strip()
+    if not root:
+        return tempfile.mkdtemp(prefix=prefix)
+    refusal = _workdir_refusal(root)
+    if refusal:
+        raise StepExecutionError(
+            "setup",
+            f"{STEP_WORKDIR_ENV} (step_executor.workdir_root)={root!r} "
+            f"{refusal}; create it as an absolute directory (an identical "
+            "host/container path when UMRS runs in a container) or unset it",
+        )
+    return tempfile.mkdtemp(prefix=prefix, dir=root)
+
+
+# ----------------------------------------------------------------------
 # In-process executor
 # ----------------------------------------------------------------------
 
@@ -536,6 +591,11 @@ class PodmanExecutor:
     * ``UMRS_STEP_GPU=1`` — adds ``--device nvidia.com/gpu=all``.
     * ``UMRS_STEP_KEEP_WORKDIR=1`` — preserves the host tmpdir on
       exit for post-mortem inspection.
+    * ``UMRS_STEP_WORKDIR`` (site ``step_executor.workdir_root`` when
+      ``kind: podman``) — parent of the per-step workdir; unset keeps
+      the system temp dir. A sibling container resolves the ``-v``
+      source on the podman HOST, so in a containerised UMRS this must be
+      an identical host/container path (DEC-064-WD, ADR-091 D-5).
     * ``UMRS_STEP_EXECUTOR_TIMEOUT`` — seconds (shared with
       :class:`SubprocessExecutor`).
     """
@@ -548,6 +608,9 @@ class PodmanExecutor:
     gpu: bool = False
     extra_args: list[str] = field(default_factory=list)
     keep_workdir: bool = False
+    # Parent of the per-step workdir (DEC-064-WD). None reads
+    # UMRS_STEP_WORKDIR at execute time; "" keeps the system temp dir.
+    workdir_root: str | None = None
 
     def execute(
         self,
@@ -556,10 +619,8 @@ class PodmanExecutor:
         config: dict[str, Any],
         ctx: StepContext,
     ) -> StepResult:
-        # Slice 10: per-step image override.
+        # Slice 10: per-step image override; slice 12: per-step GPU override.
         image = self._resolve_image(ctx)
-
-        # Slice 12: per-step GPU override.
         gpu = self._resolve_gpu(ctx)
 
         # Slice 11: decide payload transport (local file vs S3).
@@ -582,104 +643,111 @@ class PodmanExecutor:
 
         # Serialize once — reused for size checks and upload/write.
         payload_blob = pickle.dumps(payload)
-        payload_size = len(payload_blob)
+        _check_payload_cap(len(payload_blob))
 
-        # Hard cap: reject oversized payloads before touching storage.
-        if payload_size > _PAYLOAD_MAX_BYTES:
-            raise StepExecutionError(
-                "setup",
-                f"payload size {payload_size} bytes exceeds hard cap "
-                f"({_PAYLOAD_MAX_BYTES} bytes); refactor the step to "
-                "pass large data via S3 keys, not parent_results",
-            )
-
-        workdir = tempfile.mkdtemp(prefix="umrs-step-")
-        input_path = os.path.join(workdir, "input.pkl")
-        output_path = os.path.join(workdir, "output.pkl")
+        # DEC-064-WD: under step_executor.workdir_root / UMRS_STEP_WORKDIR
+        # when set (an identical host/container path for sibling containers).
+        workdir = step_workdir("umrs-step-", self.workdir_root)
         container_name = f"umrs-step-{uuid.uuid4().hex[:12]}"
 
         # Decide whether this invocation actually uses S3 transport.
-        use_s3 = payload_s3_cfg is not None and payload_size >= _PAYLOAD_THRESHOLD_BYTES
-        input_s3_key: str | None = None
-        output_s3_key: str | None = None
+        use_s3 = (
+            payload_s3_cfg is not None
+            and len(payload_blob) >= _PAYLOAD_THRESHOLD_BYTES
+        )
+        s3_cfg = payload_s3_cfg if use_s3 else None
 
         try:
-            if use_s3:
-                assert payload_s3_cfg is not None  # type narrowing
-                bucket = payload_s3_cfg["bucket"]
-                prefix = payload_s3_cfg["prefix"]
-                step_name = config.get("step_name", "unknown")
-                run_id = ctx.run_id or "unknown"
-                input_s3_key = _payload_s3_key(prefix, run_id, step_name, "input.pkl")
-                output_s3_key = _payload_s3_key(prefix, run_id, step_name, "output.pkl")
-                try:
-                    ctx.s3.put_object(
-                        Bucket=bucket,
-                        Key=input_s3_key,
-                        Body=payload_blob,
-                    )
-                except Exception as exc:
-                    raise StepExecutionError(
-                        "setup",
-                        f"failed to upload payload to "
-                        f"s3://{bucket}/{input_s3_key}: {exc}",
-                    ) from exc
-                logger.debug(
-                    "uploaded %d-byte payload to s3://%s/%s",
-                    payload_size,
-                    bucket,
-                    input_s3_key,
-                )
-            else:
-                # Local file transport (existing behaviour).
-                with open(input_path, "wb") as fh:
-                    fh.write(payload_blob)
-
+            keys = self._stage_payload(payload_blob, workdir, s3_cfg, config, ctx)
             cmd = self._build_command(
                 container_name=container_name,
                 workdir=workdir,
                 s3_config=s3_config,
                 image=image,
                 gpu=gpu,
-                input_s3_key=input_s3_key,
-                output_s3_key=output_s3_key,
-                payload_s3_bucket=(payload_s3_cfg["bucket"] if use_s3 else None),
+                input_s3_key=keys[0],
+                output_s3_key=keys[1],
+                payload_s3_bucket=(s3_cfg["bucket"] if s3_cfg else None),
             )
-            try:
-                completed = subprocess.run(
-                    cmd,
-                    capture_output=True,
-                    timeout=self.timeout_seconds,
-                    check=False,
-                )
-            except subprocess.TimeoutExpired as exc:
-                self._best_effort_remove(container_name)
-                raise StepExecutionError(
-                    "worker",
-                    f"podman step worker timed out after {exc.timeout}s",
-                ) from exc
-            except FileNotFoundError as exc:
-                raise StepExecutionError(
-                    "worker", f"could not launch podman: {exc}"
-                ) from exc
-
-            # ---- Read the reply (S3 or local) -------------------------
-            if use_s3:
-                assert payload_s3_cfg is not None
-                assert output_s3_key is not None
-                reply = self._download_s3_reply(
-                    ctx.s3,
-                    payload_s3_cfg["bucket"],
-                    output_s3_key,
-                    completed,
-                )
-            else:
-                reply = self._read_local_reply(output_path, completed)
-
+            completed = self._run_container(cmd, container_name)
+            reply = self._collect_reply(ctx, workdir, s3_cfg, keys[1], completed)
             return self._interpret_reply(reply)
         finally:
             if not self.keep_workdir:
                 shutil.rmtree(workdir, ignore_errors=True)
+
+    def _stage_payload(
+        self,
+        payload_blob: bytes,
+        workdir: str,
+        s3_cfg: dict[str, Any] | None,
+        config: dict[str, Any],
+        ctx: StepContext,
+    ) -> tuple[str | None, str | None]:
+        """Write the payload to the workdir, or upload it to S3.
+
+        Returns ``(input_s3_key, output_s3_key)``; both ``None`` for the
+        local file transport.
+        """
+        if s3_cfg is None:
+            # Local file transport (existing behaviour).
+            with open(os.path.join(workdir, "input.pkl"), "wb") as fh:
+                fh.write(payload_blob)
+            return None, None
+        bucket = s3_cfg["bucket"]
+        step_name = config.get("step_name", "unknown")
+        run_id = ctx.run_id or "unknown"
+        input_key = _payload_s3_key(s3_cfg["prefix"], run_id, step_name, "input.pkl")
+        output_key = _payload_s3_key(s3_cfg["prefix"], run_id, step_name, "output.pkl")
+        try:
+            ctx.s3.put_object(Bucket=bucket, Key=input_key, Body=payload_blob)
+        except Exception as exc:
+            raise StepExecutionError(
+                "setup",
+                f"failed to upload payload to s3://{bucket}/{input_key}: {exc}",
+            ) from exc
+        logger.debug(
+            "uploaded %d-byte payload to s3://%s/%s",
+            len(payload_blob),
+            bucket,
+            input_key,
+        )
+        return input_key, output_key
+
+    def _run_container(self, cmd: list[str], container_name: str) -> Any:
+        """Run the step container; timeouts and a missing podman are worker errors."""
+        try:
+            return subprocess.run(
+                cmd,
+                capture_output=True,
+                timeout=self.timeout_seconds,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            self._best_effort_remove(container_name)
+            raise StepExecutionError(
+                "worker",
+                f"podman step worker timed out after {exc.timeout}s",
+            ) from exc
+        except FileNotFoundError as exc:
+            raise StepExecutionError(
+                "worker", f"could not launch podman: {exc}"
+            ) from exc
+
+    def _collect_reply(
+        self,
+        ctx: StepContext,
+        workdir: str,
+        s3_cfg: dict[str, Any] | None,
+        output_s3_key: str | None,
+        completed: Any,
+    ) -> dict[str, Any]:
+        """Read the worker's reply from S3 or the local workdir."""
+        if s3_cfg is not None and output_s3_key is not None:
+            return self._download_s3_reply(
+                ctx.s3, s3_cfg["bucket"], output_s3_key, completed
+            )
+        return self._read_local_reply(os.path.join(workdir, "output.pkl"), completed)
 
     # ------------------------------------------------------------------
     # Helpers

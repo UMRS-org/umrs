@@ -131,8 +131,11 @@ class TestSetGraphAccess:
     def test_owner_replaces_the_list(self):
         rows = _graph_row()
         updated = _graph_row(access=["user:bob", "circle:proj-a/lab"])
-        # resolve, the circle exists (find_active_circle), set_access update, re-read
-        client, pool = _client([rows, ("proj-a", "lab"), None, updated])
+        # resolve, the circle exists (find_active_circle), the project facts
+        # (ADR-118 D-8 share gate: alice owns a non_sensitive proj-a),
+        # set_access update, re-read, the circle roster (effective_readers)
+        script = [rows, ("proj-a", "lab"), ("alice", "non_sensitive"), None, updated, []]
+        client, pool = _client(script)
         resp = client.put(
             "/umrs/knowledge/graphs/g-abc/access",
             json={"access": ["user:bob", "circle:proj-a/lab"]},
@@ -163,7 +166,9 @@ class TestSetGraphAccess:
     def test_admin_may_set_system(self):
         rows = _graph_row()
         updated = _graph_row(access=["system"])
-        client, _ = _client([rows, None, updated])
+        # resolve, project facts (ADR-118 D-8: system is outside the project,
+        # so the project must be non_sensitive), update, re-read
+        client, _ = _client([rows, ("alice", "non_sensitive"), None, updated])
         resp = client.put(
             "/umrs/knowledge/graphs/g-abc/access",
             json={"access": ["system"]},

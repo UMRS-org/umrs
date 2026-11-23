@@ -331,7 +331,9 @@ class StepExecutorConfig:
     # --gres=gpu:N and accepts only --gpus=N, 2026-11-08).
     gpu_flag: str = "gres"
     # Parent of the per-step workdirs; must be on a filesystem the compute
-    # nodes see (required for slurm-remote: a path on the CLUSTER).
+    # nodes see (required for slurm-remote: a path on the CLUSTER). With
+    # kind: podman it is a path on this host, exported as UMRS_STEP_WORKDIR
+    # (DEC-064-WD); in a containerised UMRS an identical host/container path.
     workdir_root: str = ""
     # ADR-074 HPC lane for uploaded step code (build spec 2026-09-26 §1).
     # The site's HPC lane may run uploaded code; false keeps it closed.
@@ -582,8 +584,7 @@ def _step_executor_env(cfg: StepExecutorConfig) -> dict[str, str]:
         env["UMRS_STEP_IMAGE"] = cfg.image
     if cfg.gpu:
         env["UMRS_STEP_GPU"] = "1"
-    if cfg.workdir_root:
-        env["UMRS_SLURM_WORKDIR_ROOT"] = cfg.workdir_root
+    env.update(_workdir_env(cfg))
     # Slurm knobs also when the default is inproc but a partition is set:
     # workflows that declare execution_mode=slurm still need them.
     if cfg.kind in ("slurm", "slurm-remote") or cfg.partition:
@@ -600,6 +601,23 @@ def _step_executor_env(cfg: StepExecutorConfig) -> dict[str, str]:
                 cfg.project_accounts, sort_keys=True, separators=(",", ":")
             )
     env.update(_step_lane_env(cfg))
+    return env
+
+
+def _workdir_env(cfg: StepExecutorConfig) -> dict[str, str]:
+    """``step_executor.workdir_root`` for the lane that uses it.
+
+    The Slurm lanes read it as UMRS_SLURM_WORKDIR_ROOT (a path the compute
+    nodes see). A local podman lane (``kind: podman``) also gets it as
+    UMRS_STEP_WORKDIR (DEC-064-WD, ADR-091 D-5): a path on THIS host, where
+    the per-step workdir is created. Other kinds keep the cluster path out
+    of UMRS_STEP_WORKDIR so a local lane never mkdtemp's under it.
+    """
+    if not cfg.workdir_root:
+        return {}
+    env = {"UMRS_SLURM_WORKDIR_ROOT": cfg.workdir_root}
+    if cfg.kind == "podman":
+        env["UMRS_STEP_WORKDIR"] = cfg.workdir_root
     return env
 
 

@@ -29,7 +29,8 @@ class _Registry:
     def get_server(self, server_id):
         return self._servers[server_id]
 
-    def get_server_by_name(self, name):
+    def get_server_by_name(self, name, *, project_id=None):
+        self.last_hint = project_id
         return self._by_name[name]
 
 
@@ -46,31 +47,34 @@ def _run(coro):
 
 
 def test_spec_validation():
-    assert validate_mcp_server_spec({"server_id": "mcp-9"})["server_id"] == "mcp-9"
-    assert validate_mcp_server_spec({"server_name": "x"})["server_name"] == "x"
+    spec = validate_mcp_server_spec({"server_id": "mcp-9", "project_id": " p "})
+    assert spec == {"server_id": "mcp-9", "server_name": "", "project_id": "p"}
+    assert validate_mcp_server_spec({"server_name": "x", "project_id": "p"})["server_name"] == "x"
     with pytest.raises(ValueError, match="requires"):
-        validate_mcp_server_spec({})
+        validate_mcp_server_spec({"project_id": "p"})
     with pytest.raises(ValueError, match="not both"):
-        validate_mcp_server_spec({"server_id": "a", "server_name": "b"})
+        validate_mcp_server_spec({"server_id": "a", "server_name": "b", "project_id": "p"})
+    with pytest.raises(ValueError, match="mcp_server.project_required"):
+        validate_mcp_server_spec({"server_id": "mcp-9"})
 
 
 def test_backend_resolves_registry_row():
     backend = McpServerBackend(registry=_Registry())
     attempt = _attempt()
-    ref = _run(backend.submit_job(_job({"server_id": "mcp-1"}), attempt))
+    ref = _run(backend.submit_job(_job({"server_id": "mcp-1", "project_id": "p"}), attempt))
     assert ref == "mcp_server|id=mcp-1"
     assert attempt.metrics["mcp_server_id"] == "mcp-1"
 
 
 def test_backend_names_absent_server():
     backend = McpServerBackend(registry=_Registry())
-    ref = _run(backend.submit_job(_job({"server_id": "mcp-ghost"}), _attempt()))
+    ref = _run(backend.submit_job(_job({"server_id": "mcp-ghost", "project_id": "p"}), _attempt()))
     assert "error=server_not_in_registry" in ref
 
 
 def test_backend_degrades_without_registry():
     backend = McpServerBackend(registry=None)
-    ref = _run(backend.submit_job(_job({"server_id": "mcp-1"}), _attempt()))
+    ref = _run(backend.submit_job(_job({"server_id": "mcp-1", "project_id": "p"}), _attempt()))
     assert "degraded=no_registry" in ref
 
 

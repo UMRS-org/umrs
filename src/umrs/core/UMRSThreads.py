@@ -15,6 +15,23 @@ from umrs.shared.pretty_print import pretty_print_thread_status
 logger = logging.getLogger(__name__)
 
 
+# Status-payload keys copied verbatim into a status entry. ``s3cfg_content``
+# is deliberately absent (DEC-016): STATUS replies never carry credentials.
+_STATUS_PASSTHROUGH_FIELDS = ("last_updated_at", "requires_update", "error")
+
+
+def _sanitize_status_data(data):
+    if isinstance(data, dict):
+        return {k: _sanitize_status_data(v) for k, v in data.items()}
+    if isinstance(data, (list, tuple)):
+        return [_sanitize_status_data(item) for item in data]
+    if hasattr(data, "model_name"):
+        return data.model_name
+    if isinstance(data, (str, int, float, bool)) or data is None:
+        return data
+    return str(data)
+
+
 class ThreadStatus:
     RUNNING = "Running"
     DONE = "Done"
@@ -639,17 +656,6 @@ class UMRSThreads:
 
     def record_status(self, client_id, key, payload):
         # record entry about the status of the thread for a given used in a status_stire (shared with ZeoMQ)
-        def _sanitize_status_data(data):
-            if isinstance(data, dict):
-                return {k: _sanitize_status_data(v) for k, v in data.items()}
-            if isinstance(data, (list, tuple)):
-                return [_sanitize_status_data(item) for item in data]
-            if hasattr(data, "model_name"):
-                return data.model_name
-            if isinstance(data, (str, int, float, bool)) or data is None:
-                return data
-            return str(data)
-
         if self.status_store is None:
             return
 
@@ -658,16 +664,13 @@ class UMRSThreads:
             "summary": payload.get("summary", ""),
             "generated_at": self._now_iso(),
         }
-        if "last_updated_at" in payload:
-            entry["last_updated_at"] = payload["last_updated_at"]
+        # DEC-016 (2026-11-24): a payload's ``s3cfg_content`` is never stored,
+        # so STATUS replies cannot carry storage credentials to a client.
+        for field in _STATUS_PASSTHROUGH_FIELDS:
+            if field in payload:
+                entry[field] = payload[field]
         if "data" in payload:
             entry["data"] = _sanitize_status_data(payload["data"])
-        if "requires_update" in payload:
-            entry["requires_update"] = payload["requires_update"]
-        if "error" in payload:
-            entry["error"] = payload["error"]
-        if "s3cfg_content" in payload:
-            entry["s3cfg_content"] = payload["s3cfg_content"]
 
         # print(f"[{owner}]: {key} -> {entry}")
 

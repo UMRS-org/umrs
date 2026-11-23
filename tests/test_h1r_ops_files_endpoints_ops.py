@@ -4,8 +4,9 @@
   above the helper ``_enum_value``, so the path answered 422/500 with no
   authentication and ``ops_timeline`` (admin-only) was never mounted.
 - ``GET /umrs/ops/connect-info``: with ``UMRS_EMIT_S3CFG=1`` a bare
-  ``X-User-ID`` returned (and minted) that user's s3cfg. Strict mode now
-  emits it only for the user of a gateway-signed identity tuple.
+  ``X-User-ID`` returned (and minted) that user's s3cfg. Strict mode then
+  emitted it only for a gateway-signed identity tuple; DEC-016 (2026-11-24)
+  removed the emission, a forged tuple is still 401.
 """
 
 from __future__ import annotations
@@ -116,55 +117,20 @@ def test_anonymous_timeline_is_401_in_strict(strict, client, timeline_store):
     assert resp.status_code == 401
 
 
-# ── connect-info s3cfg emission ─────────────────────────────────────────────
+# ── connect-info identity tuple ─────────────────────────────────────────────
+# connect-info returns nothing per user since DEC-016 (2026-11-24; the s3cfg
+# emission pins live in test_connect_info_s3cfg_gate.py). A forged tuple is
+# still refused and anonymous discovery stays open.
 
 
-@pytest.fixture
-def minted(monkeypatch):
-    import umrs.api.ops as ops
-
-    calls: list[str] = []
-
-    def _mint(username: str) -> str:
-        calls.append(username)
-        return f"s3cfg-for-{username}"
-
-    monkeypatch.setenv("UMRS_EMIT_S3CFG", "1")
-    monkeypatch.setattr(ops, "_get_or_create_user_s3cfg", _mint)
-    return calls
-
-
-def test_bare_user_header_gets_no_s3cfg_in_strict(strict, client, minted):
-    resp = client.get("/umrs/ops/connect-info", headers={"X-User-ID": "alice"})
-    assert resp.status_code == 200, resp.text
-    assert resp.json().get("s3cfg_content") is None
-    assert minted == []
-
-
-def test_forged_tuple_gets_no_s3cfg(strict, client, minted):
+def test_forged_tuple_is_refused(strict, client):
     resp = client.get("/umrs/ops/connect-info", headers=_forged("alice", "proj-b"))
     assert resp.status_code == 401
-    assert minted == []
 
 
-def test_signed_caller_gets_only_its_own_s3cfg(strict, client, minted):
-    resp = client.get("/umrs/ops/connect-info", headers=_headers("alice", "proj-a"))
-    assert resp.status_code == 200, resp.text
-    assert resp.json()["s3cfg_content"] == "s3cfg-for-alice"
-    assert minted == ["alice"]
-
-
-def test_anonymous_discovery_stays_open(strict, client, minted):
+def test_anonymous_discovery_stays_open(strict, client):
     resp = client.get("/umrs/ops/connect-info")
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert "control_port" in body["zmq"]
     assert body.get("s3cfg_content") is None
-    assert minted == []
-
-
-def test_mvp_keeps_the_legacy_header_trust(monkeypatch, client, minted):
-    monkeypatch.setenv("UMRS_AUTH_MODE", "mvp")
-    resp = client.get("/umrs/ops/connect-info", headers={"X-User-ID": "alice"})
-    assert resp.status_code == 200, resp.text
-    assert resp.json()["s3cfg_content"] == "s3cfg-for-alice"

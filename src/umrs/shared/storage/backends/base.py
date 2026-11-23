@@ -177,20 +177,9 @@ class ObjectStoreBackend(Protocol):
     ) -> tuple[str, str]:
         """Ensure *username* exists with a list-only baseline policy.
 
-        Returns ``(alias, s3cfg_content)`` — the content is what gets
-        delivered to the client. Idempotent: an existing valid user s3cfg is
+        Returns ``(alias, s3cfg_content)``. The content stays server-side:
+        since DEC-016 (2026-11-24) no path delivers it to a client. Idempotent: an existing valid user s3cfg is
         reconciled and returned, never silently re-keyed.
-        """
-
-    def user_s3cfg_is_current(
-        self, username: str, user_s3cfg_path: str, admin_s3cfg_path: str
-    ) -> bool:
-        """Does the credential in the user's s3cfg still authenticate here?
-
-        Lets login-time delivery notice an s3cfg issued by a *previous*
-        backend (ADR-055 cutover: MinIO-era keys do not exist on SeaweedFS)
-        and re-provision instead of handing out dead credentials. A missing
-        file counts as not current.
         """
 
     def grant_bucket_access(

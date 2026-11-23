@@ -496,6 +496,205 @@ async def get_graph_access(graph_id: str, request: Request) -> dict[str, Any]:
     return {"graph_id": graph.graph_id, "access": list(graph.access)}
 
 
+# ── ADR-118 D-8 (K-14): sharing outside the project ─────────────────────────
+#
+# Any graph writer could replace the access list until 2026-11-24, so one
+# call exposed a sensitive project's graph to another project. Now an entry
+# the request ADDS that reaches outside the graph's project (another
+# project, a circle of another project, a same-project circle whose roster
+# holds a non-member, ``system``, a user who is not a live member) needs the project owner or an admin AND a project whose
+# ``data_class`` is ``non_sensitive``. Narrowing, keeping the stored entries
+# and in-project audiences (the project itself, its circles, its members)
+# stay open to every writer. Project-less graphs (personal, system) keep
+# their own owner/admin ladder unchanged. Facts that cannot be read fail
+# closed: no owner, no class, no membership.
+
+_PROJECT_SHARE_FACTS_SQL = (
+    "SELECT owner_id, data_class FROM projects WHERE project_id = %s"
+)
+_CIRCLE_ROSTER_SQL = (
+    "SELECT cm.user_id FROM circle_members cm"
+    " JOIN circles c ON c.project_id = cm.project_id AND c.circle_id = cm.circle_id"
+    " WHERE cm.project_id = %s AND cm.circle_id = %s AND c.status = 'active'"
+    " ORDER BY cm.user_id"
+)
+_SHARE_RULE = "ADR-118 D-8"
+
+
+def _pool_fetch(request: Request, sql: str, params: tuple[Any, ...], *, many: bool) -> Any:
+    """One read on the request pool; None when the pool is absent or the
+    read fails (each caller decides what unreadable means: fail closed)."""
+    pool = getattr(request.app.state, "umrs_db_pool", None)
+    if pool is None:
+        return None
+    conn = pool.getconn()
+    try:
+        cur = conn.cursor()
+        cur.execute(sql, params)
+        return cur.fetchall() if many else cur.fetchone()
+    except Exception:  # unreadable is answered by the caller (fail closed)
+        logger.warning("share gate read failed (%s)", sql.split(" FROM ")[0], exc_info=True)
+        return None
+    finally:
+        pool.putconn(conn)
+
+
+def _project_share_facts(request: Request, project_id: str) -> tuple[str, str]:
+    """(owner_id, data_class) of the graph's project; ``("", "")`` when the
+    row is absent or unreadable."""
+    row = _pool_fetch(request, _PROJECT_SHARE_FACTS_SQL, (project_id,), many=False)
+    if not row:
+        return "", ""
+    return str(row[0] or ""), str(row[1] or "")
+
+
+def _live_member(request: Request, user: str, project_id: str) -> bool:
+    """ADR-097 D-1: is *user* a live member of *project_id*? Unreadable
+    memberships answer False: an unverifiable reader is outside."""
+    from .projects import ProjectStore, live_memberships
+
+    pool = getattr(request.app.state, "umrs_db_pool", None)
+    if pool is None or not user:
+        return False
+    conn = pool.getconn()
+    try:
+        memberships = live_memberships(ProjectStore(conn), user)
+    finally:
+        try:
+            conn.rollback()  # a read must not leave the conn idle in transaction
+        finally:
+            pool.putconn(conn)
+    return project_id in (memberships or [])
+
+
+def _user_outside(request: Request, user: str, project_id: str, owner: str) -> bool:
+    """A user is inside only as the project owner or an ADR-097 live member."""
+    return user != owner and not _live_member(request, user, project_id)
+
+
+def _roster_outside(request: Request, ref: str, project_id: str, owner: str) -> bool:
+    """A same-project circle is inside only when every member of its active
+    roster is inside. Anyone may open a personal circle in any project and a
+    circle manager may add any user (KN-S4 review, 2026-11-24), so the
+    ``project/`` prefix alone proves nothing. An unreadable roster is outside."""
+    roster = _circle_roster(request, ref)
+    if roster is None:
+        return True
+    return any(_user_outside(request, user, project_id, owner) for user in roster)
+
+
+def _entry_outside(request: Request, entry: str, project_id: str, owner: str) -> bool:
+    """Does one access entry reach readers outside the graph's project?"""
+    from umrs.shared.access_scopes import parse_access_entry
+
+    scope = parse_access_entry(entry)
+    if scope.kind == "project":
+        return scope.id.partition("/")[0] != project_id
+    if scope.kind == "circle":
+        if scope.id.partition("/")[0] != project_id:
+            return True
+        return _roster_outside(request, scope.id, project_id, owner)
+    if scope.kind == "user":
+        return _user_outside(request, scope.id, project_id, owner)
+    return True  # system: every authenticated caller
+
+
+def _share_refusal(
+    graph_id: str, project_id: str, outside: list[str], data_class: str, *, owner_ok: bool
+) -> PlatformError:
+    """The typed 403 naming why the outside entries are refused."""
+    named = ", ".join(outside)
+    if not owner_ok:
+        return PlatformError.knowledgegraphs(
+            "forbidden",
+            f"sharing graph {graph_id} outside project {project_id!r} ({named}) is "
+            f"limited to the project owner or an admin ({_SHARE_RULE})",
+        )
+    shown = data_class or "unknown"
+    return PlatformError.knowledgegraphs(
+        "forbidden",
+        f"project {project_id!r} has data_class {shown!r}: its graphs are not shared "
+        f"outside the project ({named}); only a non_sensitive project may ({_SHARE_RULE})",
+    )
+
+
+def _added_entries(access: list[str], stored: list[str]) -> list[str]:
+    """Entries the request adds (stored ones are kept, not re-granted)."""
+    return [entry for entry in access if entry not in stored]
+
+
+def _is_project_owner_or_admin(identity: CallerIdentity, owner: str) -> bool:
+    """A platform admin, or the caller named as the project row's owner."""
+    user = identity.user_id or ""
+    return bool(identity.is_admin) or bool(user and user == owner)
+
+
+def _outside_entries(
+    request: Request, added: list[str], project_id: str, owner: str
+) -> list[str]:
+    """The added entries that reach readers outside the graph's project."""
+    return [e for e in added if _entry_outside(request, e, project_id, owner)]
+
+
+def _enforce_share_gate(
+    request: Request, graph: Any, access: list[str], identity: CallerIdentity
+) -> None:
+    """ADR-118 D-8: refuse added outside-project entries unless the caller
+    is the project owner or an admin and the project is non_sensitive."""
+    project_id = graph.project_id or ""
+    added = _added_entries(access, graph.access)
+    if not project_id or not added:
+        return
+    owner, data_class = _project_share_facts(request, project_id)
+    owner_ok = _is_project_owner_or_admin(identity, owner)
+    if owner_ok and data_class == "non_sensitive":
+        return
+    outside = _outside_entries(request, added, project_id, owner)
+    if outside:
+        raise_typed(
+            _share_refusal(graph.graph_id, project_id, outside, data_class, owner_ok=owner_ok)
+        )
+
+
+def _circle_roster(request: Request, ref: str) -> list[str] | None:
+    """Members of an active circle (``project/circle``); None = unreadable."""
+    project_id, _, circle_id = ref.partition("/")
+    rows = _pool_fetch(request, _CIRCLE_ROSTER_SQL, (project_id, circle_id), many=True)
+    return None if rows is None else [str(r[0]) for r in rows]
+
+
+def _entry_readers(request: Request, entry: str) -> dict[str, Any]:
+    """Who one stored access entry admits (circle rosters resolved)."""
+    from umrs.shared.access_scopes import parse_access_entry
+
+    scope = parse_access_entry(entry)
+    row: dict[str, Any] = {"scope": entry, "kind": scope.kind}
+    if scope.kind == "user":
+        row["users"] = [scope.id]
+    elif scope.kind == "circle":
+        row["users"] = _circle_roster(request, scope.id)
+    elif scope.kind == "project":
+        row["audience"] = f"live members of project {scope.id}"
+    else:
+        row["audience"] = "every authenticated caller"
+    return row
+
+
+def _effective_readers(request: Request, graph: Any) -> dict[str, Any]:
+    """ADR-118 D-8: the readers a graph now has — its tier ladder plus each
+    access entry, circle rosters included."""
+    if graph.project_id:
+        tier = f"live members of project {graph.project_id}"
+    elif (graph.kind or "").strip().lower() == "system":
+        tier = "every authenticated caller"
+    else:
+        tier = f"its owner {graph.owner_id}"
+    return {
+        "tier": tier,
+        "entries": [_entry_readers(request, entry) for entry in graph.access],
+    }
+
+
 @router.put("/{graph_id}/access")
 async def set_graph_access(
     graph_id: str,
@@ -507,6 +706,9 @@ async def set_graph_access(
 
     The list names who may READ the graph beyond its tier ladder;
     ``system`` entries are admin-only. Lifecycle writes are unaffected.
+    Adding an audience outside the graph's project needs the project owner
+    or an admin and a ``non_sensitive`` project (ADR-118 D-8, 2026-11-24);
+    the response carries ``effective_readers``.
     # auth: verified
     """
     enforce_registry_write_authorization(request)
@@ -533,6 +735,7 @@ async def set_graph_access(
         is_admin=identity.is_admin,
     )
     access = checked_access(body.access, caller, error=PlatformError.knowledgegraphs)
+    _enforce_share_gate(request, graph, access, identity)
     updated = registry.set_access(graph.graph_id, access)
     from .audit_events import emit_audit
 
@@ -541,7 +744,8 @@ async def set_graph_access(
         project_id=graph.project_id or "",
         details={"graph_id": graph.graph_id, "access": access, "by": scope.user_id},
     )
-    return (updated or graph).to_dict()
+    result = updated or graph
+    return {**result.to_dict(), "effective_readers": _effective_readers(request, result)}
 
 
 class EstablishResponse(BaseModel):
