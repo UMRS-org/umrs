@@ -266,7 +266,11 @@ class ReadinessApproveRequest(BaseModel):
 
 
 def _durable_node_payload(node: Any) -> dict[str, Any]:
-    """KnowledgeStore row → Studio/webview node shape (id/type/label aliases)."""
+    """KnowledgeStore row → Studio/webview node shape (id/type/label aliases).
+
+    D-35 read side (2026-11-24): carries the row's tier (``status``,
+    ``confidence``) so a proposed row is told apart from an established one.
+    """
     content = node.content if isinstance(node.content, dict) else {}
     label = node.label or node.node_id
     return {
@@ -278,6 +282,8 @@ def _durable_node_payload(node: Any) -> dict[str, Any]:
         "type": node.node_type,
         "node_type": node.node_type,
         "graph_id": node.graph_id,
+        "status": node.status,
+        "confidence": node.confidence,
         "created_at": node.created_at.isoformat() if node.created_at else None,
         "metadata": content,
     }
@@ -293,6 +299,8 @@ def _durable_edge_payload(edge: Any) -> dict[str, Any]:
         "from": edge.source_id,
         "to": edge.target_id,
         "label": edge.relation_type,
+        "status": edge.status,
+        "confidence": edge.confidence,
         "created_at": edge.created_at.isoformat() if edge.created_at else None,
     }
 

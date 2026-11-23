@@ -221,6 +221,8 @@ class TestDurableRowsPayload:
             label="Spectral element method",
             node_type="concept",
             graph_id="",
+            status="proposed",
+            confidence=0.5,
             created_at=None,
         )
         edge = SimpleNamespace(
@@ -228,6 +230,8 @@ class TestDurableRowsPayload:
             source_id="n1",
             target_id="n2",
             relation_type="extends",
+            status="established",
+            confidence=0.0,
             created_at=None,
         )
 
@@ -256,6 +260,9 @@ class TestDurableRowsPayload:
         assert edges[0]["from"] == "n1"
         assert edges[0]["to"] == "n2"
         assert edges[0]["label"] == "extends"
+        # D-35 read side (2026-11-24): the stored tier rides the payload
+        assert (nodes[0]["status"], nodes[0]["confidence"]) == ("proposed", 0.5)
+        assert edges[0]["status"] == "established"
 
     def test_rows_empty_without_pool(self, monkeypatch):
         async def _no_pool(_request):

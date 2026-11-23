@@ -1016,6 +1016,11 @@ class KnowledgeStore:
 
         Graph filtering uses the legacy fallback: rows with ``graph_id = ''``
         count as members of the project's default graph.
+
+        D-35 read side (2026-11-24): each row carries its stored tier
+        (``status``, ``confidence``). The SELECT used to omit them, so every
+        node read back with the dataclass default ``established``/0.0 and a
+        proposed loop finding looked established.
         """
         params: list[Any] = [project_id]
         graph_clause = ""
@@ -1027,7 +1032,8 @@ class KnowledgeStore:
             rows = await conn.fetch(
                 f"""SELECT node_id, project_id, label, node_type,
                           content, content_hash, source_ir,
-                          created_at, updated_at, graph_id
+                          created_at, updated_at, graph_id,
+                          status, confidence
                    FROM knowledge_nodes
                    WHERE project_id = $1{graph_clause}
                    ORDER BY created_at""",
@@ -1144,7 +1150,8 @@ class KnowledgeStore:
     ) -> list[KnowledgeEdge]:
         """Return all edges for a project, optionally one graph only.
 
-        Same legacy '' fallback as :meth:`list_nodes`.
+        Same legacy '' fallback as :meth:`list_nodes`, and the same stored
+        tier (``status``, ``confidence``) on every row.
         """
         params: list[Any] = [project_id]
         graph_clause = ""
@@ -1155,7 +1162,8 @@ class KnowledgeStore:
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 f"""SELECT edge_id, project_id, source_id, target_id,
-                          relation_type, content, created_at, graph_id
+                          relation_type, content, created_at, graph_id,
+                          status, confidence
                    FROM knowledge_edges
                    WHERE project_id = $1{graph_clause}
                    ORDER BY created_at""",

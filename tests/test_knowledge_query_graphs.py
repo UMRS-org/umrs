@@ -77,8 +77,8 @@ class TestGraphBackendWiring:
         default_id = default_graph_id("proj-a")
         client, pool = _client(
             [
-                None,  # ensure_default insert
-                _graph_row(graph_id=default_id, name="proj-a"),  # ensure re-read
+                # K4 (2026-11-24): a read-only lookup, no ensure_default insert
+                _graph_row(graph_id=default_id, name="proj-a"),
                 None,  # 0075 regclass probe (embeddings unwired here)
                 None,  # WP-15: knowledge_nodes regclass probe (rag unwired here)
                 [("node:ir-9", "proj-a", "FWI notes", "concept", {}, "g-legacy", 1)],
@@ -129,8 +129,7 @@ class TestGraphBackendWiring:
         default_id = default_graph_id("proj-a")
         client, pool = _client(
             [
-                None,
-                _graph_row(graph_id=default_id, name="proj-a"),
+                _graph_row(graph_id=default_id, name="proj-a"),  # K4: lookup only
                 None,  # 0075 regclass probe (embeddings unwired here)
                 None,  # WP-15: knowledge_nodes regclass probe (rag unwired here)
                 [("node:ir-2", "proj-a", "FWI paper", "concept", {}, "", 1)],
@@ -141,7 +140,7 @@ class TestGraphBackendWiring:
         hit = resp.json()["query"]["results"][0]
         # Legacy '' row attributed to the default graph
         assert hit["metadata"]["graph_id"] == default_id
-        search_sql, params = pool.record[4]
+        search_sql, params = pool.record[3]  # K4: no insert before the lookup
         assert "graph_id = '' AND project_id = ANY" in search_sql
         assert params[1] == ["proj-a"]
 
@@ -351,7 +350,8 @@ class TestEveryLaneHonoursGraphs:
 
     def test_without_a_selection_the_lanes_keep_the_project_rule(self, captured):
         default_id = default_graph_id("proj-a")
-        client, _ = _client([None, _graph_row(graph_id=default_id, name="proj-a"), []])
+        # K4 (2026-11-24): the default graph is looked up, never inserted
+        client, _ = _client([_graph_row(graph_id=default_id, name="proj-a"), []])
         resp = _query(client, project_id="proj-a")
         assert resp.status_code == 200, resp.text
         assert captured == {"embeddings": None, "rag": None}
@@ -366,8 +366,8 @@ class TestEveryLaneHonoursGraphs:
             [
                 None,  # exclusion 'other': no id match
                 [],  # ... and no name match
-                None,  # ensure default insert
-                _graph_row(graph_id=default_id, name="proj-a"),  # ensure re-read
+                # K4 (2026-11-24): a read-only lookup, no ensure_default insert
+                _graph_row(graph_id=default_id, name="proj-a"),
                 [],  # graph search rows
             ]
         )

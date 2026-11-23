@@ -373,9 +373,35 @@ def _resolve_selected_graphs(
         allow = readable or (lambda _graph: False)
         return _resolve_includes(registry, tokens, excluded_ids, allow), excluded_names
 
-    default = registry.ensure_default_graph(project_id)
-    selected = [default] if default.graph_id not in excluded_ids else []
+    default = _default_graph_for_read(registry, project_id)
+    excluded = excluded_ids | set(excluded_names)
+    selected = [default] if default.graph_id not in excluded else []
     return selected, excluded_names
+
+
+def _default_graph_for_read(
+    registry: GraphRegistryStore, project_id: str
+) -> KnowledgeGraphMeta:
+    """The project's default graph for a READ: its registry row when one
+    exists, else an unsaved stand-in with the same deterministic id.
+
+    K4 (2026-11-24): the resolver called ``ensure_default_graph``, so every
+    query on a project wrote a ``knowledge_graphs`` row. A read writes
+    nothing now. The stand-in (not an empty selection) keeps the legacy rule:
+    nodes written before or without a registry row still carry the default
+    graph id or ``''`` and must stay searchable.
+    """
+    gid = default_graph_id(project_id)
+    found = registry.get_graph(gid)
+    if found is not None:
+        return found
+    return KnowledgeGraphMeta(
+        graph_id=gid,
+        name=project_id,
+        description=f"Default knowledge graph for project {project_id}",
+        project_id=project_id,
+        kind="project",
+    )
 
 
 def _split_csv(raw: str | None) -> list[str]:
