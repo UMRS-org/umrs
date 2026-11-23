@@ -229,9 +229,16 @@ def _as_key(value: Any) -> str:
     character, looks like a credential or carries an address."""
     text = value if isinstance(value, str) else ""
     bad = not text or len(text) > _MAX_KEY or not text.isprintable()
-    if bad or _token_like(text.rsplit("/", 1)[-1]) or _carries_ip(text):
+    if bad or _carries_ip(text) or any(map(_unsafe_segment, text.split("/"))):
         return REDACTED
     return text
+
+
+def _unsafe_segment(segment: str) -> bool:
+    """A key segment, or its stem without the extension, that looks like a
+    credential or is an address (``10.0.0.1.log``, ``fe80::1``, a JWT)."""
+    stem = segment.rsplit(".", 1)[0]
+    return any(_token_like(part) or _carries_ip(part) for part in (segment, stem))
 
 
 def _as_sha256(value: Any) -> str:

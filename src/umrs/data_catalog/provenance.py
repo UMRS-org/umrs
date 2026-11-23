@@ -10,7 +10,8 @@ paths only, and they hash the bytes as they pass through the server:
   ``source_kind=step_output`` with the execution id and step.
 
 A row is written ``verified`` only when the server itself hashed every byte
-it stored. An object without a row is **legacy**: :func:`lookup` returns a
+it stored and the stored version's ETag is the MD5 of those bytes. An
+object without a row is **legacy**: :func:`lookup` returns a
 ``source_kind="legacy"`` record with no hash, which ``OBJECT_VERIFY``
 (slice MB-S2c) hashes on demand.
 
@@ -20,8 +21,19 @@ legacy and verifiable later). The same holds with no database at all, so a
 server without Postgres keeps working.
 
 The ETag is the store's, read back with one ``head_object`` after the
-upload (a multipart upload's ETag is not the body MD5). When it cannot be
-read, no row is written.
+upload. It must belong to the bytes the server hashed, or a write racing
+on the same key (a second upload, an ADR-080 grantee writing to the
+owner's bucket) would get this server's hash recorded as ``verified``:
+
+* a single-part ETag must equal the MD5 the server computed beside the
+  SHA-256: then the row is ``verified``;
+* a multipart ETag (``<md5>-<parts>``) is not a body MD5, so it cannot be
+  tied to the bytes; with a matching ``ContentLength`` the row is written
+  ``pending`` (``OBJECT_VERIFY`` re-hashes it), otherwise no row;
+* any other ETag, or none: no row, the object stays legacy.
+
+(2026-11-24, review of MB-S2a: the first cut marked any ETag the HEAD
+returned ``verified``.)
 """
 
 from __future__ import annotations
@@ -133,17 +145,25 @@ def content_type_for(key: str) -> str:
     return guessed or DEFAULT_CONTENT_TYPE
 
 
-def live_etag(s3_client: Any, bucket: str, key: str) -> str | None:
-    """The stored object's ETag without quotes; None when unreadable."""
+def _head(s3_client: Any, bucket: str, key: str) -> dict[str, Any]:
     try:
         head = s3_client.head_object(Bucket=bucket, Key=key)
     except Exception:  # no ETag means no row, never a failure
         logger.debug("provenance: head %s/%s failed", bucket, key, exc_info=True)
-        return None
-    etag = head.get("ETag") if isinstance(head, dict) else None
+        return {}
+    return head if isinstance(head, dict) else {}
+
+
+def _etag_of(head: dict[str, Any]) -> str | None:
+    etag = head.get("ETag")
     if not isinstance(etag, str):
         return None
     return etag.strip('"') or None
+
+
+def live_etag(s3_client: Any, bucket: str, key: str) -> str | None:
+    """The stored object's ETag without quotes; None when unreadable."""
+    return _etag_of(_head(s3_client, bucket, key))
 
 
 # ── the store ───────────────────────────────────────────────────────────────
@@ -259,20 +279,42 @@ class HashedObject:
     size: int
     sha256: str
     content_type: str
+    #: MD5 of the same bytes: ties a single-part ETag to what was hashed.
+    md5: str = ""
 
 
 def hashed(bucket: str, key: str, reader: Sha256Reader, content_type: str) -> HashedObject:
-    return HashedObject(bucket, key, reader.size, reader.sha256.hexdigest(), content_type)
+    return HashedObject(
+        bucket,
+        key,
+        reader.size,
+        reader.sha256.hexdigest(),
+        content_type,
+        reader.md5.hexdigest(),
+    )
+
+
+def _state_for(obj: HashedObject, etag: str, length: Any) -> str | None:
+    """``verified`` when the stored version is provably the hashed bytes,
+    ``pending`` when it may be (multipart, same size), else None."""
+    if "-" in etag:
+        return "pending" if length == obj.size else None
+    if obj.md5 and etag.lower() == obj.md5:
+        return "verified"
+    return None
 
 
 def provenance_row(
     s3_client: Any, obj: HashedObject, source_kind: str, **origin: Any
 ) -> ObjectProvenance | None:
-    """The ``verified`` row for an object the server just hashed and stored
-    (``origin``: uploader, project_id, execution_id, step, source_ref);
-    None when the store does not return the object's ETag."""
-    etag = live_etag(s3_client, obj.bucket, obj.key)
-    if etag is None:
+    """The row for an object the server just hashed and stored (``origin``:
+    uploader, project_id, execution_id, step, source_ref). None when the
+    store returns no ETag, or one that is not this server's bytes (a write
+    raced on the key): the object then stays legacy."""
+    head = _head(s3_client, obj.bucket, obj.key)
+    etag = _etag_of(head)
+    state = None if etag is None else _state_for(obj, etag, head.get("ContentLength"))
+    if etag is None or state is None:
         return None
     return ObjectProvenance(
         bucket=obj.bucket,
@@ -280,7 +322,7 @@ def provenance_row(
         etag=etag,
         size=obj.size,
         sha256=obj.sha256,
-        sha256_state="verified",
+        sha256_state=state,
         content_type=obj.content_type,
         source_kind=source_kind,
         **origin,

@@ -299,6 +299,74 @@ def test_no_etag_means_no_row() -> None:
     assert provenance.provenance_row(_S3(), obj, "local_upload") is None
 
 
+class _RacedS3(_S3):
+    """Another write lands on the key between our PUT and our HEAD."""
+
+    def __init__(self, etag: str, length: int) -> None:
+        super().__init__()
+        self._etag, self._length = etag, length
+
+    def head_object(self, *, Bucket, Key):  # noqa: N803 — boto3
+        self.heads.append((Bucket, Key))
+        return {"ETag": f'"{self._etag}"', "ContentLength": self._length}
+
+
+def _md5(data: bytes) -> str:
+    return hashlib.md5(data).hexdigest()
+
+
+def _hashed_body(key: str = "k") -> provenance.HashedObject:
+    return provenance.HashedObject(BUCKET, key, len(BODY), SHA, "video/mp4", _md5(BODY))
+
+
+def test_a_write_racing_on_the_key_never_gets_our_hash_as_verified(monkeypatch) -> None:
+    s3, pool = _RacedS3(_md5(b"OTHER BYTES"), len(b"OTHER BYTES")), _Pool()
+    body = _upload(_client(monkeypatch, s3, pool))
+    assert body["sha256"] == SHA  # the upload itself still succeeds
+    assert pool.rows() == []  # no row: the object stays legacy
+    assert _audit("data.upload")[0]["details"]["provenance"] is False
+
+
+def test_a_multipart_etag_of_our_size_is_pending_not_verified() -> None:
+    row = provenance.provenance_row(
+        _RacedS3(_md5(b"x") + "-3", len(BODY)), _hashed_body(), "local_upload"
+    )
+    assert row is not None and row.sha256_state == "pending" and row.sha256 == SHA
+
+
+def test_a_multipart_etag_of_another_size_gets_no_row() -> None:
+    row = provenance.provenance_row(
+        _RacedS3(_md5(b"x") + "-3", len(BODY) + 1), _hashed_body(), "local_upload"
+    )
+    assert row is None
+
+
+def test_a_single_part_etag_of_our_bytes_is_verified() -> None:
+    row = provenance.provenance_row(
+        _RacedS3(_md5(BODY).upper(), len(BODY)), _hashed_body(), "local_upload"
+    )
+    assert row is not None and row.sha256_state == "verified"
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "proj/eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJhIn0.sig/a.txt",
+        "proj/ghp_ABCDEF0123456789/x.csv",
+        "proj/fe80::1/x",
+        "proj/x/10.0.0.1.log",
+    ],
+)
+def test_data_audit_key_redaction_checks_every_segment(key: str) -> None:
+    clean = security_events.redact_details("data.upload", {"key": key})
+    assert clean["key"] == "<redacted>"
+
+
+def test_an_ordinary_dotted_key_is_kept() -> None:
+    key = "pa/uploads/2026-11-24/clip_v1.2.mp4"
+    assert security_events.redact_details("data.upload", {"key": key})["key"] == key
+
+
 def test_data_audit_redacts_by_kind() -> None:
     clean = security_events.emit_data(
         "data.upload",

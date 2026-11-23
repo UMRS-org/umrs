@@ -33,6 +33,9 @@ def fake_runtime(monkeypatch):
     monkeypatch.delenv("UMRS_DISABLE_DURABLE_RUNTIME", raising=False)
     monkeypatch.setattr(djr, "DurableJobRuntime", _Runtime)
     monkeypatch.setattr(djr, "build_durable_job_db_pool_from_env", lambda: object())
+    # _start_new_runtime installs the pool for step-output provenance
+    # (MB-S2a); restore the global at teardown so the fake never leaks.
+    monkeypatch.setattr("umrs.data_catalog.provenance._pool", None)
     monkeypatch.setattr("umrs.api.catalog_store.init_catalog_meta_store", lambda _p: None)
     monkeypatch.setattr(
         "umrs.orchestrator.detection.detect_backend", lambda: type("D", (), {"backend": "x"})()
