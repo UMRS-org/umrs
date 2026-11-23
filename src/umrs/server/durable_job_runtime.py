@@ -36,6 +36,18 @@ def _set_runtime(runtime: DurableJobRuntime | None) -> None:
     _global_runtime = runtime
 
 
+def _clear_runtime_if(runtime: DurableJobRuntime) -> None:
+    """Unregister *runtime* if it is the process runtime (never another).
+
+    A shut-down runtime stayed registered: ``get_runtime()`` kept returning
+    it, so a loop start in the same process was job-hosted on a runtime
+    whose scheduler had stopped (2026-11-24, UMRS-org main run 45280814153).
+    """
+    global _global_runtime
+    if _global_runtime is runtime:
+        _global_runtime = None
+
+
 def get_runtime() -> DurableJobRuntime | None:
     """Return the running DurableJobRuntime instance, or None."""
     return _global_runtime
@@ -153,6 +165,7 @@ class DurableJobRuntime:
                 logger.debug("DurableJobRuntime.shutdown() already called; skipping")
                 return
             self._shutdown_called = True
+            _clear_runtime_if(self)
             thread = self._thread
             loop = self._loop
             startup_error = self._startup_error
