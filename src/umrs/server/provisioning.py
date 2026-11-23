@@ -130,7 +130,8 @@ def _resolve_s3cfg_path(user_cfg):
     Why this matters: a per-user MinIO secret must be created **once** and stay
     identical across reloads, container restarts, and — on umrs-front — across
     both cluster servers (rccs + ai4s) that share a single MinIO. The shared
-    location is the same path ``_read_user_s3cfg`` treats as authoritative
+    location is the path the retired connect-info emission (removed by DEC-016,
+    2026-11-24) treated as authoritative
     (priority 1) and is backed by the shared ``umrs_config`` volume in the
     umrs-front compose stack.
 
@@ -151,7 +152,7 @@ def _resolve_s3cfg_path(user_cfg):
     if os.path.isfile(expanded):
         return expanded
 
-    # Durable, shared authoritative location. Matches `_read_user_s3cfg`
+    # Durable, shared authoritative location: the retired connect-info reader's
     # priority-1 and the umrs-front shared `umrs_config` volume, so the secret
     # is stable across reloads, restarts and both cluster servers.
     shared = os.path.expanduser(f"~/.config/umrs/s3cfg_{username}")

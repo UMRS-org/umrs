@@ -14,7 +14,7 @@ class TestConnectInfoServices:
         for k, v in env.items():
             monkeypatch.setenv(k, v)
         result: dict = {}
-        ops._add_connect_info_extras(result, None)
+        ops._add_connect_info_extras(result)
         return result.get("services", {})
 
     def test_s3_url_is_canonical_and_minio_url_mirrors_it(self, monkeypatch):

@@ -640,7 +640,8 @@ class ConnectInfoServices(BaseModel):
 class ConnectInfoResponse(BaseModel):
     zmq: ConnectInfoZMQ
     services: ConnectInfoServices | None = None
-    s3cfg_content: str | None = None
+    # DEC-016 (2026-11-24): no ``s3cfg_content`` field; connect-info never
+    # carries storage credentials (UMRS_EMIT_S3CFG retired).
     # ADR-062 amendment (2026-10-15): the site's institutional-provider
     # allowlist, so the workstation classifies sources exactly as the
     # venue-start and lease gates do (UMRS_INSTITUTIONAL_PROVIDER_HOSTS).
@@ -673,11 +674,10 @@ def ops_connect_info(
     """Return ZMQ transport parameters so clients can auto-configure.
 
     This endpoint is unauthenticated for basic discovery (ports, auth
-    mode, bind address). Under ``UMRS_EMIT_S3CFG=1`` the response also
-    carries the caller's ``s3cfg_content``, but only for the user of a
-    gateway-signed identity tuple in strict mode: a bare ``X-User-ID``
-    selected (and minted) any user's s3cfg (H-1, 2026-10-18). A presented
-    tuple whose signature fails is 401; mvp keeps the raw header.
+    mode, bind address). It never carries storage credentials: the
+    ``UMRS_EMIT_S3CFG`` emission was removed by DEC-016 (2026-11-24); a set
+    switch only logs one warning. A presented identity tuple whose signature
+    fails is still 401 (H-1, 2026-10-18); mvp keeps the raw header.
     """
     from umrs.shared.connection_profiles import parse_data_port_range
     from umrs.shared.project_data_class import institutional_provider_hosts
@@ -710,12 +710,10 @@ def ops_connect_info(
         "institutional_provider_hosts": sorted(institutional_provider_hosts()),
     }
 
-    # The governance owner rule is the s3cfg rule too: signed tuple in strict
-    # ("" without one), raw header in mvp.
-    s3cfg_user = governance_user_id(
-        x_user_id, x_verified_project_id, x_verified_is_admin, x_verified_hmac
-    )
-    _add_connect_info_extras(result, s3cfg_user or None)
+    # A presented tuple is verified (forged -> 401) even though connect-info
+    # no longer returns anything per user (DEC-016, 2026-11-24).
+    governance_user_id(x_user_id, x_verified_project_id, x_verified_is_admin, x_verified_hmac)
+    _add_connect_info_extras(result)
     default_models = connect_info_default_models()
     if default_models:
         result["default_models"] = default_models
@@ -813,37 +811,31 @@ def _connect_info_services() -> dict[str, str]:
     return services
 
 
-def _add_connect_info_extras(result: dict[str, Any], x_user_id: str | None) -> None:
-    """Add service URLs and per-user S3 credentials to connect-info result.
+def _add_connect_info_extras(result: dict[str, Any]) -> None:
+    """Add the configured service URLs to the connect-info result.
 
-    ``x_user_id`` is the caller ``ops_connect_info`` resolved (signed in
-    strict mode), never a raw header.
+    UMRS_S3_URL is the canonical knob (ADR-055); the MinIO-era names stay
+    readable so an older .env keeps working. Per-user S3 credentials are
+    never added (D-16; emission removed by DEC-016, 2026-11-24).
     """
-    # Include service URLs when configured (allows clients to discover
-    # the correct S3/RAG endpoint instead of guessing from the host).
-    # UMRS_S3_URL is the canonical knob (ADR-055); the MinIO-era names stay
-    # readable so an older .env keeps working.
     services = _connect_info_services()
     if services:
         result["services"] = services
+    _warn_retired_emit_switch()
 
-    # Include per-user S3 credentials when caller identity is known —
-    # legacy transition only (D-16, 2026-09-22): clients stop holding
-    # storage credentials; the r4 client already drops this payload. The
-    # emission remains behind UMRS_EMIT_S3CFG=1 for the `umrs` CLI's
-    # bucket verbs during the transition window and is removed afterwards.
-    if x_user_id and os.environ.get("UMRS_EMIT_S3CFG", "").strip().lower() in (
-        "1",
-        "true",
-        "yes",
-    ):
-        s3cfg = _get_or_create_user_s3cfg(x_user_id)
-        if s3cfg:
-            result["s3cfg_content"] = s3cfg
-    elif x_user_id:
-        logger.debug(
-            "connect-info s3cfg emission skipped (D-16; UMRS_EMIT_S3CFG=1 for the legacy window)"
-        )
+
+_EMIT_SWITCH_WARNED: list[bool] = []
+
+
+def _warn_retired_emit_switch() -> None:
+    """One warning per process when the retired ``UMRS_EMIT_S3CFG`` is set."""
+    if _EMIT_SWITCH_WARNED or not os.environ.get("UMRS_EMIT_S3CFG", "").strip():
+        return
+    _EMIT_SWITCH_WARNED.append(True)
+    logger.warning(
+        "UMRS_EMIT_S3CFG is set but retired (DEC-016, 2026-11-24): connect-info "
+        "never emits storage credentials; remove the variable"
+    )
 
 
 def _resolve_data_port_range(
@@ -864,104 +856,6 @@ def _resolve_data_port_range(
         data_start = int(data_port_env)
         return data_start, data_start
     return control_port + 1, control_port + 8
-
-
-def _read_user_s3cfg(username: str) -> str | None:
-    """Read existing s3cfg content for *username* from the server filesystem.
-
-    Searches several locations in order (most authoritative first):
-
-    1. ``~/.config/umrs/s3cfg_<username>``  (authoritative — written by
-       ``minio_s3_create_user``; always reflects the most recent MinIO
-       credentials)
-    2. ``<umrs_config_dir>/user_files/s3cfg_<username>``  (mirror copy —
-       kept in sync by ``_mirror_s3cfg_to_user_files``; pruned when stale
-       by ``_prune_stale_user_files_s3cfg``)
-    3. ``<configure_file_dir>/user_files/s3cfg_<username>``  (legacy
-       provisioning fallback)
-
-    Bare-root fallbacks (``<cfg_dir>/s3cfg_<username>`` without the
-    ``user_files`` segment) were retired 2026-08-23 — zero live files
-    existed on data0 and no writer ever produced them.
-
-    Returns ``None`` if no file is found.
-    """
-    candidates: list[str] = []
-
-    # Priority 1: Authoritative path (written by minio_s3_create_user on creation,
-    # updated on secret rotation).  Always trust this copy over mirrors.
-    candidates.append(
-        os.path.expanduser(f"~/.config/umrs/s3cfg_{username}"),
-    )
-
-    # Priority 2: UMRS_CONFIG mirror
-    umrs_config_dir = os.environ.get("UMRS_CONFIG", "")
-    if umrs_config_dir:
-        umrs_config_dir = os.path.expanduser(umrs_config_dir)
-        candidates.append(
-            os.path.join(umrs_config_dir, "user_files", f"s3cfg_{username}"),
-        )
-
-    # Priority 3: Legacy provisioning fallback
-    configure_file = os.environ.get("UMRS_CONFIGURE_FILE", "")
-    if configure_file:
-        cfg_dir = os.path.dirname(os.path.expanduser(configure_file))
-        candidates.append(
-            os.path.join(cfg_dir, "user_files", f"s3cfg_{username}"),
-        )
-
-    for path in candidates:
-        if os.path.isfile(path):
-            try:
-                with open(path, encoding="utf-8") as f:
-                    return f.read()
-            except OSError:
-                pass
-
-    return None
-
-
-def _get_or_create_user_s3cfg(username: str) -> str | None:
-    """Return the user's s3cfg content, provisioning an object-store identity if needed.
-
-    Reads the existing s3cfg from disk first (``_read_user_s3cfg``). When
-    ``UMRS_ADMIN_S3_CONFIGURATION_FILE`` is set the backend adapter (ADR-055)
-    is asked whether that credential still authenticates — an s3cfg issued
-    by a previous object store (MinIO-era key after the SeaweedFS cutover) is
-    re-provisioned instead of being delivered dead. Without the admin config
-    the file is returned as-is. Returns ``None`` on any failure — login still
-    succeeds without s3cfg.
-    """
-    existing = _read_user_s3cfg(username)
-    admin_s3cfg = os.environ.get("UMRS_ADMIN_S3_CONFIGURATION_FILE", "")
-    if not admin_s3cfg:
-        # No admin config → cannot verify or auto-provision; deliver what exists.
-        return existing
-
-    try:
-        from umrs.shared.storage.backends import get_backend
-
-        backend = get_backend()
-        user_s3cfg_path = os.path.expanduser(f"~/.config/umrs/s3cfg_{username}")
-        if existing and backend.user_s3cfg_is_current(
-            username, user_s3cfg_path, admin_s3cfg
-        ):
-            return existing
-        if existing:
-            logger.warning(
-                "s3cfg for %s no longer authenticates on the %s backend; re-provisioning",
-                username,
-                backend.profile.display_name,
-            )
-        _alias, s3cfg_content = backend.create_user(
-            username, user_s3cfg_path, admin_s3cfg
-        )
-        return s3cfg_content
-    except Exception as e:
-        # Best-effort: the object store may be unavailable; login proceeds with
-        # whatever s3cfg exists (possibly none).
-        print(f"Warning: auto-provision s3cfg for '{username}' failed: {e}")
-        return existing
 
 
 # ---------------------------------------------------------------------------
