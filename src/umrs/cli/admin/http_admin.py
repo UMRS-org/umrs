@@ -208,6 +208,45 @@ def _cmd_session_stop(args: argparse.Namespace, _store: Any) -> int:
     return 0
 
 
+def _post_session_verb(args: argparse.Namespace, verb: str) -> int:
+    url = _session_url(args, f"/{verb}")
+    result = umrs_api("POST", url, args, {"note": args.note}) or {}
+    if args.json:
+        print(json.dumps(result, indent=2, default=str))
+    else:
+        print(f"session {args.session_id}: {result.get('state', 'unknown')}")
+    return 0
+
+
+def _cmd_session_pause(args: argparse.Namespace, _store: Any) -> int:
+    """Pause any user's session between turns (audited, actor = the admin)."""
+    return _post_session_verb(args, "pause")
+
+
+def _cmd_session_resume(args: argparse.Namespace, _store: Any) -> int:
+    """Resume any user's paused session (audited, actor = the admin)."""
+    return _post_session_verb(args, "resume")
+
+
+def _add_pause_resume_parsers(session_sub: argparse._SubParsersAction) -> None:
+    for verb, func, what in (
+        ("pause", _cmd_session_pause, "Pause any user's session between turns"),
+        ("resume", _cmd_session_resume, "Resume any user's paused session"),
+    ):
+        p = session_sub.add_parser(
+            verb,
+            help=what,
+            description=(
+                f"{what}. The lease stays warm. Audited as venue.session.{verb} "
+                "with actor = the admin and cause=admin."
+            ),
+        )
+        p.add_argument("session_id")
+        p.add_argument("--note", default="", help="Why (kept in the session's reason)")
+        p.add_argument("--json", action="store_true")
+        p.set_defaults(func=func)
+
+
 def add_session_parsers(session_sub: argparse._SubParsersAction) -> None:
     list_p = session_sub.add_parser("list", help="List every user's remote sessions")
     list_p.add_argument("--user", default="", help="Only this owner")
@@ -245,3 +284,4 @@ def add_session_parsers(session_sub: argparse._SubParsersAction) -> None:
     stop_p.add_argument("-y", "--yes", action="store_true", help="Skip confirmation")
     stop_p.add_argument("--json", action="store_true")
     stop_p.set_defaults(func=_cmd_session_stop)
+    _add_pause_resume_parsers(session_sub)

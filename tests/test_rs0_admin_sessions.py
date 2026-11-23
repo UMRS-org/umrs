@@ -396,3 +396,78 @@ class TestAdminListStore:
         assert "LEFT JOIN jobs j ON j.job_id = s.job_id" in sql
         assert "ORDER BY s.started_at DESC" in sql
         assert params == ("alice", "alice", "", "", "proj-1", "proj-1", 5)
+
+
+def _venue_rows(audit, *events: str) -> list[dict]:
+    return [r for r in audit.rows if r["event"] in events]
+
+
+class TestAdminPauseResume:
+    """RS-0 P-4 residual (2026-11-24): an admin pauses or resumes any user's
+    session; the audit row names the admin, not the owner."""
+
+    @staticmethod
+    def _post(admin_h, verb: str, sid: str = "sess-a", headers=None, **kw):
+        return admin_h.client.post(
+            f"{ADMIN_URL}/{sid}/{verb}", headers=headers or _bearer("root"), **kw
+        )
+
+    def test_admin_pauses_another_users_session(self, admin_h):
+        r = self._post(admin_h, "pause", json={"note": "maintenance"})
+        assert r.status_code == 200, r.text
+        body = r.json()
+        got = (body["state"], body["user_id"], body["project"], body["host"])
+        assert got == ("paused", "alice", "proj-alice", "local")
+        assert "admin root: maintenance" in body["reason"]
+        assert "partial" not in body["runtime"]
+        assert admin_h.service.store.get("sess-b").state == "running"
+
+    def test_admin_resumes_a_paused_session(self, admin_h):
+        self._post(admin_h, "pause")
+        r = self._post(admin_h, "resume")
+        assert r.status_code == 200, r.text
+        assert (r.json()["state"], r.json()["user_id"]) == ("running", "alice")
+
+    def test_audit_actor_is_the_admin_with_cause_admin(self, admin_h):
+        self._post(admin_h, "pause")
+        self._post(admin_h, "resume")
+        rows = _venue_rows(admin_h.audit, "venue.session.pause", "venue.session.resume")
+        got = [(r["event"], r["actor"], r["details"]["owner"], r["details"]["cause"]) for r in rows]
+        assert got == [
+            ("venue.session.pause", "root", "alice", "admin"),
+            ("venue.session.resume", "root", "alice", "admin"),
+        ]
+
+    def test_owner_pause_and_resume_still_audit_the_owner(self, admin_h):
+        admin_h.service.pause(owner="bob", session_id="sess-b")
+        admin_h.service.resume(owner="bob", session_id="sess-b")
+        rows = _venue_rows(admin_h.audit, "venue.session.pause", "venue.session.resume")
+        assert [(r["actor"], r["details"]["cause"]) for r in rows] == [
+            ("bob", "owner"),
+            ("bob", "owner"),
+        ]
+
+    def test_unknown_is_404_and_bad_transition_is_409(self, admin_h):
+        assert self._post(admin_h, "pause", sid="ghost").status_code == 404
+        assert self._post(admin_h, "resume", sid="ghost").status_code == 404
+        r = self._post(admin_h, "resume")  # running, not paused
+        assert r.status_code == 409
+        assert r.headers["x-platform-error-code"] == "companionvenue.conflict"
+
+    @pytest.mark.parametrize("verb", ["pause", "resume"])
+    def test_no_credential_is_401(self, admin_h, verb):
+        r = admin_h.client.post(f"{ADMIN_URL}/sess-a/{verb}")
+        assert r.status_code == 401
+        assert r.headers["x-platform-error-code"] == "companionvenue.unauthorized"
+
+    @pytest.mark.parametrize("verb", ["pause", "resume"])
+    def test_non_admin_is_403_audited_and_changes_nothing(self, admin_h, verb):
+        if verb == "resume":
+            admin_h.service.pause(owner="alice", session_id="sess-a")
+        before = admin_h.service.store.get("sess-a").state
+        r = self._post(admin_h, verb, headers=_bearer("mallory", ["user"]))
+        assert r.status_code == 403
+        assert r.headers["x-platform-error-code"] == "companionvenue.forbidden"
+        assert admin_h.service.store.get("sess-a").state == before
+        denied = _venue_rows(admin_h.audit, "venue.admin.denied")
+        assert denied and denied[-1]["actor"] == "mallory"

@@ -724,9 +724,11 @@ class FrontendVenueService:
         return self._describe(stopped)
 
     def pause(
-        self, *, owner: str, session_id: str, actor: str = "user"
+        self, *, owner: str, session_id: str, actor: str = "user", actor_id: str = ""
     ) -> dict[str, Any]:
-        """D-09 pause verb: active → paused; idempotent on paused rows."""
+        """D-09 pause verb: active → paused; idempotent on paused rows.
+        ``actor_id`` (who paused it; the owner by default) goes to the
+        audit row, ``details.cause`` is ``admin`` when it is not the owner."""
         row = self.store.get(session_id)
         if row is None or row.user_id != owner:
             raise VenueError("not_found", "no venue runtime for this session")
@@ -736,11 +738,14 @@ class FrontendVenueService:
         if paused is None:
             raise VenueError("conflict", f"cannot pause from state {row.state!r}")
         self._project_registry(owner, session_id, state="paused")
-        audit_venue("session.pause", actor=owner, session_id=session_id, owner=owner)
+        _audit_owner_verb("session.pause", owner, session_id, actor, actor_id)
         return self._describe(paused)
 
-    def resume(self, *, owner: str, session_id: str) -> dict[str, Any]:
-        """D-09 resume verb: paused → running; only from paused."""
+    def resume(
+        self, *, owner: str, session_id: str, actor: str = "user", actor_id: str = ""
+    ) -> dict[str, Any]:
+        """D-09 resume verb: paused → running; only from paused (audit
+        actor as for ``pause``)."""
         row = self.store.get(session_id)
         if row is None or row.user_id != owner:
             raise VenueError("not_found", "no venue runtime for this session")
@@ -748,7 +753,7 @@ class FrontendVenueService:
         if resumed is None:
             raise VenueError("conflict", f"cannot resume from state {row.state!r}")
         self._project_registry(owner, session_id, state="ongoing")
-        audit_venue("session.resume", actor=owner, session_id=session_id, owner=owner)
+        _audit_owner_verb("session.resume", owner, session_id, actor, actor_id)
         return self._describe(resumed)
 
     # ── admin (C-1, remote-session plan RS-0) ─────────────────────────
@@ -886,6 +891,18 @@ def admin_view(out: dict[str, Any]) -> dict[str, Any]:
     if runtime.get("phase") in _ADMIN_HIDDEN_DETAIL_PHASES and "detail" in runtime:
         runtime["detail"] = ""
     return {**out, "runtime": runtime, "host": SESSION_HOST}
+
+
+def _audit_owner_verb(
+    event: str, owner: str, session_id: str, actor: str, actor_id: str
+) -> None:
+    """Audit a pause/resume with who did it: the owner, or an admin
+    (``actor_id`` set and not the owner; RS-0 P-4, 2026-11-24)."""
+    who = actor_id or owner
+    cause = "owner" if who == owner else "admin"
+    audit_venue(
+        event, actor=who, session_id=session_id, owner=owner, cause=cause, by=actor
+    )
 
 
 def _admin_row(row: VenueSessionRow, project: str) -> dict[str, Any]:
