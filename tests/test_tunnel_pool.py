@@ -80,6 +80,34 @@ async def test_reopen_when_listener_dead():
     assert spec.process is None  # rc==0 -> master-owned again
 
 
+async def _never_connects(*_args, **_kwargs):
+    """open_connection stand-in for a starved event loop: never completes."""
+    await asyncio.Event().wait()
+
+
+@pytest.mark.asyncio
+async def test_probe_timeout_keeps_live_tunnel():
+    """A probe that times out (busy loop / CI host) must not tear the tunnel down.
+
+    Regression for the CI flake of test_reuse_when_listener_alive: under CPU
+    starvation the 1 s probe timed out, was read as "listener dead", and the
+    pool cancelled and reopened a healthy forward.
+    """
+    pool = _make_pool()
+    pool._tunnels["node:8001"] = TunnelSpec(
+        remote_host="node", remote_port=8001, local_port=40001, process=None
+    )
+    probe = pool._listener_up
+    with (
+        mock.patch("asyncio.open_connection", new=_never_connects),
+        mock.patch.object(pool, "_listener_up", new=lambda p: probe(p, timeout=0.01)),
+        mock.patch("asyncio.create_subprocess_exec", side_effect=AssertionError("no re-open")),
+    ):
+        result = await pool.open_tunnel("node", 8001, local_port=40001)
+    assert result == 40001
+    assert "node:8001" in pool._tunnels
+
+
 @pytest.mark.asyncio
 async def test_listener_up_true_and_false():
     pool = _make_pool()

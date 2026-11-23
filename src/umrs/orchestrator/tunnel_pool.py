@@ -247,13 +247,25 @@ class TunnelPool:
 
         Detects forwards silently dropped by a ControlMaster restart: the
         pool still tracks the spec but nothing listens on the local port.
+
+        Only a refused (or otherwise failed) connect means "dead". A probe
+        that times out is NOT read as dead: on the local address a missing
+        listener is refused at once, so a timeout means something holds the
+        port but this event loop (or host) was too busy to finish the probe
+        in time. Tearing down a healthy forward then would cancel the
+        master's forward and reopen it for nothing; reopening a port that is
+        still held fails anyway (``ExitOnForwardFailure``).
         """
         try:
             _reader, writer = await asyncio.wait_for(
                 asyncio.open_connection(self._config.bind_address, local_port),
                 timeout=timeout,
             )
-        except (OSError, asyncio.TimeoutError):
+        except asyncio.TimeoutError:
+            # Checked before OSError: TimeoutError subclasses OSError (3.11+).
+            logger.debug("Listener probe on port %d timed out; keeping tunnel", local_port)
+            return True
+        except OSError:
             return False
         writer.close()
         try:
