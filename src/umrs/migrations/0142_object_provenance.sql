@@ -8,8 +8,8 @@
 -- (OBJECT_VERIFY, slice MB-S2c).
 --
 -- Number: the next free after 0141 (wave 1A, endpoint registry venue key).
--- The integrator renumbers in merge-train order; the file name keeps the
--- slice id so the renumber is mechanical. Idempotent (IF NOT EXISTS
+-- Written as 0142_mbs2a_...; the wave 1B integration (2026-11-24) kept
+-- 0142 and dropped the slice id from the name like 0141. Idempotent (IF NOT EXISTS
 -- throughout): a stand-alone stack that re-runs its migrations at boot
 -- applies it twice without error. Additive only; no existing table changes.
 

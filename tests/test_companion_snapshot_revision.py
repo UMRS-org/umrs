@@ -24,7 +24,7 @@ from typing import Any
 import pytest
 
 _MIGRATIONS = Path(__file__).resolve().parents[1] / "src" / "umrs" / "migrations"
-_REVISION_MIGRATION = "0142_sh_j1_companion_snapshot_revision.sql"
+_REVISION_MIGRATION = "0143_companion_snapshot_revision.sql"
 _BASE_MIGRATIONS = (
     "0079_companion_trust_session_cascade.sql",
     "0080_companion_session_snapshots.sql",

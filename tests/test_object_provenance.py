@@ -390,7 +390,7 @@ def test_data_and_security_names_share_one_block_and_do_not_cross() -> None:
 
 # ── migration ───────────────────────────────────────────────────────────────
 
-_MIGRATION = next(migrations.MIGRATIONS_DIR.glob("*_mbs2a_object_provenance.sql"))
+_MIGRATION = next(migrations.MIGRATIONS_DIR.glob("0142_object_provenance.sql"))
 
 
 def test_the_migration_has_a_unique_number_after_0140() -> None:

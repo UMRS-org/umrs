@@ -1,4 +1,4 @@
--- 0142 (slice SH-J1): revision compare-and-swap on the companion session journal.
+-- 0143 (slice SH-J1): revision compare-and-swap on the companion session journal.
 --
 -- ADR-057 amendment D-7 (decision SH-D1, 2026-11-24). Snapshot PUTs were
 -- settled by timestamp LWW on update_marker, so two clients writing from one
@@ -17,9 +17,9 @@
 -- first insert writes 1. A client feature-detects the column by `revision`
 -- appearing in GET/list/PUT answers.
 --
--- Renumber note: the number is the next free one after 0141 (UMRS-org PR
--- #153, unmerged when this was written); the integrator renumbers in
--- merge-train order. The slice id in the name keeps the file findable.
+-- Renumber note: written as 0142_sh_j1_...; the wave 1B integration
+-- (2026-11-24) renumbered it 0143, after MB-S2a's 0142, and dropped the
+-- slice id from the name like 0141.
 --
 -- Down (manual, no data loss beyond the counter):
 --   ALTER TABLE companion_session_snapshots DROP COLUMN IF EXISTS revision;

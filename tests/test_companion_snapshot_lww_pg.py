@@ -50,7 +50,7 @@ def conn():
         for name in (
             "0080_companion_session_snapshots.sql",
             "0084_companion_session_registry.sql",
-            "0142_sh_j1_companion_snapshot_revision.sql",
+            "0143_companion_snapshot_revision.sql",
         ):
             cur.execute((_MIGRATIONS / name).read_text())
         cur.execute("DELETE FROM companion_session_snapshots WHERE user_id = %s", (_USER,))

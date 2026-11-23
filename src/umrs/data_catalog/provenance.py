@@ -2,7 +2,7 @@
 (ADR-115 D-2, slice MB-S2a).
 
 One Postgres row per ``(bucket, key, etag)`` in ``object_provenance``
-(migration ``0142_mbs2a_object_provenance.sql``). The writers are UMRS code
+(migration ``0142_object_provenance.sql``). The writers are UMRS code
 paths only, and they hash the bytes as they pass through the server:
 
 * the files upload route (``umrs.api.files``): ``source_kind=local_upload``;
