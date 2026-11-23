@@ -1,8 +1,16 @@
 # gitleaks configuration for .github/workflows/security.yml (ADR-117 §7.2, U4).
 #
-# The default rule set, plus an allowlist for the false positives the first
-# HEAD-tree scan found (2026-11-24: 11 findings, all triaged below). Add an
-# entry only for a triaged line, with its reason.
+# The default rule set, plus allowlists for the false positives a HEAD-tree
+# scan finds with the gitleaks the workflow pins (8.30.1). Add an entry only
+# for a triaged line, with its reason.
+#
+# Triage with the pinned binary, never a local one: an unversioned local
+# gitleaks reported a different set (2026-11-24 review: it missed 3
+# generic-api-key hits and the base64-decoded PEM finding below). Check:
+#   gitleaks version            # must print 8.30.1
+#   gitleaks dir . --config .gitleaks.toml --redact   # "no leaks found"
+# This file uses "[[allowlists]]" (per-rule targets); gitleaks before 8.25
+# cannot read it, and no gitleaks accepts it next to a "[allowlist]" table.
 #
 # History is out of scope on purpose: the known SEC-MU7 history (credentials
 # committed before the repository went public) fails a full-history scan
@@ -11,13 +19,11 @@
 [extend]
 useDefault = true
 
-# One global allowlist matched against the whole LINE (regexTarget = "line"),
-# so each entry covers one triaged line shape and nothing else: a real
-# credential, even in the same file, does not have these shapes and still
-# fails the scan. ("[[allowlists]]" with targetRules needs a newer gitleaks;
-# this form reads the same on the pinned 8.30.1 and on older local binaries.)
-[allowlist]
-description = "triaged false positives, first HEAD-tree scan 2026-11-24"
+# Matched against the whole LINE, so each entry covers one triaged line shape
+# and nothing else: a real credential, even in the same file, does not have
+# these shapes and still fails the scan.
+[[allowlists]]
+description = "triaged false-positive lines (pinned gitleaks 8.30.1, 2026-11-24)"
 regexTarget = "line"
 regexes = [
   # Test fixtures: readable HMAC secrets such as SECRET = "c2-llm-body-secret"
@@ -28,15 +34,32 @@ regexes = [
   '''^\s*KEY_[12] = "plan-key-(one|two)-0123456789"\s*$''',
   # test_k1b_review: a redaction sample the reviewer must flag.
   '''^\s*\("\{'api_key': 'a1b2c3d4e5f6g7h8'\}", "api_key"\),\s*$''',
-  # test_seal: an attribute comparison, no value at all.
-  '''^\s*assert blob1\.seal_key_id == blob2\.seal_key_id\s*$''',
-  # test_intake_gate: a PEM header with the body "XYZ", fed to the intake gate
-  # to prove it refuses private keys. The private-key rule matches lazily up to
-  # the next "KEY-----" (a second fixture, line 119), so the finding spans many
-  # lines: (?m) anchors this entry to its first line, the fixture itself.
-  '''(?m)^\s*dec = gate\.inspect\(_doc\("id\.pem", "-----BEGIN PRIVATE KEY-----\\nXYZ"\)\)\s*$''',
   # deploy/*/pool-*.yaml: a Hugging Face model name under VLLM_TOKENIZER; the
   # generic rule reads "TOKEN" in the key as a credential name. The exact name,
   # not a character class: a token pasted under that key must still fire.
   '''^\s*VLLM_TOKENIZER:\s*"Qwen3\.6-35B-A3B-NVFP4"\s*$''',
+  # deploy/rccs/dsv41/extract.py: a tuple of metric names ("prompt_tokens_p50").
+  '''^\s*for k in \("prompt_tokens_p50", "prefill_tok_s_p50", "ttft_p50_s"\)\s*$''',
+  # test_h1_scope_guard: an import path with a keyword argument, no value.
+  '''^\s*HMAC_KEYWORD = "umrs\.api\._identity:verify_hmac=True"\s*$''',
+  # test_secret_broker_durable: two migration file names.
+  '''^\s*_MIGRATIONS = \("0085_secret_leases\.sql", "0124_secret_leases_venue\.sql"\)\s*$''',
+]
+
+# test_intake_gate: a PEM header with the body "XYZ", fed to the intake gate to
+# prove it refuses private keys. The private-key rule matches lazily up to the
+# next "KEY-----" (a second fixture, line 119), so the finding spans ~80 lines,
+# and 8.30.1 reports it twice: plain, and base64-decoded (tags decoded:base64).
+# A line-target regex never matches the decoded finding, so this table matches
+# the finding's MATCH, anchored at both ends: it starts at the "XYZ" fixture and
+# ends at the "secret.pem" fixture. A real PEM placed anywhere in this file,
+# including between the two fixtures, changes either end and still fires.
+[[allowlists]]
+description = "test_intake_gate PEM fixtures (plain and decoded findings)"
+targetRules = ["private-key"]
+condition = "AND"
+paths = ['''^tests/test_intake_gate\.py$''']
+regexTarget = "match"
+regexes = [
+  '''\A-----BEGIN PRIVATE KEY-----\\nXYZ"\)\)\n(?:[^-]|-[^-]|--[^-]|---[^-]|----[^-])*_doc\("secret\.pem", "-----BEGIN PRIVATE KEY-----\z''',
 ]
