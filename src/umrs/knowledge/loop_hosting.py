@@ -48,9 +48,10 @@ class HostingWiring:
     agent_executor: Callable[[str], Callable[..., Any]]
     checkpoint_store: Callable[[], Any | None]
     finding_sink: Callable[[], Any | None]
-    # D-43/D-52: pins real findings onto the project's single active
-    # catalog (kind=finding). Getter like the rest; None = unwired (no pin,
-    # reported by warning — never a silent no-op on a wired host).
+    # D-43/D-52: pins real findings onto the loop's named catalog
+    # (S-D39b), else the project's single active catalog (kind=finding).
+    # Getter like the rest; None = unwired (no pin, reported by warning —
+    # never a silent no-op on a wired host).
     catalog_pinner: Callable[[], Any | None] | None = None
 
 
@@ -125,9 +126,21 @@ def _pin_real_findings(loop: ResearchLoop, iteration: LoopIteration) -> None:
     if pinner is None:
         return
     try:
-        pinner(loop.project_id, pins)
+        _call_pinner(pinner, loop, pins)
     except Exception as exc:  # noqa: BLE001 — pin is best-effort, never a gate
         logger.warning("finding pin skipped for loop %s: %s", loop.loop_id, exc)
+
+
+def _call_pinner(pinner: Any, loop: ResearchLoop, pins: list[tuple[str, str]]) -> None:
+    """DEC-D39 (S-D39b): pass the loop's pinned catalog (``catalog_pin`` on
+    its metadata, set at start) when it has one; without one the pinner
+    falls back to the project's single active catalog."""
+    pinned = (loop.metadata or {}).get("catalog_pin") or {}
+    catalog_id = str(pinned.get("catalog_id") or "")
+    if catalog_id:
+        pinner(loop.project_id, pins, catalog_id)
+    else:
+        pinner(loop.project_id, pins)
 
 
 def _checkpoint_iteration(
