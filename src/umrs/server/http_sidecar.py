@@ -19,7 +19,7 @@ import os
 import pathlib
 import threading
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from fastapi import Request
 from fastapi.staticfiles import StaticFiles
@@ -77,7 +77,7 @@ def _build_db_pool(app):
         return None
 
 
-def _start_durable_runtime():
+def _start_durable_runtime() -> Any:
     """Start the process-owned durable jobs runtime (best-effort).
 
     ``start_durable_job_runtime_from_env()`` is a no-op when no orchestrator
@@ -106,7 +106,7 @@ def _start_durable_runtime():
     return None if started is running else started
 
 
-def _stop_durable_runtime(runtime) -> None:
+def _stop_durable_runtime(runtime: Any) -> None:
     """Shut down the runtime this lifespan started (None: nothing to stop)."""
     if runtime is None:
         return
