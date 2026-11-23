@@ -18,9 +18,12 @@ existing SSH path (the login-node helper, ``umrs_step_helper.py``):
 3. :func:`collect_out` — reads the helper's ``collect-out`` tar stream
    (``tarfile`` mode ``r|``), accepts only regular files named
    ``<output_bucket>/<key>`` under caps, and uploads each one to
-   ``runs/<run_id>/<step>/<key>`` in the run's output bucket. Outputs bound
-   for the run's in-memory store live in server memory, so they share one
-   small whole-run budget and are stored in one batch.
+   ``runs/<run_id>/<step>/<key>`` in the run's output bucket, hashing each
+   one (SHA-256) on the way and setting its ContentType from the extension;
+   each upload then gets a ``step_output`` provenance row (ADR-115 D-2,
+   slice MB-S2a) and the step one ``data.step_output`` audit row. Outputs
+   bound for the run's in-memory store live in server memory, so they share
+   one small whole-run budget and are stored in one batch.
 4. :func:`rewrite_output_keys` — the reply's ``output_keys`` must each be a
    collected file; they become the physical keys children stage.
 
@@ -43,6 +46,13 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, BinaryIO
 
+from umrs.data_catalog.provenance import (
+    HashedObject,
+    Sha256Reader,
+    content_type_for,
+    hashed,
+    record_step_outputs,
+)
 from umrs.pipeline_sdk.staged_s3 import (
     MANIFEST_NAME,
     check_bucket_name,
@@ -829,23 +839,6 @@ class _CappedTarInfo(tarfile.TarInfo):
         return super()._proc_member(tarfile_)
 
 
-class _MemberReader:
-    """A non-seekable view of one stream member (``upload_fileobj`` probes
-    ``seekable()``, which tarfile's stream objects cannot answer)."""
-
-    def __init__(self, fileobj: Any) -> None:
-        self._fileobj = fileobj
-
-    def read(self, n: int = -1) -> bytes:
-        return self._fileobj.read(n)
-
-    def readable(self) -> bool:
-        return True
-
-    def seekable(self) -> bool:
-        return False
-
-
 def physical_prefix(run_id: str, step: str) -> str:
     """``runs/<run_id>/<step>/`` with both parts made safe key segments."""
     return f"runs/{_key_segment(run_id)}/{_key_segment(step)}/"
@@ -904,6 +897,8 @@ class _Collected:
     mapping: dict[str, str] = field(default_factory=dict)
     #: Buffered outputs, stored in one batch once the stream is read whole.
     pending: dict[str, bytes] = field(default_factory=dict)
+    #: Uploaded outputs with their server-computed SHA-256 (provenance).
+    stored: list[HashedObject] = field(default_factory=list)
 
     def hint(self) -> str:
         return buffered_hint(self.caps) if self.buffered else ""
@@ -963,9 +958,20 @@ class _Collected:
             )
 
 
-def _upload(s3_client: Any, fileobj: Any, bucket: str, physical: str, key: str) -> None:
+def _upload(
+    s3_client: Any, fileobj: Any, bucket: str, physical: str, key: str
+) -> HashedObject:
+    """Stream one member to ``bucket/physical``; what was stored, hashed.
+
+    The reader is a non-seekable view (``upload_fileobj`` probes
+    ``seekable()``, which tarfile's stream objects cannot answer) that
+    SHA-256-hashes every byte the store reads."""
+    reader = Sha256Reader(fileobj)
+    content_type = content_type_for(key)
     try:
-        s3_client.upload_fileobj(_MemberReader(fileobj), bucket, physical)
+        s3_client.upload_fileobj(
+            reader, bucket, physical, ExtraArgs={"ContentType": content_type}
+        )
     except StepExecutionError:
         raise
     except Exception as exc:  # an upload failure fails the step by name
@@ -973,6 +979,7 @@ def _upload(s3_client: Any, fileobj: Any, bucket: str, physical: str, key: str) 
             "worker",
             f"uploading output {key!r} to s3://{bucket}/{physical} failed: {exc}",
         ) from exc
+    return hashed(bucket, physical, reader, content_type)
 
 
 def _collect_members(
@@ -987,7 +994,9 @@ def _collect_members(
         if state.buffered:
             state.pending[physical] = fileobj.read()
         else:
-            _upload(s3_client, fileobj, state.dest_bucket, physical, key)
+            state.stored.append(
+                _upload(s3_client, fileobj, state.dest_bucket, physical, key)
+            )
         state.mapping[key] = physical
 
 
@@ -1044,7 +1053,31 @@ def collect_out(
         ) from exc
     if state.buffered:
         _store_buffered(s3_client, state)
+    _record_outputs(s3_client, state, run_id, step)
     return state.mapping
+
+
+def _record_outputs(s3_client: Any, state: _Collected, run_id: str, step: str) -> None:
+    """Provenance rows and one ``data.step_output`` audit row for what this
+    collection uploaded (ADR-115 D-2/D-12). Never fails the step: an output
+    without a row is legacy, verified on demand. In-memory-store outputs
+    live in the run record, not a bucket, and get neither."""
+    if not state.stored:
+        return
+    from umrs.audit.security_events import emit_data
+
+    rows = record_step_outputs(
+        s3_client, state.stored, execution_id=run_id, step=step
+    )
+    emit_data(
+        "data.step_output",
+        bucket=state.dest_bucket,
+        execution_id=run_id,
+        step=step,
+        files=len(state.stored),
+        bytes=sum(obj.size for obj in state.stored),
+        provenance_rows=rows,
+    )
 
 
 # ── key mapping ─────────────────────────────────────────────────────────────

@@ -34,6 +34,17 @@ Families (``event`` column):
     security.action           reserved for the watch (W1/W3): a T1/T2 action
     security.watch_degraded   reserved for the watch: it runs degraded
 
+Data families (ADR-115 D-12 as amended 2026-11-24, DEC-A115-AUDIT; slice
+MB-S2a). Media and object access is audited on the same stream, not in a
+``data_access_audit`` table, and its names live in this block beside the
+security ones (:data:`DATA_FAMILIES`, written through :func:`emit_data`):
+
+    data.upload               an object was stored through the files route
+    data.step_output          a step's outputs were collected (one row per step)
+
+Later ADR-115 slices add ``data.*`` names here (tree, stream, import,
+source bind/revoke, batch launch); none is emitted before its slice lands.
+
 The ``security.*`` names are the schema the watch writes from W1 on; nothing
 emits them yet. ``step.refused`` is deferred to a second tranche (its refusal
 sites live in modules another lane owns).
@@ -63,6 +74,8 @@ _CODE_RE = re.compile(r"^[a-z0-9][a-z0-9_.:-]{0,63}$")
 _HOST_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,62}\.)*[a-z0-9-]{1,63}$")
 _SEGMENT_RE = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
 _IPV4_IN_TEXT = re.compile(r"(?<![\d.])\d{1,3}(?:\.\d{1,3}){3}(?![\d.])")
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_MAX_KEY = 512
 _TOKEN_PREFIXES = ("eyj", "bearer", "umrs-admin-", "sk-", "hf_", "ghp_", "gho_")
 _MAX_LIST = 32
 _DENIED_SUFFIXES = frozenset({"failed", "denied", "invoke_refused", "refused"})
@@ -131,6 +144,33 @@ SECURITY_FAMILIES: dict[str, dict[str, str]] = {
     "security.watch_degraded": {"reason": "code"},
 }
 
+# event -> {field: kind} for data access (ADR-115 D-12, DEC-A115-AUDIT).
+# Object keys are data, not secrets: kept (``key`` kind), but never a
+# credential-shaped or address-carrying one, and never past 512 chars.
+DATA_FAMILIES: dict[str, dict[str, str]] = {
+    "data.upload": {
+        "bucket": "id",
+        "key": "key",
+        "size": "int",
+        "sha256": "sha256",
+        "content_type": "id",
+        "source_kind": "code",
+        "provenance": "bool",
+    },
+    "data.step_output": {
+        "bucket": "id",
+        "execution_id": "id",
+        "step": "id",
+        "files": "int",
+        "bytes": "int",
+        "provenance_rows": "int",
+    },
+}
+
+#: Every family the audit stream knows, security and data alike.
+AUDIT_FAMILIES: dict[str, dict[str, str]] = {**SECURITY_FAMILIES, **DATA_FAMILIES}
+DATA_SCHEMA_VERSION = "1"
+
 
 def _token_like(text: str) -> bool:
     """A JWT (``eyJ...``), an admin token or a provider key by its prefix."""
@@ -184,6 +224,21 @@ def _as_route(value: Any) -> str:
     return "/" + "/".join(p if _SEGMENT_RE.fullmatch(p) else "*" for p in parts)
 
 
+def _as_key(value: Any) -> str:
+    """An object key: kept as data, unless it is too long, carries a control
+    character, looks like a credential or carries an address."""
+    text = value if isinstance(value, str) else ""
+    bad = not text or len(text) > _MAX_KEY or not text.isprintable()
+    if bad or _token_like(text.rsplit("/", 1)[-1]) or _carries_ip(text):
+        return REDACTED
+    return text
+
+
+def _as_sha256(value: Any) -> str:
+    text = value.strip().lower() if isinstance(value, str) else ""
+    return text if _SHA256_RE.fullmatch(text) else REDACTED
+
+
 def _as_list(value: Any, item: Callable[[Any], Any]) -> list[Any]:
     if not isinstance(value, (list, tuple, set, frozenset)):
         return []
@@ -199,7 +254,15 @@ _KINDS: dict[str, Callable[[Any], Any]] = {
     "route": _as_route,
     "codes": lambda v: _as_list(v, _as_code),
     "ids": lambda v: _as_list(v, _as_id),
+    "key": _as_key,
+    "sha256": _as_sha256,
 }
+
+
+def _schema_marker(event: str) -> tuple[str, str]:
+    if event in DATA_FAMILIES:
+        return "data_schema", DATA_SCHEMA_VERSION
+    return "security_schema", SECURITY_SCHEMA_VERSION
 
 
 def redact_details(event: str, details: dict[str, Any]) -> dict[str, Any]:
@@ -208,14 +271,15 @@ def redact_details(event: str, details: dict[str, Any]) -> dict[str, Any]:
     Unknown events keep nothing. The result always names the schema
     version; ``dropped_keys`` counts the fields the schema does not know.
     """
-    schema = SECURITY_FAMILIES.get(event, {})
+    schema = AUDIT_FAMILIES.get(event, {})
     clean: dict[str, Any] = {
         field: _KINDS[kind](details[field])
         for field, kind in schema.items()
         if field in details
     }
     dropped = len([key for key in details if key not in schema])
-    clean["security_schema"] = SECURITY_SCHEMA_VERSION
+    marker, version = _schema_marker(event)
+    clean[marker] = version
     if dropped:
         clean["dropped_keys"] = dropped
     return clean
@@ -243,6 +307,36 @@ def emit_security(
     if event not in SECURITY_FAMILIES:
         logger.warning("security audit: %r is not a known family; not written", event)
         return None
+    return _emit_family(event, actor, project_id, outcome, scope, details)
+
+
+def emit_data(
+    event: str,
+    *,
+    actor: str = "",
+    project_id: str = "",
+    outcome: str = "success",
+    scope: str = "project",
+    **details: Any,
+) -> dict[str, Any] | None:
+    """Write one ``data.*`` row (DEC-A115-AUDIT); return the details written.
+
+    Same contract as :func:`emit_security`: schema-filtered, never raises,
+    an unknown name is refused with a warning (None)."""
+    if event not in DATA_FAMILIES:
+        logger.warning("data audit: %r is not a known family; not written", event)
+        return None
+    return _emit_family(event, actor, project_id, outcome, scope, details)
+
+
+def _emit_family(
+    event: str,
+    actor: str,
+    project_id: str,
+    outcome: str,
+    scope: str,
+    details: dict[str, Any],
+) -> dict[str, Any]:
     clean = redact_details(event, details)
     try:
         from umrs.api.audit_events import emit_audit

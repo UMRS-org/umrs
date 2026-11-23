@@ -296,6 +296,11 @@ def _start_new_runtime(timeout: float) -> DurableJobRuntime | None:
         from umrs.api.catalog_store import init_catalog_meta_store
 
         init_catalog_meta_store(db_pool)
+        from umrs.data_catalog.provenance import set_provenance_pool
+
+        # ADR-115 D-2 (MB-S2a): step outputs this runtime collects get
+        # provenance rows through the runtime's own pool.
+        set_provenance_pool(db_pool)
         runtime = DurableJobRuntime(db_pool=db_pool)
         runtime.start(timeout=timeout)
         _set_runtime(runtime)

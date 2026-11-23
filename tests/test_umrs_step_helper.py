@@ -486,7 +486,7 @@ def test_collect_out_round_trips_through_the_server_collector(root, wd):
         def __init__(self):
             self.objects = {}
 
-        def upload_fileobj(self, fileobj, bucket, key):
+        def upload_fileobj(self, fileobj, bucket, key, ExtraArgs=None):  # noqa: N803, ARG002 — boto3 shape
             self.objects[(bucket, key)] = fileobj.read()
 
     (wd / "out" / "u.p.a-output" / "res").mkdir(parents=True)

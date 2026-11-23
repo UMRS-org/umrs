@@ -91,7 +91,7 @@ class _FakeS3:
             **({"NextContinuationToken": page[-1]} if more else {}),
         }
 
-    def upload_fileobj(self, fileobj, bucket, key):
+    def upload_fileobj(self, fileobj, bucket, key, ExtraArgs=None):  # noqa: N803, ARG002 — boto3 shape
         # what boto3's transfer manager would pick for this stream
         assert UploadNonSeekableInputManager.is_compatible(fileobj)
         assert not UploadSeekableInputManager.is_compatible(fileobj)
@@ -603,7 +603,7 @@ def test_the_store_rechecks_the_budget_a_parallel_step_claimed():
 
 def test_an_upload_failure_is_an_output_upload_error():
     class _Down(_FakeS3):
-        def upload_fileobj(self, *_args):
+        def upload_fileobj(self, *_args, **_kw):
             raise ConnectionError("seaweedfs down")
 
     with pytest.raises(OutputUploadError, match="seaweedfs down"):
