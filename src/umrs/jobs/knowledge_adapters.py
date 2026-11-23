@@ -3108,16 +3108,10 @@ def _detect_graph_payload(text: str) -> dict[str, Any] | None:
 
 
 def _is_chat_endpoint(ep: Any) -> bool:
-    """A registry row that serves general chat: ``llm``/``vlm``, no service kind
-    naming a vision or embedding service (rerankers, OCR and embedders are not
-    chat models, 2026-11-02)."""
-    from umrs.model_registry.models import CHAT_MODEL_TYPES, normalized_model_type
+    """A registry row that serves general chat (the resolver's ``chat`` role)."""
+    from umrs.orchestrator.registry_route import is_chat_row
 
-    meta = getattr(ep, "metadata", None) or {}
-    if normalized_model_type(meta.get("model_type")) not in CHAT_MODEL_TYPES:
-        return False
-    kind = str(meta.get("service_kind") or "").lower()
-    return not any(word in kind for word in ("vision", "embed"))
+    return is_chat_row(ep)
 
 
 def _served_model_name(ep: Any) -> str:
@@ -3125,71 +3119,45 @@ def _served_model_name(ep: Any) -> str:
     return str(meta.get("served_model_name") or ep.model)
 
 
-def _is_system_shared(ep: Any, scopes_of: Any) -> bool:
-    """Shared with everyone (ADR-078 system scope)."""
-    return any(scope.kind == "system" for scope in scopes_of(ep))
-
-
 def _registry_chat_candidates(project_id: str) -> list[Any]:
-    """READY/DEGRADED chat rows the project may use: its own, then system-shared.
+    """READY/DEGRADED chat rows the project may use: its own, then system-shared
+    (ungated; the resolver gates them, DEC-063)."""
+    from umrs.orchestrator.registry_route import registry_rows
 
-    A strict subset of ADR-078 routing (user/group/circle grants need a full
-    caller identity a background job does not have).
-    """
-    try:
-        from umrs.orchestrator.endpoint_access import endpoint_scopes
-        from umrs.orchestrator.endpoint_registry import EndpointStatus, get_registry
-
-        ready = [EndpointStatus.READY, EndpointStatus.DEGRADED]
-        registry = get_registry()
-        own = registry.list_all(project_id=project_id, status_filter=ready)
-        every = registry.list_all(status_filter=ready)
-    except Exception as exc:  # noqa: BLE001 — extraction is best-effort
-        logger.warning("Extraction endpoint lookup failed: %s", exc)
-        return []
-    shared = [
-        ep
-        for ep in every
-        if ep.project_id != project_id and _is_system_shared(ep, endpoint_scopes)
-    ]
-    return [ep for ep in (*own, *shared) if _is_chat_endpoint(ep)]
+    return registry_rows(project_id, "chat")
 
 
 def _wanted_model_names(wanted: str) -> set[str]:
-    """``wanted`` plus, for an ADR-106 role alias (``svc-fast``), the models
-    whose roster entries serve it."""
-    names = {wanted}
-    try:
-        from umrs.orchestrator.provision_roster import is_role_alias, role_alias_models
+    """``wanted`` plus the models an ADR-106 role alias serves (ADR-116 D-2)."""
+    from umrs.orchestrator.registry_route import wanted_names
 
-        if is_role_alias(wanted):
-            names.update(role_alias_models(wanted))
-    except Exception as exc:  # noqa: BLE001 — an unreadable roster matches by name only
-        logger.warning("role alias %s unresolved: %s", wanted, exc)
-    return names
+    return wanted_names(wanted)
 
 
 def _extract_chat_endpoint(project_id: str) -> tuple[str, str] | None:
     """(base_url, model) for semantic extraction, or None when none is usable.
 
-    An explicit UMRS_AGENT_LITELLM_URL wins, so sites that configured it keep
-    their behaviour. Otherwise the chat model is resolved through the endpoint
-    registry — the one internal inference API (ADR-068, gap D-63) — instead of
-    the old default http://127.0.0.1:11434, which inside a container is the
-    container itself and refused every request. UMRS_KNOWLEDGE_EXTRACT_MODEL,
-    when set, picks among the candidates; it may name an ADR-106 role alias,
-    which matches the endpoints serving the alias's models (ADR-116 D-2).
+    An explicit UMRS_AGENT_LITELLM_URL wins (the resolver's one declared
+    exception, DEC-063), so sites that configured it keep their behaviour.
+    Otherwise the chat model is resolved through the gated registry resolver
+    (ADR-068, gap D-63): a sensitive project is never handed a public
+    passthrough row (refused by name, ``source_class_refused``, 2026-11-24).
+    UMRS_KNOWLEDGE_EXTRACT_MODEL, when set, picks among the candidates; it
+    may name an ADR-106 role alias (ADR-116 D-2).
     """
+    from umrs.orchestrator import registry_route
+
     wanted = os.environ.get("UMRS_KNOWLEDGE_EXTRACT_MODEL", "").strip()
-    explicit = os.environ.get("UMRS_AGENT_LITELLM_URL", "").strip()
+    explicit = registry_route.agent_url_exception(project_id)
     if explicit:
         return explicit, wanted or "gpt-oss"
-    candidates = _registry_chat_candidates(project_id)
-    if wanted:
-        names = _wanted_model_names(wanted)
-        candidates = [
-            ep for ep in candidates if names & {ep.model, _served_model_name(ep)}
-        ]
+    try:
+        candidates = registry_route.resolve_candidates(
+            project_id, wanted or None, rows=_registry_chat_candidates(project_id)
+        )
+    except registry_route.RegistryRouteRefused as exc:
+        logger.warning("Extraction endpoint refused: %s", exc)
+        return None
     if not candidates:
         return None
     best = _ranked_candidates(candidates)[0]

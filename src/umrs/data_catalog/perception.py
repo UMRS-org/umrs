@@ -316,14 +316,19 @@ def _find_text_endpoint(project_id: str) -> Any | None:
 
 
 def _usable_endpoints(project_id: str) -> list[Any]:
+    """The project's READY/DEGRADED rows that its ADR-062 class admits: a
+    sensitive project's images and text never go to a public passthrough row
+    (DEC-063 gated resolver, 2026-11-24)."""
     try:
         from umrs.orchestrator.endpoint_registry import EndpointStatus, get_registry
+        from umrs.orchestrator.registry_route import gate_rows
 
         registry = get_registry()
-        return registry.list_all(
+        rows = registry.list_all(
             project_id=project_id,
             status_filter=[EndpointStatus.READY, EndpointStatus.DEGRADED],
         )
+        return gate_rows(rows, project_id)
     except Exception:
         logger.debug("endpoint registry unavailable for perception", exc_info=True)
         return []

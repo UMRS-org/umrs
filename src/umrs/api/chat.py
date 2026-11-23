@@ -37,6 +37,11 @@ from umrs.orchestrator.endpoint_registry import (
     RegisteredEndpoint,
     get_registry,
 )
+from umrs.orchestrator.registry_route import (
+    RegistryRouteRefused,
+    endpoint_admitted,
+    resolve_candidates,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -79,22 +84,29 @@ def _discover_endpoint(
     """Discover a ready mini-RiVault endpoint for the given project.
 
     If *model* is provided, attempts to match by model name first.
-    Falls back to any ready endpoint for the project.
+    Falls back to any ready endpoint for the project. Every pick passes the
+    ADR-062 class gate (DEC-063 gated resolver, 2026-11-24): a sensitive
+    project is never handed a public passthrough row; when only such rows
+    exist the refusal names ``source_class_refused``.
     """
     if model:
         endpoint = registry.select_endpoint(
             project_id, model, strategy="least_connections"
         )
-        if endpoint:
+        if endpoint and endpoint_admitted(endpoint, project_id):
             return endpoint
 
-    # Fallback: any ready endpoint for this project
+    # Fallback: any ready, admitted endpoint for this project
     all_eps = registry.list_all(
         project_id=project_id,
         status_filter=[EndpointStatus.READY, EndpointStatus.DEGRADED],
     )
-    if all_eps:
-        return min(all_eps, key=lambda ep: ep.active_requests)
+    try:
+        admitted = resolve_candidates(project_id, role="any", rows=all_eps)
+    except RegistryRouteRefused as exc:
+        raise_typed(PlatformError.chatapi("unavailable", str(exc)), cause=exc)
+    if admitted:
+        return min(admitted, key=lambda ep: ep.active_requests)
 
     raise_typed(
         PlatformError.chatapi(
