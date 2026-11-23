@@ -844,6 +844,40 @@ def test_the_watchdog_retries_a_kill_that_missed_until_it_lands(stop_run):
     assert not (stop_run["state"] / "run_pid").exists()  # a kill landed
 
 
+#: A watchdog held inside its stop (after the line the test names): it has
+#: decided to stop the step, and the step sees that before it exits 0.
+HOLD_IN_STOP = (
+    ': > "$FAKE_STATE/stop_decided"; sleep 3 </dev/null >/dev/null 2>&1'
+)
+WAIT_FOR_DECISION = (
+    'for _ in $(seq 1 300); do [[ -e "$FAKE_STATE/stop_decided" ]] && break; sleep 0.1; done'
+)
+
+
+def _exit_while_the_watchdog_stops(stop_run, after: str) -> tuple[int, bool]:
+    """The step passes its byte cap, waits until the watchdog is inside its
+    stop (held after *after*), then exits 0: (job exit code, FATAL logged)."""
+    (stop_run["state"] / "run_script").write_text(
+        f'head -c 5000 /dev/zero > "$WD/out/flood"\n{WAIT_FOR_DECISION}\nexit 0\n'
+    )
+    proc = stop_run["run"](watch_seconds=1, max_out_bytes=4096, after=after, insert=HOLD_IN_STOP)
+    assert (stop_run["state"] / "stop_decided").exists(), proc.stderr
+    return proc.returncode, "FATAL" in proc.stderr
+
+
+def test_a_stop_the_watchdog_has_not_recorded_when_the_step_ends_is_no_stop(stop_run):
+    # Held before the marker: the run lines end the watchdog first, so the
+    # stop never happens and nothing claims it did (f410eb45 logged FATAL
+    # first and ended 0: the CI signature of run 45225154809).
+    assert _exit_while_the_watchdog_stops(stop_run, "_step_watch_kill() {") == (0, False)
+
+
+def test_a_stop_recorded_but_not_yet_logged_still_fails_the_job(stop_run):
+    # Held between the marker and its FATAL line: the run lines name the stop.
+    rc, fatal = _exit_while_the_watchdog_stops(stop_run, '    : > "${_step_stop}"')
+    assert (rc, fatal) == (137, True)
+
+
 def test_a_stale_stop_marker_never_fails_a_good_step(stop_run):
     (stop_run["wd"] / "log" / "watchdog.stop").write_text("")
     (stop_run["state"] / "run_script").write_text("exit 0\n")

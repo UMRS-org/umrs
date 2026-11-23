@@ -1026,12 +1026,11 @@ def _staged_pids_lines(job: StagedJob) -> list[str]:
 
 
 def _watch_stop(condition: str, why: str) -> list[str]:
-    """``if condition`` then name *why* in the log and stop the pod
-    (``_step_watch_kill``: the stop marker first, then the kill)."""
+    """``if condition`` then stop the pod (``_step_watch_kill``: the stop
+    marker first, then *why* in the log, then the kill)."""
     return [
         f"        if {condition}; then",
-        f"            printf '[umrs-step] FATAL: %s\\n' \"{why}; the step was stopped\" >&2",
-        "            _step_watch_kill",
+        f'            _step_watch_kill "{why}; the step was stopped"',
         "            return",
         "        fi",
     ]
@@ -1042,12 +1041,16 @@ def _watch_kill_lines(job: StagedJob) -> list[str]:
     the kill is retried until it lands: a pod not created yet, or one that
     exits 0 between the check and the kill, must not end the job COMPLETED
     (CI flake 2026-11-23: the kill missed, the step ran on and exited 0).
-    The run lines turn the marker into a failed job (:func:`_staged_run_lines`)."""
+    The run lines turn the marker into a failed job (:func:`_staged_run_lines`).
+    The FATAL line follows the marker: a watchdog the run lines end before
+    it recorded the stop has logged nothing, so the log never names a stop
+    the exit code does not report (review of f410eb45)."""
     return [
         f"_step_stop={shlex.quote(job.workdir + '/log/watchdog.stop')}",
         'rm -f -- "${_step_stop}"',
         "_step_watch_kill() {",
         '    : > "${_step_stop}"',
+        "    printf '[umrs-step] FATAL: %s\\n' \"$1\" >&2",
         '    until podman kill "${_step_ctr}" >/dev/null 2>&1; do',
         f"        sleep {int(job.watch_seconds)} </dev/null >/dev/null 2>&1 || return",
         "    done",
@@ -1058,7 +1061,10 @@ def _watch_kill_lines(job: StagedJob) -> list[str]:
 def _staged_run_lines(job: StagedJob) -> list[str]:
     """The pod, unless the watchdog already stopped the step; the job's exit
     code is the pod's (``pipefail``), and :data:`_EX_STOPPED` whenever the
-    watchdog stopped it, whatever the pod returned."""
+    watchdog stopped it, whatever the pod returned. The watchdog is ended
+    (TERM: an async subshell keeps no trap of ours) and reaped before the
+    marker is read, so a stop it decides on while the pod exits is either
+    recorded, and fails the job, or never happens."""
     stopped = '[[ ! -e "${_step_stop}" ]]'
     why = "the watchdog stopped the step"
     return [
@@ -1066,6 +1072,9 @@ def _staged_run_lines(job: StagedJob) -> list[str]:
         "set +e",
         " ".join(staged_podman_argv(job)) + " 2>&1 | _step_log >&2",
         "_step_rc=$?",
+        'kill "${_step_watch_pid}" 2>/dev/null',
+        'wait "${_step_watch_pid}" 2>/dev/null',
+        '_step_watch_pid=""',
         "set -e",
         _or_fatal(stopped, _EX_STOPPED, f"{why} (pod exit ${{_step_rc}})"),
         'exit "${_step_rc}"',
