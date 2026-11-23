@@ -13,8 +13,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import tempfile
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -145,12 +143,12 @@ def inbox():
 
 
 @pytest.fixture
-def h():
+def h(tmp_path):
     pool = _Pool()
     broker = SecretBroker()
     podman = TokenPodman()
     provisioner = FrontendPodmanProvisioner(
-        broker, podman=podman, session_root=Path(tempfile.mkdtemp(prefix="plan-venue-"))
+        broker, podman=podman, session_root=tmp_path / "plan-venue"
     )
     jobs = VenueJobStore()
     traces = ExecutionTraceStore(db_url=None)

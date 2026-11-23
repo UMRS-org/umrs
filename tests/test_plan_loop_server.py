@@ -13,7 +13,6 @@ venue, no container, no model.
 from __future__ import annotations
 
 import json
-import tempfile
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -339,7 +338,7 @@ class TestTheGate:
 
 class TestTheStartRoute:
     @pytest.fixture
-    def loops(self, monkeypatch):
+    def loops(self, monkeypatch, tmp_path):
         from umrs.api import loop as loop_api
         from umrs.knowledge.loop import AutonomousResearchLoop
 
@@ -355,7 +354,7 @@ class TestTheStartRoute:
         )
         app = FastAPI()
         app.include_router(loop_api.router)
-        app.state.companion_venue_service = _real_service(PolicyRuleStore())
+        app.state.companion_venue_service = _real_service(tmp_path, PolicyRuleStore())
         yield TestClient(app), loop_api, registered
         loop_api._loop_engine = previous
         loop_api.clear_loop_store()
@@ -509,7 +508,7 @@ def test_each_run_gets_the_tighter_of_the_project_and_loop_caps():
 # ── ADR-099 D-2: the loop's runs need the user's web choice (fix P1) ───────
 
 
-def _real_service(store: PolicyRuleStore, jobs: Any = None) -> FrontendVenueService:
+def _real_service(tmp_path: Path, store: PolicyRuleStore, jobs: Any = None) -> FrontendVenueService:
     """A real venue service over the route-test fakes (no podman, no DB)."""
     broker = SecretBroker()
     return FrontendVenueService(
@@ -519,7 +518,7 @@ def _real_service(store: PolicyRuleStore, jobs: Any = None) -> FrontendVenueServ
         provisioner=FrontendPodmanProvisioner(
             broker,
             podman=TokenPodman(),
-            session_root=Path(tempfile.mkdtemp(prefix="plan-loop-")),
+            session_root=tmp_path / "plan-loop",
         ),
         pool=_Pool(),
         sealed_store=FakeSealed({("alice", "openai-main"): _meta("openai-main")}),
@@ -536,7 +535,7 @@ class TestTheWebChoice:
     plan_web_allow_domains did not exist, so allowlist could never run."""
 
     @pytest.fixture
-    def loops(self, monkeypatch):
+    def loops(self, monkeypatch, tmp_path):
         from umrs.api import loop as loop_api
         from umrs.knowledge.loop import AutonomousResearchLoop
 
@@ -550,7 +549,7 @@ class TestTheWebChoice:
         monkeypatch.setattr("umrs.api.loop._project_budget_caps", lambda _p: {})
         store = PolicyRuleStore()
         jobs = VenueJobStore()
-        service = _real_service(store, jobs)
+        service = _real_service(tmp_path, store, jobs)
         app = FastAPI()
         app.include_router(loop_api.router)
         app.state.companion_venue_service = service

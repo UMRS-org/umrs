@@ -7,9 +7,7 @@ HS256 JWT signed with a test secret, or a gateway-signed admin identity.
 
 from __future__ import annotations
 
-import tempfile
 import time
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -70,13 +68,13 @@ def audit(monkeypatch):
 
 
 @pytest.fixture
-def admin_h(monkeypatch, audit):
+def admin_h(monkeypatch, audit, tmp_path):
     monkeypatch.setenv("JWT_SECRET", SECRET)
     pool = _Pool()
     broker = SecretBroker()
     podman = FakePodman()
     provisioner = FrontendPodmanProvisioner(
-        broker, podman=podman, session_root=Path(tempfile.mkdtemp(prefix="admin-venue-"))
+        broker, podman=podman, session_root=tmp_path / "admin-venue"
     )
     jobs = FakeJobStore()
     sealed = FakeSealed(

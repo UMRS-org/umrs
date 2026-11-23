@@ -11,8 +11,6 @@ is the sqlite fallback, the settings store the in-memory one.
 
 from __future__ import annotations
 
-import tempfile
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -55,12 +53,12 @@ class _TokenPodman(FakePodman):
 
 
 @pytest.fixture
-def h():
+def h(tmp_path):
     pool = _Pool()
     broker = SecretBroker()
     podman = _TokenPodman()
     provisioner = FrontendPodmanProvisioner(
-        broker, podman=podman, session_root=Path(tempfile.mkdtemp(prefix="venue-parity-"))
+        broker, podman=podman, session_root=tmp_path / "venue-parity"
     )
     questions = ChatTurnQuestionsStore()
     service = FrontendVenueService(

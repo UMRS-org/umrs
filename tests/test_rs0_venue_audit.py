@@ -8,9 +8,7 @@ sidecar's ``AuditStore`` would insert.
 from __future__ import annotations
 
 import asyncio
-import tempfile
 from datetime import timedelta
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -61,7 +59,7 @@ def sink(monkeypatch):
 
 
 @pytest.fixture
-def venue(sink):
+def venue(sink, tmp_path):
     pool = _Pool()
     broker = SecretBroker()
     podman = FakePodman()
@@ -70,7 +68,7 @@ def venue(sink):
         broker=broker,
         store=VenueSessionStore(),
         provisioner=FrontendPodmanProvisioner(
-            broker, podman=podman, session_root=Path(tempfile.mkdtemp(prefix="audit-venue-"))
+            broker, podman=podman, session_root=tmp_path / "audit-venue"
         ),
         pool=pool,
         sealed_store=FakeSealed({("alice", "openai-main"): _meta("openai-main")}),

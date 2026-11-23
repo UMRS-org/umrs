@@ -68,15 +68,10 @@ class FakePodman:
         return subprocess.CompletedProcess(args, 0, "", "")
 
 
-def _provision(fail_at: str | None = None, **cfg_over):
+def _provision(tmp_path: Path, fail_at: str | None = None, **cfg_over):
     broker = SecretBroker()
     podman = FakePodman(fail_at)
-    provisioner = FrontendPodmanProvisioner(
-        broker, podman=podman, session_root=Path("/tmp/umrs-test-sessions")
-    )
-    import tempfile
-
-    provisioner._root = Path(tempfile.mkdtemp(prefix="umrs-venue-test-"))
+    provisioner = FrontendPodmanProvisioner(broker, podman=podman, session_root=tmp_path / "sessions")
     result = provisioner.provision(_cfg(**cfg_over))
     return provisioner, broker, podman, result
 
@@ -87,8 +82,8 @@ def _env_values(argv: tuple[str, ...]) -> list[str]:
 
 
 class TestHappyPath:
-    def test_ordered_steps(self):
-        _, _, _, result = _provision()
+    def test_ordered_steps(self, tmp_path):
+        _, _, _, result = _provision(tmp_path)
         assert result.state == "running"
         assert result.steps == [
             "network",
@@ -108,16 +103,16 @@ class TestHappyPath:
             "worker",
         ]
 
-    def test_lease_issued_and_ip_bound(self):
-        _, broker, _, result = _provision()
+    def test_lease_issued_and_ip_bound(self, tmp_path):
+        _, broker, _, result = _provision(tmp_path)
         assert result.lease_id
         assert result.egress_ip == "172.18.52.9"
         lease = broker.get_lease(result.lease_id)
         assert lease.session_id == "sess-t1"
         assert lease.egress_ip == "172.18.52.9"
 
-    def test_plaintext_token_only_in_podman_secret(self):
-        _, broker, podman, result = _provision()
+    def test_plaintext_token_only_in_podman_secret(self, tmp_path):
+        _, broker, podman, result = _provision(tmp_path)
         assert podman.secret_stdin is not None
         # Token goes via stdin to the secret driver — never into worker env.
         worker_run = next(c for c in podman.calls if c[0] == "run" and "worker-sess-t1" in c)
@@ -125,11 +120,11 @@ class TestHappyPath:
         assert podman.secret_stdin not in env_pairs
         assert any("R4_VENUE_SESSION_TOKEN_FILE=/run/secrets/session_token" in e for e in env_pairs)
 
-    def test_token_secret_is_owned_by_the_worker_user(self):
+    def test_token_secret_is_owned_by_the_worker_user(self, tmp_path):
         """Live 2026-09-25: a type=mount secret without uid/gid is root-owned;
         at mode 0400 the worker (image USER r4user, uid 1000) could not read
         it and every venue worker exited 4 before consuming its queue."""
-        _, _, podman, _ = _provision()
+        _, _, podman, _ = _provision(tmp_path)
         worker_run = [c for c in podman.calls if "worker-sess-t1" in c][0]
         secret = worker_run[list(worker_run).index("--secret") + 1]
         for part in ("target=/run/secrets/session_token", "uid=1000", "gid=1000", "mode=0400"):
@@ -138,8 +133,8 @@ class TestHappyPath:
 
 class TestFailurePaths:
     @pytest.mark.parametrize("fail_at", ["sess-sess-t1", "egress-sess-t1", "squid"])
-    def test_steps_fail_compensating_teardown(self, fail_at):
-        _, broker, podman, result = _provision(fail_at=fail_at)
+    def test_steps_fail_compensating_teardown(self, fail_at, tmp_path):
+        _, broker, podman, result = _provision(tmp_path, fail_at=fail_at)
         assert result.state == "failed"
         assert result.reason
         # Teardown ran: network rm + secret rm + pod rm attempted.
@@ -149,8 +144,8 @@ class TestFailurePaths:
         assert any("network rm sess-sess-t1" in c for c in flattened)
         assert any("secret rm sess-sess-t1-token" in c for c in flattened)
 
-    def test_worker_failure_revokes_lease(self):
-        _, broker, _, result = _provision(fail_at="r4-companion@sha256:abc")
+    def test_worker_failure_revokes_lease(self, tmp_path):
+        _, broker, _, result = _provision(tmp_path, fail_at="r4-companion@sha256:abc")
         assert result.state == "failed"
         lease = broker.get_lease(result.lease_id)
         assert lease is None or not lease.is_valid
@@ -229,8 +224,8 @@ class TestTemplates:
         assert render_allowlist_file(()) == ""
         assert render_allowlist_file(("", " ", "..")) == ""
 
-    def test_allowlist_mounts_allow_file(self):
-        _, _, podman, _ = _provision(web_policy="allowlist", web_allow_domains=("pypi.org",))
+    def test_allowlist_mounts_allow_file(self, tmp_path):
+        _, _, podman, _ = _provision(tmp_path, web_policy="allowlist", web_allow_domains=("pypi.org",))
         flattened = [" ".join(c) for c in podman.calls]
         assert any("squid-allow.txt:/etc/squid/allow.txt" in c for c in flattened)
         assert any("squid.conf:/etc/squid/squid.conf" in c for c in flattened)
@@ -302,15 +297,15 @@ class TestWorkerHardening:
         assert "location / { return 404; }" in conf
         assert "$http_authorization" not in conf
 
-    def test_web_policy_none_skips_squid(self):
-        _, _, podman, _ = _provision(web_policy="none")
+    def test_web_policy_none_skips_squid(self, tmp_path):
+        _, _, podman, _ = _provision(tmp_path, web_policy="none")
         flattened = [" ".join(c) for c in podman.calls]
         assert not any("squid" in c for c in flattened)
 
 
 class TestBrokerLeaseShape:
-    def test_lease_bindings(self):
-        _, broker, _, result = _provision()
+    def test_lease_bindings(self, tmp_path):
+        _, broker, _, result = _provision(tmp_path)
         lease = broker.get_lease(result.lease_id)
         assert lease.scope == "inference"
         assert lease.owner_id == "alice"
