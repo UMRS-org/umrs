@@ -20,7 +20,11 @@ The declared flags are the run's ingest allowlist:
   whose flags admit nothing enqueues no ingest job.
 
 The selection is the run's step output keys (``StepResult.output_keys``)
-matched against those declarations; the runner records it as
+matched against those declarations. Review fix (2026-11-24): a key given as
+``s3://<bucket>/<key>`` is cut to ``<key>``, the form the stored blob keeps,
+and ``path_or_ref`` also matches the key below a staged step's
+``runs/<run>/<step>/`` prefix (the HPC step lane rewrites its logical keys to
+those physical ones); the selection records the stored key either way; the runner records it as
 ``record.results["ingest_keys"]`` and ``jobs.workflow_run`` marks each
 stored output that falls outside it ``"ingest": false``.
 
@@ -32,6 +36,7 @@ nothing to decide for them; they still bind URL and git ingest.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable, Mapping
 from typing import Any
 
@@ -55,6 +60,22 @@ def _under(key: str, ref: str) -> bool:
     return key == ref or key == root or key.startswith(root + "/")
 
 
+_STAGED_PREFIX = re.compile(r"runs/[^/]+/[^/]+/(?P<logical>.+)")
+
+
+def _logical_key(key: str) -> str | None:
+    """The step's own key below a staged ``runs/<run>/<step>/`` prefix
+    (``step_staging.physical_prefix``), or None for an unstaged key."""
+    match = _STAGED_PREFIX.fullmatch(key)
+    return match.group("logical") if match else None
+
+
+def _admits(key: str, ref: str) -> bool:
+    """*key* is *ref* or under it, directly or below its staged prefix."""
+    logical = _logical_key(key)
+    return _under(key, ref) or (logical is not None and _under(logical, ref))
+
+
 def _output_keys(output: Mapping[str, Any], keys: list[str]) -> set[str]:
     """The step keys one ``ingest: true`` output admits."""
     if output.get("ingest") is not True:
@@ -62,12 +83,21 @@ def _output_keys(output: Mapping[str, Any], keys: list[str]) -> set[str]:
     ref = output.get("path_or_ref")
     if not isinstance(ref, str) or not ref.strip():
         return set(keys)
-    return {k for k in keys if _under(k, ref.strip())}
+    return {k for k in keys if _admits(k, ref.strip())}
+
+
+def _store_key(key: str) -> str:
+    """``s3://<bucket>/<key>`` cut to ``<key>``, the form the run's stored
+    blob keeps (``jobs.workflow_run._persist_one_blob`` drops the bucket)."""
+    if not key.startswith("s3://"):
+        return key
+    _bucket, _, rest = key[len("s3://") :].partition("/")
+    return rest
 
 
 def _result_keys(result: Any) -> list[str]:
     keys = getattr(result, "output_keys", None) or []
-    return [str(k) for k in keys]
+    return [_store_key(str(k)) for k in keys]
 
 
 def ingest_selection(

@@ -285,6 +285,25 @@ def test_declared_flags_select_the_steps_keys() -> None:
     assert ingest_selection(steps, results) == ["c/d", "results", "results/t.csv"]
 
 
+def test_a_staged_steps_path_or_ref_admits_its_stored_key() -> None:
+    # The HPC step lane rewrites a step's logical keys to runs/<run>/<step>/...
+    # (step_staging.rewrite_output_keys); path_or_ref names the logical key.
+    steps = _steps([{"name": "table", "path_or_ref": "results/", "ingest": True}])
+    staged = ["runs/exec-1/s0/results/t.csv", "runs/exec-1/s0/tmp/z"]
+    assert ingest_selection(steps, _results(s0=staged)) == ["runs/exec-1/s0/results/t.csv"]
+
+
+def test_uri_form_output_keys_select_the_stored_blob() -> None:
+    steps = _steps([{"name": "all", "ingest": True}])
+    uri = "s3://out/runs/exec-1/s0/results/t.csv"
+    selected = ingest_selection(steps, _results(s0=[uri]))
+    assert selected == ["runs/exec-1/s0/results/t.csv"]
+    record = _record({"out/runs/exec-1/s0/results/t.csv": b"1"})
+    record.results["ingest_keys"] = selected
+    (desc,) = _persist(record)
+    assert "ingest" not in desc  # the stored blob matches, so it is ingested
+
+
 def _record(blobs: dict[str, bytes]) -> SimpleNamespace:
     return SimpleNamespace(
         results={"blobs": blobs}, execution_id="wf-1", workflow_name="demo", user_id="alice"
