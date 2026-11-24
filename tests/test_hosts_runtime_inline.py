@@ -192,7 +192,9 @@ SCENARIOS: dict[str, tuple[dict[str, Any], dict[str, Any], dict[str, Any], str]]
     "egress-ip-missing": ({}, {"inspect_ip": ""}, {}, "bda7e30f2f7e0e04"),
     "bind-refused": ({}, {}, {"bind_ok": False}, "de41f824bb818c59"),
     "fail-worker": ({}, {"fail": ("r4-companion@sha256:abc",)}, {}, "c02805694ff14730"),
-    "teardown-step-raises": ({}, {"fail": ("r4-companion@sha256:abc",), "raise_on": "rm"}, {}, "7fed01a5d0ac6221"),
+    # 2026-11-24: the teardown warning logs the podman verb only, not the
+    # arguments that name the session secret (CodeQL on UMRS #155).
+    "teardown-step-raises": ({}, {"fail": ("r4-companion@sha256:abc",), "raise_on": "rm"}, {}, "535846f59aa81265"),
 }
 
 

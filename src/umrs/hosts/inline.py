@@ -575,7 +575,8 @@ class InlineHostRuntime:
             try:
                 self._podman(*action)
             except Exception:  # noqa: BLE001 — teardown must never raise-chain
-                logger.warning("teardown step failed: %s", action)
+                # The verb only: the arguments name the session secret (CodeQL).
+                logger.warning("teardown step failed: podman %s", " ".join(action[:2]))
         revoked = self._broker.revoke_by_session(sid, actor="sweeper")
         if revoked:
             audit_venue(
