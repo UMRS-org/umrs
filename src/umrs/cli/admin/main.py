@@ -1306,8 +1306,8 @@ def _venue_arg(value: str) -> str:
 def venue_gateway_url_env(venue: str) -> str:
     """``UMRS_<VENUE>_PUBLIC_GATEWAY_URL`` for *venue* (S-D47c).
 
-    ``octopus`` -> ``UMRS_OCTOPUS_PUBLIC_GATEWAY_URL``, ``rccs-front`` ->
-    ``UMRS_RCCS_FRONT_PUBLIC_GATEWAY_URL``: the key is derived, never listed.
+    ``cluster-a`` -> ``UMRS_CLUSTER_A_PUBLIC_GATEWAY_URL``, ``gpu.site`` ->
+    ``UMRS_GPU_SITE_PUBLIC_GATEWAY_URL``: the key is derived, never listed.
     """
     return f"UMRS_{re.sub(r'[^A-Z0-9]', '_', venue.upper())}_PUBLIC_GATEWAY_URL"
 
