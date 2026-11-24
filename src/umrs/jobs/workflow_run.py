@@ -9,6 +9,8 @@ import os
 from collections.abc import Callable
 from typing import Any
 
+from umrs.shared.step_ingest import blob_ingest_flag
+
 from .models import Job, JobAttempt, JobType
 from .monitor import AttemptCheckResult
 from .scheduler import OrchestratorBackend
@@ -377,6 +379,9 @@ def _persist_one_blob(
         "source_ref": f"s3://{bucket}/{s3_key}",
         "name": key,
         "size_bytes": len(payload),
+        # ADR-105 D-10 (A105-S7): an output outside the steps' declared
+        # ingest selection is stored and listed, never ingested.
+        **blob_ingest_flag(getattr(ctx.record, "results", None), key),
     }
 
 

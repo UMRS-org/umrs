@@ -2034,6 +2034,7 @@ def _finalize_status(
             last_result = parent_results.get(last_name)
             if last_result is not None:
                 record.results["final"] = _serialise_step_extra(last_result)
+        _stamp_ingest_selection(record, levels, parent_results)
 
     record.update(
         status="succeeded",
@@ -2042,6 +2043,22 @@ def _finalize_status(
     )
     _emit_workflow_metric(record, executor, "succeeded")
     _try_shutdown_executor(executor)
+
+
+def _stamp_ingest_selection(
+    record: ExecutionRecord,
+    levels: list[list[dict[str, Any]]],
+    parent_results: dict[str, StepResult],
+) -> None:
+    """ADR-105 D-10 (A105-S7): the steps' ``outputs[].ingest`` flags select
+    which stored outputs the run's auto-ingest takes (``shared.step_ingest``).
+    No flag declared: nothing is recorded and every output is ingested."""
+    from umrs.shared.step_ingest import INGEST_KEYS_RESULT, ingest_selection
+
+    steps = [spec for level in levels for spec in level]
+    selected = ingest_selection(steps, parent_results)
+    if selected is not None:
+        record.results[INGEST_KEYS_RESULT] = selected
 
 
 def _fail_run(record: ExecutionRecord, executor: Any, error: str) -> None:

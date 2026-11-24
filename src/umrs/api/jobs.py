@@ -1693,3 +1693,10 @@ async def retry_job(
 # H-1 (2026-10-18): GET /stats was deleted. It took ?project_id with no
 # identity, and GET /{job_id} (registered first) shadowed it, so it never
 # ran; /umrs/jobs/stats is a job lookup that needs identity.
+
+
+# ADR-105 D-10 (A105-S7): GET /{job_id}/receipt, a read-time join over the
+# job's outputs, registry, a2l and knowledge rows (``job_receipt``).
+from .job_receipt import register as _register_receipt_route
+
+_register_receipt_route(router)

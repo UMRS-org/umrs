@@ -5408,12 +5408,25 @@ async def _artifacts_from_attempt_metrics(
                 att_id,
             )
             metrics = _parse_metrics_jsonb(row)
-            for art in metrics.get("artifacts", []):
-                if isinstance(art, dict) and art.get("artifact_id"):
-                    results.append(art)
+            results.extend(_ingestible(metrics.get("artifacts", [])))
         except Exception:  # noqa: BLE001, S110 — best-effort, must not raise
             pass
     return results
+
+
+def _ingestible(entries: Any) -> list[dict[str, Any]]:
+    """Attempt-metrics artifacts the auto-ingest may take: those with an id
+    and not marked ``"ingest": false`` (ADR-105 D-10, A105-S7: outside the
+    steps' declared ingest selection, ``shared.step_ingest``)."""
+    if not isinstance(entries, list):
+        return []
+    return [
+        art
+        for art in entries
+        if isinstance(art, dict)
+        and art.get("artifact_id")
+        and art.get("ingest") is not False
+    ]
 
 
 def _collect_artifact_ids(job: Any) -> list[dict[str, Any]]:
@@ -5657,6 +5670,9 @@ def _enqueue_ingest_job(
                 "sources": ingest_sources,
                 "bucket": bucket,
                 "project_id": project_id,
+                # ADR-105 D-10 (A105-S7): the run whose outputs these are, so
+                # its receipt finds this ingest (understand jobs carry it too).
+                "parent_job_id": job.job_id,
                 "extract_mode": extract_mode or auto_extract_mode(),
                 **_run_scope_path(job),
             },
