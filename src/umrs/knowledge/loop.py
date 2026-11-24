@@ -246,7 +246,13 @@ class ResearchLoop:
 #: (``PUT /loops/{id}/state``), so the loop's runs keep the starter's rights.
 OWNER_USER_KEY = "owner_user_id"
 OWNER_PROJECT_KEY = "owner_verified_project"
-SERVER_OWNED_METADATA = frozenset({OWNER_USER_KEY, OWNER_PROJECT_KEY})
+#: S-D39b (DEC-D39): the catalog the loop's findings pin onto, resolved and
+#: checked against the loop's project at start (``POST /umrs/loops``
+#: ``catalog``). A driver's state write must not set or repoint it: a stored
+#: id is where real findings get appended (2026-11-24 review: a PUT could
+#: aim a loop at another project's catalog).
+CATALOG_PIN_KEY = "catalog_pin"
+SERVER_OWNED_METADATA = frozenset({OWNER_USER_KEY, OWNER_PROJECT_KEY, CATALOG_PIN_KEY})
 
 
 def verified_loop_project(loop: Any) -> str | None:

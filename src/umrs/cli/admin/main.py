@@ -634,13 +634,8 @@ def _print_onboarding_steps(
     _print_slurm_account_note(rec)
 
 
-def _generate_jwt_command(args: argparse.Namespace, rec: UserRecord) -> tuple[str, str]:
-    """``(command, note)`` minting the token ``--issue-token`` would mint.
-
-    Same projects (``--projects`` for several, which fills
-    project_memberships), profile and gateway-URL choice; role and email come
-    from the user record in both paths. Every value is shell-quoted.
-    """
+def _generate_jwt_base_parts(args: argparse.Namespace, rec: UserRecord) -> list[str]:
+    """The ``token generate-jwt`` argv for *rec*: user, projects and profile."""
     parts = ["umrs-server", "admin", "token", "generate-jwt", "--user", rec.username]
     projects = list(rec.projects or [])
     if len(projects) > 1:
@@ -650,18 +645,31 @@ def _generate_jwt_command(args: argparse.Namespace, rec: UserRecord) -> tuple[st
     profile = getattr(args, "profile", None)
     if profile:
         parts += ["--profile", profile]
+    return parts
+
+
+def _generate_jwt_command(args: argparse.Namespace, rec: UserRecord) -> tuple[str, str]:
+    """``(command, note)`` minting the token ``--issue-token`` would mint.
+
+    Same projects (``--projects`` for several, which fills
+    project_memberships), profile and gateway-URL choice; role and email come
+    from the user record in both paths. Every value is shell-quoted.
+    """
+    parts = _generate_jwt_base_parts(args, rec)
     if getattr(args, "no_gateway_url", False):
         parts.append("--no-gateway-url")
         return shlex.join(parts), "--no-gateway-url: the token carries no gateway URL"
-    url = _resolve_public_gateway_url(
-        args, unset=f"the mint command below shows the example {_GATEWAY_URL_EXAMPLE}"
+    url, source = _resolve_gateway_url_source(
+        args, f"the mint command below shows the example {_GATEWAY_URL_EXAMPLE}"
     )
     if getattr(args, "gateway_url", None):
         return shlex.join(
             [*parts, "--gateway-url", url or ""]
         ), "embeds the gateway URL"
+    if getattr(args, "venue", None):
+        parts += ["--venue", args.venue]
     if url:
-        return shlex.join(parts), f"embeds ${PUBLIC_GATEWAY_URL_ENV}={url}"
+        return shlex.join(parts), f"embeds ${source}={url}"
     return (
         shlex.join([*parts, "--gateway-url", _GATEWAY_URL_EXAMPLE]),
         f"replace {_GATEWAY_URL_EXAMPLE} with the site's public gateway URL",
@@ -1224,9 +1232,11 @@ def _resolve_jwt_secret(args: argparse.Namespace) -> str:
 # ``r4 auth login --api-key TOKEN`` alone. The URL comes from --gateway-url, else
 # from $UMRS_PUBLIC_GATEWAY_URL: the umrs-front converge sets it in each
 # per-site server container to that site's URL. The URL belongs to a venue,
-# not to a container: the ADR-060 hub serves every venue from one container,
-# so it must pick UMRS_<VENUE>_PUBLIC_GATEWAY_URL from the user's venue (open
-# item under U-3 in docs/development/umrs-hub-convergence-plan-2026-10-03.md).
+# not to a container: the ADR-060 hub serves every venue from one container.
+# S-D47c (2026-11-24, DEC-D47): --venue VENUE picks UMRS_<VENUE>_PUBLIC_GATEWAY_URL
+# (VENUE upper-cased, every other character than A-Z/0-9 becomes "_"), before
+# $UMRS_PUBLIC_GATEWAY_URL, which stays the fallback where one URL serves all.
+# No venue name lives here: the key is derived. Without --venue nothing changes.
 # Printed commands never carry ``<PLACEHOLDER>`` tokens: bash reads ``<X>`` as
 # an input redirect ("GATEWAY_URL: No such file or directory"). Nor does an
 # r4-facing command carry _GATEWAY_URL_EXAMPLE: pasted as-is, the r4 client
@@ -1279,32 +1289,126 @@ def _gateway_url_arg(value: str) -> str:
     return url
 
 
-def _resolve_public_gateway_url(
-    args: argparse.Namespace, *, unset: str = "the token carries no gateway URL"
-) -> str | None:
-    """The gateway URL a minted token embeds.
+# A venue name as --venue takes it: the site.name / venues-map key shape.
+_VENUE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
-    ``--no-gateway-url`` > ``--gateway-url`` (validated by argparse) >
-    ``$UMRS_PUBLIC_GATEWAY_URL`` > none. An env value that breaks the
-    ``_GATEWAY_URL_RE`` rule is ignored with a warning ending in *unset*,
-    which says what the caller does without a URL.
+
+def _venue_arg(value: str) -> str:
+    """argparse ``type`` for --venue: a malformed name fails loudly (exit 2)."""
+    venue = value.strip()
+    if not _VENUE_RE.match(venue):
+        raise argparse.ArgumentTypeError(
+            f"{value!r} is not a venue name (letters, digits and . _ - only)"
+        )
+    return venue
+
+
+def venue_gateway_url_env(venue: str) -> str:
+    """``UMRS_<VENUE>_PUBLIC_GATEWAY_URL`` for *venue* (S-D47c).
+
+    ``octopus`` -> ``UMRS_OCTOPUS_PUBLIC_GATEWAY_URL``, ``rccs-front`` ->
+    ``UMRS_RCCS_FRONT_PUBLIC_GATEWAY_URL``: the key is derived, never listed.
     """
-    if getattr(args, "no_gateway_url", False):
-        return None
-    explicit = getattr(args, "gateway_url", None)
-    if explicit:
-        return explicit
-    raw = os.environ.get(PUBLIC_GATEWAY_URL_ENV, "")
+    return f"UMRS_{re.sub(r'[^A-Z0-9]', '_', venue.upper())}_PUBLIC_GATEWAY_URL"
+
+
+def _env_gateway_url(name: str, unset: str) -> tuple[bool, str | None]:
+    """``(present, url)`` for env var *name*; an invalid value warns, url None."""
+    raw = os.environ.get(name, "")
     if not raw.strip():
-        return None
+        return False, None
     url = _normalize_gateway_url(raw)
     if url is None:
         print(
-            f"warning: ignoring ${PUBLIC_GATEWAY_URL_ENV}={raw!r} "
-            f"(not a plain http(s) URL); {unset}",
+            f"warning: ignoring ${name}={raw!r} (not a plain http(s) URL); {unset}",
             file=sys.stderr,
         )
-    return url
+    return True, url
+
+
+def _resolve_gateway_url_source(
+    args: argparse.Namespace, unset: str
+) -> tuple[str | None, str | None]:
+    """``(url, env var it came from)``; the source is None for a flag or no URL.
+
+    ``--no-gateway-url`` > ``--gateway-url`` (validated by argparse) >
+    ``$UMRS_<VENUE>_PUBLIC_GATEWAY_URL`` when ``--venue`` names one >
+    ``$UMRS_PUBLIC_GATEWAY_URL`` > none. With ``--venue`` the single URL is a
+    fallback only where no other venue's key is set (see
+    ``_venue_gateway_url_source``); a per-venue value that is present but
+    invalid yields no URL.
+    """
+    if getattr(args, "no_gateway_url", False):
+        return None, None
+    explicit = getattr(args, "gateway_url", None)
+    if explicit:
+        return explicit, None
+    venue = getattr(args, "venue", None)
+    if venue:
+        return _venue_gateway_url_source(venue, unset)
+    _, url = _env_gateway_url(PUBLIC_GATEWAY_URL_ENV, unset)
+    return url, PUBLIC_GATEWAY_URL_ENV if url else None
+
+
+# Any per-venue key UMRS_<VENUE>_PUBLIC_GATEWAY_URL (never the single-URL key,
+# which has no <VENUE> part and so does not match).
+_VENUE_GATEWAY_URL_KEY_RE = re.compile(r"^UMRS_[A-Z0-9_]+_PUBLIC_GATEWAY_URL$")
+
+
+def _other_venue_gateway_keys(own: str) -> list[str]:
+    """The set per-venue gateway URL keys in the environment other than *own*."""
+    return sorted(
+        key
+        for key, value in os.environ.items()
+        if key != own and value.strip() and _VENUE_GATEWAY_URL_KEY_RE.match(key)
+    )
+
+
+def _venue_gateway_url_source(venue: str, unset: str) -> tuple[str | None, str | None]:
+    """``(url, env var)`` for ``--venue`` *venue* (S-D47c; review fix 2026-11-24).
+
+    ``$UMRS_<VENUE>_PUBLIC_GATEWAY_URL`` when present (invalid: no URL). When it
+    is unset, ``$UMRS_PUBLIC_GATEWAY_URL`` serves only a true single-URL server.
+    If any other venue's key is set, that single URL belongs to some venue:
+    every fleet container sees all keys through ``env_file: .env`` and its
+    single URL is its own site's, and the converge drops a .env line that
+    breaks the URL rule, so an invalid venue line arrives here as unset. The
+    token then gets no URL, never another venue's.
+    """
+    name = venue_gateway_url_env(venue)
+    present, url = _env_gateway_url(name, unset)
+    if present:
+        return url, name if url else None
+    others = _other_venue_gateway_keys(name)
+    if others:
+        print(
+            f"warning: ${name} is unset while other venues' URLs are set "
+            f"({', '.join('$' + key for key in others)}); not using "
+            f"${PUBLIC_GATEWAY_URL_ENV} for venue {venue!r}; {unset}. "
+            f"Mint with --gateway-url {_GATEWAY_URL_EXAMPLE} (replaced by the "
+            f"venue's public gateway URL) or set ${name}",
+            file=sys.stderr,
+        )
+        return None, None
+    _, url = _env_gateway_url(PUBLIC_GATEWAY_URL_ENV, unset)
+    if url:
+        print(
+            f"note: ${name} is unset; venue {venue!r} uses "
+            f"${PUBLIC_GATEWAY_URL_ENV}={url} (no other venue URL is set)",
+            file=sys.stderr,
+        )
+    return url, PUBLIC_GATEWAY_URL_ENV if url else None
+
+
+def _resolve_public_gateway_url(
+    args: argparse.Namespace, *, unset: str = "the token carries no gateway URL"
+) -> str | None:
+    """The gateway URL a minted token embeds (order: ``_resolve_gateway_url_source``).
+
+    An env value that breaks the ``_GATEWAY_URL_RE`` rule is ignored with a
+    warning ending in *unset*, which says what the caller does without a URL.
+    """
+    return _resolve_gateway_url_source(args, unset)[0]
 
 
 def _format_login_hint(
@@ -1648,7 +1752,9 @@ _GENERATE_JWT_DESCRIPTION = (
     "(the first project becomes the default project_id). "
     "The token embeds the public Gateway URL from --gateway-url or, by default, "
     "$UMRS_PUBLIC_GATEWAY_URL (set per server container by the converge; "
-    "--no-gateway-url leaves it out), so 'r4 auth login --api-key TOKEN' "
+    "--no-gateway-url leaves it out; --venue VENUE reads that venue's "
+    "$UMRS_{VENUE}_PUBLIC_GATEWAY_URL first), "
+    "so 'r4 auth login --api-key TOKEN' "
     "auto-configures everything; --profile embeds a suggested profile name "
     "(OIDC tokens lack these claims \u2014 the client falls through to flags). "
     "For shared user sessions prefer OIDC/Okta. "
@@ -1678,6 +1784,18 @@ def _add_gateway_url_args(parser: argparse.ArgumentParser, help_text: str) -> No
         dest="no_gateway_url",
         action="store_true",
         help=f"Embed no Gateway URL (ignore ${PUBLIC_GATEWAY_URL_ENV})",
+    )
+    parser.add_argument(
+        "--venue",
+        dest="venue",
+        default=None,
+        type=_venue_arg,
+        metavar="VENUE",
+        help=(
+            "The user's venue: embed $UMRS_{VENUE}_PUBLIC_GATEWAY_URL (VENUE "
+            "upper-cased, other characters than A-Z/0-9 as _) before "
+            f"${PUBLIC_GATEWAY_URL_ENV}; for a server that mints for several venues"
+        ),
     )
 
 

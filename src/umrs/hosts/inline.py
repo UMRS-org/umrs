@@ -1,0 +1,600 @@
+"""Inline host runtime: the UMRS process drives its own host's podman.
+
+ADR-098 D-3 ``inline`` mode (the default; single-node fronts and the
+stand-alone stack), extracted unchanged from the r4 extension's
+``FrontendPodmanProvisioner`` by slice SH-H0 (2026-11-24).
+
+Per-session: internal network → broker lease → podman secret → sidecar
+configs (nginx inference listener + squid) → dual-homed egress pod →
+egress IP pinned on the lease → CPU-only worker container → entrypoint
+isolation self-test. Compensating teardown on any step failure.
+
+The worker's image, command and environment come from a ``WorkerSpec`` the
+caller supplies; everything else (network, egress, hardening, secret,
+teardown) is this runtime's. The podman CLI is injected as a callable so
+unit tests drive the full state machine without a live host.
+"""
+
+from __future__ import annotations
+
+import logging
+import shutil
+import subprocess
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+from umrs.hosts.runtime import (
+    EGRESS_INFER_URL,
+    SECRET_NAME_PREFIX,
+    SESSION_DIR_ROOT,
+    SESSION_TOKEN_PATH,
+    PodmanRunner,
+    ProvisionResult,
+    ProvisionStepError,
+    SandboxConfig,
+    WorkerSpec,
+    WorkerSpecFn,
+    default_podman_runner,
+)
+from umrs.session_policy.model import normalize_allow_domain
+from umrs.venues.session_audit import audit_venue
+
+logger = logging.getLogger(__name__)
+
+def _iso_or_none(value: Any) -> str | None:
+    return value.isoformat() if hasattr(value, "isoformat") else None
+
+
+# ── Templates ────────────────────────────────────────────────────────────
+
+
+def _infer_tls_block(cfg: SandboxConfig) -> str:
+    """HTTPS-uplink block vs plain bootstrap HTTP (internal-CA lands later).
+
+    Name-based upstreams (umrs-infer on a bridge) must not bake at startup:
+    ``resolver`` + variable re-resolves per request — a proxy recreate whose
+    IP changed would otherwise strand every existing session's sidecar.
+    """
+    needs_resolver = (
+        cfg.infer_resolve_via
+        and not cfg.infer_host.replace("[", "")
+        .replace("]", "")
+        .replace(".", "")
+        .isdigit()
+    )
+    resolver = (
+        f"    resolver {cfg.infer_resolve_via} valid=10s;\n" if needs_resolver else ""
+    )
+    # IMPORTANT nginx semantics: `proxy_pass <variable>` with the URI in the
+    # variable DROPS the request path (live-leg I-2 failure: path=/ denied).
+    # Correct recipe: rewrite the path to /s/<sid>/..., then `proxy_pass
+    # http://<scheme-var>` with NO URI — the rewritten URI passes verbatim and
+    # the resolver re-resolves the upstream name per request.
+    scheme = "https" if cfg.infer_uplink == "https" else "http"
+    tls = (
+        f"""
+      proxy_ssl_verify on;
+      proxy_ssl_trusted_certificate {cfg.internal_ca_path};
+      proxy_ssl_server_name on;"""
+        if cfg.infer_uplink == "https"
+        else ""
+    )
+    return f"""{resolver}
+      set $um_infer {cfg.infer_host}:{cfg.infer_port};
+      rewrite ^/(.+)$ /s/{cfg.session_id}/$1 break;
+      proxy_pass {scheme}://$um_infer;{tls}"""
+
+
+def render_nginx_conf(cfg: SandboxConfig, *, rail_path: str = "") -> str:
+    """Inference-listener nginx.conf (design §3.4). No $http_authorization logged.
+
+    ``rail_path``: the worker spec's rail location ("" = no rail listener)."""
+    return f"""worker_processes 1;
+error_log stderr warn;
+pid /tmp/nginx.pid;
+events {{ worker_connections 256; }}
+http {{
+  access_log off;
+  log_format sess '$time_iso8601 $remote_addr "$request" $status $body_bytes_sent $request_time';
+  # D-1: the session token flows through here; auth headers stay out of logs.
+
+  server {{
+    listen 8080;
+    access_log /dev/stdout sess;
+    client_max_body_size 512m;
+    location / {{
+{_infer_tls_block(cfg)}
+      proxy_http_version 1.1;
+      proxy_set_header Connection "";
+      proxy_set_header Host {cfg.infer_host};
+      proxy_buffering off;
+      proxy_request_buffering off;
+      proxy_cache off;
+      proxy_read_timeout 3600s;
+      proxy_send_timeout 3600s;
+      proxy_connect_timeout 10s;
+    }}
+  }}
+  server {{
+    listen 8443;
+    return 404;  # ingress listener placeholder — gateway-side routing lands with venue wiring
+  }}
+{_rail_server_block(cfg, rail_path)}}}
+"""
+
+
+def _rail_server_block(cfg: SandboxConfig, rail_path: str) -> str:
+    """Worker rail listener (design §1.1 worker principal; flow matrix row
+    "sidecar → UMRS API (renew, journal)").
+
+    Path-anchored to this session's rail prefix; every gateway identity
+    header is cleared so the sandbox can never present one — the API
+    authenticates the rail by the lease token alone.
+    """
+    if not cfg.rail_upstream or not rail_path:
+        return ""
+    host = cfg.rail_upstream.split(":", 1)[0]
+    return f"""  server {{
+    listen {cfg.rail_port};
+    access_log /dev/stdout sess;
+    client_max_body_size 64m;
+    location {rail_path} {{
+      proxy_pass http://{cfg.rail_upstream};
+      proxy_http_version 1.1;
+      proxy_set_header Connection "";
+      proxy_set_header Host {host};
+      proxy_set_header X-User-ID "";
+      proxy_set_header X-Verified-Project-ID "";
+      proxy_set_header X-Verified-Is-Admin "";
+      proxy_set_header X-Verified-HMAC "";
+      proxy_set_header X-Project-ID "";
+      proxy_buffering off;
+      proxy_read_timeout 120s;
+      proxy_connect_timeout 10s;
+    }}
+    location / {{ return 404; }}
+  }}
+"""
+
+
+def _squid_deny_set(cfg: SandboxConfig) -> str:
+    extras = " ".join(sorted({h for h in (cfg.gateway_host, cfg.umrs_host) if h}))
+    # host.containers.internal is covered by .internal; squid rejects a
+    # host entry that is a subdomain of another acl entry (fatal at parse).
+    return (
+        "acl infra_ips dst 0.0.0.0/8 10.0.0.0/8 100.64.0.0/10 127.0.0.0/8 "
+        "169.254.0.0/16 172.16.0.0/12 192.0.0.0/24 192.168.0.0/16 198.18.0.0/15 "
+        "224.0.0.0/4 240.0.0.0/4 ::1/128 fc00::/7 fe80::/10 ::ffff:0:0/96\n"
+        f"acl infra_names dstdomain .infra .internal .local localhost {extras}"
+    )
+
+
+def render_allowlist_file(domains: tuple[str, ...]) -> str:
+    """One domain per line for squid dstdomain (EgressGuard schema parity).
+
+    An empty allowlist renders an empty file — squid denies every destination
+    (fail-closed parity with EgressGuard's empty-list rule).
+    """
+    seen = {normalize_allow_domain(d) for d in domains if normalize_allow_domain(d)}
+    return "".join(f"{d}\n" for d in sorted(seen))
+
+
+def render_squid_conf(cfg: SandboxConfig) -> str:
+    """Forward-proxy config per design §3.4 (web class; no credential injection).
+
+    Allowlist mode reads a mounted `/etc/squid/allow.txt` the provisioner
+    writes from ``web_allow_domains`` (EgressGuard schema parity, R2-7).
+    """
+    allowlist = ""
+    if cfg.web_policy == "allowlist":
+        allowlist = (
+            'acl allowed dstdomain "/etc/squid/allow.txt"\nhttp_access deny !allowed\n'
+        )
+    return f"""http_port 3128
+cache deny all
+reply_body_max_size 512 MB
+request_body_max_size 64 MB
+{_squid_deny_set(cfg)}
+acl Safe_ports port 80 443
+acl SSL_ports port 443
+acl CONNECT method CONNECT
+http_access deny infra_ips
+http_access deny infra_names
+http_access deny !Safe_ports
+http_access deny CONNECT !SSL_ports
+{allowlist}http_access allow all
+logformat sess %ts.%03tu %>a %rm %ru %>Hs %<st %Ss
+access_log stdio:/dev/stdout sess
+"""
+
+
+SELFTEST_SCRIPT = """#!/bin/sh
+# D-7 isolation self-test: direct egress MUST fail before the agent loop.
+set -u
+exit_iso() {
+  echo "venue_isolation_failed: $1" >&2
+  exit 78
+}
+# 1. Direct TCP to internet must not connect.
+( timeout 3 sh -c 'echo > /dev/tcp/1.1.1.1/443' ) 2>/dev/null && exit_iso "direct tcp to 1.1.1.1:443 succeeded"
+# 2. External DNS must not resolve.
+getent hosts example.com >/dev/null 2>&1 && exit_iso "external DNS resolved"
+# 3. Session-internal names MUST resolve.
+getent hosts egress >/dev/null 2>&1 || exit_iso "egress does not resolve"
+exit 0
+"""
+
+
+@dataclass(frozen=True)
+class WorkerRunArgs:
+    """Argv for the worker container (§2.5 hardening; Amendment 1 CPU-only)."""
+
+    argv: tuple[str, ...]
+
+
+def _resource_limits(
+    cfg: SandboxConfig, controllers: frozenset[str] | None
+) -> tuple[str, ...]:
+    """``--memory``/``--cpus`` only when the host delegates the cgroup controller.
+
+    Rootless user slices get ``memory pids`` by default; ``cpu`` needs a
+    systemd ``Delegate=cpu …`` drop-in (root). Without it crun refuses the
+    container outright ("controller `cpu` is not available", live receipt 6,
+    2026-09-22) — so the limit is dropped, never the session. ``None`` =
+    unknown → apply both (the pre-probe behaviour).
+    """
+    out: list[str] = []
+    if controllers is None or "memory" in controllers:
+        out += ["--memory", cfg.worker_memory]
+    if controllers is None or "cpu" in controllers:
+        out += ["--cpus", cfg.worker_cpus]
+    return tuple(out)
+
+
+def worker_run_args(
+    cfg: SandboxConfig,
+    spec: WorkerSpec,
+    *,
+    controllers: frozenset[str] | None = None,
+) -> WorkerRunArgs:
+    """CPU-only sandbox. Asserted in tests: no GPU envs, devices, or mounts.
+
+    The runtime's hardening, token secret and egress variables, then the
+    spec's environment, image and command."""
+    spec_env = tuple(arg for k, v in spec.env for arg in ("--env", f"{k}={v}"))
+    argv = (
+        "run",
+        "-d",
+        "--name",
+        f"worker-{cfg.session_id}",
+        "--network",
+        f"sess-{cfg.session_id}",
+        "--cap-drop",
+        "ALL",
+        "--security-opt",
+        "no-new-privileges",
+        "--read-only",
+        "--tmpfs",
+        "/tmp:size=4g",
+        "--tmpfs",
+        "/run",
+        "--pids-limit",
+        "1024",
+        *_resource_limits(cfg, controllers),
+        "--secret",
+        (
+            f"{SECRET_NAME_PREFIX}{cfg.session_id}-token,type=mount,"
+            f"target={SESSION_TOKEN_PATH},"
+            f"uid={cfg.worker_uid},gid={cfg.worker_uid},mode=0400"
+        ),
+        "--env",
+        f"OPENAI_BASE_URL={EGRESS_INFER_URL}/v1",
+        "--env",
+        f"ANTHROPIC_BASE_URL={EGRESS_INFER_URL}",
+        "--env",
+        "HTTPS_PROXY=http://egress:3128",
+        "--env",
+        "HTTP_PROXY=http://egress:3128",
+        "--env",
+        "NO_PROXY=egress,localhost,127.0.0.1",
+        *spec_env,
+        spec.image,
+        *spec.command,
+    )
+    return WorkerRunArgs(argv=argv)
+
+
+# ── Provisioner ──────────────────────────────────────────────────────────
+
+
+class InlineHostRuntime:
+    """Ordered provisioning with compensating teardown (idempotent sweeps).
+
+    ``worker_spec`` is the extension's contribution: called once per
+    provision with the session's config, it names the worker image,
+    command, environment and rail path."""
+
+    def __init__(
+        self,
+        broker: Any,
+        worker_spec: WorkerSpecFn,
+        podman: PodmanRunner = default_podman_runner,
+        session_root: Path = SESSION_DIR_ROOT,
+    ) -> None:
+        self._broker = broker
+        self._worker_spec = worker_spec
+        self._podman = podman
+        self._root = Path(session_root)
+        self._controllers: frozenset[str] | None = None
+        self._controllers_probed = False
+
+    def provision(self, cfg: SandboxConfig) -> ProvisionResult:
+        result = ProvisionResult(session_id=cfg.session_id, state="running")
+        spec = self._worker_spec(cfg)
+        try:
+            self._step_network(cfg, result)
+            lease, token = self._step_lease(cfg, result)
+            self._step_secret(cfg, result, token)
+            self._step_configs(cfg, result, spec.rail_path)
+            self._step_egress_pod(cfg, result)
+            self._step_bind_egress_ip(cfg, result, lease)
+            self._step_worker(cfg, result, spec)
+        except ProvisionStepError as exc:
+            result.state = "failed"
+            result.reason = f"{exc.step}: {exc.detail}"
+            self.teardown(cfg.session_id)
+        return result
+
+    # ── Steps ─────────────────────────────────────────────────────────
+
+    def _step_network(self, cfg: SandboxConfig, result: ProvisionResult) -> None:
+        # _run_ok(step, *podman_args): the step label is NOT a podman arg —
+        # the live receipt of 2026-09-21 ran `podman create --internal …`.
+        self._run_ok(
+            "network",
+            "network",
+            "create",
+            "--internal",
+            "--subnet",
+            cfg.subnet,
+            f"sess-{cfg.session_id}",
+        )
+        result.steps.append("network")
+
+    def _step_lease(
+        self, cfg: SandboxConfig, result: ProvisionResult
+    ) -> tuple[Any, str]:
+        """Issue the session lease; returns (lease, plaintext token once)."""
+        lease, token = self._broker.issue_lease(
+            f"session-{cfg.session_id}",
+            "inference-token",
+            "inference",
+            lease_seconds=cfg.lease_seconds,
+            owner_id=cfg.owner,
+            session_id=cfg.session_id,
+            source_ids=cfg.source_ids,
+            default_source_id=cfg.default_source_id,
+            project=cfg.project,
+            max_lifetime_seconds=cfg.max_lifetime_seconds,
+        )
+        result.lease_id = lease.lease_id
+        result.steps.append("lease")
+        audit_venue(
+            "lease.issue",
+            actor="provisioner",
+            session_id=cfg.session_id,
+            owner=cfg.owner,
+            project=cfg.project,
+            lease_id=lease.lease_id,
+            expires_at=_iso_or_none(getattr(lease, "expires_at", None)),
+        )
+        return lease, token
+
+    def _step_secret(
+        self, cfg: SandboxConfig, result: ProvisionResult, token: str
+    ) -> None:
+        """Plaintext token enters ONLY the podman secret driver — never env."""
+        name = f"{SECRET_NAME_PREFIX}{cfg.session_id}-token"
+        proc = self._podman("secret", "create", name, "-", input_text=token)
+        if proc.returncode != 0:
+            raise ProvisionStepError("secret", proc.stderr[:120])
+        result.steps.append("secret")
+
+    def _step_configs(
+        self, cfg: SandboxConfig, result: ProvisionResult, rail_path: str
+    ) -> None:
+        session_dir = self._root / cfg.session_id
+        session_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
+        (session_dir / "nginx.conf").write_text(
+            render_nginx_conf(cfg, rail_path=rail_path)
+        )
+        if cfg.web_policy != "none":
+            (session_dir / "squid.conf").write_text(render_squid_conf(cfg))
+            if cfg.web_policy == "allowlist":
+                (session_dir / "squid-allow.txt").write_text(
+                    render_allowlist_file(cfg.web_allow_domains)
+                )
+        (session_dir / "entrypoint-selftest.sh").write_text(SELFTEST_SCRIPT)
+        (session_dir / "entrypoint-selftest.sh").chmod(0o700)
+        result.steps.append("configs")
+
+    def _step_egress_pod(self, cfg: SandboxConfig, result: ProvisionResult) -> None:
+        session_dir = self._root / cfg.session_id
+        self._run_ok(
+            "egress-pod",
+            "pod",
+            "create",
+            "--name",
+            f"egress-{cfg.session_id}",
+            "--network",
+            f"sess-{cfg.session_id}:alias=egress",
+            "--network",
+            "egress-net",
+        )
+        self._run_ok(
+            "nginx",
+            "run",
+            "-d",
+            "--pod",
+            f"egress-{cfg.session_id}",
+            "--read-only",
+            # Stock alpine-nginx chowns its temp dirs (live leg blockers).
+            "--cap-drop",
+            "ALL",
+            "--cap-add",
+            "CHOWN",
+            "--cap-add",
+            "SETUID",
+            "--cap-add",
+            "SETGID",
+            "--tmpfs",
+            "/var/cache/nginx:rw,size=32m",
+            "--tmpfs",
+            "/var/run:rw,size=4m",
+            "-v",
+            f"{session_dir}/nginx.conf:/etc/nginx/nginx.conf:ro,z",
+            cfg.nginx_image,
+        )
+        if cfg.web_policy != "none":
+            squid_volumes = [
+                "-v",
+                f"{session_dir}/squid.conf:/etc/squid/squid.conf:ro,z",
+            ]
+            if cfg.web_policy == "allowlist":
+                squid_volumes += [
+                    "-v",
+                    f"{session_dir}/squid-allow.txt:/etc/squid/allow.txt:ro,z",
+                ]
+            self._run_ok(
+                "squid",
+                "run",
+                "-d",
+                "--pod",
+                f"egress-{cfg.session_id}",
+                "--read-only",
+                # Squid drops to the proxy user (uid 13) at boot.
+                "--cap-drop",
+                "ALL",
+                "--cap-add",
+                "SETUID",
+                "--cap-add",
+                "SETGID",
+                "--tmpfs",
+                "/var/spool/squid:rw,size=32m",
+                "--tmpfs",
+                "/var/log/squid:rw,size=16m",
+                "--tmpfs",
+                "/var/run/squid:rw,size=4m",
+                *squid_volumes,
+                cfg.squid_image,
+            )
+        result.steps.append("egress-pod")
+
+    def _step_bind_egress_ip(
+        self, cfg: SandboxConfig, result: ProvisionResult, _lease: Any
+    ) -> None:
+        """lease unused here — bind is keyed on result.lease_id (kept in signature for step shape)."""
+        egress_ip = self._egress_ip_of(self._egress_infra_id(cfg.session_id))
+        if not egress_ip:
+            raise ProvisionStepError("bind-egress-ip", "egress-net address missing")
+        if not self._broker.bind_egress_ip(
+            result.lease_id, egress_ip, actor="provisioner"
+        ):
+            raise ProvisionStepError("bind-egress-ip", "broker refused the bind")
+        result.egress_ip = egress_ip
+        result.steps.append("bind-egress-ip")
+
+    def _egress_infra_id(self, sid: str) -> str:
+        """The pod's own inspect JSON carries no NetworkSettings — its infra
+        container does (live receipt 5, 2026-09-22: "egress-net address missing")."""
+        infra = self._podman(
+            "pod", "inspect", f"egress-{sid}", "--format", "{{.InfraContainerID}}"
+        )
+        lines = (infra.stdout or "").strip().splitlines()
+        if infra.returncode != 0 or not lines:
+            raise ProvisionStepError(
+                "bind-egress-ip",
+                f"pod inspect: {infra.stderr[:100] or 'no infra container id'}",
+            )
+        return lines[-1].strip()
+
+    def _egress_ip_of(self, container_id: str) -> str:
+        proc = self._podman("inspect", "--type", "container", container_id)
+        if proc.returncode != 0:
+            raise ProvisionStepError("bind-egress-ip", proc.stderr[:120])
+        import json
+
+        try:
+            networks = (
+                json.loads(proc.stdout)[0]
+                .get("NetworkSettings", {})
+                .get("Networks", {})
+            )
+            return str((networks.get("egress-net") or {}).get("IPAddress", ""))
+        except (json.JSONDecodeError, KeyError, IndexError, AttributeError) as exc:
+            raise ProvisionStepError("bind-egress-ip", f"inspect parse: {exc}") from exc
+
+    def _cgroup_controllers(self) -> frozenset[str] | None:
+        """Controllers podman can apply for this (rootless) user; None = unknown."""
+        if self._controllers_probed:
+            return self._controllers
+        self._controllers_probed = True
+        proc = self._podman("info", "--format", "{{.Host.CgroupControllers}}")
+        if proc.returncode != 0:
+            return None
+        tokens = (proc.stdout or "").strip().strip("[]").split()
+        self._controllers = frozenset(tokens) if tokens else None
+        if self._controllers is not None and "cpu" not in self._controllers:
+            logger.warning(
+                "worker CPU limit not applied: the cpu cgroup controller is not "
+                "delegated to this user slice (systemd Delegate=cpu … drop-in, root)"
+            )
+        return self._controllers
+
+    def _step_worker(
+        self, cfg: SandboxConfig, result: ProvisionResult, spec: WorkerSpec
+    ) -> None:
+        args = worker_run_args(cfg, spec, controllers=self._cgroup_controllers())
+        proc = self._podman(*args.argv)
+        if proc.returncode != 0:
+            raise ProvisionStepError("worker", proc.stderr[:120])
+        result.steps.append("worker")
+
+    # ── Teardown ──────────────────────────────────────────────────────
+
+    def teardown(self, session_id: str) -> None:
+        """Idempotent, order-fixed teardown; the orphan sweeper calls this."""
+        sid = session_id
+        for action in (
+            ("rm", "-f", f"worker-{sid}"),
+            ("pod", "rm", "-f", f"egress-{sid}"),
+            ("network", "rm", f"sess-{sid}"),
+            ("secret", "rm", f"{SECRET_NAME_PREFIX}{sid}-token"),
+        ):
+            try:
+                self._podman(*action)
+            except Exception:  # noqa: BLE001 — teardown must never raise-chain
+                # The verb only: the arguments name the session secret (CodeQL).
+                logger.warning("teardown step failed: podman %s", " ".join(action[:2]))
+        revoked = self._broker.revoke_by_session(sid, actor="sweeper")
+        if revoked:
+            audit_venue(
+                "lease.revoke",
+                actor="sweeper",
+                session_id=sid,
+                revoked=int(revoked),
+                via="teardown",
+            )
+        session_dir = self._root / sid
+        if session_dir.exists():
+            shutil.rmtree(session_dir, ignore_errors=True)
+        logger.info("teardown complete for session %s", sid)
+
+    # ── Runner helper ─────────────────────────────────────────────────
+
+    def _run_ok(self, step: str, *args: str) -> subprocess.CompletedProcess:
+        proc = self._podman(*args)
+        if proc.returncode != 0:
+            raise ProvisionStepError(step, proc.stderr[:160])
+        return proc

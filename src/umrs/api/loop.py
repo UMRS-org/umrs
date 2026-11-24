@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field
 
 from umrs.knowledge import loop_hosting, loop_iteration_kinds
 from umrs.knowledge.loop import (
+    CATALOG_PIN_KEY,
     OWNER_PROJECT_KEY,
     SERVER_OWNED_METADATA,
     AutonomousResearchLoop,
@@ -60,47 +61,80 @@ def _finding_sink():
 
 
 def _catalog_pinner():
-    """D-43/D-52 findings pin: single-active-catalog append via the jobs pool.
+    """D-43/D-52 findings pin via the jobs pool (DEC-D39 S-D39b).
 
-    None when no job service/pool is up (loop_hosting reports the skip);
-    never a silent no-op on a wired host.
+    Findings pin onto the loop's named catalog (``catalog`` at start), else
+    the project's single active catalog. None when no job service/pool is
+    up (loop_hosting reports the skip); never a silent no-op on a wired host.
     """
 
-    from umrs.jobs.service import get_job_service
-
-    svc = get_job_service()
-    pool = getattr(svc, "db_pool", None) if svc is not None else None
+    pool = _jobs_pool()
     if pool is None:
         logger.warning("catalog pinner: no jobs pool — finding pins skipped")
         return None
-    return lambda project_id, pins: _pin_findings_onto_catalog(pool, project_id, pins)
+    return lambda project_id, pins, catalog_id="": _pin_findings_onto_catalog(
+        pool, project_id, pins, catalog_id
+    )
 
 
-def _pin_findings_onto_catalog(pool, project_id: str, pins) -> None:
-    """Append kind=finding pins; single-active-catalog rule, deduped.
+def _jobs_pool():
+    """The jobs service's sync pool (scientific catalogs live there), or None."""
+    from umrs.jobs.service import get_job_service
 
-    Zero catalogs → nothing to associate against; several → ambiguous,
-    never silently guessed (pin by hand with `r4 catalog pin`).
+    svc = get_job_service()
+    return getattr(svc, "db_pool", None) if svc is not None else None
+
+
+def _pin_findings_onto_catalog(pool, project_id: str, pins, catalog_id: str = "") -> None:
+    """Append kind=finding pins, deduped (``scientific_catalogs.pinner``).
+
+    ``catalog_id`` = the loop's pinned catalog. Without one the fallback is
+    the single active catalog: zero → nothing to associate against; several
+    → ambiguous, never silently guessed (name one at loop start with
+    ``catalog``, or pin by hand with `r4 catalog pin`).
     """
+    from umrs.scientific_catalogs.pinner import pin_findings
     from umrs.scientific_catalogs.store import ScientificCatalogStore
 
     conn = pool.getconn()
     try:
-        store = ScientificCatalogStore(conn)
-        catalogs = store.list(project_id=project_id)
-        if len(catalogs) != 1:
-            return
-        catalog_id = catalogs[0]["catalog_id"]
-        already = {
-            p.get("ref")
-            for p in (store.get(catalog_id).get("provenance") or {}).get("pins", [])
-        }
-        for ref, note in pins:
-            if ref in already:
-                continue
-            store.add_pin(catalog_id, kind="finding", ref=ref, note=note)
+        pin_findings(ScientificCatalogStore(conn), project_id, pins, catalog_id)
     finally:
         pool.putconn(conn)
+
+
+def _resolve_loop_catalog(request: Any) -> dict[str, Any]:
+    """S-D39b: resolve the start's ``catalog`` (``catalog_id@version``) once,
+    before the loop exists; a catalog that cannot be pinned is refused by
+    name (404 ``catalog_not_found`` / ``catalog_version_not_found``, 422
+    ``catalog_retired``, 503 ``catalog_store_unavailable``)."""
+    ref = (getattr(request, "catalog", "") or "").strip()
+    if not ref:
+        return {}
+    from umrs.scientific_catalogs.pinner import CatalogPinRefused, resolve_catalog_pin
+    from umrs.scientific_catalogs.store import ScientificCatalogStore
+
+    pool = _jobs_pool()
+    if pool is None:
+        raise_typed(
+            PlatformError.loops(
+                "unavailable",
+                "catalog_store_unavailable: no catalog store on this server;"
+                " start without `catalog`",
+                reason="catalog_store_unavailable",
+            )
+        )
+    conn = pool.getconn()
+    try:
+        row = resolve_catalog_pin(ScientificCatalogStore(conn), request.project_id, ref)
+    except CatalogPinRefused as exc:
+        status = "unprocessable" if exc.reason == "catalog_retired" else "not_found"
+        message = f"{exc.reason}: {exc}"
+        raise_typed(PlatformError.loops(status, message, reason=exc.reason, catalog=ref))
+    finally:
+        pool.putconn(conn)
+    pin = {"catalog_id": row["catalog_id"], "version": row["version"], "requested": ref}
+    return {CATALOG_PIN_KEY: pin}
 
 
 def _checkpoint_store():
@@ -527,6 +561,16 @@ class StartLoopRequest(BaseModel):
     )
     plan_default_model: str = ""
     plan_tool_capabilities: dict[str, Any] = Field(default_factory=dict)
+    catalog: str = Field(
+        "",
+        description=(
+            "DEC-D39 (S-D39b): the Scientific Catalog the loop's findings pin "
+            "onto, as `catalog_id@version` (`@version` optional: the id's own "
+            "row). Resolved at start and refused by name when it is not in the "
+            "project, has no such version or is retired. Empty → the project's "
+            "single active catalog (none or several: no pin, never a guess)."
+        ),
+    )
 
 
 class LoopStatusResponse(BaseModel):
@@ -1096,6 +1140,7 @@ async def start_loop(
     # venue (grammar 400, another site 403) leaves no orphan loop behind.
     venue = _validate_loop_venue(request)
     _refuse_cluster_loop_identity(venue, http_request, owner)
+    catalog_pin = _resolve_loop_catalog(request)
 
     engine = _get_engine()
     loop = engine.start_loop(
@@ -1107,6 +1152,7 @@ async def start_loop(
     if kind is not None:
         kind.attach(loop, request)
     loop.metadata["venue"] = venue
+    loop.metadata.update(catalog_pin)
     # D-52 (2026-09-22): one trace id through the loop's jobs, iterations and
     # knowledge writes — the loop id itself is the trace anchor.
     loop.metadata.setdefault("trace_id", loop.loop_id)
