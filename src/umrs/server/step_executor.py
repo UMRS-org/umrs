@@ -2140,6 +2140,23 @@ def _build_slurm_executor(chosen: str) -> StepExecutor:
     return SlurmStepExecutor()
 
 
+def _build_podman_staged_executor(_chosen: str) -> StepExecutor:
+    """ADR-091: the local staged podman lane for uploaded code; it refuses
+    every step unless the site set ``step_executor.uploaded_code_lane:
+    podman``. Not ``podman`` (:class:`PodmanExecutor`, ADR-091 D-2)."""
+    from .podman_staged_step_executor import PodmanStagedStepExecutor
+
+    return PodmanStagedStepExecutor()
+
+
+#: The staged lanes' builders (files in, a JSON reply out).
+_STAGED_BUILDERS = {
+    "slurm": _build_slurm_executor,
+    "slurm-remote": _build_slurm_executor,
+    "podman-staged": _build_podman_staged_executor,
+}
+
+
 def build_step_executor(
     name: str | None = None,
 ) -> StepExecutor:
@@ -2154,6 +2171,7 @@ def build_step_executor(
         ``router``           â†’ :class:`RouterPoolExecutor`
         ``slurm``            â†’ :class:`SlurmStepExecutor`
         ``slurm-remote``     â†’ :class:`RemoteSlurmStepExecutor` (front-end host)
+        ``podman-staged``    -> :class:`PodmanStagedStepExecutor` (ADR-091)
 
     Unknown values fall back to ``inproc`` with a warning so a typo
     in deployment config doesn't crash the workflow runner.
@@ -2161,8 +2179,8 @@ def build_step_executor(
     chosen = (name or os.environ.get("UMRS_STEP_EXECUTOR") or "inproc").lower()
     if chosen == "inproc":
         return InProcessExecutor()
-    if chosen in ("slurm", "slurm-remote"):
-        return _build_slurm_executor(chosen)
+    if chosen in _STAGED_BUILDERS:
+        return _STAGED_BUILDERS[chosen](chosen)
     if chosen == "subprocess":
         return SubprocessExecutor(timeout_seconds=_executor_timeout())
     if chosen == "podman":

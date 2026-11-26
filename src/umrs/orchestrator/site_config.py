@@ -379,6 +379,10 @@ class StepExecutorConfig:
     # Verified-project → Slurm account overrides; an unlisted project uses account.
     # Appended after every existing positional field for constructor compatibility.
     project_accounts: dict[str, str] = field(default_factory=dict)
+    # ADR-091 D-3: "podman" opts this site into the local staged podman lane
+    # for uploaded step code when no HPC lane is available; "" (default)
+    # keeps today's behaviour (HPC lane, uploaded_code switch or refusal).
+    uploaded_code_lane: str = ""
 
 
 @dataclass
@@ -601,6 +605,7 @@ def _step_executor_env(cfg: StepExecutorConfig) -> dict[str, str]:
                 cfg.project_accounts, sort_keys=True, separators=(",", ":")
             )
     env.update(_step_lane_env(cfg))
+    env.update(_local_lane_env(cfg))
     return env
 
 
@@ -608,17 +613,42 @@ def _workdir_env(cfg: StepExecutorConfig) -> dict[str, str]:
     """``step_executor.workdir_root`` for the lane that uses it.
 
     The Slurm lanes read it as UMRS_SLURM_WORKDIR_ROOT (a path the compute
-    nodes see). A local podman lane (``kind: podman``) also gets it as
-    UMRS_STEP_WORKDIR (DEC-064-WD, ADR-091 D-5): a path on THIS host, where
-    the per-step workdir is created. Other kinds keep the cluster path out
-    of UMRS_STEP_WORKDIR so a local lane never mkdtemp's under it.
+    nodes see). A local podman lane (``kind: podman``, or the staged lane
+    for uploaded code on a site whose step kind is not Slurm) also gets it
+    as UMRS_STEP_WORKDIR (DEC-064-WD, ADR-091 D-5): a path on THIS host,
+    where the per-step workdir is created. Other kinds keep the cluster path
+    out of UMRS_STEP_WORKDIR so a local lane never mkdtemp's under it.
     """
     if not cfg.workdir_root:
         return {}
     env = {"UMRS_SLURM_WORKDIR_ROOT": cfg.workdir_root}
-    if cfg.kind == "podman":
+    if _local_podman_lane(cfg):
         env["UMRS_STEP_WORKDIR"] = cfg.workdir_root
     return env
+
+
+def _local_podman_lane(cfg: StepExecutorConfig) -> bool:
+    """Whether ``workdir_root`` is a path on this host: ``kind: podman``, or
+    the staged podman lane for uploaded code (ADR-091) where the step kind
+    is not Slurm (whose root is a cluster path)."""
+    if cfg.kind == "podman":
+        return True
+    return cfg.uploaded_code_lane == "podman" and cfg.kind not in (
+        "slurm",
+        "slurm-remote",
+    )
+
+
+def _local_lane_env(cfg: StepExecutorConfig) -> dict[str, str]:
+    """The staged podman lane's opt-in and its container limits (ADR-091
+    D-1, D-3): ``uploaded_code_lane``, ``memory`` and ``cpus``."""
+    if cfg.uploaded_code_lane != "podman":
+        return {"UMRS_STEP_UPLOADED_CODE_LANE": cfg.uploaded_code_lane}
+    return {
+        "UMRS_STEP_UPLOADED_CODE_LANE": cfg.uploaded_code_lane,
+        "UMRS_STEP_MEMORY": cfg.memory,
+        "UMRS_STEP_CPUS": str(cfg.cpus) if cfg.cpus else "",
+    }
 
 
 def _step_lane_env(cfg: StepExecutorConfig) -> dict[str, str]:

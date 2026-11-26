@@ -398,28 +398,43 @@ def _hpc_attempt_seconds(step_timeout: float | None, lane: str) -> float:
 
 
 def _attempt_seconds(step_timeout: float | None, lane: str) -> int:
-    from umrs.server.step_trust import HPC_LANES
+    from umrs.server.step_trust import HPC_LANES, PODMAN_STAGED_LANE
 
     if lane in HPC_LANES:
         return math.ceil(_hpc_attempt_seconds(step_timeout, lane))
     # No scheduler bounds these lanes: a step without timeout_seconds
     # counts the 3600 s default.
-    return math.ceil(step_timeout or _DEFAULT_STEP_SECONDS)
+    seconds = float(step_timeout or _DEFAULT_STEP_SECONDS)
+    if lane == PODMAN_STAGED_LANE:
+        # The staged podman lane (ADR-091) also stops the container at the
+        # site's executor timeout, as PodmanStagedStepExecutor does.
+        executor_limit = _env_int("UMRS_STEP_EXECUTOR_TIMEOUT", 0)
+        seconds = min(seconds, executor_limit) if executor_limit > 0 else seconds
+    return math.ceil(seconds)
 
 
 def _truthy_hint(hint: Any) -> bool:
     return hint is True or str(hint).strip().lower() in _TRUE_HINTS
 
 
-def _step_needs_gpu(spec: dict[str, Any], lane: str) -> bool:
-    """As the executors decide: the remote lane needs the site's GPU switch
-    AND the step's ``routing_hints.gpu``; elsewhere the hint, else the switch."""
-    from umrs.server.step_trust import HPC_LANES
+def _hint_and_switch(lane: str) -> bool:
+    """The lanes on which a GPU needs the site's switch AND the step's hint:
+    the remote HPC lane and the staged podman lane (ADR-091)."""
+    from umrs.server.step_trust import HPC_LANES, PODMAN_STAGED_LANE
 
+    if lane == PODMAN_STAGED_LANE:
+        return True
+    return lane in HPC_LANES and _remote_submit(lane)
+
+
+def _step_needs_gpu(spec: dict[str, Any], lane: str) -> bool:
+    """As the executors decide: the remote lane and the staged podman lane
+    need the site's GPU switch AND the step's ``routing_hints.gpu``;
+    elsewhere the hint, else the switch."""
     hints = spec.get("routing_hints")
     hint = hints.get("gpu") if isinstance(hints, dict) else None
     site_gpu = os.environ.get("UMRS_STEP_GPU", "0").strip() == "1"
-    if lane in HPC_LANES and _remote_submit(lane):
+    if _hint_and_switch(lane):
         return site_gpu and _truthy_hint(hint)
     return site_gpu if hint is None else _truthy_hint(hint)
 
