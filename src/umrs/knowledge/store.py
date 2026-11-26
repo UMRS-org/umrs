@@ -18,11 +18,24 @@ import contextlib
 import logging
 import time
 from collections.abc import AsyncIterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Any
 
 from .graph_registry import default_graph_id
+from .term_registry import SnapshotCache
+from .typed_write import (
+    TYPED_COLUMNS_PROBE_SQL,
+    WriteBatch,
+    WriteBatchResult,
+    is_typed_edge,
+    is_typed_node,
+    check_batch,
+    untyped_fallback,
+    write_batch,
+    write_typed_edge,
+    write_typed_node,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -94,11 +107,15 @@ _SEARCH_TEXT_RECHECK_S = 60.0
 # pool) are dropped on the next store, and the memo is bounded.
 _SEARCH_TEXT_MEMO_MAX = 64
 _search_text_probes: dict[int, tuple[Any, bool, float]] = {}
+# The same memo shape for migration 0145's typed columns (ADR-081 W2a); probed
+# only when a typed row is written, so untyped writers never see the probe.
+_typed_probes: dict[int, tuple[Any, bool, float]] = {}
+_ProbeMemo = dict[int, tuple[Any, bool, float]]
 
 
-def _known_search_text(pool: Any) -> bool | None:
+def _known_probe(memo: _ProbeMemo, pool: Any) -> bool | None:
     """The remembered probe for ``pool``, or None when it must be (re)run."""
-    entry = _search_text_probes.get(id(pool))
+    entry = memo.get(id(pool))
     if entry is None or entry[0] is not pool:
         return None
     _held, present, checked = entry
@@ -107,20 +124,42 @@ def _known_search_text(pool: Any) -> bool | None:
     return None
 
 
+def _known_search_text(pool: Any) -> bool | None:
+    """The remembered search_text probe for ``pool`` (None = (re)run it)."""
+    return _known_probe(_search_text_probes, pool)
+
+
 def _pool_closing(pool: Any) -> bool:
     is_closing = getattr(pool, "is_closing", None)
     return bool(is_closing()) if callable(is_closing) else False
 
 
-def _remember_search_text(pool: Any, present: bool) -> None:
+def _remember_probe(memo: _ProbeMemo, pool: Any, present: bool) -> None:
     """Store one probe; drop closed pools and the oldest beyond the bound."""
-    for key, entry in list(_search_text_probes.items()):
+    for key, entry in list(memo.items()):
         if _pool_closing(entry[0]):
-            del _search_text_probes[key]
-    _search_text_probes.pop(id(pool), None)
-    while len(_search_text_probes) >= _SEARCH_TEXT_MEMO_MAX:
-        del _search_text_probes[next(iter(_search_text_probes))]
-    _search_text_probes[id(pool)] = (pool, present, time.monotonic())
+            del memo[key]
+    memo.pop(id(pool), None)
+    while len(memo) >= _SEARCH_TEXT_MEMO_MAX:
+        del memo[next(iter(memo))]
+    memo[id(pool)] = (pool, present, time.monotonic())
+
+
+def _remember_search_text(pool: Any, present: bool) -> None:
+    """Store one search_text probe (see :func:`_remember_probe`)."""
+    _remember_probe(_search_text_probes, pool, present)
+
+
+async def _has_typed_columns(pool: Any, conn: Any) -> bool:
+    """Does ``knowledge_nodes.node_class`` (migration 0145) exist?"""
+    known = _known_probe(_typed_probes, pool)
+    if known is not None:
+        return known
+    present = (await conn.fetchval(TYPED_COLUMNS_PROBE_SQL)) is True
+    _remember_probe(_typed_probes, pool, present)
+    if not present:
+        logger.info("knowledge_nodes.node_class absent (migration 0145): typed rows written untyped")
+    return present
 
 
 async def _has_search_text(pool: Any, conn: Any) -> bool:
@@ -201,6 +240,12 @@ class KnowledgeNode:
     # is ``content['chunk_md5']``. None = not given (an upsert keeps the
     # stored text while the chunk's md5 and header are unchanged).
     search_text: str | None = None
+    # ADR-081 W2a (0145, KN-S7): a writer that gives any of these writes a
+    # typed row through the graph's TypingContext (umrs.knowledge.typed_write);
+    # all None/empty = the legacy untyped write, unchanged.
+    node_class: str | None = None  # CURIE or alias, e.g. "r4:Document"
+    attrs: dict[str, Any] = field(default_factory=dict)  # declared attributes
+    natural_key: str | None = None
 
 
 @dataclass(frozen=True)
@@ -218,6 +263,9 @@ class KnowledgeEdge:
     confidence: float = 0.0
     created_at: datetime | None = None
     graph_id: str = ""
+    # ADR-081 W2a (0145, KN-S7): given = a typed write (relation_type keeps
+    # the writer's raw text either way).
+    relation_class: str | None = None
 
 
 # ── D-35 promotion helpers ────────────────────────────────────────────────────
@@ -395,6 +443,8 @@ class KnowledgeStore:
     def __init__(self, pool) -> None:  # type: ignore[misc]  # asyncpg Pool
         """Initialize store with an asyncpg connection pool."""
         self._pool = pool
+        # ADR-081 W2a: graph typing contexts, resolved once per TTL.
+        self._snapshots = SnapshotCache()
 
     async def active_artifact_for(
         self, content_hash: str, project_id: str
@@ -529,11 +579,77 @@ class KnowledgeStore:
             logger.warning("IR insert was a duplicate: %s: %s", ir_id, exc)
             return False
 
+    @contextlib.asynccontextmanager
+    async def _typed_tx(self, conn: Any = None) -> AsyncIterator[Any]:
+        """A connection inside a transaction: the caller's own (``conn``,
+        whose transaction it already holds) or a pool connection with one."""
+        if conn is not None:
+            yield conn
+            return
+        async with self._pool.acquire() as own, own.transaction():
+            yield own
+
+    async def _typed_node_written(self, node: KnowledgeNode, conn: Any, writer: str) -> bool:
+        """ADR-081 W2a: write ``node`` typed when the registry allows it.
+        False = the caller writes the untyped fallback (no 0145, or no seed).
+        Raises OntologyViolationError for an enforce-mode graph."""
+        async with self._typed_tx(conn) as db:
+            if not await _has_typed_columns(self._pool, db):
+                return False
+            prepared = await write_typed_node(db, self._snapshots, node, writer=writer)
+            return prepared is not None
+
+    async def _typed_edge_written(self, edge: KnowledgeEdge, conn: Any, writer: str) -> bool:
+        """The edge twin of :meth:`_typed_node_written`."""
+        async with self._typed_tx(conn) as db:
+            if not await _has_typed_columns(self._pool, db):
+                return False
+            prepared = await write_typed_edge(db, self._snapshots, edge, writer=writer)
+            return prepared is not None
+
+    async def upsert_typed(
+        self, batch: WriteBatch, *, conn: Any = None
+    ) -> WriteBatchResult | None:
+        """ADR-081 D-9: one audited typed write batch into one graph.
+
+        In one transaction (the caller's when ``conn`` is given): resolve the
+        graph's TypingContext, type every row (``prepare_row`` /
+        ``prepare_edge``), refuse the whole batch with OntologyViolationError
+        on an enforce-mode graph with any violation (nothing written), write
+        the rows, count vocabulary gaps, append the
+        ``knowledge_write_batches`` row and bump ``graph_version``. A
+        malformed batch (unknown origin_actor, a row of another project or
+        graph) raises ValueError first. Returns None when the database has no
+        typed columns (0145) or no seeded registry: the rows are then written
+        untyped (attrs kept in ``content["undeclared"]``) and no batch row is
+        appended. A typed edge that repeats another edge's (source,
+        relation_class, target) under a new edge_id is refused by 0145's
+        unique index (asyncpg UniqueViolationError), except the warn-mode
+        fallback ``r4:relatedTo``.
+        """
+        check_batch(batch)
+        async with self._typed_tx(conn) as db:
+            if await _has_typed_columns(self._pool, db):
+                result = await write_batch(db, self._snapshots, batch)
+                if result is not None:
+                    return result
+            await self._write_batch_untyped(db, batch)
+            return None
+
+    async def _write_batch_untyped(self, db: Any, batch: WriteBatch) -> None:
+        for node in batch.nodes:
+            row = node if node.graph_id else replace(node, graph_id=batch.graph_id)
+            await self._upsert_node_untyped(untyped_fallback(row), db)
+        for edge in batch.edges:
+            row = edge if edge.graph_id else replace(edge, graph_id=batch.graph_id)
+            await self._upsert_edge_untyped(replace(row, relation_class=None), db)
+
     async def upsert_node(
         self,
         node: KnowledgeNode,
         *,
         conn: Any = None,
+        writer: str = "store.upsert_node",
     ) -> None:
         """Upsert a knowledge graph node (graph-scoped; first-write wins graph).
 
@@ -549,7 +665,23 @@ class KnowledgeStore:
         Non-chunk nodes never touch the column. Without migration 0120 the
         row is written without it (probed once per pool). ``conn`` joins the
         caller's transaction.
+
+        ADR-081 W2a (KN-S7): a node that carries ``node_class``, ``attrs`` or
+        ``natural_key`` is a typed write: it goes through the graph's
+        TypingContext (``umrs.knowledge.typed_write``; warn mode rewrites,
+        enforce mode raises OntologyViolationError) and its vocabulary gaps
+        are counted under ``writer``. Without 0145 or a seeded registry it is
+        written untyped with its attrs in ``content["undeclared"]``. Untyped
+        nodes take exactly the pre-W2a statements.
         """
+        if is_typed_node(node):
+            if await self._typed_node_written(node, conn, writer):
+                return
+            node = untyped_fallback(node)
+        await self._upsert_node_untyped(node, conn)
+
+    async def _upsert_node_untyped(self, node: KnowledgeNode, conn: Any = None) -> None:
+        """The pre-W2a node upsert (see :meth:`upsert_node`)."""
         async with self._using(conn) as db:
             ts = _utcnow()
             params: list[Any] = [
@@ -576,9 +708,24 @@ class KnowledgeStore:
         edge: KnowledgeEdge,
         *,
         conn: Any = None,
+        writer: str = "store.upsert_edge",
     ) -> None:
         """Upsert a knowledge graph edge (graph-scoped; D-35 tiers as nodes).
-        ``conn`` joins the caller's transaction."""
+        ``conn`` joins the caller's transaction.
+
+        ADR-081 W2a (KN-S7): an edge with ``relation_class`` is a typed write
+        (``prepare_edge``: an unknown relation becomes ``r4:relatedTo`` with
+        ``content["rel_raw"]`` in warn mode); without 0145 or a seeded
+        registry it is written untyped. ``relation_type`` keeps the writer's
+        raw text either way."""
+        if is_typed_edge(edge):
+            if await self._typed_edge_written(edge, conn, writer):
+                return
+            edge = replace(edge, relation_class=None)
+        await self._upsert_edge_untyped(edge, conn)
+
+    async def _upsert_edge_untyped(self, edge: KnowledgeEdge, conn: Any = None) -> None:
+        """The pre-W2a edge upsert (see :meth:`upsert_edge`)."""
         async with self._using(conn) as db:
             await db.execute(
                 """INSERT INTO knowledge_edges

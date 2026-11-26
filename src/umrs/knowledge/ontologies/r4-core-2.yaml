@@ -1,0 +1,129 @@
+# r4-core@2 — the L1 core profile (ADR-081 D-3), shipped as UMRS package data.
+#
+# Namespace: a non-resolvable `tag:` identifier (RFC 4151) that nothing
+# fetches, so the core needs no hosted service. A null graph ontology
+# resolves to this profile, in warn mode (ADR-081 D-5).
+#
+# Bucket roots: one class per legacy node_type facet, so an untyped writer's
+# facet maps onto a class. `aliases` are the legacy slugs live writers emit
+# (relation_type values, content kinds); they are unique per term kind.
+# Terms are immutable: a change is a new version (r4-core@3) with
+# `status: deprecated` + `replaced_by` here.
+ontology: r4-core
+version: "2"
+iri_base: "tag:r-ccs.riken.jp,2026:r4/core#"
+origin: minted
+description: Core classes, relations and attributes of the R4 knowledge spine.
+prefixes:
+  r4: "tag:r-ccs.riken.jp,2026:r4/core#"
+  prov: "http://www.w3.org/ns/prov#"
+  sosa: "http://www.w3.org/ns/sosa/"
+  oa: "http://www.w3.org/ns/oa#"
+  schema: "https://schema.org/"
+  mls: "http://www.w3.org/ns/mls#"
+  dcterms: "http://purl.org/dc/terms/"
+  skos: "http://www.w3.org/2004/02/skos/core#"
+  owl: "http://www.w3.org/2002/07/owl#"
+  obo: "http://purl.obolibrary.org/obo/"
+imports: ["std@1"]
+classes:
+  # fallback (ADR-081 D-5): its node_type is the writer's facet
+  - {id: "r4:Unclassified", label: Unclassified, bucket: entity, aliases: [unclassified, unknown]}
+  # bucket roots (legacy node_type facets)
+  - {id: "r4:CodeClass", label: Code class, bucket: class, parents: ["schema:SoftwareSourceCode"], aliases: [class]}
+  - {id: "r4:Function", label: Function, bucket: function, parents: ["schema:SoftwareSourceCode"], aliases: [function]}
+  - {id: "r4:SourceFile", label: Source file, bucket: file, parents: ["prov:Entity"], aliases: [file]}
+  - {id: "r4:Module", label: Module, bucket: module, parents: ["schema:SoftwareSourceCode"], aliases: [module]}
+  - {id: "r4:Concept", label: Concept, bucket: concept, parents: ["skos:Concept"], aliases: [concept]}
+  - {id: "r4:Entity", label: Entity, bucket: entity, parents: ["prov:Entity"], aliases: [entity]}
+  - {id: "r4:Relationship", label: Relationship, bucket: relationship, parents: ["owl:Thing"], aliases: [relationship]}
+  # assets and documents
+  - {id: "r4:Asset", label: Asset, bucket: file, parents: ["prov:Entity"], aliases: [asset]}
+  - {id: "r4:Artifact", label: Artifact, bucket: file, parents: ["r4:Asset"], aliases: [artifact]}
+  - {id: "r4:Document", label: Document, bucket: file, parents: ["r4:Asset"], aliases: [document]}
+  - {id: "r4:Paper", label: Paper, bucket: file, parents: ["r4:Document", "schema:ScholarlyArticle"], aliases: [paper]}
+  - {id: "r4:Report", label: Report, bucket: file, parents: ["r4:Document"], aliases: [report]}
+  - {id: "r4:TextChunk", label: Text chunk, bucket: entity, parents: ["prov:Entity"], aliases: [chunk]}
+  - {id: "r4:ReportSection", label: Report section, bucket: entity, parents: ["r4:TextChunk"], aliases: [section]}
+  - {id: "r4:Dataset", label: Dataset, bucket: file, parents: ["r4:Asset", "schema:Dataset"], aliases: [dataset]}
+  - {id: "r4:Table", label: Table, bucket: file, parents: ["r4:Dataset"], aliases: [table]}
+  - {id: "r4:Video", label: Video, bucket: file, parents: ["r4:Asset", "schema:VideoObject"], aliases: [video]}
+  - {id: "r4:Image", label: Image, bucket: file, parents: ["r4:Asset", "schema:ImageObject"], aliases: [image]}
+  - {id: "r4:Volume", label: Volume, bucket: file, parents: ["r4:Asset"], aliases: [volume]}
+  - {id: "r4:CodeRepository", label: Code repository, bucket: module, parents: ["r4:Asset", "schema:SoftwareSourceCode"], aliases: [repository]}
+  # runs and software
+  - {id: "r4:Run", label: Run, bucket: entity, parents: ["mls:Run"], aliases: [run]}
+  - {id: "r4:Job", label: Job, bucket: entity, parents: ["r4:Run"], aliases: [job]}
+  - {id: "r4:WorkflowRun", label: Workflow run, bucket: entity, parents: ["r4:Run"], aliases: [workflow_run]}
+  - {id: "r4:LoopIteration", label: Loop iteration, bucket: entity, parents: ["r4:Run"], aliases: [loop_iteration, iteration]}
+  - {id: "r4:Failure", label: Failure, bucket: entity, parents: ["prov:Entity"], aliases: [failure, job_failure]}
+  - {id: "r4:Workflow", label: Workflow, bucket: entity, parents: ["prov:Plan"], aliases: [workflow]}
+  - {id: "r4:Model", label: Model, bucket: entity, parents: ["mls:Model"], aliases: [model]}
+  - {id: "r4:Software", label: Software, bucket: module, parents: ["schema:SoftwareSourceCode"], aliases: [software, package]}
+  # observations and annotations
+  - {id: "r4:Observation", label: Observation, bucket: entity, parents: ["sosa:Observation"], aliases: [observation]}
+  - {id: "r4:Event", label: Event, bucket: entity, parents: ["r4:Observation"], aliases: [event]}
+  - {id: "r4:Detection", label: Detection, bucket: entity, parents: ["r4:Observation"], aliases: [detection]}
+  - {id: "r4:Segmentation", label: Segmentation, bucket: entity, parents: ["r4:Observation"], aliases: [segmentation]}
+  - {id: "r4:Measurement", label: Measurement, bucket: entity, parents: ["r4:Observation"], aliases: [measurement]}
+  - {id: "r4:Annotation", label: Annotation, bucket: entity, parents: ["oa:Annotation"], aliases: [annotation]}
+  # claims (judgements; currency rows arrive with ADR-081 D-7)
+  - {id: "r4:Claim", label: Claim, bucket: concept, parents: ["r4:Concept"], aliases: [claim]}
+  - {id: "r4:Finding", label: Finding, bucket: concept, parents: ["r4:Claim"], aliases: [finding]}
+  - {id: "r4:Hypothesis", label: Hypothesis, bucket: concept, parents: ["r4:Claim"], aliases: [hypothesis]}
+  - {id: "r4:Decision", label: Decision, bucket: concept, parents: ["r4:Claim"], aliases: [decision]}
+  - {id: "r4:NegativeResult", label: Negative result, bucket: concept, parents: ["r4:Claim"], aliases: [negative_result]}
+  - {id: "r4:Assumption", label: Assumption, bucket: concept, parents: ["r4:Claim"], aliases: [assumption]}
+  - {id: "r4:OpenQuestion", label: Open question, bucket: concept, parents: ["r4:Claim"], aliases: [open_question]}
+  # instruments, samples, subjects, agents
+  - {id: "r4:Instrument", label: Instrument, bucket: entity, parents: ["sosa:Sensor"], aliases: [instrument]}
+  - {id: "r4:Camera", label: Camera, bucket: entity, parents: ["r4:Instrument"], aliases: [camera]}
+  - {id: "r4:Sample", label: Sample, bucket: entity, parents: ["sosa:Sample"], aliases: [sample]}
+  - {id: "r4:Subject", label: Subject, bucket: entity, parents: ["sosa:FeatureOfInterest"], aliases: [subject]}
+  - {id: "r4:Organism", label: Organism, bucket: entity, parents: ["r4:Subject"], aliases: [organism]}
+  - {id: "r4:Person", label: Person, bucket: entity, parents: ["prov:Person"], aliases: [person]}
+  - {id: "r4:SoftwareAgent", label: Software agent, bucket: entity, parents: ["prov:SoftwareAgent"], aliases: [agent]}
+  # concepts
+  - {id: "r4:Topic", label: Topic, bucket: concept, parents: ["r4:Concept"], aliases: [topic]}
+  - {id: "r4:Method", label: Method, bucket: concept, parents: ["r4:Concept"], aliases: [method]}
+  - {id: "r4:Parameter", label: Parameter, bucket: concept, parents: ["r4:Concept"], aliases: [parameter]}
+relations:
+  # fallback (ADR-081 D-5): any unknown relation lands here with content.rel_raw
+  - {id: "r4:relatedTo", label: related to, parents: ["skos:related"], aliases: [related_to, related]}
+  - {id: "r4:partOf", label: part of, parents: ["obo:BFO_0000050"], transitive: true, inverse_of: "r4:hasPart", aliases: [part_of]}
+  - {id: "r4:hasPart", label: has part, parents: ["dcterms:hasPart"], inverse_of: "r4:partOf", aliases: [has_part, contains]}
+  - {id: "r4:producedBy", label: produced by, parents: ["prov:wasGeneratedBy"], aliases: [produced_by, generated_by]}
+  - {id: "r4:derivedFrom", label: derived from, parents: ["prov:wasDerivedFrom"], aliases: [derived_from]}
+  - {id: "r4:used", label: used, parents: ["prov:used"], aliases: [used, uses]}
+  - {id: "r4:attributedTo", label: attributed to, parents: ["prov:wasAttributedTo"], aliases: [attributed_to, authored_by]}
+  - {id: "r4:cites", label: cites, parents: ["dcterms:references"], aliases: [cites]}
+  - {id: "r4:mentions", label: mentions, parents: ["r4:relatedTo"], aliases: [mentions]}
+  - {id: "r4:dependsOn", label: depends on, transitive: true, aliases: [depends_on]}
+  - {id: "r4:implements", label: implements, aliases: [implements]}
+  - {id: "r4:defines", label: defines, aliases: [defines]}
+  - {id: "r4:causedBy", label: caused by, aliases: [caused_by]}
+  - {id: "r4:sameAs", label: same as, parents: ["owl:sameAs"], aliases: [same_as]}
+  - {id: "r4:supports", label: supports, parents: ["r4:relatedTo"], aliases: [supports, evidence_for]}
+  - {id: "r4:contradicts", label: contradicts, parents: ["r4:relatedTo"], aliases: [contradicts]}
+  - {id: "r4:supersedes", label: supersedes, aliases: [supersedes]}
+  - {id: "r4:about", label: about, parents: ["r4:relatedTo"], aliases: [about, is_about]}
+  - {id: "r4:annotates", label: annotates, parents: ["oa:hasTarget"], domain: ["oa:Annotation"], aliases: [annotates]}
+  - {id: "r4:observedBy", label: observed by, parents: ["sosa:madeBySensor"], domain: ["sosa:Observation"], range: ["sosa:Sensor"], aliases: [observed_by]}
+  - {id: "r4:hasSubject", label: has subject, parents: ["sosa:hasFeatureOfInterest"], domain: ["sosa:Observation"], aliases: [has_subject]}
+attributes:
+  - {id: "r4:pixelSize", label: pixel size, datatype: number, unit: "unit:MicroM", domain: ["r4:Image", "r4:Video", "r4:Volume"], required_on: ["r4:Image", "r4:Volume"], aliases: [pixel_size]}
+  - {id: "r4:frameRate", label: frame rate, datatype: number, unit: "unit:HZ", domain: ["r4:Video"], aliases: [frame_rate, fps]}
+  - {id: "r4:durationS", label: duration, datatype: number, unit: "unit:SEC", domain: ["r4:Video", "r4:Run"], aliases: [duration_s, duration]}
+  - {id: "r4:cameraModel", label: camera model, datatype: string, domain: ["r4:Video", "r4:Image", "r4:Camera"], required_on: ["r4:Video"], aliases: [camera_model]}
+  - {id: "r4:instrumentName", label: instrument, datatype: string, domain: ["r4:Asset", "r4:Observation"], aliases: [instrument_name]}
+  - {id: "r4:subjectTaxon", label: subject taxon, datatype: string, domain: ["r4:Subject"], required_on: ["r4:Organism"], aliases: [subject_taxon, taxon]}
+  - {id: "r4:mimeType", label: media type, datatype: string, domain: ["r4:Asset"], aliases: [mime_type]}
+  - {id: "r4:checksum", label: checksum, datatype: string, domain: ["r4:Asset", "r4:TextChunk"], aliases: [sha256, checksum]}
+  - {id: "r4:runKey", label: run key, datatype: string, domain: ["r4:Run"], aliases: [run_key]}
+  - {id: "r4:startedAt", label: started at, datatype: datetime, domain: ["r4:Run", "r4:Observation"], aliases: [started_at]}
+  - {id: "r4:statedAt", label: stated at, datatype: date, domain: ["r4:Claim"], aliases: [stated_at]}
+  - {id: "r4:timeWindow", label: time window, datatype: interval, unit: "unit:SEC", domain: ["r4:Event", "r4:Observation"], aliases: [time_window, t_range]}
+  - {id: "r4:frameCount", label: frame count, datatype: integer, domain: ["r4:Video"], aliases: [n_frames, frame_count]}
+  - {id: "r4:producer", label: producer, datatype: node, aliases: [producer_node]}
+  - {id: "r4:metadata", label: metadata, datatype: json, aliases: [metadata]}
+  - {id: "r4:verified", label: verified, datatype: boolean, aliases: [verified_flag]}

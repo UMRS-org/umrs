@@ -25,6 +25,23 @@ logger = logging.getLogger(__name__)
 
 _MINT_CAP = 100  # mirror the proxy cap: oversized uploads mint the first N chunks
 
+# ADR-081 W2a (KN-S7): the raw-SQL mint writes typed rows. Its rows are fixed
+# core shapes with no attrs, so ``typing.prepare_row`` over the bundled
+# r4-core@2 context maps them to exactly these classes (a test holds the two
+# together). The class goes through a sub-select, so a database whose
+# registry is not seeded yet stores NULL (a legacy-valid row) instead of
+# failing the foreign key; the update keeps a stored class.
+MINT_DOC_CLASS = "r4:Document"
+MINT_CHUNK_CLASS = "r4:TextChunk"
+MINT_PART_OF_RELATION = "r4:partOf"
+_MINT_CLASSES = {"file": MINT_DOC_CLASS, "entity": MINT_CHUNK_CLASS}
+_SEEDED_TERM = "(SELECT term_id FROM knowledge_terms WHERE term_id = %s)"
+
+
+def _mint_class(node_type: str) -> str | None:
+    """The core class of a minted row's facet (doc = file, chunk = entity)."""
+    return _MINT_CLASSES.get(node_type)
+
 
 def _iso_now() -> str:
     from datetime import datetime, timezone
@@ -89,18 +106,20 @@ def _upsert_node(
     content: dict[str, Any],
     content_hash: str,
     graph_id: str,
+    node_class: str | None = None,
 ) -> None:
     import json
 
     ts = _iso_now()
     cur.execute(
-        """
+        f"""
         INSERT INTO knowledge_nodes
             (node_id, project_id, label, node_type, content, content_hash,
-             source_ir, created_at, updated_at, graph_id)
-        VALUES (%s, %s, %s, %s, %s::jsonb, %s, NULL, %s, %s, %s)
+             source_ir, created_at, updated_at, graph_id, node_class)
+        VALUES (%s, %s, %s, %s, %s::jsonb, %s, NULL, %s, %s, %s, {_SEEDED_TERM})
         ON CONFLICT (node_id) DO UPDATE
-        SET content = %s::jsonb, content_hash = %s, source_ir = NULL, updated_at = %s
+        SET content = %s::jsonb, content_hash = %s, source_ir = NULL, updated_at = %s,
+            node_class = coalesce(EXCLUDED.node_class, knowledge_nodes.node_class)
         """,
         (
             node_id,
@@ -112,6 +131,7 @@ def _upsert_node(
             ts,
             ts,
             graph_id,
+            node_class or _mint_class(node_type),
             json.dumps(content),
             content_hash,
             ts,
@@ -131,12 +151,14 @@ def _upsert_part_of_edge(
     import json
 
     cur.execute(
-        """
+        f"""
         INSERT INTO knowledge_edges
-            (edge_id, project_id, source_id, target_id, relation_type, content, graph_id)
-        VALUES (%s, %s, %s, %s, 'part_of', %s::jsonb, %s)
+            (edge_id, project_id, source_id, target_id, relation_type, content, graph_id,
+             relation_class)
+        VALUES (%s, %s, %s, %s, 'part_of', %s::jsonb, %s, {_SEEDED_TERM})
         ON CONFLICT (edge_id) DO UPDATE
-        SET content = %s::jsonb
+        SET content = %s::jsonb,
+            relation_class = coalesce(EXCLUDED.relation_class, knowledge_edges.relation_class)
         """,
         (
             f"{chunk_id}-part-of",
@@ -145,6 +167,7 @@ def _upsert_part_of_edge(
             doc_node_id,
             json.dumps({"kind": "part_of", "origin": origin}),
             graph_id,
+            MINT_PART_OF_RELATION,
             json.dumps({"kind": "part_of", "origin": origin}),
         ),
     )
@@ -235,6 +258,7 @@ def mint_rag_upload(
                 project_id=project_id,
                 label=filename,
                 node_type="file",
+                node_class=MINT_DOC_CLASS,
                 content={
                     "kind": "document",
                     "document_id": document_id,
@@ -256,6 +280,7 @@ def mint_rag_upload(
                     project_id=project_id,
                     label=f"chunk {i} of {filename}",
                     node_type="entity",
+                    node_class=MINT_CHUNK_CLASS,
                     content={
                         "kind": "chunk",
                         "document_id": document_id,
