@@ -4297,6 +4297,7 @@ async def _write_embedded_chunks(
     cap = int(os.environ.get(_NODE_EMBED_MAX_CHUNKS_ENV, "128"))
     pairs, total = _kept_chunks(chunks, vectors, cap, artifact_id in result.cut_texts)
     async with pool.acquire() as conn, conn.transaction():
+        await _require_embedding_space(conn, model_name)
         await _require_artifact_row(conn, wanted)
         target = await _resolve_target(conn, wanted)
         md5s = [
@@ -4313,6 +4314,17 @@ async def _write_embedded_chunks(
     stamp = ChunkStamp(scheme=scheme, total=total, indexed=len(pairs))
     _note_truncation(artifact_id, stamp, result)
     await _stamp_embedded(store, artifact_id, model_name, len(vectors[0]), stamp)
+
+
+async def _require_embedding_space(conn: Any, model_name: str) -> None:
+    """ADR-083 D-1 (slice KN-S5): refuse vectors of a model no active
+    embedding space owns, before anything is written (inside the artifact's
+    transaction, so a refusal writes nothing). The refusal is not permanent:
+    registering the space and re-running the embed repairs it."""
+    from umrs.knowledge.embedding_space_guard import require_writer_space
+    from umrs.knowledge.embedding_space_site import site_embedding_spaces
+
+    await require_writer_space(conn, model_name, site_spaces=site_embedding_spaces)
 
 
 def _kept_chunks(

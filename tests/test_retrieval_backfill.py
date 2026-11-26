@@ -597,6 +597,9 @@ class _TxConn:
     async def fetchval(self, *_a: Any) -> int:
         return 1
 
+    async def fetch(self, *_a: Any) -> list[Any]:
+        return []  # the embedding-space registry (KN-S5): empty = bundled
+
     async def execute(self, *_a: Any) -> str:
         return "DELETE 0"
 
@@ -622,7 +625,7 @@ class _ChunkStore:
 def test_embed_job_stores_each_chunks_full_body(monkeypatch: pytest.MonkeyPatch) -> None:
     from umrs.jobs import knowledge_adapters as ka
 
-    monkeypatch.setenv("UMRS_KNOWLEDGE_EMBED_MODEL", "/srv/models/e5")
+    monkeypatch.setenv("UMRS_KNOWLEDGE_EMBED_MODEL", "/srv/models/e5-base-v2")
     long_body = "x" * 900  # longer than the 500-character excerpt
     embedded = {
         "chunks": [

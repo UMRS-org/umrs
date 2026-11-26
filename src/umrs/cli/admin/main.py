@@ -2551,6 +2551,32 @@ def _cmd_reload(args: argparse.Namespace, _store: UserStore) -> int:
     return 0 if result.sent else 2
 
 
+def _add_embedding_space_group(sub: argparse._SubParsersAction) -> None:
+    """``embedding-space``: the ADR-083 D-1 registry (slice KN-S5)."""
+    from .embedding_spaces import add_embedding_space_parsers
+
+    space_p = sub.add_parser(
+        "embedding-space",
+        help="Embedding-space registry: list, register, retire, seed-site "
+        "(ADR-083; reads the site database)",
+        description=(
+            "Embedding spaces the knowledge writers accept (ADR-083 D-1). The "
+            "bundled e5-base-v2 space is seeded by migration; the site file's "
+            "knowledge.embedding_spaces is seeded on first write or by seed-site."
+        ),
+        epilog=(
+            "Examples:\n"
+            "  umrs-server admin embedding-space list --all\n"
+            "  umrs-server admin embedding-space register --space-id me5b "
+            "--model-name /models/me5b --dimension 768 --legacy-name me5b\n"
+            "  umrs-server admin embedding-space retire me5b\n"
+            "  umrs-server admin embedding-space seed-site --dry-run"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    add_embedding_space_parsers(space_p.add_subparsers(dest="action", required=True))
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="umrs-server admin",
@@ -2740,6 +2766,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_http_admin_args(policy_p)
     add_policy_parsers(policy_p.add_subparsers(dest="action", required=True))
+
+    _add_embedding_space_group(sub)
 
     # ADR-099 (RS-1 lane Q): remote-session token usage per user and day.
     from .http_usage import add_usage_parsers

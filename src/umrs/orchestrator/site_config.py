@@ -415,6 +415,9 @@ class SiteConfig:
     # U3 S3 (ADR-117 §6): enabled UMRS extensions; None = not configured
     # (the loader then applies UMRS_EXTENSIONS or its transitional default).
     extensions: list[str] | None = None
+    # ADR-083 D-1 (slice KN-S5): ``knowledge.embedding_spaces`` and future
+    # knowledge keys, kept raw; umrs.knowledge.embedding_space_site parses it.
+    knowledge: dict[str, Any] = field(default_factory=dict)
     extra: dict[str, Any] = field(default_factory=dict)
 
     # --- helpers -----------------------------------------------------------
@@ -1036,7 +1039,18 @@ def _parse_raw(raw: dict[str, Any]) -> SiteConfig:
         partition_profiles=profiles,
         extra=raw.get("extra", {}),
         extensions=_parse_extensions(raw.get("extensions")),
+        knowledge=_parse_knowledge(raw.get("knowledge")),
     )
+
+
+def _parse_knowledge(value: Any) -> dict[str, Any]:
+    """site.yaml ``knowledge:``; absent is ``{}``, anything but a mapping is
+    an error (the entries are validated where they are used)."""
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise TypeError("site.yaml 'knowledge' must be a mapping")
+    return dict(value)
 
 
 def _parse_extensions(value: Any) -> list[str] | None:
