@@ -7,13 +7,13 @@ Pure tests over a hand-built vocabulary. Task kn-s7-04 implements
 from __future__ import annotations
 
 from _kn_s7_pending import pending
+from umrs.knowledge.edge_typing import prepare_edge
 from umrs.knowledge.term_types import (
     EdgeDraft,
     RegistrySnapshot,
     TermSpec,
     TypingContext,
 )
-from umrs.knowledge.edge_typing import prepare_edge
 
 pytestmark = pending(prepare_edge)
 
@@ -122,9 +122,7 @@ def test_range_violation():
     out = prepare_edge(
         CTX, EdgeDraft("e-1", "part_of"), source_class="ex:Image", target_class="ex:Run"
     )
-    assert [(v.code, v.detail) for v in out.violations] == [
-        ("relation_range", "ex:partOf: ex:Run")
-    ]
+    assert [(v.code, v.detail) for v in out.violations] == [("relation_range", "ex:partOf: ex:Run")]
 
 
 def test_both_ends_wrong_reports_domain_then_range():

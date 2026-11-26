@@ -92,8 +92,15 @@ def test_record_batch_refuses_an_unknown_actor_before_writing():
     with pytest.raises(ValueError, match="loop"):
         asyncio.run(
             reg.record_batch(
-                _NoWrite(), batch_id="b", graph_id="g", project_id="p", writer="w",
-                origin_actor="loop", ontology_ref=CORE_REF, mode="warn", counts={},
+                _NoWrite(),
+                batch_id="b",
+                graph_id="g",
+                project_id="p",
+                writer="w",
+                origin_actor="loop",
+                ontology_ref=CORE_REF,
+                mode="warn",
+                counts={},
                 violations=(),
             )
         )
@@ -114,7 +121,9 @@ def _pg_url() -> str | None:
     return f"postgresql://{user}:{secret}@{host}:{port}/{name}"
 
 
-needs_pg = pytest.mark.skipif(not _pg_url(), reason="needs UMRS_TEST_DB_URL or the CI job's POSTGRES_*")
+needs_pg = pytest.mark.skipif(
+    not _pg_url(), reason="needs UMRS_TEST_DB_URL or the CI job's POSTGRES_*"
+)
 
 
 async def _seed_record(conn: Any, tag: str, project: str | None) -> str:
@@ -123,28 +132,40 @@ async def _seed_record(conn: Any, tag: str, project: str | None) -> str:
     await conn.execute(
         "INSERT INTO knowledge_ontologies (record_id, ontology_id, version, entity_types, "
         "relation_types, owner_id, project_id) VALUES ($1, $2, '1', '[]', '[]', 'u', $3)",
-        record, f"demo-{tag}", project,
+        record,
+        f"demo-{tag}",
+        project,
     )
     return record
 
 
 async def _seed_terms(conn: Any, tag: str, record: str) -> None:
     a, b, r = f"{tag}:A", f"{tag}:B", f"{tag}:r"
-    for term_id, kind, bucket, parents in ((a, "class", "entity", []), (b, "class", "file", [a]),
-                                           (r, "relation", None, [])):
+    for term_id, kind, bucket, parents in (
+        (a, "class", "entity", []),
+        (b, "class", "file", [a]),
+        (r, "relation", None, []),
+    ):
         await conn.execute(
             "INSERT INTO knowledge_terms (term_id, iri, kind, label, bucket, parents) "
             "VALUES ($1, $2, $3, $1, $4, $5) ON CONFLICT DO NOTHING",
-            term_id, f"http://{tag}/{term_id}", kind, bucket, parents,
+            term_id,
+            f"http://{tag}/{term_id}",
+            kind,
+            bucket,
+            parents,
         )
         await conn.execute(
             "INSERT INTO knowledge_ontology_terms (record_id, term_id) VALUES ($1, $2)",
-            record, term_id,
+            record,
+            term_id,
         )
     for anc, desc, depth in ((a, a, 0), (b, b, 0), (a, b, 1), (r, r, 0)):
         await conn.execute(
             "INSERT INTO knowledge_term_closure VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
-            anc, desc, depth,
+            anc,
+            desc,
+            depth,
         )
 
 
@@ -152,7 +173,10 @@ async def _bind_graph(conn: Any, graph: str, project: str, tag: str, mode: str) 
     await conn.execute(
         "INSERT INTO knowledge_graphs (graph_id, name, project_id, ontology_id, "
         "ontology_version, ontology_mode) VALUES ($1, $1, $2, $3, '1', $4)",
-        graph, project, f"demo-{tag}", mode,
+        graph,
+        project,
+        f"demo-{tag}",
+        mode,
     )
 
 
@@ -169,17 +193,29 @@ async def _registry_round_trip(url: str, tag: str) -> dict[str, Any]:
         own = await reg.fetch_snapshot(conn, project_id=f"p-{tag}", graph_id=f"g-{tag}")
         other = await reg.fetch_snapshot(conn, project_id=f"q-{tag}", graph_id=f"g-{tag}")
         await reg.record_gaps(
-            conn, graph_id=f"g-{tag}", writer="w",
+            conn,
+            graph_id=f"g-{tag}",
+            writer="w",
             gaps=[Gap("attribute", "colour", "n1"), Gap("attribute", "colour", "n2")],
         )
-        await reg.record_gaps(conn, graph_id=f"g-{tag}", writer="w", gaps=[Gap("attribute", "colour")])
+        await reg.record_gaps(
+            conn, graph_id=f"g-{tag}", writer="w", gaps=[Gap("attribute", "colour")]
+        )
         gap_n = await conn.fetchval(
-            "SELECT n FROM knowledge_vocab_gaps WHERE graph_id = $1 AND value = 'colour'", f"g-{tag}"
+            "SELECT n FROM knowledge_vocab_gaps WHERE graph_id = $1 AND value = 'colour'",
+            f"g-{tag}",
         )
         await reg.record_batch(
-            conn, batch_id=f"b-{tag}", graph_id=f"g-{tag}", project_id=f"p-{tag}", writer="w",
-            origin_actor="agent", ontology_ref=f"demo-{tag}@1", mode="enforce",
-            counts={"nodes": 2}, violations=[Violation("class_unknown", "n1", "x:Y")],
+            conn,
+            batch_id=f"b-{tag}",
+            graph_id=f"g-{tag}",
+            project_id=f"p-{tag}",
+            writer="w",
+            origin_actor="agent",
+            ontology_ref=f"demo-{tag}@1",
+            mode="enforce",
+            counts={"nodes": 2},
+            violations=[Violation("class_unknown", "n1", "x:Y")],
         )
         batch = await conn.fetchrow(
             "SELECT origin_actor, counts, violations FROM knowledge_write_batches WHERE batch_id = $1",
@@ -188,7 +224,13 @@ async def _registry_round_trip(url: str, tag: str) -> dict[str, Any]:
         version = await conn.fetchval(
             "SELECT graph_version FROM knowledge_graphs WHERE graph_id = $1", f"g-{tag}"
         )
-        return {"own": own, "other": other, "gap_n": gap_n, "batch": dict(batch), "version": version}
+        return {
+            "own": own,
+            "other": other,
+            "gap_n": gap_n,
+            "batch": dict(batch),
+            "version": version,
+        }
     finally:
         await tx.rollback()
         await conn.close()

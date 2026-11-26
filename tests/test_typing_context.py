@@ -10,13 +10,13 @@ import math
 
 import pytest
 from _kn_s7_pending import pending
+from umrs.knowledge.node_typing import check_datatype, prepare_row
 from umrs.knowledge.term_types import (
     NodeDraft,
     RegistrySnapshot,
     TermSpec,
     TypingContext,
 )
-from umrs.knowledge.node_typing import check_datatype, prepare_row
 
 pytestmark = pending(check_datatype, prepare_row)
 

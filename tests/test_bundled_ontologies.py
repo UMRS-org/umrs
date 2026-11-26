@@ -34,12 +34,23 @@ DOC: dict[str, Any] = {
         {"id": "d:Image", "label": "Image", "bucket": "file", "parents": ["d:Thing", "s:Obj"]},
     ],
     "relations": [
-        {"id": "d:partOf", "aliases": ["part_of", "thing"], "domain": ["d:Thing"],
-         "range": ["d:Thing"], "transitive": True, "inverse_of": "d:hasPart"},
+        {
+            "id": "d:partOf",
+            "aliases": ["part_of", "thing"],
+            "domain": ["d:Thing"],
+            "range": ["d:Thing"],
+            "transitive": True,
+            "inverse_of": "d:hasPart",
+        },
     ],
     "attributes": [
-        {"id": "d:pixelSize", "datatype": "number", "unit": "unit:MicroM",
-         "domain": ["d:Image"], "required_on": ["d:Image"]},
+        {
+            "id": "d:pixelSize",
+            "datatype": "number",
+            "unit": "unit:MicroM",
+            "domain": ["d:Image"],
+            "required_on": ["d:Image"],
+        },
     ],
 }
 
@@ -90,10 +101,21 @@ def test_parse_doc_term_values():
     assert (image.label, image.bucket, image.parents) == ("Image", "file", ("d:Thing", "s:Obj"))
     assert terms["d:Thing"].label == "Thing"  # default: the local part
     assert (part.domain_classes, part.range_classes) == (("d:Thing",), ("d:Thing",))
-    assert (part.transitive, part.inverse_of, part.aliases) == (True, "d:hasPart", ("part_of", "thing"))
-    assert (pixel.datatype, pixel.unit, pixel.required_on) == ("number", "unit:MicroM", ("d:Image",))
+    assert (part.transitive, part.inverse_of, part.aliases) == (
+        True,
+        "d:hasPart",
+        ("part_of", "thing"),
+    )
+    assert (pixel.datatype, pixel.unit, pixel.required_on) == (
+        "number",
+        "unit:MicroM",
+        ("d:Image",),
+    )
     assert (pixel.origin, pixel.verified, pixel.status, pixel.source) == (
-        "minted", True, "active", "demo@1",
+        "minted",
+        True,
+        "active",
+        "demo@1",
     )
 
 
@@ -191,6 +213,17 @@ def test_std_terms_are_standard_and_core_terms_minted():
 def test_legacy_relation_slugs_resolve_in_core():
     core = bundled_by_ref()[CORE_REF]
     aliases = {a for t in core.terms if t.kind == "relation" for a in t.aliases}
-    legacy = {"part_of", "produced_by", "derived_from", "mentions", "cites",
-              "depends_on", "implements", "defines", "caused_by", "same_as", "contains"}
+    legacy = {
+        "part_of",
+        "produced_by",
+        "derived_from",
+        "mentions",
+        "cites",
+        "depends_on",
+        "implements",
+        "defines",
+        "caused_by",
+        "same_as",
+        "contains",
+    }
     assert legacy <= aliases

@@ -26,6 +26,8 @@ from umrs.knowledge import rag_upload_mint as mint
 from umrs.knowledge import store as store_mod
 from umrs.knowledge import term_registry as reg
 from umrs.knowledge import typed_write as tw
+from umrs.knowledge.edge_typing import prepare_edge
+from umrs.knowledge.node_typing import prepare_row
 from umrs.knowledge.ontologies import bundled_by_ref, load_bundled
 from umrs.knowledge.ontologies.seed_sql import render_seed_sql
 from umrs.knowledge.store import KnowledgeEdge, KnowledgeNode, KnowledgeStore
@@ -36,8 +38,6 @@ from umrs.knowledge.term_types import (
     OntologyViolationError,
     TypingContext,
 )
-from umrs.knowledge.node_typing import prepare_row
-from umrs.knowledge.edge_typing import prepare_edge
 
 COMPOSED = (load_bundled, bundled_by_ref, build_closure, admitted_set, prepare_row, prepare_edge)
 
@@ -88,20 +88,33 @@ class _Pool:
 
 
 def _node(**kw: Any) -> KnowledgeNode:
-    base: dict[str, Any] = {"node_id": "n-1", "project_id": "p", "label": "img", "node_type": "file"}
+    base: dict[str, Any] = {
+        "node_id": "n-1",
+        "project_id": "p",
+        "label": "img",
+        "node_type": "file",
+    }
     return KnowledgeNode(**{**base, **kw})
 
 
 def _edge(**kw: Any) -> KnowledgeEdge:
     base: dict[str, Any] = {
-        "edge_id": "e-1", "project_id": "p", "source_id": "a", "target_id": "b",
+        "edge_id": "e-1",
+        "project_id": "p",
+        "source_id": "a",
+        "target_id": "b",
         "relation_type": "frobs",
     }
     return KnowledgeEdge(**{**base, **kw})
 
 
 def _batch(**kw: Any) -> tw.WriteBatch:
-    base: dict[str, Any] = {"graph_id": "g", "project_id": "p", "writer": "w", "origin_actor": "agent"}
+    base: dict[str, Any] = {
+        "graph_id": "g",
+        "project_id": "p",
+        "writer": "w",
+        "origin_actor": "agent",
+    }
     return tw.WriteBatch(**{**base, **kw})
 
 
@@ -192,11 +205,14 @@ def test_raw_mint_classes_agree_with_prepare_row():
     ctx = _core_ctx()
     doc = prepare_row(ctx, NodeDraft("d", "file", mint.MINT_DOC_CLASS))
     chunk = prepare_row(ctx, NodeDraft("c", "entity", mint.MINT_CHUNK_CLASS))
-    part = prepare_edge(ctx, EdgeDraft("e", "part_of"), source_class=chunk.node_class,
-                        target_class=doc.node_class)
+    part = prepare_edge(
+        ctx, EdgeDraft("e", "part_of"), source_class=chunk.node_class, target_class=doc.node_class
+    )
     assert (doc.node_class, doc.node_type, doc.violations) == (mint.MINT_DOC_CLASS, "file", ())
     assert (chunk.node_class, chunk.node_type, chunk.violations) == (
-        mint.MINT_CHUNK_CLASS, "entity", (),
+        mint.MINT_CHUNK_CLASS,
+        "entity",
+        (),
     )
     assert (part.relation_class, part.violations) == (mint.MINT_PART_OF_RELATION, ())
 
@@ -213,7 +229,9 @@ def _pg_url() -> str | None:
     return f"postgresql://{user}:{secret}@{host}:{port}/{name}"
 
 
-needs_pg = pytest.mark.skipif(not _pg_url(), reason="needs UMRS_TEST_DB_URL or the CI job's POSTGRES_*")
+needs_pg = pytest.mark.skipif(
+    not _pg_url(), reason="needs UMRS_TEST_DB_URL or the CI job's POSTGRES_*"
+)
 
 
 def _seed_bundled(url: str) -> None:
@@ -260,33 +278,60 @@ async def _warn_batch(url: str, project: str) -> dict[str, Any]:
     try:
         result = await KnowledgeStore(pool).upsert_typed(
             tw.WriteBatch(
-                graph_id=graph, project_id=project, writer="test.kn_s7", origin_actor="agent",
+                graph_id=graph,
+                project_id=project,
+                writer="test.kn_s7",
+                origin_actor="agent",
                 nodes=(
-                    KnowledgeNode(f"img-{project}", project, "frame", "entity",
-                                  content={"kind": "image"}, node_class="image",
-                                  attrs={"pixel_size": 0.3, "colour": "red"}),
-                    KnowledgeNode(f"doc-{project}", project, "paper", "file",
-                                  node_class="r4:Document"),
+                    KnowledgeNode(
+                        f"img-{project}",
+                        project,
+                        "frame",
+                        "entity",
+                        content={"kind": "image"},
+                        node_class="image",
+                        attrs={"pixel_size": 0.3, "colour": "red"},
+                    ),
+                    KnowledgeNode(
+                        f"doc-{project}", project, "paper", "file", node_class="r4:Document"
+                    ),
                 ),
                 edges=(
-                    KnowledgeEdge(f"e1-{project}", project, f"img-{project}", f"doc-{project}",
-                                  "frobs"),
-                    KnowledgeEdge(f"e2-{project}", project, f"img-{project}", f"doc-{project}",
-                                  "part_of"),
+                    KnowledgeEdge(
+                        f"e1-{project}", project, f"img-{project}", f"doc-{project}", "frobs"
+                    ),
+                    KnowledgeEdge(
+                        f"e2-{project}", project, f"img-{project}", f"doc-{project}", "part_of"
+                    ),
                 ),
             )
         )
-        nodes = {r["node_id"]: dict(r) for r in await pool.fetch(
-            "SELECT node_id, node_class, node_type, attrs, content FROM knowledge_nodes "
-            "WHERE project_id = $1", project)}
-        edges = {r["edge_id"]: dict(r) for r in await pool.fetch(
-            "SELECT edge_id, relation_type, relation_class, content FROM knowledge_edges "
-            "WHERE project_id = $1", project)}
-        gaps = {(r["kind"], r["value"]) for r in await pool.fetch(
-            "SELECT kind, value FROM knowledge_vocab_gaps WHERE graph_id = $1", graph)}
+        nodes = {
+            r["node_id"]: dict(r)
+            for r in await pool.fetch(
+                "SELECT node_id, node_class, node_type, attrs, content FROM knowledge_nodes "
+                "WHERE project_id = $1",
+                project,
+            )
+        }
+        edges = {
+            r["edge_id"]: dict(r)
+            for r in await pool.fetch(
+                "SELECT edge_id, relation_type, relation_class, content FROM knowledge_edges "
+                "WHERE project_id = $1",
+                project,
+            )
+        }
+        gaps = {
+            (r["kind"], r["value"])
+            for r in await pool.fetch(
+                "SELECT kind, value FROM knowledge_vocab_gaps WHERE graph_id = $1", graph
+            )
+        }
         batch = await pool.fetchrow(
             "SELECT origin_actor, counts FROM knowledge_write_batches WHERE batch_id = $1",
-            result.batch_id if result else "")
+            result.batch_id if result else "",
+        )
         return {"result": result, "nodes": nodes, "edges": edges, "gaps": gaps, "batch": batch}
     finally:
         await pool.execute("DELETE FROM knowledge_vocab_gaps WHERE graph_id = $1", graph)
@@ -339,26 +384,50 @@ async def _enforce(url: str, project: str) -> dict[str, Any]:
         await pool.execute(
             "INSERT INTO knowledge_graphs (graph_id, name, project_id, ontology_id, "
             "ontology_version, ontology_mode) VALUES ($1, $1, $2, 'r4-core', '2', 'enforce')",
-            graph, project)
-        bad = tw.WriteBatch(graph, project, "test.kn_s7", "user", nodes=(
-            KnowledgeNode(f"ok-{project}", project, "ok", "file", node_class="r4:Document"),
-            KnowledgeNode(f"bad-{project}", project, "bad", "entity", node_class="ex:Nope"),
-        ))
+            graph,
+            project,
+        )
+        bad = tw.WriteBatch(
+            graph,
+            project,
+            "test.kn_s7",
+            "user",
+            nodes=(
+                KnowledgeNode(f"ok-{project}", project, "ok", "file", node_class="r4:Document"),
+                KnowledgeNode(f"bad-{project}", project, "bad", "entity", node_class="ex:Nope"),
+            ),
+        )
         refused = None
         try:
             await store.upsert_typed(bad)
         except OntologyViolationError as exc:
             refused = exc
         written = await pool.fetchval(
-            "SELECT count(*) FROM knowledge_nodes WHERE project_id = $1", project)
+            "SELECT count(*) FROM knowledge_nodes WHERE project_id = $1", project
+        )
         version_after_refusal = await pool.fetchval(
-            "SELECT graph_version FROM knowledge_graphs WHERE graph_id = $1", graph)
-        await store.upsert_typed(tw.WriteBatch(graph, project, "test.kn_s7", "user", nodes=(
-            KnowledgeNode(f"ok-{project}", project, "ok", "file", node_class="r4:Document"),)))
+            "SELECT graph_version FROM knowledge_graphs WHERE graph_id = $1", graph
+        )
+        await store.upsert_typed(
+            tw.WriteBatch(
+                graph,
+                project,
+                "test.kn_s7",
+                "user",
+                nodes=(
+                    KnowledgeNode(f"ok-{project}", project, "ok", "file", node_class="r4:Document"),
+                ),
+            )
+        )
         version_after_write = await pool.fetchval(
-            "SELECT graph_version FROM knowledge_graphs WHERE graph_id = $1", graph)
-        return {"refused": refused, "written": written, "v0": version_after_refusal,
-                "v1": version_after_write}
+            "SELECT graph_version FROM knowledge_graphs WHERE graph_id = $1", graph
+        )
+        return {
+            "refused": refused,
+            "written": written,
+            "v0": version_after_refusal,
+            "v1": version_after_write,
+        }
     finally:
         await _cleanup(pool, project)
         await pool.close()
@@ -381,12 +450,22 @@ async def _legacy_and_typed(url: str, project: str) -> dict[str, Any]:
     store = KnowledgeStore(pool)
     try:
         await store.upsert_node(KnowledgeNode(f"old-{project}", project, "old", "concept"))
-        await store.upsert_edge(KnowledgeEdge(f"e-{project}", project, f"old-{project}",
-                                              f"old-{project}", "frobs", relation_class="frobs"))
+        await store.upsert_edge(
+            KnowledgeEdge(
+                f"e-{project}",
+                project,
+                f"old-{project}",
+                f"old-{project}",
+                "frobs",
+                relation_class="frobs",
+            )
+        )
         rows = await pool.fetch(
-            "SELECT node_class, attrs FROM knowledge_nodes WHERE project_id = $1", project)
+            "SELECT node_class, attrs FROM knowledge_nodes WHERE project_id = $1", project
+        )
         edge = await pool.fetchrow(
-            "SELECT relation_class, content FROM knowledge_edges WHERE project_id = $1", project)
+            "SELECT relation_class, content FROM knowledge_edges WHERE project_id = $1", project
+        )
         return {"rows": [dict(r) for r in rows], "edge": dict(edge)}
     finally:
         await _cleanup(pool, project)

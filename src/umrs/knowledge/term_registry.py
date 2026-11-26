@@ -59,7 +59,9 @@ _RECORD_SQL = (
     "AND EXISTS (SELECT 1 FROM knowledge_ontology_terms ot WHERE ot.record_id = o.record_id) "
     "ORDER BY o.project_id NULLS LAST LIMIT 1"
 )
-_SEEDED_SQL = "SELECT EXISTS (SELECT 1 FROM knowledge_ontology_terms WHERE record_id = $1)"
+_SEEDED_SQL = (
+    "SELECT EXISTS (SELECT 1 FROM knowledge_ontology_terms WHERE record_id = $1)"
+)
 _TERM_COLUMNS = (
     "t.term_id, t.iri, t.kind, t.label, t.parents, t.bucket, t.domain_classes, "
     "t.range_classes, t.datatype, t.unit, t.transitive, t.functional, t.inverse_of, "
@@ -89,8 +91,7 @@ _BATCH_SQL = (
     "VALUES ($1, $2, $3, $4, $5, $6, $7, $8::text::jsonb, $9::text::jsonb)"
 )  # text params, cast in SQL: the same JSON with or without a jsonb codec
 _BUMP_SQL = (
-    "UPDATE knowledge_graphs SET graph_version = graph_version + 1 "
-    "WHERE graph_id = $1"
+    "UPDATE knowledge_graphs SET graph_version = graph_version + 1 WHERE graph_id = $1"
 )
 
 
@@ -274,6 +275,8 @@ class SnapshotCache:
         key = (project_id, graph_id)
         hit, snapshot = self.get(key)
         if not hit:
-            snapshot = await fetch_snapshot(conn, project_id=project_id, graph_id=graph_id)
+            snapshot = await fetch_snapshot(
+                conn, project_id=project_id, graph_id=graph_id
+            )
             self.put(key, snapshot)
         return snapshot

@@ -62,8 +62,14 @@ def test_sql_jsonb():
 def _doc(prefix: str = "x", base: str = "http://x/") -> OntologyDoc:
     a = TermSpec(f"{prefix}:A", f"{base}A", "class", "A", (), "entity", source=f"{prefix}@1")
     b = TermSpec(
-        f"{prefix}:B", f"{base}B", "class", "B", (f"{prefix}:A",), "file",
-        aliases=("bee",), source=f"{prefix}@1",
+        f"{prefix}:B",
+        f"{base}B",
+        "class",
+        "B",
+        (f"{prefix}:A",),
+        "file",
+        aliases=("bee",),
+        source=f"{prefix}@1",
     )
     r = TermSpec(f"{prefix}:r", f"{base}r", "relation", "r", transitive=True, source=f"{prefix}@1")
     return OntologyDoc(prefix, "1", base, {prefix: base}, (), "demo", (b, a, r))
@@ -81,7 +87,7 @@ def _admitted(prefix: str = "x") -> dict[str, dict[str, str]]:
 def _lines() -> list[str]:
     text = render_seed_sql([_doc()], _closure(), _admitted())
     assert text.startswith(HEADER)
-    return text[len(HEADER):].splitlines()
+    return text[len(HEADER) :].splitlines()
 
 
 def test_render_ontology_row():
@@ -114,8 +120,12 @@ def test_render_closure_and_admitted_rows_sorted():
     assert closure == [
         "INSERT INTO knowledge_term_closure (ancestor, descendant, depth) VALUES "
         f"({a}, {d}, {n}) ON CONFLICT DO NOTHING;"
-        for a, d, n in (("'x:A'", "'x:A'", 0), ("'x:A'", "'x:B'", 1), ("'x:B'", "'x:B'", 0),
-                        ("'x:r'", "'x:r'", 0))
+        for a, d, n in (
+            ("'x:A'", "'x:A'", 0),
+            ("'x:A'", "'x:B'", 1),
+            ("'x:B'", "'x:B'", 0),
+            ("'x:r'", "'x:r'", 0),
+        )
     ]
     admitted = [line for line in lines if "knowledge_ontology_terms" in line]
     assert admitted == [
@@ -127,8 +137,12 @@ def test_render_closure_and_admitted_rows_sorted():
 
 def test_render_order_is_ontologies_terms_closure_admitted():
     tables = [line.split()[2] for line in _lines()]
-    order = ["knowledge_ontologies", "knowledge_terms", "knowledge_term_closure",
-             "knowledge_ontology_terms"]
+    order = [
+        "knowledge_ontologies",
+        "knowledge_terms",
+        "knowledge_term_closure",
+        "knowledge_ontology_terms",
+    ]
     assert [t for i, t in enumerate(tables) if i == 0 or tables[i - 1] != t] == order
 
 
@@ -184,16 +198,28 @@ def test_rendered_seed_applies_to_a_migrated_database():
             cur.execute(sql)
             cur.execute(sql)  # idempotent
             like = f"{prefix}:%"
-            assert _count(cur, "SELECT count(*) FROM knowledge_terms WHERE term_id LIKE %s", like) == 3
-            assert _count(
-                cur, "SELECT count(*) FROM knowledge_term_closure WHERE descendant LIKE %s", like
-            ) == 4
-            assert _count(
-                cur, "SELECT count(*) FROM knowledge_ontology_terms WHERE record_id = %s",
-                f"bundled:{prefix}@1",
-            ) == 3
-            cur.execute("SELECT parents, aliases FROM knowledge_terms WHERE term_id = %s",
-                        (f"{prefix}:B",))
+            assert (
+                _count(cur, "SELECT count(*) FROM knowledge_terms WHERE term_id LIKE %s", like) == 3
+            )
+            assert (
+                _count(
+                    cur,
+                    "SELECT count(*) FROM knowledge_term_closure WHERE descendant LIKE %s",
+                    like,
+                )
+                == 4
+            )
+            assert (
+                _count(
+                    cur,
+                    "SELECT count(*) FROM knowledge_ontology_terms WHERE record_id = %s",
+                    f"bundled:{prefix}@1",
+                )
+                == 3
+            )
+            cur.execute(
+                "SELECT parents, aliases FROM knowledge_terms WHERE term_id = %s", (f"{prefix}:B",)
+            )
             assert cur.fetchone() == ([f"{prefix}:A"], ["bee"])
     finally:
         conn.rollback()

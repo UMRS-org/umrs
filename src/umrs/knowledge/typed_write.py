@@ -28,7 +28,9 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
+from .edge_typing import prepare_edge
 from .graph_registry import default_graph_id
+from .node_typing import prepare_row
 from .term_registry import SnapshotCache, record_batch, record_gaps
 from .term_types import (
     ORIGIN_ACTORS,
@@ -42,8 +44,6 @@ from .term_types import (
     TypingContext,
     Violation,
 )
-from .node_typing import prepare_row
-from .edge_typing import prepare_edge
 
 if TYPE_CHECKING:
     from .store import KnowledgeEdge, KnowledgeNode
@@ -66,9 +66,7 @@ TYPED_COLUMNS_PROBE_SQL = (
 # D-6 (W2a part): a typed re-upsert merges attrs, keeps a stored class unless
 # the new one is a real class (not the warn fallback), keeps the facet with
 # the class, and never touches status (still INSERT-only, D-35).
-_KEEP_CLASS = (
-    "EXCLUDED.node_class IS NULL OR EXCLUDED.node_class = 'r4:Unclassified'"
-)
+_KEEP_CLASS = "EXCLUDED.node_class IS NULL OR EXCLUDED.node_class = 'r4:Unclassified'"
 UPSERT_TYPED_NODE_SQL = f"""INSERT INTO knowledge_nodes
    (node_id, project_id, label, node_type, content, content_hash,
     source_ir, created_at, updated_at, graph_id, status, confidence,
@@ -178,7 +176,10 @@ def untyped_fallback(node: KnowledgeNode) -> KnowledgeNode:
         return replace(node, node_class=None, attrs={}, natural_key=None)
     content = dict(node.content)
     held = content.get(UNDECLARED_KEY)
-    content[UNDECLARED_KEY] = {**(held if isinstance(held, Mapping) else {}), **node.attrs}
+    content[UNDECLARED_KEY] = {
+        **(held if isinstance(held, Mapping) else {}),
+        **node.attrs,
+    }
     return replace(node, node_class=None, attrs={}, natural_key=None, content=content)
 
 
@@ -255,7 +256,9 @@ async def write_typed_node(
 ) -> PreparedNode | None:
     """One typed node (``upsert_node`` path). None = registry not seeded and
     the caller must write :func:`untyped_fallback` itself."""
-    ctx = await context_for(cache, db, project_id=node.project_id, graph_id=node_graph(node))
+    ctx = await context_for(
+        cache, db, project_id=node.project_id, graph_id=node_graph(node)
+    )
     if ctx is None:
         return None
     prepared = prepare_row(ctx, _draft(node))
@@ -273,7 +276,9 @@ async def write_typed_edge(
     ctx = await context_for(cache, db, project_id=edge.project_id, graph_id=graph_id)
     if ctx is None:
         return None
-    classes = await endpoint_classes(db, edge.project_id, (edge.source_id, edge.target_id), {})
+    classes = await endpoint_classes(
+        db, edge.project_id, (edge.source_id, edge.target_id), {}
+    )
     prepared = prepare_edge(
         ctx,
         _edge_draft(edge),
@@ -294,8 +299,13 @@ def check_batch(batch: WriteBatch) -> None:
         raise ValueError("a write batch names graph_id, project_id and writer")
     rows: list[Any] = [*batch.nodes, *batch.edges]
     for row in rows:
-        if row.project_id != batch.project_id or row.graph_id not in ("", batch.graph_id):
-            raise ValueError(f"row outside the batch graph: {getattr(row, 'node_id', '') or row.edge_id}")
+        if row.project_id != batch.project_id or row.graph_id not in (
+            "",
+            batch.graph_id,
+        ):
+            raise ValueError(
+                f"row outside the batch graph: {getattr(row, 'node_id', '') or row.edge_id}"
+            )
 
 
 def _in_graph(row: Any, graph_id: str) -> Any:
@@ -308,9 +318,7 @@ class _Prepared:
     edges: list[tuple[KnowledgeEdge, PreparedEdge]] = field(default_factory=list)
 
     def violations(self) -> tuple[Violation, ...]:
-        return tuple(
-            v for _, p in [*self.nodes, *self.edges] for v in p.violations
-        )
+        return tuple(v for _, p in [*self.nodes, *self.edges] for v in p.violations)
 
     def gaps(self) -> tuple[Gap, ...]:
         return tuple(g for _, p in [*self.nodes, *self.edges] for g in p.gaps)
@@ -342,7 +350,9 @@ async def write_batch(
     """The typed batch (module docstring) in the caller's transaction. None
     = registry not seeded; the caller writes the rows untyped."""
     check_batch(batch)
-    ctx = await context_for(cache, db, project_id=batch.project_id, graph_id=batch.graph_id)
+    ctx = await context_for(
+        cache, db, project_id=batch.project_id, graph_id=batch.graph_id
+    )
     if ctx is None:
         return None
     prepared = await _prepare_batch(db, ctx, batch)
@@ -351,7 +361,9 @@ async def write_batch(
         await db.execute(UPSERT_TYPED_NODE_SQL, *typed_node_params(node, p))
     for edge, pe in prepared.edges:
         await db.execute(UPSERT_TYPED_EDGE_SQL, *typed_edge_params(edge, pe))
-    gaps = await record_gaps(db, graph_id=batch.graph_id, writer=batch.writer, gaps=prepared.gaps())
+    gaps = await record_gaps(
+        db, graph_id=batch.graph_id, writer=batch.writer, gaps=prepared.gaps()
+    )
     result = WriteBatchResult(
         batch_id=batch.batch_id or f"kwb-{uuid.uuid4().hex}",
         ontology_ref=ctx.ontology_ref,
@@ -359,7 +371,11 @@ async def write_batch(
         counts={"nodes": len(prepared.nodes), "edges": len(prepared.edges)},
         violations=prepared.violations(),
         gaps=gaps,
-        missing_required={n.node_id: p.missing_required for n, p in prepared.nodes if p.missing_required},
+        missing_required={
+            n.node_id: p.missing_required
+            for n, p in prepared.nodes
+            if p.missing_required
+        },
     )
     await record_batch(
         db,

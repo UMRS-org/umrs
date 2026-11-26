@@ -158,7 +158,9 @@ async def _has_typed_columns(pool: Any, conn: Any) -> bool:
     present = (await conn.fetchval(TYPED_COLUMNS_PROBE_SQL)) is True
     _remember_probe(_typed_probes, pool, present)
     if not present:
-        logger.info("knowledge_nodes.node_class absent (migration 0145): typed rows written untyped")
+        logger.info(
+            "knowledge_nodes.node_class absent (migration 0145): typed rows written untyped"
+        )
     return present
 
 
@@ -589,7 +591,9 @@ class KnowledgeStore:
         async with self._pool.acquire() as own, own.transaction():
             yield own
 
-    async def _typed_node_written(self, node: KnowledgeNode, conn: Any, writer: str) -> bool:
+    async def _typed_node_written(
+        self, node: KnowledgeNode, conn: Any, writer: str
+    ) -> bool:
         """ADR-081 W2a: write ``node`` typed when the registry allows it.
         False = the caller writes the untyped fallback (no 0145, or no seed).
         Raises OntologyViolationError for an enforce-mode graph."""
@@ -599,7 +603,9 @@ class KnowledgeStore:
             prepared = await write_typed_node(db, self._snapshots, node, writer=writer)
             return prepared is not None
 
-    async def _typed_edge_written(self, edge: KnowledgeEdge, conn: Any, writer: str) -> bool:
+    async def _typed_edge_written(
+        self, edge: KnowledgeEdge, conn: Any, writer: str
+    ) -> bool:
         """The edge twin of :meth:`_typed_node_written`."""
         async with self._typed_tx(conn) as db:
             if not await _has_typed_columns(self._pool, db):

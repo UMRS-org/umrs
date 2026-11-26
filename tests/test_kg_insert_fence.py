@@ -37,11 +37,7 @@ def _literal_text(node: ast.AST) -> str | None:
 
 
 def _untyped(text: str) -> list[str]:
-    return [
-        m.group(1)
-        for m in _INSERT.finditer(text)
-        if _REQUIRED[m.group(1).lower()] not in text
-    ]
+    return [m.group(1) for m in _INSERT.finditer(text) if _REQUIRED[m.group(1).lower()] not in text]
 
 
 def untyped_inserts(source: str) -> list[tuple[int, str]]:

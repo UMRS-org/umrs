@@ -25,7 +25,11 @@ pytestmark = pending(bundled_by_ref, build_closure, admitted_set, render_seed_sq
 
 
 def _seed_files() -> list[tuple[str, str]]:
-    return [(v, p.read_text()) for v, p in get_migration_files() if p.name.endswith("_knowledge_terms_seed.sql")]
+    return [
+        (v, p.read_text())
+        for v, p in get_migration_files()
+        if p.name.endswith("_knowledge_terms_seed.sql")
+    ]
 
 
 def _version_of(suffix: str) -> str:
@@ -34,8 +38,14 @@ def _version_of(suffix: str) -> str:
 
 def test_exactly_one_seed_migration_exists_after_the_typed_columns():
     seeds = _seed_files()
-    assert len(seeds) == 1, "generate it: python -m umrs.knowledge.ontologies > <NNNN>_knowledge_terms_seed.sql"
-    assert seeds[0][0] > _version_of("_knowledge_typed_columns.sql") > _version_of("_knowledge_terms.sql")
+    assert len(seeds) == 1, (
+        "generate it: python -m umrs.knowledge.ontologies > <NNNN>_knowledge_terms_seed.sql"
+    )
+    assert (
+        seeds[0][0]
+        > _version_of("_knowledge_typed_columns.sql")
+        > _version_of("_knowledge_terms.sql")
+    )
 
 
 def test_seed_migration_equals_the_package_data():
