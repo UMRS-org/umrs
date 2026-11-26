@@ -86,8 +86,8 @@ _GAP_SQL = (
 _BATCH_SQL = (
     "INSERT INTO knowledge_write_batches (batch_id, graph_id, project_id, writer, "
     "origin_actor, ontology_ref, mode, counts, violations) "
-    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb)"
-)
+    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8::text::jsonb, $9::text::jsonb)"
+)  # text params, cast in SQL: the same JSON with or without a jsonb codec
 _BUMP_SQL = (
     "UPDATE knowledge_graphs SET graph_version = graph_version + 1 "
     "WHERE graph_id = $1"

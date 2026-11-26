@@ -28,8 +28,10 @@ Term keys (any other key is an error): ``id`` (required CURIE),
 (default the document ref), ``status`` (``active``|``deprecated``, default
 ``active``), ``replaced_by``, ``mappings`` (mapping). Lists become tuples.
 
-Validation (each failure raises :class:`OntologyDocError` naming the
-document ref and, where there is one, the term id):
+Validation (each failure raises :class:`OntologyDocError`; its message
+names the document ref once it is known, the term id where there is one,
+and the offending key or value, e.g. ``"demo@1: d:Thing: class needs a
+bucket"`` or ``"demo@1: unknown key 'colour'"``):
 
 - a CURIE is ``<prefix>:<local>`` with a non-empty local part and a prefix
   declared in ``prefixes``; this holds for ``id``, ``parents``, ``domain``,
