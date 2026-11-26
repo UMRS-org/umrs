@@ -20,7 +20,9 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 ACTIVE_STATES = ("provisioning", "running")
-VALID_STATES = ("provisioning", "running", "paused", "failed", "stopped")
+# ``host_lost``: the session's host went down (ADR-098 D-4; set by the hosts
+# janitor through ``umrs_r4.venues.host_sessions``, never by a route).
+VALID_STATES = ("provisioning", "running", "paused", "failed", "stopped", "host_lost")
 
 _COLUMNS = (
     "session_id",

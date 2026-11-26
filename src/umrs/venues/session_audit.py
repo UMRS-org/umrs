@@ -12,7 +12,8 @@ Events (``event`` column; ``actor`` is who caused it):
     venue.session.pause    owner paused the worker between turns
     venue.session.resume   owner resumed it
     venue.lease.issue      the session lease was minted (provisioning)
-    venue.lease.revoke     a session lease was revoked (teardown, idle)
+    venue.lease.revoke     a session lease was revoked (teardown, idle, host_lost)
+    venue.host.down        a host missed its heartbeats (SH-H1a hosts janitor)
     venue.admin.list       an admin listed sessions across users
     venue.admin.show       an admin read one user's session
     venue.admin.denied     a non-admin called an admin session route
@@ -45,6 +46,7 @@ STOP_CAUSES = frozenset(
         "cancel",  # the durable job was cancelled from another surface
         "provision_failed",  # the sandbox never came up
         "disabled",  # the S-2 cascade: account disabled / removed from project
+        "host_lost",  # the session's host went down (ADR-098 D-4 janitor)
     }
 )
 

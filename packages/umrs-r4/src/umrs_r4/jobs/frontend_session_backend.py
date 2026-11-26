@@ -332,12 +332,9 @@ class FrontendSessionStatusChecker(BackendStatusChecker):
         row = self._backend.store.get(sid)
         if row is None:
             return AttemptCheckResult.failed("venue registry row missing")
-        if row.state == "failed":
-            return AttemptCheckResult.failed(row.reason or "provisioning failed")
-        if row.state == "stopped":
-            return AttemptCheckResult.succeeded(
-                metrics={"end": row.reason or "stopped"}
-            )
+        ended = _ended_result(row)
+        if ended is not None:
+            return ended
         return await asyncio.to_thread(self._check_live, row, self._idle_seconds(job))
 
     def _check_live(self, row: Any, idle_seconds: int) -> AttemptCheckResult:
@@ -380,6 +377,17 @@ class FrontendSessionStatusChecker(BackendStatusChecker):
         detail = str(row.runtime.get("detail") or "worker exited")
         self._backend.end_session(row, reason=detail, cause="exit", failed=True)
         return AttemptCheckResult.failed(f"worker exited: {detail}")
+
+
+def _ended_result(row: Any) -> AttemptCheckResult | None:
+    """The attempt's result for a row that already ended (None: still live)."""
+    if row.state == "failed":
+        return AttemptCheckResult.failed(row.reason or "provisioning failed")
+    if row.state == "host_lost":  # SH-H1a: the hosts janitor ended it
+        return AttemptCheckResult.failed(row.reason or "host_lost")
+    if row.state == "stopped":
+        return AttemptCheckResult.succeeded(metrics={"end": row.reason or "stopped"})
+    return None
 
 
 def _running_detail(row: Any) -> str:

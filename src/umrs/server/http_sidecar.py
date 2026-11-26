@@ -28,6 +28,7 @@ from ..api.web_dashboard import router as web_dashboard_router
 
 if TYPE_CHECKING:
     from umrs.admin.account_cascade import AccountStandingSweep
+    from umrs.hosts.janitor import HostMaintenance
 
 logger = logging.getLogger(__name__)
 
@@ -813,6 +814,36 @@ def _start_account_sweep() -> AccountStandingSweep | None:
         return None
 
 
+def _start_hosts() -> HostMaintenance | None:
+    """ADR-098 D-4 (SH-H1a): register this process's own host (``inline``)
+    in the hosts registry, then heartbeat it and run the site-scoped hosts
+    janitor every ``UMRS_HOST_HEARTBEAT_SEC`` (30 s). Needs the site
+    database; ``UMRS_HOSTS_ENABLED=false`` turns it off."""
+    flag = os.environ.get("UMRS_HOSTS_ENABLED", "true").strip().lower()
+    if flag in ("false", "0", "no"):
+        logger.warning("hosts registry disabled (UMRS_HOSTS_ENABLED)")
+        return None
+    from umrs.api._asyncpg_pool import _resolve_knowledge_dsn
+
+    dsn, _ = _resolve_knowledge_dsn()
+    if not dsn:
+        logger.info("hosts registry: no DSN, not started")
+        return None
+    try:
+        import psycopg2 as _psycopg2
+
+        from umrs.hosts.janitor import start_inline_host
+        from umrs.shared.pg_settings import pg_connect_kwargs
+
+        pool = _SingleConnPool(
+            lambda: _psycopg2.connect(dsn, **pg_connect_kwargs("hosts"))
+        )
+        return start_inline_host(pool)
+    except Exception:
+        logger.warning("hosts registry not started", exc_info=True)
+        return None
+
+
 def _start_ledger_sweep() -> object:
     """ADR-112 wave D (plan §6 C/D.0 D2): this venue's usage ledger
     recovery sweep every 300 s (``UMRS_LEDGER_SWEEP_ENABLED=false`` turns it
@@ -1064,9 +1095,12 @@ def _create_app():
         _rehydrate_loop_drivers()
         account_sweep = _start_account_sweep()
         _start_ledger_sweep()
+        hosts = _start_hosts()
         try:
             yield
         finally:
+            if hosts is not None:
+                hosts.stop()
             if account_sweep is not None:
                 account_sweep.stop()
             stop_scheduler()

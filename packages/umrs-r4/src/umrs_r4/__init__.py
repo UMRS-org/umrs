@@ -80,6 +80,7 @@ def register(ext: Any) -> None:
     from umrs_r4.api.loop_plan_iteration import plan_kind
     from umrs_r4.trust.approval_listener import mint_session_trust_on_always
     from umrs_r4.trust.archive_participant import revoke_trust_on_archive
+    from umrs_r4.venues.host_sessions import build_host_sessions
 
     _routers(ext)
     _job_types(ext)
@@ -88,3 +89,4 @@ def register(ext: Any) -> None:
     ext.add_startup(init_loop_plan_host)
     ext.add_session_archive_participant(revoke_trust_on_archive)
     ext.add_approval_listener(mint_session_trust_on_always)
+    ext.add_host_sessions(build_host_sessions)  # SH-H1a hosts janitor

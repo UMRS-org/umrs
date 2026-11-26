@@ -4,9 +4,20 @@
 adds only a ``WorkerSpec``. ``InlineHostRuntime`` is the ``inline`` launch
 mode (the UMRS process on its own host), today's only mode. Nothing in this
 package imports the r4 extension (ADR-117 D-3).
+
+``HostRegistry`` (ADR-098 D-4, SH-H1a) is the per-site ``hosts`` table the
+inline front registers itself in; ``umrs.hosts.janitor`` heartbeats it and
+ends the sessions of hosts that miss their heartbeats (``host_lost``).
 """
 
 from umrs.hosts.inline import InlineHostRuntime, WorkerRunArgs, worker_run_args
+from umrs.hosts.registry import (
+    HOST_STATES,
+    PLACEABLE_STATES,
+    HostRecord,
+    HostRegistry,
+    HostRegistryError,
+)
 from umrs.hosts.runtime import (
     INLINE_HOST_ID,
     LAUNCH_MODES,
@@ -19,8 +30,13 @@ from umrs.hosts.runtime import (
 )
 
 __all__ = [
+    "HOST_STATES",
     "INLINE_HOST_ID",
     "LAUNCH_MODES",
+    "PLACEABLE_STATES",
+    "HostRecord",
+    "HostRegistry",
+    "HostRegistryError",
     "HostRuntime",
     "InlineHostRuntime",
     "ProvisionResult",
