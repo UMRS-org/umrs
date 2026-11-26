@@ -87,12 +87,19 @@ def _lines() -> list[str]:
 
 
 def test_render_ontology_row():
+    taken = (
+        "EXISTS (SELECT 1 FROM knowledge_ontologies WHERE ontology_id = 'x' AND version = '1' "
+        "AND project_id IS NULL AND retired_at IS NULL AND record_id <> 'bundled:x@1')"
+    )
     assert _lines()[0] == (
         "INSERT INTO knowledge_ontologies (record_id, ontology_id, version, entity_types, "
         "relation_types, transitive_relations, description, owner_id, project_id, iri_base, "
-        "prefixes, imports, profile) VALUES ('bundled:x@1', 'x', '1', '[\"x:A\", \"x:B\"]'::jsonb, "
+        "prefixes, imports, profile, status, retired_at) VALUES ('bundled:x@1', 'x', '1', "
+        '\'["x:A", "x:B"]\'::jsonb, '
         "'[\"x:r\"]'::jsonb, '[\"x:r\"]'::jsonb, 'demo', 'system', NULL, 'http://x/', "
-        "'{\"x\": \"http://x/\"}'::jsonb, '[]'::jsonb, '{}'::jsonb) ON CONFLICT DO NOTHING;"
+        "'{\"x\": \"http://x/\"}'::jsonb, '[]'::jsonb, '{}'::jsonb, "
+        f"CASE WHEN {taken} THEN 'retired' ELSE 'active' END, "
+        f"CASE WHEN {taken} THEN now() END) ON CONFLICT DO NOTHING;"
     )
 
 

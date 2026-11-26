@@ -67,6 +67,14 @@ TYPED_COLUMNS_PROBE_SQL = (
 # the new one is a real class (not the warn fallback), keeps the facet with
 # the class, and never touches status (still INSERT-only, D-35).
 _KEEP_CLASS = "EXCLUDED.node_class IS NULL OR EXCLUDED.node_class = 'r4:Unclassified'"
+# ADR-093 D-6 (0120), the same rule as store._UPSERT_NODE_TEXT_SQL: a stored
+# search_text survives a re-upsert without one only while the chunk it was
+# verified against (chunk_md5, header, header_chars) is unchanged; a re-chunk
+# clears it (review 2026-11-27: a coalesce kept the old words).
+_KEEP_SEARCH_TEXT = " AND ".join(
+    f"knowledge_nodes.content->'{key}' IS NOT DISTINCT FROM EXCLUDED.content->'{key}'"
+    for key in ("chunk_md5", "header", "header_chars")
+)
 UPSERT_TYPED_NODE_SQL = f"""INSERT INTO knowledge_nodes
    (node_id, project_id, label, node_type, content, content_hash,
     source_ir, created_at, updated_at, graph_id, status, confidence,
@@ -87,7 +95,8 @@ UPSERT_TYPED_NODE_SQL = f"""INSERT INTO knowledge_nodes
                     ELSE knowledge_nodes.label END,
        attrs = knowledge_nodes.attrs || EXCLUDED.attrs,
        natural_key = coalesce(EXCLUDED.natural_key, knowledge_nodes.natural_key),
-       search_text = coalesce($16::text, knowledge_nodes.search_text)"""
+       search_text = CASE WHEN $16::text IS NOT NULL THEN $16::text
+                          WHEN {_KEEP_SEARCH_TEXT} THEN knowledge_nodes.search_text END"""
 
 UPSERT_TYPED_EDGE_SQL = """INSERT INTO knowledge_edges
    (edge_id, project_id, source_id, target_id, relation_type, content,

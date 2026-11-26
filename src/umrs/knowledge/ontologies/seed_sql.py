@@ -17,7 +17,12 @@ on one line ending ``;`` and a newline):
    ``transitive_relations`` are JSON lists of the doc's own class /
    relation / transitive-relation term ids, sorted; ``owner_id`` is
    ``'system'``; ``project_id`` is NULL; ``imports`` is the JSON list of the
-   doc's imports in declared order.
+   doc's imports in declared order. Two more columns, ``status`` and
+   ``retired_at``, are :func:`coordinate_taken` expressions: when an owner
+   already registered a live global record at the same id@version, the
+   bundled record lands retired beside it (the live-coordinate index would
+   otherwise turn the insert into a silent no-op and fail the admitted-set
+   rows' foreign key; review 2026-11-27).
 3. One ``INSERT INTO knowledge_terms (<TERM_COLUMNS joined by ", ">) VALUES
    (...) ON CONFLICT (term_id) DO NOTHING;`` per term of all documents,
    sorted by term_id. A term id defined by two documents raises ValueError.
@@ -46,6 +51,7 @@ from ..term_types import OntologyDoc, TermSpec, bundled_record_id
 __all__ = [
     "HEADER",
     "TERM_COLUMNS",
+    "coordinate_taken",
     "render_seed_sql",
     "sql_bool",
     "sql_jsonb",
@@ -138,8 +144,20 @@ def _statement(
     )
 
 
+def coordinate_taken(doc: OntologyDoc) -> str:
+    """SQL: a live global record other than the bundled one holds ``doc``'s
+    id@version (an owner registered it before the seed ran)."""
+    return (
+        "EXISTS (SELECT 1 FROM knowledge_ontologies WHERE ontology_id = "
+        f"{sql_text(doc.ontology_id)} AND version = {sql_text(doc.version)} "
+        "AND project_id IS NULL AND retired_at IS NULL "
+        f"AND record_id <> {sql_text(bundled_record_id(doc.ref))})"
+    )
+
+
 def _ontology_statement(doc: OntologyDoc) -> str:
     """The ``knowledge_ontologies`` row of one document."""
+    taken = coordinate_taken(doc)
     classes = sorted(term.term_id for term in doc.terms if term.kind == "class")
     relations = sorted(term.term_id for term in doc.terms if term.kind == "relation")
     transitive = sorted(
@@ -161,6 +179,8 @@ def _ontology_statement(doc: OntologyDoc) -> str:
         sql_jsonb(doc.prefixes),
         sql_jsonb(list(doc.imports)),
         sql_jsonb(doc.profile),
+        f"CASE WHEN {taken} THEN 'retired' ELSE 'active' END",
+        f"CASE WHEN {taken} THEN now() END",
     )
     columns = (
         "record_id",
@@ -176,6 +196,8 @@ def _ontology_statement(doc: OntologyDoc) -> str:
         "prefixes",
         "imports",
         "profile",
+        "status",
+        "retired_at",
     )
     return _statement("knowledge_ontologies", columns, values)
 

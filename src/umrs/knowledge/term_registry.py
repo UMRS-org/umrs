@@ -39,6 +39,7 @@ from .term_types import (
 )
 
 __all__ = [
+    "GAP_VALUE_MAX",
     "SnapshotCache",
     "bundled_snapshot",
     "fetch_snapshot",
@@ -90,6 +91,12 @@ _BATCH_SQL = (
     "origin_actor, ontology_ref, mode, counts, violations) "
     "VALUES ($1, $2, $3, $4, $5, $6, $7, $8::text::jsonb, $9::text::jsonb)"
 )  # text params, cast in SQL: the same JSON with or without a jsonb codec
+# knowledge_vocab_gaps' primary key (graph_id, kind, value) is a btree, whose
+# rows cap near 2.7 kB: a writer-given raw value (an agent's attribute key,
+# an extracted relation) longer than that aborted the whole warn-mode write.
+# The gap row keeps a prefix; the node keeps the full raw value in content
+# (review 2026-11-27).
+GAP_VALUE_MAX = 512
 _BUMP_SQL = (
     "UPDATE knowledge_graphs SET graph_version = graph_version + 1 WHERE graph_id = $1"
 )
@@ -173,10 +180,12 @@ async def fetch_snapshot(
 async def record_gaps(
     conn: Any, *, graph_id: str, writer: str, gaps: Iterable[Gap]
 ) -> int:
-    """Count each (kind, value) miss once per call with its multiplicity.
-    Returns the number of distinct gaps written."""
-    counted = Counter((g.kind, g.value) for g in gaps if g.value)
-    samples = {(g.kind, g.value): g.sample_id for g in gaps}
+    """Count each (kind, value) miss once per call with its multiplicity
+    (``value`` cut to :data:`GAP_VALUE_MAX` characters). Returns the number
+    of distinct gaps written."""
+    kept = [(g.kind, g.value[:GAP_VALUE_MAX], g.sample_id) for g in gaps if g.value]
+    counted = Counter((kind, value) for kind, value, _ in kept)
+    samples = {(kind, value): sample for kind, value, sample in kept}
     for (kind, value), n in sorted(counted.items()):
         await conn.execute(
             _GAP_SQL, graph_id, kind, value, writer, n, samples.get((kind, value), "")

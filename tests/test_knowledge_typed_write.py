@@ -470,3 +470,128 @@ def test_legacy_rows_stay_valid_and_a_single_typed_edge_falls_back():
     assert seen["rows"] == [{"node_class": None, "attrs": {}}]
     assert seen["edge"]["relation_class"] == "r4:relatedTo"
     assert seen["edge"]["content"] == {"rel_raw": "frobs"}
+
+
+# ── Review of KN-S7 (2026-11-27) ─────────────────────────────────────────────
+
+
+def _seed_over_a_registered_coordinate(url: str) -> dict[str, Any]:
+    """Replay the seed on a database where an owner had registered a global
+    ``std@1`` before the upgrade (the bundled record removed first, inside a
+    rolled-back transaction)."""
+    import psycopg2
+    from umrs.knowledge.ontologies.__main__ import bundled_seed_sql
+
+    conn = psycopg2.connect(url)
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM knowledge_ontologies WHERE record_id = 'bundled:std@1'")
+            cur.execute(
+                "INSERT INTO knowledge_ontologies (record_id, ontology_id, version, "
+                "entity_types, relation_types, owner_id) "
+                "VALUES ('onto:std:1:mine', 'std', '1', '[]', '[]', 'owner')"
+            )
+            cur.execute(bundled_seed_sql())
+            cur.execute(
+                "SELECT record_id, retired_at IS NULL, status FROM knowledge_ontologies "
+                "WHERE ontology_id = 'std' AND version = '1' ORDER BY record_id"
+            )
+            rows = cur.fetchall()
+            cur.execute(
+                "SELECT count(*) FROM knowledge_ontology_terms WHERE record_id = 'bundled:std@1'"
+            )
+            return {"rows": rows, "admitted": cur.fetchone()[0]}
+    finally:
+        conn.rollback()
+        conn.close()
+
+
+@needs_pg
+def test_seed_applies_when_an_owner_already_registered_the_coordinate():
+    """A global record at std@1 / r4-core@2 made the seed's ontology insert
+    a silent no-op and its admitted-set rows then failed the foreign key, so
+    the migration (and the front's start) failed. The bundled record now
+    lands retired beside the owner's live one."""
+    _seed_bundled(_pg_url() or "")
+    seen = _seed_over_a_registered_coordinate(_pg_url() or "")
+    assert seen["rows"] == [
+        ("bundled:std@1", False, "retired"),
+        ("onto:std:1:mine", True, "active"),
+    ]
+    assert seen["admitted"] > 0
+
+
+def _chunk(node_id: str, project: str, md5: str, text: str | None) -> KnowledgeNode:
+    return KnowledgeNode(
+        node_id,
+        project,
+        "chunk 0",
+        "entity",
+        content={"kind": "chunk", "chunk_md5": md5},
+        search_text=text,
+        node_class="r4:TextChunk",
+    )
+
+
+async def _rechunk(url: str, project: str) -> dict[str, Any]:
+    pool = await _pool(url)
+    store = KnowledgeStore(pool)
+    node_id = f"chunk-{project}"
+    read = "SELECT search_text FROM knowledge_nodes WHERE node_id = $1"
+    try:
+        await store.upsert_node(_chunk(node_id, project, "aaa", "old words"))
+        await store.upsert_node(_chunk(node_id, project, "aaa", None))
+        kept = await pool.fetchval(read, node_id)
+        await store.upsert_node(_chunk(node_id, project, "bbb", None))
+        return {"kept": kept, "after": await pool.fetchval(read, node_id)}
+    finally:
+        await _cleanup(pool, project)
+        await pool.close()
+
+
+@needs_pg
+def test_typed_rechunk_drops_the_stale_search_text():
+    """ADR-093 D-6 (data-deploy-5): a chunk's stored search_text survives a
+    re-upsert only while its chunk_md5/header are unchanged. The typed upsert
+    kept it through a re-chunk (coalesce), so lexical lanes ranked old words."""
+    _seed_bundled(_pg_url() or "")
+    project = f"p-kns7-{uuid.uuid4().hex[:8]}"
+    seen = asyncio.run(_rechunk(_pg_url() or "", project))
+    assert seen["kept"] == "old words"
+    assert seen["after"] is None
+
+
+async def _long_gap(url: str, project: str, key: str) -> dict[str, Any]:
+    pool = await _pool(url)
+    graph = f"g-{project}"
+    node = KnowledgeNode(
+        f"n-{project}", project, "n", "file", graph_id=graph,
+        node_class="r4:Document", attrs={key: 1},
+    )  # fmt: skip
+    try:
+        await KnowledgeStore(pool).upsert_node(node)
+        content = await pool.fetchval(
+            "SELECT content FROM knowledge_nodes WHERE node_id = $1", node.node_id
+        )
+        gap = await pool.fetchval(
+            "SELECT length(value) FROM knowledge_vocab_gaps WHERE graph_id = $1", graph
+        )
+        return {"content": content, "gap_len": gap}
+    finally:
+        await pool.execute("DELETE FROM knowledge_vocab_gaps WHERE graph_id = $1", graph)
+        await _cleanup(pool, project)
+        await pool.close()
+
+
+@needs_pg
+def test_a_huge_undeclared_attribute_key_never_fails_a_warn_write():
+    """The gap value is part of knowledge_vocab_gaps' btree primary key; a
+    multi-kB writer-given key overflowed the index row and aborted the whole
+    warn-mode write. The gap row now holds a bounded value; the node keeps
+    the full key under content.undeclared."""
+    _seed_bundled(_pg_url() or "")
+    project = f"p-kns7-{uuid.uuid4().hex[:8]}"
+    key = "".join(uuid.uuid4().hex for _ in range(120))  # ~3.8 kB, incompressible
+    seen = asyncio.run(_long_gap(_pg_url() or "", project, key))
+    assert seen["content"]["undeclared"] == {key: 1}
+    assert seen["gap_len"] == reg.GAP_VALUE_MAX
