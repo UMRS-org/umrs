@@ -133,6 +133,12 @@ class _CatalogRestoreAdapter:
 
         return self._store.create(spec=CatalogSpec(**spec), owner_id=owner_id)
 
+    def member_resolver(self, project_id: str):  # type: ignore[no-untyped-def]
+        """DEC-D39: member lookups scoped to the import's target project."""
+        from umrs.knowledge.catalog_member_resolver import SqlMemberResolver
+
+        return SqlMemberResolver(self._store._conn, project_id)
+
 
 def _reference_stores(request: Request):
     """Skill/MCP stores for the V-05 reference-consumption leg (context manager).

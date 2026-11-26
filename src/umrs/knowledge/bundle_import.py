@@ -33,7 +33,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from . import bundle_raw, canonical_identity
+from . import bundle_raw, canonical_identity, catalog_origin
 from .bundle_export import tables_pinned, verify_bundle_integrity
 from .bundle_reader import chunk_search_text
 from .retrieval.hydrate import artifact_slice
@@ -102,6 +102,11 @@ class KnowledgeImportResult:
     reference_stores_deferred: bool = False
     # D-40/D-39 tie: the D-39 catalog row re-registered from the manifest block.
     catalog_registered: bool = False
+    # DEC-D39 (S-D39a): the local id of the registered catalog row ("" when
+    # none) and the catalog members with no local match (labels such as
+    # "graph:<name>"; "members:mapping_failed" when mapping itself failed).
+    catalog_id: str = ""
+    catalog_members_unmapped: list[str] = field(default_factory=list)
     # D-41: source version when the bundle was upgraded on read ("" when 1.2).
     upgraded_from: str = ""
     # D-40: canonical node vectors (0075) imported under the destination's
@@ -171,6 +176,8 @@ class KnowledgeImportResult:
             "mcp_refs_missing": list(self.mcp_refs_missing),
             "reference_stores_deferred": self.reference_stores_deferred,
             "catalog_registered": self.catalog_registered,
+            "catalog_id": self.catalog_id,
+            "catalog_members_unmapped": list(self.catalog_members_unmapped),
             "node_embedding_count": self.node_embedding_count,
             "node_embeddings_pending": self.node_embeddings_pending,
             "legacy_embeddings_skipped": self.legacy_embeddings_skipped,
@@ -755,7 +762,7 @@ class KnowledgeImportEngine:
         ) = await self._restore_a2l(bundle_path, target)
         self._unwritten.report(result, target)
         self._consume_context_references(manifest, target, result)
-        result.catalog_registered = self._register_catalog_row(manifest, target)
+        self._register_catalog_row(manifest, target, result)
         if result.upgraded_from and write_upgrade:
             _write_upgraded_manifest(bundle_path, manifest)
 
@@ -1325,28 +1332,66 @@ class KnowledgeImportEngine:
         result.mcp_refs_missing = missing
 
     def _register_catalog_row(
-        self, manifest: dict[str, Any], target_project: str
-    ) -> bool:
+        self,
+        manifest: dict[str, Any],
+        target_project: str,
+        result: KnowledgeImportResult,
+    ) -> None:
         """Re-register the D-39 catalog row from the manifest ``catalog`` block.
 
         The catalog round-trips with the bundle (D-40: the bundle IS the
-        catalog object). Create is idempotent on (project, name, version),
-        so re-imports converge; absent block/store or catalog-less bundles
-        are a quiet no-op.
+        catalog object). DEC-D39 (S-D39a): the new row records the source's
+        ``catalog_id`` as ``origin_catalog_id`` plus the source installation
+        fingerprint, keeps the version and its change note, and maps member
+        refs by content identity onto the target project. Its own id is
+        minted here, never taken from the bundle. Create is idempotent on
+        (project, name, version), so re-imports converge on one row; absent
+        block/store or catalog-less bundles are a quiet no-op.
         """
         if self._catalog_store is None:
-            return False
-        spec = _catalog_spec_from_manifest(manifest, target_project)
+            return
+        mapping = self._member_mapping(manifest, target_project, result)
+        spec = _catalog_spec_from_manifest(manifest, target_project, mapping)
         if spec is None:
-            return False
+            return
         try:
             # The store adapter (api layer) owns the CatalogSpec shape —
             # knowledge never imports umrs.api (ADR-053 plane fence).
-            self._catalog_store.register_from_bundle(spec, owner_id="bundle-import")
+            row = self._catalog_store.register_from_bundle(
+                spec, owner_id="bundle-import"
+            )
         except Exception:  # noqa: BLE001 — catalog reg is best-effort beside the restore
             logger.warning("catalog row registration failed for %r", spec["name"])
-            return False
-        return True
+            return
+        result.catalog_registered = True
+        result.catalog_id = str((row or {}).get("catalog_id") or "")
+
+    def _member_mapping(
+        self,
+        manifest: dict[str, Any],
+        target_project: str,
+        result: KnowledgeImportResult,
+    ) -> Any:
+        """The block's members mapped onto the target project, or None.
+
+        None when the store adapter offers no resolver (members are then
+        not registered, as before S-D39a) or mapping failed (named in
+        ``catalog_members_unmapped``, never silent).
+        """
+        factory = getattr(self._catalog_store, "member_resolver", None)
+        block = manifest.get("catalog")
+        if factory is None or not isinstance(block, dict):
+            return None
+        try:
+            from .catalog_member_map import map_members
+
+            mapping = map_members(block.get("members"), factory(target_project))
+        except Exception as exc:  # noqa: BLE001 — members are best-effort labels
+            logger.warning("catalog member mapping failed: %s", exc)
+            result.catalog_members_unmapped = ["members:mapping_failed"]
+            return None
+        result.catalog_members_unmapped = list(mapping.unmapped)
+        return mapping
 
 
 def _manifest_refs(manifest: dict[str, Any]) -> tuple[list[dict], list[dict]]:
@@ -1357,15 +1402,58 @@ def _manifest_refs(manifest: dict[str, Any]) -> tuple[list[dict], list[dict]]:
 
 
 def _catalog_spec_from_manifest(
-    manifest: dict[str, Any], target_project: str
+    manifest: dict[str, Any], target_project: str, mapping: Any = None
 ) -> dict[str, Any] | None:
-    """The D-39 catalog row to re-register, or None (no block / no name)."""
+    """The D-39 catalog row to re-register, or None (no block / no name).
+
+    ``mapping`` is a ``catalog_member_map.MemberMapping`` (None = members
+    not mapped). The bundle's ``catalog_id`` is only ever the origin label.
+    """
     block = manifest.get("catalog")
     name = str(block.get("name") or "").strip() if isinstance(block, dict) else ""
     if not name:
         return None
     fields = _catalog_fields(block, manifest.get("ownership") or {})
-    return {"project_id": target_project, "name": name, **fields}
+    spec = {"project_id": target_project, "name": name, **fields}
+    spec.update(_origin_spec_fields(block, fields, mapping))
+    if mapping is not None:
+        spec.update(_mapped_member_fields(mapping))
+    return spec
+
+
+def _origin_spec_fields(
+    block: dict[str, Any], fields: dict[str, Any], mapping: Any
+) -> dict[str, Any]:
+    """DEC-D39 origin columns, the version's change note and the
+    ``provenance.origin`` record (a bundle-supplied ``origin`` is replaced)."""
+    origin_id, origin_fp = catalog_origin.origin_from_block(block)
+    chain = catalog_origin.clean_change_notes(block.get("change_notes"))
+    provenance = dict(fields["provenance"])
+    provenance.pop("origin", None)
+    if origin_id:
+        provenance["origin"] = {
+            "catalog_id": origin_id,
+            "fingerprint": origin_fp,
+            "change_notes": chain,
+            "unmapped_members": list(getattr(mapping, "unmapped", [])),
+        }
+    return {
+        "origin_catalog_id": origin_id,
+        "origin_fingerprint": origin_fp,
+        "change_note": catalog_origin.version_note(chain, fields["version"]),
+        "provenance": provenance,
+    }
+
+
+def _mapped_member_fields(mapping: Any) -> dict[str, Any]:
+    """CatalogSpec member fields from a ``MemberMapping`` (local ids only)."""
+    return {
+        "member_graph_ids": list(mapping.member_graph_ids),
+        "skill_ids": list(mapping.skill_ids),
+        "mcp_server_ids": list(mapping.mcp_server_ids),
+        "embedding_model_ids": list(mapping.embedding_model_ids),
+        "mcp_trust_classes": dict(mapping.mcp_trust_classes),
+    }
 
 
 def _catalog_fields(block: dict[str, Any], ownership: dict[str, Any]) -> dict[str, Any]:

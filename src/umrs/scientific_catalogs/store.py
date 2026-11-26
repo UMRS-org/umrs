@@ -53,13 +53,18 @@ class CatalogSpec(BaseModel):
         description='D-46 export rules: [{"target": manifest_field, "action": "drop"|"hash"}]',
     )
     catalog_id: str = Field(default="")
+    # DEC-D39 (0144): where an imported catalog came from. Set by the bundle
+    # import only (the create route clears them); "" = made here.
+    origin_catalog_id: str = Field(default="", max_length=128)
+    origin_fingerprint: str = Field(default="", max_length=64)
 
 
 _COLUMNS = (
     "catalog_id, project_id, name, version, description, ontology,"
     " member_graph_ids, skill_ids, mcp_server_ids, embedding_model_ids,"
     " mcp_trust_classes, contributors, licence, provenance, change_note,"
-    " redaction_rules, owner_id, status, created_at, updated_at, access"
+    " redaction_rules, owner_id, status, created_at, updated_at, access,"
+    " origin_catalog_id, origin_fingerprint"
 )
 
 
@@ -115,6 +120,7 @@ class ScientificCatalogStore:
             "created_at": row[18].isoformat() if row[18] else None,
             "updated_at": row[19].isoformat() if row[19] else None,
             "access": _as_list(row[20]) if len(row) > 20 else [],
+            **_origin_fields(row),
         }
         return payload
 
@@ -143,6 +149,8 @@ class ScientificCatalogStore:
             "created_at": row[17].isoformat() if row[17] else None,
             "updated_at": row[18].isoformat() if row[18] else None,
             "access": [],
+            "origin_catalog_id": "",
+            "origin_fingerprint": "",
         }
 
     def _row(self, catalog_id: str) -> dict[str, Any] | None:
@@ -183,9 +191,10 @@ class ScientificCatalogStore:
                    member_graph_ids, skill_ids, mcp_server_ids,
                    embedding_model_ids, mcp_trust_classes,
                    contributors, licence, provenance,
-                   change_note, redaction_rules, owner_id
+                   change_note, redaction_rules, owner_id,
+                   origin_catalog_id, origin_fingerprint
                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                         %s, %s, %s, %s)
+                         %s, %s, %s, %s, %s, %s)
                ON CONFLICT (project_id, name, version) DO NOTHING""",
             (
                 catalog_id,
@@ -205,6 +214,8 @@ class ScientificCatalogStore:
                 spec.change_note,
                 json.dumps(spec.redaction_rules),
                 owner_id,
+                spec.origin_catalog_id,
+                spec.origin_fingerprint,
             ),
         )
         self._conn.commit()
@@ -406,6 +417,16 @@ class ScientificCatalogStore:
         provenance = dict(spec.provenance)
         provenance["embedding_models"] = pins
         return provenance
+
+
+def _origin_fields(row: Any) -> dict[str, str]:
+    """DEC-D39 origin columns (0144); pre-0144 rows read "" (made here)."""
+    if len(row) < 23:
+        return {"origin_catalog_id": "", "origin_fingerprint": ""}
+    return {
+        "origin_catalog_id": str(row[21] or ""),
+        "origin_fingerprint": str(row[22] or ""),
+    }
 
 
 def _as_list(value: Any) -> list[Any]:

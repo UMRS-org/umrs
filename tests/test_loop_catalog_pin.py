@@ -296,7 +296,7 @@ def _db_url() -> str | None:
 
 
 def _catalog_ddl() -> list[str]:
-    """0101/0102/0103/0108 plus 0116's scientific_catalogs statement."""
+    """0101/0102/0103/0108, 0116's scientific_catalogs statement, 0144."""
     names = (
         "0101_scientific_catalogs.sql",
         "0102_scientific_catalogs_changelog.sql",
@@ -306,6 +306,7 @@ def _catalog_ddl() -> list[str]:
     ddl = [(_MIGRATIONS / n).read_text() for n in names]
     access = (_MIGRATIONS / "0116_resource_access.sql").read_text()
     ddl += re.findall(r"ALTER TABLE scientific_catalogs\s+ADD COLUMN[^;]*;", access)
+    ddl.append((_MIGRATIONS / "0144_catalog_origin.sql").read_text())  # S-D39a
     return ddl
 
 
