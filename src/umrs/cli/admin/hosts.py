@@ -2,8 +2,11 @@
 
 The hosts registry of one site (default: this deployment's), read and
 written straight against the site database (``cli_db_pool``), like the
-account cascade and ``site-accounts``. The server reads the registry live,
-so a drain takes effect on the next placement without signalling it.
+account cascade and ``site-accounts``. Placement reads the registry live
+from slice SH-H2 on; until then a drain is recorded but sessions still
+start on the front. A drain outlives the host going down and coming back
+(it returns ``draining``); only ``undrain`` ends it. A transition that
+races the janitor or another admin is refused (``hosts.conflict``).
 
     list      every host: state, mode, roles, last heartbeat
     drain     no new placement; the host keeps its sessions

@@ -40,6 +40,9 @@ CREATE TABLE IF NOT EXISTS hosts (
     registered_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
     last_heartbeat_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    -- Non-empty while an admin drain stands; only `undrain` clears it, so a
+    -- drained host that goes down comes back `draining`, never `active`.
+    drain_reason      TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (venue, host_id)
 );
 

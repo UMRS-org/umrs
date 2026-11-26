@@ -433,3 +433,110 @@ def test_sidecar_hosts_switch_and_missing_database(
     monkeypatch.setenv("UMRS_HOSTS_ENABLED", "true")
     monkeypatch.setattr(_asyncpg_pool, "_resolve_knowledge_dsn", lambda: ("", None))
     assert http_sidecar._start_hosts() is None
+
+
+# ── review (SH-H1a adversarial pass) ────────────────────────────────────────
+
+
+def test_a_drain_survives_a_missed_heartbeat_and_return() -> None:
+    """An admin's drain is not undone by a host blip (down, then a beat)."""
+    registry = HostRegistry(venue="site-a")
+    registry.register("cpu-1", launch_mode="agent")
+    registry.drain("cpu-1", "kernel update")
+    _age(registry, "cpu-1", 600)
+    assert registry.mark_down("cpu-1", 90, "no heartbeat")
+    back = registry.heartbeat("cpu-1")
+    assert (back.state, back.reason) == ("draining", "kernel update")
+    assert registry.placeable() == []
+    _age(registry, "cpu-1", 600)
+    registry.mark_down("cpu-1", 90, "no heartbeat")
+    assert registry.register("cpu-1", launch_mode="agent").state == "draining"
+    assert registry.undrain("cpu-1").state == "active"
+
+
+def _stale_read(registry: HostRegistry, state: str) -> None:
+    """The next ``get`` answers ``state`` (a read that lost a race)."""
+    real_get = registry.get
+    calls = {"n": 0}
+
+    def get(host_id: str):
+        calls["n"] += 1
+        record = real_get(host_id)
+        if calls["n"] == 1 and record is not None:
+            record.state = state
+        return record
+
+    registry.get = get  # type: ignore[method-assign]
+
+
+def test_drain_does_not_overwrite_a_host_the_janitor_just_downed() -> None:
+    registry = HostRegistry(venue="site-a")
+    registry.register("cpu-1", launch_mode="agent")
+    _age(registry, "cpu-1", 600)
+    registry.mark_down("cpu-1", 90, "no heartbeat")
+    _stale_read(registry, "active")
+    with pytest.raises(HostRegistryError) as err:
+        registry.drain("cpu-1")
+    assert err.value.code == "hosts.host_down"
+    assert registry.get("cpu-1").state == "down"
+
+
+def test_remove_does_not_delete_a_host_undrained_meanwhile() -> None:
+    registry = HostRegistry(venue="site-a")
+    registry.register("cpu-1", launch_mode="agent")
+    _stale_read(registry, "draining")
+    with pytest.raises(HostRegistryError) as err:
+        registry.remove("cpu-1")
+    assert err.value.code == "hosts.host_active"
+    assert registry.get("cpu-1").state == "active"
+
+
+def _age_pg(pool: _SchemaPool) -> None:
+    conn = pool.getconn()
+    with conn.cursor() as cur:
+        cur.execute("UPDATE hosts SET last_heartbeat_at = now() - interval '1 hour'")
+    conn.commit()
+    pool.putconn(conn)
+
+
+@_needs_pg
+def test_pg_a_drain_survives_a_missed_heartbeat_and_return(
+    pg_pool: _SchemaPool,
+) -> None:
+    registry = HostRegistry(pg_pool, venue="site-a")
+    registry.register("cpu-1", launch_mode="agent")
+    registry.drain("cpu-1", "kernel update")
+    _age_pg(pg_pool)
+    assert registry.mark_down("cpu-1", 90, "no heartbeat")
+    assert registry.get("cpu-1").state == "down"
+    back = registry.heartbeat("cpu-1")
+    assert (back.state, back.reason) == ("draining", "kernel update")
+    _age_pg(pg_pool)
+    registry.mark_down("cpu-1", 90, "no heartbeat")
+    assert registry.register("cpu-1", launch_mode="agent").state == "draining"
+    assert registry.undrain("cpu-1").state == "active"
+    assert registry.heartbeat("cpu-1").state == "active"
+
+
+@_needs_pg
+def test_pg_janitor_reads_staleness_on_the_database_clock(
+    pg_pool: _SchemaPool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A process clock ahead of the database never downs a fresh host (nor
+    its own inline host right after its beat, ending every session)."""
+    from umrs.hosts import registry as registry_mod
+
+    registry = HostRegistry(pg_pool, venue="site-a")
+    registry.register(INLINE_HOST_ID)
+    ahead = datetime.now(timezone.utc) + timedelta(hours=1)
+    monkeypatch.setattr(registry_mod, "_now", lambda: ahead)
+    sessions = _Sessions({INLINE_HOST_ID: ["s1"]})
+    janitor = HostJanitor(
+        registry,
+        broker=SecretBroker(venue="site-a"),
+        sessions=[sessions],
+        down_after_s=90,
+    )
+    report = HostMaintenance(registry, janitor, interval=30).tick()
+    assert (report.down, report.lost) == ([], [])
+    assert registry.get(INLINE_HOST_ID).state == "active"

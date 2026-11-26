@@ -656,6 +656,22 @@ class TestOwnerRoutes:
         assert (again.status_code, again.json()["state"]) == (200, "stopped")
         assert len(harness.jobs.cancelled) == 1  # the second stop cancels nothing new
 
+    def test_stop_keeps_a_host_lost_end(self, harness):
+        """SH-H1a review: a session the hosts janitor ended ``host_lost`` is
+        ended; an owner's stop answers it as is (no second stop, no rewrite
+        to ``stopped``, no teardown of a host that is not ours to drive)."""
+        harness.pool.seed("alice", "sess-1")
+        _start(harness)
+        _run_lane(harness)
+        harness.service.store._transition(
+            "sess-1", state="host_lost", reason="host_lost: host cpu-1 is down", stopped=True
+        )
+        before = len(harness.podman.calls)
+        r = harness.client.post("/umrs/companion/sessions/sess-1/venue/stop", headers=H)
+        assert (r.status_code, r.json()["state"]) == (200, "host_lost")
+        assert len(harness.podman.calls) == before
+        assert harness.jobs.cancelled == []
+
     def test_stop_survives_a_job_already_terminal(self, harness):
         harness.pool.seed("alice", "sess-1")
         _start(harness)

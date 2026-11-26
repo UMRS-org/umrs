@@ -426,6 +426,8 @@ class TestTheStartRoute:
         ({"venue": {"state": "stopped"}, "attempts": [{"status": "running"}]}, None),
         ({"venue": {"state": "failed", "reason": "pull"}, "attempts": []}, "failed"),
         ({"venue": {"state": "stopped"}, "attempts": [{"status": "lost"}]}, "failed"),
+        # SH-H1a review: the worker's host went down (hosts janitor)
+        ({"venue": {"state": "host_lost", "reason": "host_lost"}, "attempts": []}, "failed"),
     ],
 )
 def test_a_runs_outcome_is_what_its_record_says(view, expected):

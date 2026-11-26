@@ -254,7 +254,7 @@ def add_session_parsers(session_sub: argparse._SubParsersAction) -> None:
     list_p.add_argument(
         "--state",
         default="",
-        choices=["", "provisioning", "running", "paused", "failed", "stopped"],
+        choices=["", "provisioning", "running", "paused", "failed", "stopped", "host_lost"],
         help="Only this state",
     )
     list_p.add_argument(

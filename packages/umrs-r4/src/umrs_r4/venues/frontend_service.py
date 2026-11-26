@@ -57,7 +57,12 @@ from umrs_r4.venues.frontend_config import (
     allocate_subnet,
 )
 from umrs_r4.venues.start_checks import StartCheck, StartCheckFn, StartLockFn
-from umrs_r4.venues.venue_sessions import VenueSessionRow, VenueSessionStore, project_session_state
+from umrs_r4.venues.venue_sessions import (
+    ENDED_STATES,
+    VenueSessionRow,
+    VenueSessionStore,
+    project_session_state,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -708,7 +713,7 @@ class FrontendVenueService:
         row = self.store.get(session_id)
         if row is None or row.user_id != owner:
             raise VenueError("not_found", "no venue runtime for this session")
-        if row.state in ("stopped", "failed"):
+        if row.state in ENDED_STATES:
             return self._describe(row)
         try:
             self.provisioner.teardown(session_id)
@@ -847,7 +852,7 @@ class FrontendVenueService:
             ),
         )
         lease = self.broker.get_lease(lease_id)
-        stop_requested = row is None or row.state in ("stopped", "failed")
+        stop_requested = row is None or row.state in ENDED_STATES
         return {
             "ok": True,
             "renewed": renewed,

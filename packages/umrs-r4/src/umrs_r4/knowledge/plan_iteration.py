@@ -46,6 +46,7 @@ from typing import Any
 from umrs.knowledge.loop import LoopIteration, LoopPhase, LoopStatus, ResearchLoop
 
 from r4_contracts import loop_plan
+from umrs_r4.venues.venue_sessions import ENDED_STATES
 
 logger = logging.getLogger(__name__)
 
@@ -173,7 +174,7 @@ def _reported(last: dict[str, Any]) -> dict[str, Any]:
 def _worker_ended(venue: dict[str, Any], last: dict[str, Any]) -> dict[str, Any] | None:
     """A failed run when the worker's session ended with no attempt running."""
     if (
-        venue.get("state") not in ("failed", "stopped")
+        venue.get("state") not in ENDED_STATES
         or last.get("status") == "running"
     ):
         return None

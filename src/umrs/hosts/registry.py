@@ -8,7 +8,15 @@ on a single node and on a site with agent hosts.
 States: ``active`` (placeable), ``draining`` (keeps its sessions, gets no new
 placement; admin), ``down`` (missed heartbeats; the janitor ended its
 sessions ``host_lost`` and revoked their leases). A heartbeat brings a
-``down`` host back to ``active``; ``draining`` stays until an admin undrains.
+``down`` host back to ``active``, or to ``draining`` when an admin had drained
+it: the drain lives in ``drain_reason``, which only ``undrain`` clears, so a
+blip never undoes it.
+
+Staleness is judged on the database clock (``now()``, the clock that stamps
+``last_heartbeat_at``), never this process's: a process clock ahead of the
+database would otherwise down a fresh host, its own inline host included.
+Admin transitions are compare-and-set on the state they checked, so a
+racing janitor or admin is refused by name instead of overwritten.
 
 Dual backend like ``SecretBroker``: in memory without a pool (tests, dev),
 Postgres (migration ``<n>_hosts.sql``) with one. Every query is scoped to this
@@ -26,6 +34,7 @@ HOST_STATES = ("active", "draining", "down")
 #: States placement may choose (SH-H2 reads :meth:`HostRegistry.placeable`).
 PLACEABLE_STATES = ("active",)
 HOST_LAUNCH_MODES = ("inline", "agent")
+_REMOVABLE_STATES = ("draining", "down")
 
 _COLUMNS = (
     "venue",
@@ -40,6 +49,7 @@ _COLUMNS = (
     "registered_at",
     "updated_at",
     "last_heartbeat_at",
+    "drain_reason",
 )
 _SELECT = f"SELECT {', '.join(_COLUMNS)} FROM hosts"
 
@@ -74,6 +84,8 @@ class HostRecord:
     registered_at: datetime | None = None
     updated_at: datetime | None = None
     last_heartbeat_at: datetime | None = None
+    #: Non-empty while an admin drain stands (kept through ``down``).
+    drain_reason: str = ""
 
     @property
     def placeable(self) -> bool:
@@ -93,6 +105,7 @@ class HostRecord:
             "registered_at": _iso(self.registered_at),
             "updated_at": _iso(self.updated_at),
             "last_heartbeat_at": _iso(self.last_heartbeat_at),
+            "drain_reason": self.drain_reason,
         }
 
 
@@ -117,6 +130,7 @@ def _record(row: Any) -> HostRecord:
         registered_at=data["registered_at"],
         updated_at=data["updated_at"],
         last_heartbeat_at=data["last_heartbeat_at"],
+        drain_reason=str(data["drain_reason"] or ""),
     )
 
 
@@ -145,6 +159,16 @@ def _check_remove(record: HostRecord) -> None:
 # ── backends ──────────────────────────────────────────────────────────────
 
 
+@dataclass(frozen=True)
+class _Change:
+    """An admin transition, applied only while the state is in ``from_states``."""
+
+    from_states: tuple[str, ...]
+    state: str
+    reason: str
+    drain_reason: str
+
+
 class _MemoryHosts:
     def __init__(self) -> None:
         self._rows: dict[tuple[str, str], HostRecord] = {}
@@ -153,12 +177,12 @@ class _MemoryHosts:
         key = (record.venue, record.host_id)
         now = _now()
         current = self._rows.get(key)
-        kept = current.state if current and current.state == "draining" else "active"
-        reason = current.reason if kept == "draining" and current else ""
+        drained = current.drain_reason if current else ""
         self._rows[key] = replace(
             record,
-            state=kept,
-            reason=reason,
+            state="draining" if drained else "active",
+            reason=drained,
+            drain_reason=drained,
             registered_at=current.registered_at if current else now,
             updated_at=now,
             last_heartbeat_at=now,
@@ -171,7 +195,8 @@ class _MemoryHosts:
             return None
         current.last_heartbeat_at = current.updated_at = _now()
         if current.state == "down":
-            current.state, current.reason = "active", ""
+            current.state = "draining" if current.drain_reason else "active"
+            current.reason = current.drain_reason
         return replace(current)
 
     def get(self, venue: str, host_id: str) -> HostRecord | None:
@@ -182,23 +207,40 @@ class _MemoryHosts:
         rows = [r for (v, _), r in sorted(self._rows.items()) if v == venue]
         return [replace(r) for r in rows if r.state in states]
 
-    def set_state(self, venue: str, host_id: str, state: str, reason: str) -> None:
-        current = self._rows[(venue, host_id)]
-        current.state, current.reason, current.updated_at = state, reason, _now()
+    def stale(self, venue: str, down_after_s: float) -> list[HostRecord]:
+        cutoff = _now() - timedelta(seconds=down_after_s)
+        return [
+            h
+            for h in self.select(venue, ("active", "draining"))
+            if h.last_heartbeat_at is None or h.last_heartbeat_at < cutoff
+        ]
+
+    def transition(self, venue: str, host_id: str, change: _Change) -> bool:
+        current = self._rows.get((venue, host_id))
+        if current is None or current.state not in change.from_states:
+            return False
+        current.state, current.reason = change.state, change.reason
+        current.drain_reason, current.updated_at = change.drain_reason, _now()
+        return True
 
     def mark_down(
-        self, venue: str, host_id: str, cutoff: datetime, reason: str
+        self, venue: str, host_id: str, down_after_s: float, reason: str
     ) -> bool:
         current = self._rows.get((venue, host_id))
+        cutoff = _now() - timedelta(seconds=down_after_s)
         if current is None or current.state == "down":
             return False
         if (current.last_heartbeat_at or _now()) >= cutoff:
             return False
-        self.set_state(venue, host_id, "down", reason)
+        current.state, current.reason, current.updated_at = "down", reason, _now()
         return True
 
-    def delete(self, venue: str, host_id: str) -> None:
-        self._rows.pop((venue, host_id), None)
+    def delete(self, venue: str, host_id: str, from_states: tuple[str, ...]) -> bool:
+        current = self._rows.get((venue, host_id))
+        if current is None or current.state not in from_states:
+            return False
+        del self._rows[(venue, host_id)]
+        return True
 
 
 _UPSERT_SQL = (
@@ -209,20 +251,35 @@ _UPSERT_SQL = (
     " labels = EXCLUDED.labels, capacity = EXCLUDED.capacity,"
     " isolation = EXCLUDED.isolation, updated_at = now(),"
     " last_heartbeat_at = now(),"
-    " reason = CASE WHEN hosts.state = 'draining' THEN hosts.reason ELSE '' END,"
-    " state = CASE WHEN hosts.state = 'draining' THEN 'draining' ELSE 'active' END"
+    " reason = hosts.drain_reason,"
+    " state = CASE WHEN hosts.drain_reason <> '' THEN 'draining' ELSE 'active' END"
     f" RETURNING {', '.join(_COLUMNS)}"
 )
 _HEARTBEAT_SQL = (
     "UPDATE hosts SET last_heartbeat_at = now(), updated_at = now(),"
-    " reason = CASE WHEN state = 'down' THEN '' ELSE reason END,"
-    " state = CASE WHEN state = 'down' THEN 'active' ELSE state END"
+    " reason = CASE WHEN state = 'down' THEN drain_reason ELSE reason END,"
+    " state = CASE WHEN state <> 'down' THEN state"
+    " WHEN drain_reason <> '' THEN 'draining' ELSE 'active' END"
     f" WHERE venue = %s AND host_id = %s RETURNING {', '.join(_COLUMNS)}"
+)
+# Staleness on the database clock (the one that stamps last_heartbeat_at).
+_STALE_SQL = (
+    f"{_SELECT} WHERE venue = %s AND state <> 'down'"
+    " AND last_heartbeat_at < now() - make_interval(secs => %s) ORDER BY host_id"
 )
 _MARK_DOWN_SQL = (
     "UPDATE hosts SET state = 'down', reason = %s, updated_at = now()"
     " WHERE venue = %s AND host_id = %s AND state <> 'down'"
-    " AND last_heartbeat_at < %s RETURNING host_id"
+    " AND last_heartbeat_at < now() - make_interval(secs => %s) RETURNING host_id"
+)
+_TRANSITION_SQL = (
+    "UPDATE hosts SET state = %s, reason = %s, drain_reason = %s,"
+    " updated_at = now() WHERE venue = %s AND host_id = %s"
+    " AND state = ANY(%s) RETURNING host_id"
+)
+_DELETE_SQL = (
+    "DELETE FROM hosts WHERE venue = %s AND host_id = %s AND state = ANY(%s)"
+    " RETURNING host_id"
 )
 
 
@@ -256,23 +313,30 @@ class _PgHosts:
         sql = f"{_SELECT} WHERE venue = %s AND state = ANY(%s) ORDER BY host_id"
         return [_record(r) for r in self._all(sql, (venue, list(states)))]
 
-    def set_state(self, venue: str, host_id: str, state: str, reason: str) -> None:
-        self._one(
-            "UPDATE hosts SET state = %s, reason = %s, updated_at = now()"
-            " WHERE venue = %s AND host_id = %s RETURNING host_id",
-            (state, reason, venue, host_id),
+    def stale(self, venue: str, down_after_s: float) -> list[HostRecord]:
+        rows = self._all(_STALE_SQL, (venue, float(down_after_s)))
+        return [_record(r) for r in rows]
+
+    def transition(self, venue: str, host_id: str, change: _Change) -> bool:
+        params = (
+            change.state,
+            change.reason,
+            change.drain_reason,
+            venue,
+            host_id,
+            list(change.from_states),
         )
+        return self._one(_TRANSITION_SQL, params) is not None
 
     def mark_down(
-        self, venue: str, host_id: str, cutoff: datetime, reason: str
+        self, venue: str, host_id: str, down_after_s: float, reason: str
     ) -> bool:
-        return self._one(_MARK_DOWN_SQL, (reason, venue, host_id, cutoff)) is not None
+        params = (reason, venue, host_id, float(down_after_s))
+        return self._one(_MARK_DOWN_SQL, params) is not None
 
-    def delete(self, venue: str, host_id: str) -> None:
-        self._one(
-            "DELETE FROM hosts WHERE venue = %s AND host_id = %s RETURNING host_id",
-            (venue, host_id),
-        )
+    def delete(self, venue: str, host_id: str, from_states: tuple[str, ...]) -> bool:
+        params = (venue, host_id, list(from_states))
+        return self._one(_DELETE_SQL, params) is not None
 
     def _one(self, sql: str, params: tuple) -> Any:
         rows = self._all(sql, params)
@@ -356,35 +420,45 @@ class HostRegistry:
         return self.hosts(PLACEABLE_STATES)
 
     def stale(self, down_after_s: float) -> list[HostRecord]:
-        """Hosts not yet down whose last heartbeat is older than the cutoff."""
-        cutoff = _now() - timedelta(seconds=down_after_s)
-        return [
-            h
-            for h in self.hosts(("active", "draining"))
-            if h.last_heartbeat_at is None or h.last_heartbeat_at < cutoff
-        ]
+        """Hosts not yet down whose last heartbeat is older than
+        ``down_after_s`` (database clock on Postgres)."""
+        return self._backend.stale(self.venue, down_after_s)
 
     def mark_down(self, host_id: str, down_after_s: float, reason: str) -> bool:
         """Compare-and-set: down only if still stale (a racing heartbeat wins)."""
-        cutoff = _now() - timedelta(seconds=down_after_s)
-        return self._backend.mark_down(self.venue, host_id, cutoff, reason)
+        return self._backend.mark_down(self.venue, host_id, down_after_s, reason)
 
     def drain(self, host_id: str, reason: str = "") -> HostRecord:
-        record = self._require(host_id)
-        _check_drain(record)
-        self._backend.set_state(self.venue, host_id, "draining", reason or "drained")
+        _check_drain(self._require(host_id))
+        why = reason or "drained"
+        change = _Change(("active", "draining"), "draining", why, why)
+        self._apply(host_id, change, _check_drain)
         return self._require(host_id)
 
     def undrain(self, host_id: str) -> HostRecord:
         _check_undrain(self._require(host_id))
-        self._backend.set_state(self.venue, host_id, "active", "")
+        self._apply(host_id, _Change(("draining",), "active", "", ""), _check_undrain)
         return self._require(host_id)
 
     def remove(self, host_id: str) -> HostRecord:
         record = self._require(host_id)
         _check_remove(record)
-        self._backend.delete(self.venue, host_id)
+        if not self._backend.delete(self.venue, host_id, _REMOVABLE_STATES):
+            self._refuse_raced(host_id, _check_remove)
         return record
+
+    def _apply(self, host_id: str, change: _Change, check: Any) -> None:
+        if not self._backend.transition(self.venue, host_id, change):
+            self._refuse_raced(host_id, check)
+
+    def _refuse_raced(self, host_id: str, check: Any) -> None:
+        """The checked state changed before the write: refuse by name."""
+        record = self._require(host_id)
+        check(record)
+        raise HostRegistryError(
+            "hosts.conflict",
+            f"host {host_id!r} changed to {record.state} meanwhile: retry",
+        )
 
     def _require(self, host_id: str) -> HostRecord:
         record = self.get(host_id)
