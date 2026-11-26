@@ -12,8 +12,9 @@ that runs a caller-chosen command or binary (``ShellStep``, ``VideoStep``).
 Everything else is code the operator installed in the server image.
 
 The site policy for that code lives here too: whether the hardened HPC lane
-is available, the ``uploaded_code`` transition switch for sites without one,
-and the step-image allow-list (ADR-074 D-7; build spec 2026-09-26 §1-§2).
+is available, the site's opt-in to the local staged podman lane (ADR-091),
+the ``uploaded_code`` transition switch for sites without either, and the
+step-image allow-list (ADR-074 D-7; build spec 2026-09-26 §1-§2).
 """
 
 from __future__ import annotations
@@ -36,6 +37,17 @@ logger = logging.getLogger(__name__)
 _CALLER_COMMAND_CLASSES = frozenset({"ShellStep", "VideoStep"})
 #: The lanes that run a step on a connected HPC (the ADR-061 ``gpu-job`` lane).
 HPC_LANES = frozenset({"slurm", "slurm-remote"})
+#: ADR-091: the local staged podman lane for uploaded code
+#: (:class:`~umrs.server.podman_staged_step_executor.PodmanStagedStepExecutor`).
+#: Not ``podman``: that name builds ``PodmanExecutor``, which is never
+#: admitted for uploaded code (ADR-091 D-2).
+PODMAN_STAGED_LANE = "podman-staged"
+#: The lanes that run uploaded code staged: files in, a JSON reply out.
+STAGED_LANES = HPC_LANES | {PODMAN_STAGED_LANE}
+#: ``step_executor.uploaded_code_lane`` (``UMRS_STEP_UPLOADED_CODE_LANE``):
+#: the one value that opts the site into :data:`PODMAN_STAGED_LANE`.
+UPLOADED_CODE_LANE_PODMAN = "podman"
+UPLOADED_CODE_LANE_ENV = "UMRS_STEP_UPLOADED_CODE_LANE"
 #: Lanes that run a step without a container image (an image hint is moot).
 IMAGELESS_LANES = frozenset({"inproc", "subprocess"})
 #: ``step_executor.uploaded_code`` values (``UMRS_STEP_UPLOADED_CODE``).
@@ -115,13 +127,32 @@ def _site_allows_user_account() -> bool:
     return USER_ACCOUNT in list(getattr(hpc, "modes_allowed", None) or [])
 
 
+def podman_lane_opted_in() -> bool:
+    """Whether the site opts into the local staged podman lane (ADR-091 D-3):
+    ``step_executor.uploaded_code_lane: podman``. Any other value is no
+    opt-in (an unknown one is logged), so uploaded code stays refused."""
+    _load_site_env()
+    raw = os.environ.get(UPLOADED_CODE_LANE_ENV, "").strip().lower()
+    if raw == UPLOADED_CODE_LANE_PODMAN:
+        return True
+    if raw:
+        logger.warning(
+            "unknown %s=%r: no local lane for uploaded code",
+            UPLOADED_CODE_LANE_ENV,
+            raw,
+        )
+    return False
+
+
 def uploaded_code_lane(requested: str | None) -> str | None:
     """The executor for a workflow carrying uploaded code.
 
     When the site's HPC lane (or its gated path, ADR-112 B2) is available, a
     requested HPC lane stands and any other lane (``in_process``, the
     deployment's ``UMRS_STEP_EXECUTOR``, the ``inproc`` default) becomes
-    ``slurm``. Otherwise the transition switch
+    ``slurm``. Otherwise a site that opted into the local staged podman lane
+    (ADR-091 D-3) gets :data:`PODMAN_STAGED_LANE`, whatever lane the
+    workflow asked for. Otherwise the transition switch
     decides: :data:`LEGACY_IN_PROCESS` (the caller runs the pre-ADR-074
     lanes) or None (the run is refused by name) — a requested HPC lane does
     not stand while the site keeps its lane closed.
@@ -133,6 +164,8 @@ def uploaded_code_lane(requested: str | None) -> str | None:
             .lower()
         )
         return effective if effective in HPC_LANES else "slurm"
+    if podman_lane_opted_in():
+        return PODMAN_STAGED_LANE
     if uploaded_code_policy() == LEGACY_IN_PROCESS:
         return LEGACY_IN_PROCESS
     return None
