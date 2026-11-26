@@ -62,17 +62,25 @@ def _flush(head: dict[str, Any], chunk: list[str]) -> list[str]:
     return [f'{prefix},"ops":[{",".join(chunk)}]}}']
 
 
-def apply_payload(ring: ViewRing, origin: str, payload: str) -> bool:
-    """Put one notification into ``ring``; False when it is ours or malformed."""
+def _message(origin: str, payload: str) -> dict[str, Any] | None:
+    """A notification from another process, or None (ours, or malformed)."""
     try:
         message = json.loads(payload)
     except (TypeError, ValueError):
-        return False
+        return None
     if not isinstance(message, dict) or message.get("o") in (None, origin):
+        return None
+    if not (message.get("u") and message.get("s")):
+        return None
+    return message
+
+
+def apply_payload(ring: ViewRing, origin: str, payload: str) -> bool:
+    """Put one notification into ``ring``; False when it is ours or malformed."""
+    message = _message(origin, payload)
+    if message is None:
         return False
-    key = (str(message.get("u") or ""), str(message.get("s") or ""))
-    if not all(key):
-        return False
+    key = (str(message["u"]), str(message["s"]))
     epoch = str(message.get("e") or "")
     if isinstance(message.get("gap"), int):
         ring.mark_gap(key, epoch, message["gap"])

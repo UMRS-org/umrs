@@ -60,7 +60,7 @@ def seqs(fs: list[dict]) -> list[int]:
 
 
 @pytest.fixture
-def view(rail):
+def view(rail):  # noqa: F811 — the imported fixture, by name
     rail.client.app.include_router(events.router)
     rail.hub = ViewHub(ring=ViewRing(max_ops=4))
     rail.client.app.state.companion_view_hub = rail.hub
