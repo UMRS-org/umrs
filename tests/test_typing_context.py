@@ -242,3 +242,21 @@ def test_missing_required_lists_absent_required_attrs():
 )
 def test_check_datatype(datatype, value, ok):
     assert check_datatype(datatype, value) is ok
+
+
+def test_huge_integer_is_a_finite_number_and_does_not_raise():
+    # math.isfinite(10**400) raises OverflowError; prepare_row never raises.
+    assert check_datatype("number", 10**400) is True
+    assert check_datatype("interval", [0, 10**400]) is True
+    out = _row("ex:Image", attrs={"ex:pixelSize": 10**400})
+    assert out.attrs == {"ex:pixelSize": 10**400}
+
+
+def test_unclassified_fails_a_domain_that_names_it():
+    terms = (*TERMS, _attr("ex:loose", "string", domain_classes=("r4:Unclassified",)))
+    snapshot = RegistrySnapshot(ontology_ref="ex@1", mode="warn", terms=terms, closure=CLOSURE)
+    draft = NodeDraft("n-1", "entity", None, attrs={"ex:loose": "x"})
+    out = prepare_row(TypingContext.from_snapshot(snapshot), draft)
+    assert out.attrs == {}
+    assert out.content["undeclared"] == {"ex:loose": "x"}
+    assert [v.code for v in out.violations] == ["class_missing", "attr_domain"]

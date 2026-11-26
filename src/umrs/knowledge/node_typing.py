@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import json
 import math
+from collections.abc import Callable
 from datetime import date, datetime
 from typing import Any
 
@@ -82,18 +83,7 @@ def check_datatype(datatype: str | None, value: Any) -> bool:
     """
     if datatype is None:
         return True
-    simple = {
-        "number": _is_finite_number,
-        "integer": _is_integer,
-        "string": _is_string,
-        "boolean": _is_boolean,
-        "datetime": _is_datetime,
-        "date": _is_date,
-        "interval": _is_interval,
-        "json": _is_json,
-        "node": _is_node,
-    }
-    check = simple.get(datatype)
+    check = _DATATYPE_CHECKS.get(datatype)
     return check(value) if check is not None else False
 
 
@@ -114,12 +104,11 @@ def _is_node(value: Any) -> bool:
 
 
 def _is_finite_number(value: Any) -> bool:
-    """A finite int/float; ``bool`` is not a number here."""
-    return (
-        not isinstance(value, bool)
-        and isinstance(value, (int, float))
-        and math.isfinite(value)
-    )
+    """A finite int/float; ``bool`` is not a number here. An int is always
+    finite (``math.isfinite`` would overflow on a huge one)."""
+    if _is_integer(value):
+        return True
+    return isinstance(value, float) and math.isfinite(value)
 
 
 def _is_datetime(value: Any) -> bool:
@@ -160,6 +149,19 @@ def _is_json(value: Any) -> bool:
     except (TypeError, ValueError):
         return False
     return True
+
+
+_DATATYPE_CHECKS: dict[str, Callable[[Any], bool]] = {
+    "number": _is_finite_number,
+    "integer": _is_integer,
+    "string": _is_string,
+    "boolean": _is_boolean,
+    "datetime": _is_datetime,
+    "date": _is_date,
+    "interval": _is_interval,
+    "json": _is_json,
+    "node": _is_node,
+}
 
 
 def _resolve_class(
@@ -207,7 +209,9 @@ def _attr_problem(
     """Rule 3: the violation code that moves this attr, or None to keep it."""
     if term is None:
         return "attr_undeclared"
-    if term.domain_classes and not ctx.under_any(class_id, term.domain_classes):
+    if term.domain_classes and (
+        class_id == UNCLASSIFIED or not ctx.under_any(class_id, term.domain_classes)
+    ):
         return "attr_domain"
     if not check_datatype(term.datatype, value):
         return "attr_datatype"
