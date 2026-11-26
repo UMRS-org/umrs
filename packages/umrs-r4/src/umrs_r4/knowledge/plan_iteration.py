@@ -430,6 +430,9 @@ class PlanIterationEngine:
         if verdict is not True:
             summary = _not_run(number, f"approval_rejected:{PLAN_RUN}")
             return _record(loop, number, summary, "rejected")
+        # The loop's clock ran while a human decided (D-32, ADR-067): the run
+        # gets what is left now, never the figure read before the ask.
+        remaining = remaining_wallclock_sec(loop)
         summary = self._executor.run(loop, number, remaining, self._cancel_check)
         return _record(loop, number, summary, "completed")
 
