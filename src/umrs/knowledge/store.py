@@ -647,8 +647,10 @@ class KnowledgeStore:
             row = node if node.graph_id else replace(node, graph_id=batch.graph_id)
             await self._upsert_node_untyped(untyped_fallback(row), db)
         for edge in batch.edges:
-            row = edge if edge.graph_id else replace(edge, graph_id=batch.graph_id)
-            await self._upsert_edge_untyped(replace(row, relation_class=None), db)
+            graph_id = edge.graph_id or batch.graph_id
+            await self._upsert_edge_untyped(
+                replace(edge, graph_id=graph_id, relation_class=None), db
+            )
 
     async def upsert_node(
         self,

@@ -317,11 +317,14 @@ class _Prepared:
     nodes: list[tuple[KnowledgeNode, PreparedNode]] = field(default_factory=list)
     edges: list[tuple[KnowledgeEdge, PreparedEdge]] = field(default_factory=list)
 
+    def _results(self) -> list[PreparedNode | PreparedEdge]:
+        return [p for _, p in self.nodes] + [p for _, p in self.edges]
+
     def violations(self) -> tuple[Violation, ...]:
-        return tuple(v for _, p in [*self.nodes, *self.edges] for v in p.violations)
+        return tuple(v for p in self._results() for v in p.violations)
 
     def gaps(self) -> tuple[Gap, ...]:
-        return tuple(g for _, p in [*self.nodes, *self.edges] for g in p.gaps)
+        return tuple(g for p in self._results() for g in p.gaps)
 
 
 async def _prepare_batch(db: Any, ctx: TypingContext, batch: WriteBatch) -> _Prepared:
