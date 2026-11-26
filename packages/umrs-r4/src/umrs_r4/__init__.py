@@ -44,9 +44,11 @@ def init_loop_plan_host(db_pool: Any) -> None:
 def _routers(ext: Any) -> None:
     from umrs_r4.api.admin_sessions import router as admin_sessions_router
     from umrs_r4.api.companion_chat_approvals import router as chat_approvals_router
+    from umrs_r4.api.companion_session_create import router as session_create_router
     from umrs_r4.api.companion_sessions import router as companion_sessions_router
     from umrs_r4.api.companion_venue import router as companion_venue_router
     from umrs_r4.api.companion_venue_parity import router as venue_parity_router
+    from umrs_r4.api.companion_view_events import router as view_events_router
     from umrs_r4.api.plan_run_traces import router as plan_run_traces_router
     from umrs_r4.api.plan_run_venue import router as plan_run_venue_router
     from umrs_r4.api.trust_routes import router as trust_router
@@ -57,6 +59,10 @@ def _routers(ext: Any) -> None:
     ext.add_router(chat_approvals_router, family="companion")
     ext.add_router(companion_venue_router, family="companion")
     ext.add_router(venue_parity_router, family="companion")
+    # UI plan §3.4 (lane UX-V2, ADR-119): server-made sessions, the view-op
+    # rail verb and the owner's event stream.
+    ext.add_router(session_create_router, family="companion")
+    ext.add_router(view_events_router, family="companion")
     ext.add_router(admin_sessions_router, family="admin")  # RS-0 C-1
     ext.add_router(plan_run_traces_router, family="traces")  # ADR-092 slice 7
     ext.add_router(plan_run_venue_router, family="traces")  # ADR-092 slice 8
