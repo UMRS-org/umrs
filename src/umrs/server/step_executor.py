@@ -2177,70 +2177,96 @@ def build_step_executor(
     in deployment config doesn't crash the workflow runner.
     """
     chosen = (name or os.environ.get("UMRS_STEP_EXECUTOR") or "inproc").lower()
-    if chosen == "inproc":
-        return InProcessExecutor()
-    if chosen in _STAGED_BUILDERS:
-        return _STAGED_BUILDERS[chosen](chosen)
-    if chosen == "subprocess":
-        return SubprocessExecutor(timeout_seconds=_executor_timeout())
-    if chosen == "podman":
-        image = os.environ.get("UMRS_STEP_IMAGE", "").strip()
-        if not image:
-            raise RuntimeError(
-                "UMRS_STEP_EXECUTOR=podman requires UMRS_STEP_IMAGE to be set"
-            )
-        extra_raw = os.environ.get("UMRS_STEP_PODMAN_EXTRA_ARGS", "").strip()
-        extra_args = shlex.split(extra_raw) if extra_raw else []
-        return PodmanExecutor(
-            image=image,
-            timeout_seconds=_executor_timeout(),
-            podman_bin=os.environ.get("UMRS_STEP_PODMAN_BIN", "podman"),
-            network=os.environ.get("UMRS_STEP_PODMAN_NETWORK", "host"),
-            gpu=os.environ.get("UMRS_STEP_GPU", "0").strip() == "1",
-            extra_args=extra_args,
-            keep_workdir=os.environ.get("UMRS_STEP_KEEP_WORKDIR", "0").strip() == "1",
-        )
-    if chosen == "pool":
-        image = os.environ.get("UMRS_STEP_IMAGE", "").strip()
-        if not image:
-            raise RuntimeError(
-                "UMRS_STEP_EXECUTOR=pool requires UMRS_STEP_IMAGE to be set"
-            )
-        extra_raw = os.environ.get("UMRS_STEP_PODMAN_EXTRA_ARGS", "").strip()
-        extra_args = shlex.split(extra_raw) if extra_raw else []
-        return WorkerPoolExecutor(
-            image=image,
-            timeout_seconds=_executor_timeout(),
-            podman_bin=os.environ.get("UMRS_STEP_PODMAN_BIN", "podman"),
-            network=os.environ.get("UMRS_STEP_PODMAN_NETWORK", "host"),
-            gpu=os.environ.get("UMRS_STEP_GPU", "0").strip() == "1",
-            extra_args=extra_args,
-            max_workers_per_key=_parse_int_env("UMRS_WORKER_MAX_PER_KEY", 4),
-            acquire_timeout=_parse_float_env("UMRS_WORKER_ACQUIRE_TIMEOUT", 30.0),
-            idle_timeout=_parse_float_env("UMRS_WORKER_IDLE_TIMEOUT", 300.0),
-            prewarm=os.environ.get("UMRS_WORKER_PREWARM", "0").strip() == "1",
-        )
-    if chosen == "remote":
-        raw_workers = os.environ.get("UMRS_REMOTE_WORKERS", "").strip()
-        if not raw_workers:
-            raise RuntimeError(
-                "UMRS_STEP_EXECUTOR=remote requires UMRS_REMOTE_WORKERS "
-                "to be set (comma-separated ZMQ addresses)"
-            )
-        workers = [w.strip() for w in raw_workers.split(",") if w.strip()]
-        return RemotePoolExecutor(
-            workers=workers,
-            timeout_seconds=_executor_timeout(),
-            acquire_timeout=_parse_float_env("UMRS_WORKER_ACQUIRE_TIMEOUT", 30.0),
-        )
-    if chosen == "router":
-        bind = os.environ.get("UMRS_ROUTER_BIND", "tcp://0.0.0.0:5560").strip()
-        return RouterPoolExecutor(
-            bind_address=bind,
-            timeout_seconds=_executor_timeout(),
-        )
+    builder = _BUILDERS.get(chosen)
+    if builder is not None:
+        return builder(chosen)
     logger.warning("unknown UMRS_STEP_EXECUTOR=%r; falling back to inproc", chosen)
     return InProcessExecutor()
+
+
+def _required_image(chosen: str) -> str:
+    image = os.environ.get("UMRS_STEP_IMAGE", "").strip()
+    if not image:
+        raise RuntimeError(
+            f"UMRS_STEP_EXECUTOR={chosen} requires UMRS_STEP_IMAGE to be set"
+        )
+    return image
+
+
+def _podman_extra_args() -> list[str]:
+    extra_raw = os.environ.get("UMRS_STEP_PODMAN_EXTRA_ARGS", "").strip()
+    return shlex.split(extra_raw) if extra_raw else []
+
+
+def _env_on(name: str) -> bool:
+    return os.environ.get(name, "0").strip() == "1"
+
+
+def _build_inproc_executor(_chosen: str) -> StepExecutor:
+    return InProcessExecutor()
+
+
+def _build_subprocess_executor(_chosen: str) -> StepExecutor:
+    return SubprocessExecutor(timeout_seconds=_executor_timeout())
+
+
+def _build_podman_executor(chosen: str) -> StepExecutor:
+    return PodmanExecutor(
+        image=_required_image(chosen),
+        timeout_seconds=_executor_timeout(),
+        podman_bin=os.environ.get("UMRS_STEP_PODMAN_BIN", "podman"),
+        network=os.environ.get("UMRS_STEP_PODMAN_NETWORK", "host"),
+        gpu=_env_on("UMRS_STEP_GPU"),
+        extra_args=_podman_extra_args(),
+        keep_workdir=_env_on("UMRS_STEP_KEEP_WORKDIR"),
+    )
+
+
+def _build_pool_executor(chosen: str) -> StepExecutor:
+    return WorkerPoolExecutor(
+        image=_required_image(chosen),
+        timeout_seconds=_executor_timeout(),
+        podman_bin=os.environ.get("UMRS_STEP_PODMAN_BIN", "podman"),
+        network=os.environ.get("UMRS_STEP_PODMAN_NETWORK", "host"),
+        gpu=_env_on("UMRS_STEP_GPU"),
+        extra_args=_podman_extra_args(),
+        max_workers_per_key=_parse_int_env("UMRS_WORKER_MAX_PER_KEY", 4),
+        acquire_timeout=_parse_float_env("UMRS_WORKER_ACQUIRE_TIMEOUT", 30.0),
+        idle_timeout=_parse_float_env("UMRS_WORKER_IDLE_TIMEOUT", 300.0),
+        prewarm=_env_on("UMRS_WORKER_PREWARM"),
+    )
+
+
+def _build_remote_executor(_chosen: str) -> StepExecutor:
+    raw_workers = os.environ.get("UMRS_REMOTE_WORKERS", "").strip()
+    if not raw_workers:
+        raise RuntimeError(
+            "UMRS_STEP_EXECUTOR=remote requires UMRS_REMOTE_WORKERS "
+            "to be set (comma-separated ZMQ addresses)"
+        )
+    workers = [w.strip() for w in raw_workers.split(",") if w.strip()]
+    return RemotePoolExecutor(
+        workers=workers,
+        timeout_seconds=_executor_timeout(),
+        acquire_timeout=_parse_float_env("UMRS_WORKER_ACQUIRE_TIMEOUT", 30.0),
+    )
+
+
+def _build_router_executor(_chosen: str) -> StepExecutor:
+    bind = os.environ.get("UMRS_ROUTER_BIND", "tcp://0.0.0.0:5560").strip()
+    return RouterPoolExecutor(bind_address=bind, timeout_seconds=_executor_timeout())
+
+
+#: ``UMRS_STEP_EXECUTOR`` value -> its builder (the staged lanes included).
+_BUILDERS = {
+    "inproc": _build_inproc_executor,
+    "subprocess": _build_subprocess_executor,
+    "podman": _build_podman_executor,
+    "pool": _build_pool_executor,
+    "remote": _build_remote_executor,
+    "router": _build_router_executor,
+    **_STAGED_BUILDERS,
+}
 
 
 def _executor_timeout() -> float | None:
