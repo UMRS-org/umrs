@@ -306,7 +306,8 @@ def _catalog_ddl() -> list[str]:
     ddl = [(_MIGRATIONS / n).read_text() for n in names]
     access = (_MIGRATIONS / "0116_resource_access.sql").read_text()
     ddl += re.findall(r"ALTER TABLE scientific_catalogs\s+ADD COLUMN[^;]*;", access)
-    ddl.append((_MIGRATIONS / "0144_catalog_origin.sql").read_text())  # S-D39a
+    # S-D39a; by suffix, the number is set at merge (decisions-2026-11-24 §3)
+    ddl.append(next(_MIGRATIONS.glob("*_catalog_origin.sql")).read_text())
     return ddl
 
 

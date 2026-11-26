@@ -339,7 +339,8 @@ def _ddl() -> list[str]:
         )
     ]
     ddl += _statement("0116_resource_access.sql", r"ALTER TABLE scientific_catalogs\s+ADD COLUMN[^;]*;")
-    ddl.append((_MIGRATIONS / "0144_catalog_origin.sql").read_text())
+    # By suffix: the migration number is set at merge (decisions-2026-11-24 §3).
+    ddl.append(next(_MIGRATIONS.glob("*_catalog_origin.sql")).read_text())
     ddl += _statement("0069_knowledge_graphs.sql", r"CREATE TABLE IF NOT EXISTS knowledge_graphs \(.*?\n\);")
     ddl += _statement("0052_skills_registry.sql", r"CREATE TABLE IF NOT EXISTS skills \(.*?\n\);")
     ddl += _statement("0001_mcp_registry.sql", r"CREATE TABLE IF NOT EXISTS mcp_servers \(.*?\n\);")
