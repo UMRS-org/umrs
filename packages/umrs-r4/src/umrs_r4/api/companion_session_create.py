@@ -79,7 +79,9 @@ def session_payload(session_id: str, body: SessionCreateBody, project: str, now:
     )
 
 
-def create_session_row(conn: Any, uid: str, body: SessionCreateBody, project: str) -> dict[str, Any]:
+def create_session_row(
+    conn: Any, uid: str, body: SessionCreateBody, project: str
+) -> dict[str, Any]:
     """Write a new session's first row; the detail row it now reads as."""
     session_id = str(uuid.uuid4())
     now = _now_iso()
