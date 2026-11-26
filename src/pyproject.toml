@@ -143,6 +143,8 @@ py-modules = ["client_umrs", "server_umrs"]
 # allowlist ("@recommended" in site.yaml).
 [tool.setuptools.package-data]
 "umrs.knowledge" = ["ingest_domains_recommended.yaml"]
+# ADR-088 W1: the Security Watch default rules pack ships as package data.
+"umrs.security_watch" = ["rules/*.yaml"]
 
 [tool.ruff]
 target-version = "py310"

@@ -1,0 +1,104 @@
+# UMRS Security Watch: default rules pack (ADR-088 D-4.1, DEC-D61-088W1).
+#
+# Loaded as configuration, not code, by umrs.security_watch.rules. A site
+# overlay (UMRS_SECURITY_WATCH_RULES or an explicit path) changes a rule by
+# its id, field by field, or adds a new rule; it never edits this file.
+#
+# Telemetry first (ADR-088 D-3): every audit_events rule names only events
+# the stream carries (umrs.audit.security_events.AUDIT_FAMILIES). There is no
+# rule for step.refused or GPU hoarding, because no such row is written yet.
+#
+# Detectors:
+#   burst  rows of `events` in the last `window_seconds`, grouped by
+#          `group_by`; a group with at least `threshold` rows is a hit.
+#   match  every group with at least one matching row is a hit.
+# `where` narrows on details fields the event's schema names (exact match).
+rules_version: "2026.11.27-1"
+rules:
+  - id: auth-failure-burst-actor
+    description: Repeated identity refusals for one actor at UMRS.
+    severity: medium
+    source: audit_events
+    detector: burst
+    events: [auth.failed]
+    group_by: actor
+    window_seconds: 300
+    threshold: 20
+
+  - id: edge-auth-failure-burst-client
+    description: Repeated edge identity refusals from one client fingerprint.
+    severity: high
+    source: gateway_audit_log
+    detector: burst
+    events: [auth.failed]
+    group_by: client_ip
+    window_seconds: 300
+    threshold: 30
+
+  - id: egress-deny-spike
+    description: An actor keeps hitting the egress policy.
+    severity: medium
+    source: audit_events
+    detector: burst
+    events: [egress.denied]
+    group_by: actor
+    window_seconds: 600
+    threshold: 20
+
+  - id: mcp-invoke-refused-burst
+    description: Repeated call-time MCP trust refusals for one actor.
+    severity: medium
+    source: audit_events
+    detector: burst
+    events: [mcp.invoke_refused]
+    group_by: actor
+    window_seconds: 600
+    threshold: 10
+
+  - id: access-system-grant
+    description: A resource's access list now holds system.
+    severity: high
+    source: audit_events
+    detector: match
+    events: [admin.access_system]
+    group_by: actor
+    window_seconds: 900
+
+  - id: raw-knowledge-export
+    description: A knowledge export with raw content was queued.
+    severity: high
+    source: audit_events
+    detector: match
+    events: [export.requested]
+    where:
+      include_raw: true
+    group_by: actor
+    window_seconds: 900
+
+  - id: export-refused-burst
+    description: An actor keeps asking for exports that are refused.
+    severity: medium
+    source: audit_events
+    detector: burst
+    events: [export.refused]
+    group_by: actor
+    window_seconds: 3600
+    threshold: 5
+
+  - id: scanner-finding
+    description: The recipe or skill scanner reported findings.
+    severity: medium
+    source: audit_events
+    detector: match
+    events: [scanner.finding]
+    group_by: actor
+    window_seconds: 900
+
+  - id: admin-role-changed
+    description: An account's role changed.
+    severity: low
+    source: audit_events
+    detector: match
+    events: [admin.role_changed]
+    group_by: actor
+    window_seconds: 900
