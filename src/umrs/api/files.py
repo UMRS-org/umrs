@@ -38,8 +38,10 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from umrs.data_catalog.provenance import (
     HashedObject,
+    ObjectRef,
     Sha256Reader,
     hashed,
+    lookup_many_best_effort,
     provenance_row,
     record_best_effort,
 )
@@ -145,6 +147,9 @@ class FileMetadata(BaseModel):
     last_modified: str | None = None
     etag: str | None = None
     metadata: dict[str, str] = Field(default_factory=dict)
+    #: The ``object_provenance`` row at this ETag, else the legacy record
+    #: (ADR-115 D-4, slice MB-S2b); the raw-key read only.
+    provenance: dict[str, Any] | None = None
 
 
 class UploadResponse(BaseModel):
@@ -858,6 +863,12 @@ def _namespace_bucket(bucket: str | None, config: S3Config, user_id: str | None)
     return bucket
 
 
+def _namespaced_buckets(config: S3Config) -> set[str]:
+    """Buckets whose keys this API project-namespaces: the allowlist and the
+    server default bucket (the ones ``_namespace_bucket`` passes as before)."""
+    return _cross_bucket_allowlist(config) | {get_s3_config().bucket}
+
+
 def _raw_key(key: str) -> str:
     """A key in an owned bucket keeps its own layout (no project prefix);
     traversal and empty keys are refused."""
@@ -968,13 +979,25 @@ class ListedObject(BaseModel):
     key: str
     size: int
     last_modified: str | None = None
+    #: The store's ETag, unquoted (ADR-115 D-4): a review pins it.
+    etag: str | None = None
+    #: With ``fields=provenance``: the row at this ETag, else the legacy record.
+    provenance: dict[str, Any] | None = None
 
 
 class ListObjectsResponse(BaseModel):
     bucket: str
     prefix: str
     objects: list[ListedObject] = Field(default_factory=list)
+    #: With ``delimiter=/``: the "folders" directly under ``prefix``.
+    prefixes: list[str] = Field(default_factory=list)
+    delimiter: str | None = None
     next_token: str | None = None
+
+
+#: ``/files/list`` options (ADR-115 D-4): one delimiter, one extra field.
+_LIST_DELIMITERS = frozenset({"/"})
+_LIST_FIELDS = frozenset({"provenance"})
 
 
 def _cross_bucket_allowlist(config: S3Config) -> set[str]:
@@ -1074,45 +1097,100 @@ async def download_file_stream(
     return stream_object(config.get_client(), bucket_name, key, ask)
 
 
+def _list_fields(fields: str | None) -> frozenset[str]:
+    asked = frozenset(f.strip() for f in (fields or "").split(",") if f.strip())
+    unknown = sorted(asked - _LIST_FIELDS)
+    if unknown:
+        raise_typed(
+            PlatformError.files(
+                "list_option_invalid", f"Unknown fields {unknown}; known: provenance"
+            )
+        )
+    return asked
+
+
+def _list_kwargs(
+    bucket: str, prefix: str, token: str | None, limit: int, delimiter: str | None
+) -> dict[str, Any]:
+    if delimiter is not None and delimiter not in _LIST_DELIMITERS:
+        raise_typed(
+            PlatformError.files("list_option_invalid", "Only delimiter=/ is supported")
+        )
+    kwargs: dict[str, Any] = {"Bucket": bucket, "Prefix": prefix.lstrip("/"), "MaxKeys": limit}
+    if token:
+        kwargs["ContinuationToken"] = token
+    if delimiter:
+        kwargs["Delimiter"] = delimiter
+    return kwargs
+
+
+def _unquoted(etag: Any) -> str | None:
+    return (etag.strip('"') or None) if isinstance(etag, str) else None
+
+
+def _listed(item: dict[str, Any]) -> ListedObject:
+    modified = item.get("LastModified")
+    return ListedObject(
+        key=str(item.get("Key")),
+        size=int(item.get("Size") or 0),
+        last_modified=modified.isoformat() if modified else None,
+        etag=_unquoted(item.get("ETag")),
+    )
+
+
+def _with_provenance(
+    request: Request, bucket: str, objects: list[ListedObject]
+) -> list[ListedObject]:
+    """Each object's provenance in ONE batched SELECT for the page (never a
+    ``head_object`` or a query per key); legacy without a database."""
+    refs: list[ObjectRef] = [(bucket, obj.key, obj.etag or "") for obj in objects]
+    found = lookup_many_best_effort(getattr(request.app.state, "umrs_db_pool", None), refs)
+    return [
+        obj.model_copy(update={"provenance": found[(bucket, obj.key)].as_dict()})
+        for obj in objects
+    ]
+
+
 @router.get(
     "/list",
     response_model=ListObjectsResponse,
     summary="List objects in a bucket the caller owns (ADR-079)",
 )
 async def list_owned_objects(
+    request: Request,
     bucket: str = Query(..., description="A bucket you own, or its -output pair"),
     prefix: str = Query("", description="Key prefix"),
     token: str | None = Query(None, description="next_token of the previous page"),
     limit: int = Query(1000, ge=1, le=1000),
+    delimiter: str | None = Query(
+        None, description="`/`: one level; sub-folders come back in `prefixes`"
+    ),
+    fields: str | None = Query(None, description="`provenance`: add each object's row"),
     project_id: str = Depends(get_project_id),
     x_user_id: str | None = Header(None),
 ) -> ListObjectsResponse:
-    """Keys and sizes under *prefix*; the server lists, the caller never gets
-    a credential or a presigned URL. The store is the one the runner writes
-    the bucket in (ADR-115 D-3)."""
+    """Keys, sizes and ETags under *prefix*; with ``delimiter=/`` one level
+    of a folder tree (``prefixes``, ADR-115 D-4). The server lists, the
+    caller never gets a credential or a presigned URL. The store is the one
+    the runner writes the bucket in (ADR-115 D-3). ``limit`` counts objects
+    and prefixes together (S3 ``MaxKeys``); ``next_token`` pages both."""
     _require_owned_bucket(bucket, x_user_id)
+    wanted = _list_fields(fields)
+    kwargs = _list_kwargs(bucket, prefix, token, limit, delimiter)
     s3_client = bucket_store(bucket, project_id, get_s3_config()).get_client()
-    kwargs: dict[str, Any] = {"Bucket": bucket, "Prefix": prefix.lstrip("/"), "MaxKeys": limit}
-    if token:
-        kwargs["ContinuationToken"] = token
     try:
         page = await asyncio.to_thread(s3_client.list_objects_v2, **kwargs)
     except ClientError as e:
         raise_typed(PlatformError.files("list_failed", f"Failed to list {bucket}"), cause=e)
-    objects = [
-        ListedObject(
-            key=str(item.get("Key")),
-            size=int(item.get("Size") or 0),
-            last_modified=(
-                item["LastModified"].isoformat() if item.get("LastModified") else None
-            ),
-        )
-        for item in page.get("Contents") or []
-    ]
+    objects = [_listed(item) for item in page.get("Contents") or []]
+    if "provenance" in wanted:
+        objects = await asyncio.to_thread(_with_provenance, request, bucket, objects)
     return ListObjectsResponse(
         bucket=bucket,
         prefix=kwargs["Prefix"],
         objects=objects,
+        prefixes=[str(p.get("Prefix")) for p in page.get("CommonPrefixes") or []],
+        delimiter=delimiter,
         next_token=page.get("NextContinuationToken") if page.get("IsTruncated") else None,
     )
 
@@ -1379,6 +1457,69 @@ async def check_download_status(
     return _nonblocking_job_status(job_store, job_id, scope)
 
 
+def _head_or_404(s3_client: Any, bucket: str, key: str) -> dict[str, Any]:
+    try:
+        return dict(s3_client.head_object(Bucket=bucket, Key=key))
+    except ClientError as e:
+        if e.response.get("Error", {}).get("Code") in ("404", "NoSuchKey", "NotFound"):
+            raise_typed(PlatformError.files("not_found", f"File not found: {key}"), cause=e)
+        logger.error("S3 error getting file metadata: %s", e)
+        raise_typed(
+            PlatformError.files("metadata_failed", "Failed to get file metadata"), cause=e
+        )
+
+
+def _metadata_from_head(bucket: str, key: str, head: dict[str, Any]) -> FileMetadata:
+    modified = head.get("LastModified", datetime.now(timezone.utc))
+    return FileMetadata(
+        key=key,
+        bucket=bucket,
+        size=head.get("ContentLength", 0),
+        content_type=head.get("ContentType"),
+        last_modified=modified.isoformat() + "Z",
+        etag=_unquoted(head.get("ETag")) or "",
+        metadata=head.get("Metadata", {}),
+    )
+
+
+def _raw_key_metadata(
+    request: Request, bucket: str, key: str, project_id: str | None, x_user_id: str | None
+) -> FileMetadata:
+    """``bucket/key`` as the bucket holds it (no project re-namespacing) in a
+    bucket the caller owns or is shared, with its provenance at the live
+    ETag (ADR-115 D-4). One HEAD, one SELECT."""
+    _require_owned_bucket(bucket, x_user_id)
+    object_key = _raw_key(key)
+    s3_client = bucket_store(bucket, project_id, get_s3_config()).get_client()
+    meta = _metadata_from_head(bucket, object_key, _head_or_404(s3_client, bucket, object_key))
+    pool = getattr(request.app.state, "umrs_db_pool", None)
+    found = lookup_many_best_effort(pool, [(bucket, object_key, meta.etag or "")])
+    return meta.model_copy(update={"provenance": found[(bucket, object_key)].as_dict()})
+
+
+@router.get(
+    "/metadata/{key:path}",
+    response_model=FileMetadata,
+    summary="Raw-key metadata and provenance in an owned or shared bucket",
+    description=(
+        "ADR-115 D-4: the key exactly as the bucket holds it (``runs/<id>/x.mp4`` "
+        "in an ``-output`` bucket), never re-namespaced into the project; the "
+        "bucket must be yours or shared with you (ADR-080). Returns ContentType, "
+        "ETag, size, user metadata and the provenance row at that ETag."
+    ),
+)
+async def get_raw_key_metadata(
+    request: Request,
+    key: str,
+    bucket: str = Query(..., description="A bucket you own or that is shared with you"),
+    project_id: str = Depends(get_project_id),
+    x_user_id: str | None = Header(None),
+) -> FileMetadata:
+    return await asyncio.to_thread(
+        _raw_key_metadata, request, bucket, key, project_id, x_user_id
+    )
+
+
 # Declared after /download/{path:path}: a download of a key ending in
 # "/metadata" stays a download.
 @router.get(
@@ -1391,43 +1532,22 @@ async def check_download_status(
     description="Get metadata for a file by its ID (key).",
 )
 async def get_file_metadata(
+    request: Request,
     file_id: str,
     bucket: str | None = None,
     project_id: str = Depends(get_project_id),
     config: S3Config = Depends(get_project_s3_config),
     x_user_id: str | None = Header(None),
 ) -> FileMetadata:
-    """Get file metadata."""
-
-    # Validate and namespace the key
+    """Get file metadata. A ``bucket`` the caller owns or is shared holds
+    raw keys (ADR-079 layout): read there as the raw-key route does, so
+    ``runs/<id>/x.mp4?bucket=<own>-output`` is that object, not a
+    re-namespaced ``<project>/runs/...`` 404 (ADR-115 D-4, MB-S2b)."""
+    if bucket and bucket not in _namespaced_buckets(config):
+        return await asyncio.to_thread(
+            _raw_key_metadata, request, bucket, file_id, project_id, x_user_id
+        )
     key = validate_key(file_id, project_id, warn_on_rename=True)
     bucket_name = _namespace_bucket(bucket, config, x_user_id)
-
-    try:
-        s3_client = config.get_client()
-
-        response = s3_client.head_object(Bucket=bucket_name, Key=key)
-
-        return FileMetadata(
-            key=key,
-            bucket=bucket_name,
-            size=response.get("ContentLength", 0),
-            content_type=response.get("ContentType"),
-            last_modified=response.get(
-                "LastModified", datetime.now(timezone.utc)
-            ).isoformat()
-            + "Z",
-            etag=response.get("ETag", "").strip('"'),
-            metadata=response.get("Metadata", {}),
-        )
-
-    except ClientError as e:
-        if e.response["Error"]["Code"] == "404":
-            raise_typed(
-                PlatformError.files("not_found", f"File not found: {key}"), cause=e
-            )
-        logger.error(f"S3 error getting file metadata: {e}")
-        raise_typed(
-            PlatformError.files("metadata_failed", "Failed to get file metadata"),
-            cause=e,
-        )
+    head = _head_or_404(config.get_client(), bucket_name, key)
+    return _metadata_from_head(bucket_name, key, head)

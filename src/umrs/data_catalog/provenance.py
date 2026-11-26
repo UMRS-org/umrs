@@ -261,10 +261,76 @@ def lookup(conn: Any, bucket: str, key: str, etag: str = "") -> ObjectProvenance
         found = cur.fetchone()
     if found is None:
         return legacy_record(bucket, key, etag)
+    return _row_from(found)
+
+
+_SELECT_MANY = (
+    f"SELECT {', '.join(_COLUMNS)} FROM object_provenance "
+    "WHERE bucket = ANY(%s) AND key = ANY(%s) ORDER BY created_at DESC"
+)
+
+#: One object a page or a run names: ``(bucket, key, etag)``; ``etag`` is
+#: the store's current one ("" when the caller never read it).
+ObjectRef = tuple[str, str, str]
+
+
+def _row_from(found: tuple[Any, ...]) -> ObjectProvenance:
     values = dict(zip(_COLUMNS, found, strict=True))
     ref = values["source_ref"]
     values["source_ref"] = json.loads(ref) if isinstance(ref, str) else dict(ref or {})
     return ObjectProvenance(**values)
+
+
+def _pick(rows: list[ObjectProvenance], ref: ObjectRef) -> ObjectProvenance:
+    """The newest row of *ref*'s object at its etag (any etag when the caller
+    has none); a row of another version never describes this one."""
+    bucket, key, etag = ref
+    for row in rows:
+        if row.bucket == bucket and row.key == key and etag in ("", row.etag):
+            return row
+    return legacy_record(bucket, key, etag)
+
+
+def lookup_many(conn: Any, refs: list[ObjectRef]) -> dict[tuple[str, str], ObjectProvenance]:
+    """:func:`lookup` for a whole page in **one** SELECT (ADR-115 D-4: never
+    a query or a ``head_object`` per key), keyed by ``(bucket, key)``."""
+    if not refs:
+        return {}
+    buckets = sorted({bucket for bucket, _key, _etag in refs})
+    keys = sorted({key for _bucket, key, _etag in refs})
+    with conn.cursor() as cur:
+        cur.execute(_SELECT_MANY, (buckets, keys))
+        rows = [_row_from(found) for found in cur.fetchall()]
+    return {(ref[0], ref[1]): _pick(rows, ref) for ref in refs}
+
+
+def _all_legacy(refs: list[ObjectRef]) -> dict[tuple[str, str], ObjectProvenance]:
+    return {(bucket, key): legacy_record(bucket, key, etag) for bucket, key, etag in refs}
+
+
+def lookup_many_best_effort(
+    pool: Any, refs: list[ObjectRef]
+) -> dict[tuple[str, str], ObjectProvenance]:
+    """:func:`lookup_many` on a pooled connection; every object reads as
+    legacy (unverified, the safe answer) with no pool or on any failure, so
+    a listing never fails because the provenance table is unreachable."""
+    if pool is None or not refs:
+        return _all_legacy(refs)
+    try:
+        conn = pool.getconn()
+    except Exception:  # a listing never fails on provenance
+        logger.warning(
+            "provenance: no connection for a %d-object lookup", len(refs), exc_info=True
+        )
+        return _all_legacy(refs)
+    try:
+        return lookup_many(conn, refs)
+    except Exception:  # same: unverified is the safe reading
+        _rollback(conn)
+        logger.warning("provenance: lookup of %d objects failed", len(refs), exc_info=True)
+        return _all_legacy(refs)
+    finally:
+        pool.putconn(conn)
 
 
 # ── the writers' one call each ──────────────────────────────────────────────
@@ -352,12 +418,15 @@ __all__ = [
     "SOURCE_KINDS",
     "HashedObject",
     "ObjectProvenance",
+    "ObjectRef",
     "Sha256Reader",
     "content_type_for",
     "hashed",
     "legacy_record",
     "live_etag",
     "lookup",
+    "lookup_many",
+    "lookup_many_best_effort",
     "provenance_pool",
     "provenance_row",
     "record",
