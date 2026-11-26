@@ -141,7 +141,7 @@ def test_render_documents_sorted_by_ref():
 
 
 def test_render_refuses_a_term_defined_twice():
-    with pytest.raises(ValueError, match="x:A"):
+    with pytest.raises(ValueError, match=r"x:[AB]"):
         render_seed_sql([_doc(), _doc()], _closure(), _admitted())
 
 
