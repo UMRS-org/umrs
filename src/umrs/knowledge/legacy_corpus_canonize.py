@@ -36,6 +36,8 @@ from typing import Any
 from umrs.knowledge.contributions import Contribution, record_contribution_guarded_sync
 from umrs.knowledge.graph_registry import default_graph_id
 from umrs.knowledge.rag_upload_mint import (
+    MINT_CHUNK_CLASS,
+    MINT_DOC_CLASS,
     _upsert_artifact,
     _upsert_embedding,
     _upsert_node,
@@ -156,6 +158,7 @@ def canonize_document(
             project_id=project_id,
             label=filename,
             node_type="file",
+            node_class=MINT_DOC_CLASS,
             content={
                 "kind": "document",
                 "document_id": document_id,
@@ -176,6 +179,7 @@ def canonize_document(
                 project_id=project_id,
                 label=f"chunk {i} of {filename}",
                 node_type="entity",
+                node_class=MINT_CHUNK_CLASS,
                 content={
                     "kind": "chunk",
                     "document_id": document_id,

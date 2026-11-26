@@ -143,6 +143,9 @@ py-modules = ["client_umrs", "server_umrs"]
 # allowlist ("@recommended" in site.yaml).
 [tool.setuptools.package-data]
 "umrs.knowledge" = ["ingest_domains_recommended.yaml"]
+# ADR-081 KN-2: std@1 and r4-core@2 ship as package data (stand-alone and
+# air-gapped installs read them offline).
+"umrs.knowledge.ontologies" = ["*.yaml"]
 
 [tool.ruff]
 target-version = "py310"
