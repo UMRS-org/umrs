@@ -45,6 +45,7 @@ source_modules =
     umrs.inference
     umrs.skills
     umrs.recipes
+    umrs.security_watch
 forbidden_modules =
     umrs.api
     umrs.server
