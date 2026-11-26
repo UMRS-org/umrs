@@ -2682,6 +2682,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     add_site_accounts_parser(sub)
 
+    # ADR-098 D-4 (SH-H1a): the session/MCP hosts registry (site database).
+    from .hosts import add_hosts_parser
+
+    add_hosts_parser(sub)
+
     zmq_p = sub.add_parser(
         "zmq",
         help="ZMQ CURVE key management",

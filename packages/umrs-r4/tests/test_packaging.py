@@ -48,6 +48,7 @@ def test_register_adds_every_r4_router():
 def test_register_adds_the_lanes_kinds_startups_and_listeners():
     from umrs_r4.trust.approval_listener import mint_session_trust_on_always
     from umrs_r4.trust.archive_participant import revoke_trust_on_archive
+    from umrs_r4.venues.host_sessions import build_host_sessions
 
     ctx = _registered()
     assert list(ctx.job_types) == ["frontend_session"]
@@ -56,6 +57,7 @@ def test_register_adds_the_lanes_kinds_startups_and_listeners():
     assert startups == [umrs_r4.init_trust_store, umrs_r4.init_loop_plan_host]
     assert ctx.session_archive_participants == [revoke_trust_on_archive]
     assert ctx.approval_listeners == [mint_session_trust_on_always]
+    assert ctx.host_session_factories == [build_host_sessions]  # SH-H1a
     assert umrs_r4.EXTENSION_API_VERSION == 1
 
 

@@ -1,9 +1,10 @@
 """The minimal ExtensionContext (ADR-117 §6, U3a map §3).
 
-Internal, versioned and deliberately small: it holds only the six hooks the
-umrs-r4 extension needs. It is not a public plugin API until a second
-extension exists. Each hook only records a registration; the core seam that
-owns it consumes the record (``umrs.extensions.seams``).
+Internal, versioned and deliberately small: it holds only the hooks the
+umrs-r4 extension needs (seven since SH-H1a added ``add_host_sessions``).
+It is not a public plugin API until a second extension exists. Each hook
+only records a registration; the core seam that owns it consumes the record
+(``umrs.extensions.seams``).
 """
 
 from __future__ import annotations
@@ -67,6 +68,9 @@ class ExtensionContext:
     approval_listeners: list[Callable[[dict, str, str], None]] = field(
         default_factory=list
     )
+    # SH-H1a: ``factory(db_pool)`` → the extension's sessions on a host
+    # (``umrs.hosts.janitor.HostSessions``), or None when it cannot be built.
+    host_session_factories: list[Callable[[Any], Any]] = field(default_factory=list)
     active: list[str] = field(default_factory=list)
     _current: str = "core"
 
@@ -98,3 +102,7 @@ class ExtensionContext:
 
     def add_approval_listener(self, fn: Callable[[dict, str, str], None]) -> None:
         self.approval_listeners.append(fn)
+
+    def add_host_sessions(self, factory: Callable[[Any], Any]) -> None:
+        """Sessions the extension runs on hosts (seam: the hosts janitor)."""
+        self.host_session_factories.append(factory)

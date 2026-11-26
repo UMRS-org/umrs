@@ -224,6 +224,20 @@ class TestChecker:
         assert res.status == "succeeded" and res.metrics["end"] == "stopped by user"
         assert prov.torn == []
 
+    def test_host_lost_row_fails_without_teardown_and_keeps_its_state(self):
+        """SH-H1a: the hosts janitor ended it; the check must not restate it
+        as a lease end (``stopped``) nor drive the lost host's podman."""
+        backend, prov, broker, _pool, checker, ref = self._running()
+        backend.store._transition(
+            "sess-1", state="host_lost", reason="host_lost: host cpu-1 is down", stopped=True
+        )
+        broker.leases["lease-1"].is_valid = False  # the janitor revoked it
+        prov.torn.clear()
+        res = _check(checker, ref)
+        assert res.status == "failed" and "host_lost" in res.exit_reason
+        assert prov.torn == []
+        assert backend.store.get("sess-1").state == "host_lost"
+
     def test_missing_row_or_foreign_ref_fails(self):
         backend, *_ = _lane()
         checker = FrontendSessionStatusChecker(backend)
