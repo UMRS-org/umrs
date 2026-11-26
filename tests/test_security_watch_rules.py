@@ -82,8 +82,8 @@ def test_import_linter_fences_the_watch() -> None:
 def test_default_pack_loads_with_no_site_file(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("UMRS_SECURITY_WATCH_RULES", raising=False)
     pack = load_rule_pack(site_rules_path())
-    assert pack.rules_version == "2026.11.27-1"
-    assert pack.get("auth-failure-burst-actor") is not None
+    assert pack.rules_version == "2026.11.27-2"
+    assert pack.get("auth-failure-burst-surface") is not None
     assert {rule.origin for rule in pack.rules} == {"default"}
     assert len({rule.id for rule in pack.rules}) == len(pack.rules) >= 5
 
@@ -95,6 +95,22 @@ def test_default_pack_watches_only_events_the_stream_carries() -> None:
     assert audit_events <= set(AUDIT_FAMILIES)
     assert not any(event.startswith("security.") for event in audit_events)
     assert "step.refused" not in audit_events  # not emitted yet (ADR-088 W0 deferred)
+
+
+#: Families whose call sites write no actor: an identity refusal has no
+#: identity yet, and the egress fetcher runs below any request.
+ACTORLESS = {"auth.failed", "egress.denied"}
+
+
+def test_default_rules_never_group_actorless_events_by_actor() -> None:
+    """Review S-D61a: grouped by actor, every such row lands in one ``''``
+    group, so a "per actor" burst is a site-wide counter in disguise."""
+    bad = [
+        rule.id
+        for rule in load_rule_pack().rules
+        if rule.source == "audit_events" and rule.group_by == "actor" and set(rule.events) & ACTORLESS
+    ]
+    assert bad == []
 
 
 def test_default_pack_is_package_data() -> None:
@@ -117,7 +133,7 @@ def test_site_overlay_changes_a_rule_by_id_and_adds_one(tmp_path: Path) -> None:
         """
         rules_version: "s1"
         rules:
-          - {id: auth-failure-burst-actor, threshold: 50}
+          - {id: auth-failure-burst-surface, threshold: 50}
           - {id: scanner-finding, enabled: false}
           - id: zmq-revoke-burst
             severity: low
@@ -130,8 +146,8 @@ def test_site_overlay_changes_a_rule_by_id_and_adds_one(tmp_path: Path) -> None:
         """,
     )
     pack = load_rule_pack(path)
-    assert pack.rules_version == "2026.11.27-1+site.s1"
-    auth = pack.get("auth-failure-burst-actor")
+    assert pack.rules_version == "2026.11.27-2+site.s1"
+    auth = pack.get("auth-failure-burst-surface")
     # threshold from the site, the rest of the default stays
     assert (auth.threshold, auth.origin, auth.window_seconds) == (50, "site", 300)  # type: ignore[union-attr]
     assert "scanner-finding" not in {rule.id for rule in pack.enabled()}
@@ -144,10 +160,10 @@ def test_site_rules_path_reads_the_env() -> None:
 
 
 _BAD_RULES = {
-    "unknown key": ("auth-failure-burst-actor", "sql: 'DROP TABLE x'"),
-    "bad severity": ("auth-failure-burst-actor", "severity: urgent"),
+    "unknown key": ("auth-failure-burst-surface", "sql: 'DROP TABLE x'"),
+    "bad severity": ("auth-failure-burst-surface", "severity: urgent"),
     "group_by injection": (
-        "auth-failure-burst-actor",
+        "auth-failure-burst-surface",
         'group_by: "actor); DELETE FROM audit_events; --"',
     ),
     "match with threshold": ("access-system-grant", "threshold: 3"),
@@ -168,6 +184,19 @@ _BAD_RULES = {
         "new-rule",
         "severity: low, source: gateway_audit_log, "
         "detector: burst, events: [auth.failed], window_seconds: 600",
+    ),
+    # Review S-D61a: only the edge's auth.failed rows carry a fingerprint and a
+    # route family; its other actions keep the raw address and the raw path.
+    "edge action with a raw address": (
+        "new-rule",
+        "severity: low, source: gateway_audit_log, detector: match, "
+        "events: [origin_refused], group_by: client_ip, window_seconds: 600",
+    ),
+    "outcome on the edge": ("edge-auth-failure-burst-client", "outcome: denied"),
+    "group by an object key": (
+        "new-rule",
+        "severity: low, source: audit_events, detector: match, "
+        "events: [data.upload], group_by: details.key, window_seconds: 600",
     ),
 }
 
@@ -228,7 +257,7 @@ def test_autocommit_connection_is_refused() -> None:
     class _Conn:
         autocommit = True
 
-    rule = load_rule_pack().get("auth-failure-burst-actor")
+    rule = load_rule_pack().get("auth-failure-burst-surface")
     assert rule is not None
     with pytest.raises(ValueError, match="transactional"):
         run_rule(_Conn(), rule, now=1.0)
@@ -336,11 +365,16 @@ def _mine(hits: Any, tag: str) -> list[Any]:
 def test_auth_failure_burst_fires(pg: Any) -> None:
     owner, reader, tag = pg
     noisy, quiet = f"{tag}noisy", f"{tag}quiet"
-    rows = [("auth.failed", noisy, BASE_TS - i, {"reason": "bad_token"}) for i in range(20)]
-    rows += [("auth.failed", quiet, BASE_TS - i, {}) for i in range(19)]
-    rows += [("auth.failed", quiet, BASE_TS - 3600, {})]  # outside the 300 s window
+    # Rows shaped like the emitter's: no identity to name, so one actor
+    # value per row (the tag only keeps the rows purgeable); the surface groups.
+    rows = [
+        ("auth.failed", f"{tag}{i}", BASE_TS - i, {"surface": noisy, "reason": "bad_token"})
+        for i in range(20)
+    ]
+    rows += [("auth.failed", f"{tag}q{i}", BASE_TS - i, {"surface": quiet}) for i in range(19)]
+    rows += [("auth.failed", f"{tag}old", BASE_TS - 3600, {"surface": quiet})]  # outside 300 s
     _audit_rows(owner, rows)
-    rule = load_rule_pack().get("auth-failure-burst-actor")
+    rule = load_rule_pack().get("auth-failure-burst-surface")
     assert rule is not None
     hits = _mine(run_rule(reader, rule, now=BASE_TS + 1), tag)
     assert [(h.group, h.count, h.severity) for h in hits] == [(noisy, 20, "medium")]
@@ -380,6 +414,24 @@ def test_pack_refuses_a_writer_role_and_skips_by_id(pg: Any) -> None:
     assert result.rules_version == pack.rules_version
 
 
+def test_run_rule_refuses_a_writer_role(pg: Any) -> None:
+    owner, _reader, _tag = pg
+    rule = load_rule_pack().get("auth-failure-burst-surface")
+    assert rule is not None
+    with pytest.raises(WriterRoleRefused):
+        run_rule(owner, rule, now=BASE_TS)
+
+
+def test_writer_check_and_detection_share_one_transaction(pg: Any) -> None:
+    """An uncommitted ``SET ROLE`` passes a separate check, whose rollback then
+    drops it: the detection must not run as the owner role."""
+    owner, _reader, _tag = pg
+    with owner.cursor() as cur:
+        cur.execute("SET ROLE umrs_audit_reader")
+    with pytest.raises(WriterRoleRefused):
+        run_pack(load_rule_pack(), {"audit_events": owner}, now=BASE_TS)
+
+
 class _RecordingConn:
     autocommit = False
 
@@ -399,6 +451,9 @@ class _RecordingConn:
             def execute(self, sql: str, params: Any = None) -> None:
                 conn.calls.append(sql.split(" ", 2)[0] if params else sql)
 
+            def fetchone(self) -> tuple[bool]:
+                return (False,)
+
             def fetchall(self) -> list[Any]:
                 return []
 
@@ -410,7 +465,8 @@ class _RecordingConn:
 
 def test_detection_runs_read_only_and_rolls_back() -> None:
     conn = _RecordingConn()
-    rule = load_rule_pack().get("auth-failure-burst-actor")
+    rule = load_rule_pack().get("auth-failure-burst-surface")
     assert rule is not None
     assert run_rule(conn, rule, now=BASE_TS) == []
-    assert conn.calls == ["SET TRANSACTION READ ONLY", "SELECT", "ROLLBACK"]
+    # The writer check runs in the detection's own transaction (review S-D61a).
+    assert conn.calls == ["SET TRANSACTION READ ONLY", "SELECT", "SELECT", "ROLLBACK"]

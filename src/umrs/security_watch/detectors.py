@@ -13,7 +13,10 @@ Read-only twice over:
   watch reads through the ``umrs_audit_reader`` grant
   (docs/admin/security/audit-reader-role.md), never through the owner role.
 - Every detection runs inside ``SET TRANSACTION READ ONLY`` and is rolled
-  back, so even a mis-granted role writes nothing.
+  back, so even a mis-granted role writes nothing. The writer check runs
+  again inside that same transaction, so a role that only held for an
+  earlier transaction (an uncommitted ``SET ROLE``) cannot carry the
+  detection over to the owner role.
 
 A hit carries ids and counts only: the rule id, the group value (an actor
 id, a project id, or the edge's ``ipfp:`` fingerprint, never an address),
@@ -143,29 +146,33 @@ def _write_check_sql(tables: Iterable[str]) -> tuple[str, list[str]]:
     return f"SELECT {checks}", [value for pair in pairs for value in pair]
 
 
+def _refuse_writer(cur: Any, tables: list[str]) -> None:
+    sql, params = _write_check_sql(tables)
+    cur.execute(sql, params)
+    if bool(cur.fetchone()[0]):
+        raise WriterRoleRefused(
+            f"security watch refuses a role that can write {tables}"
+        )
+
+
 def assert_read_only(conn: Any, sources: Iterable[str]) -> None:
     """Refuse a connection whose role may write any of ``sources``' tables."""
     tables = sorted({_TABLES[source].name for source in sources})
     if not tables:
         return
-    sql, params = _write_check_sql(tables)
     try:
         with conn.cursor() as cur:
-            cur.execute(sql, params)
-            writable = bool(cur.fetchone()[0])
+            _refuse_writer(cur, tables)
     finally:
         conn.rollback()
-    if writable:
-        raise WriterRoleRefused(
-            f"security watch refuses a role that can write {tables}"
-        )
 
 
 def run_rule(conn: Any, rule: Rule, now: float | None = None) -> list[Hit]:
     """Run one rule in a read-only transaction; the transaction is rolled back.
 
     An autocommit connection is refused: ``SET TRANSACTION READ ONLY`` would
-    have no transaction to bind to there.
+    have no transaction to bind to there. A role that may write the rule's
+    table is refused (:class:`WriterRoleRefused`) inside that transaction.
     """
     if getattr(conn, "autocommit", False):
         raise ValueError("security watch detectors need a transactional connection")
@@ -173,6 +180,7 @@ def run_rule(conn: Any, rule: Rule, now: float | None = None) -> list[Hit]:
     try:
         with conn.cursor() as cur:
             cur.execute("SET TRANSACTION READ ONLY")
+            _refuse_writer(cur, [_TABLES[rule.source].name])
             cur.execute(sql, params)
             rows = cur.fetchall()
     finally:

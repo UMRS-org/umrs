@@ -44,6 +44,16 @@ GROUP_COLUMNS: dict[str, tuple[str, ...]] = {
     "gateway_audit_log": ("client_ip", "user_id", "path"),
 }
 
+#: The edge actions a rule may watch. Only ``auth.failed`` rows carry the
+#: client as a keyed ``ipfp:`` fingerprint and the path as a route family
+#: (ADR-088 W0); the edge's other actions keep the raw address and the raw
+#: path, which a hit must never carry (review S-D61a).
+GATEWAY_EVENTS = ("auth.failed",)
+
+#: Details kinds a hit may be grouped by: identifiers and codes. An object
+#: key (a file name) or a list never becomes a hit's group (review S-D61a).
+GROUPABLE_KINDS = frozenset({"id", "code", "host", "route", "int", "bool", "sha256"})
+
 MIN_WINDOW = 60
 MAX_WINDOW = 7 * 24 * 3600
 MAX_THRESHOLD = 1_000_000
@@ -143,11 +153,8 @@ def _check_event(event: Any, source: str) -> None:
         not event.startswith(RESERVED_PREFIX),
         f"{event!r}: the watch never watches its own events",
     )
-    if source == "audit_events":
-        _need(
-            event in AUDIT_FAMILIES,
-            f"{event!r} is not an audit family the stream carries",
-        )
+    carried = AUDIT_FAMILIES if source == "audit_events" else GATEWAY_EVENTS
+    _need(event in carried, f"{event!r} is not an event {source} carries for the watch")
 
 
 def _schema_fields(events: tuple[str, ...]) -> set[str]:
@@ -156,13 +163,22 @@ def _schema_fields(events: tuple[str, ...]) -> set[str]:
     return set.intersection(*sets) if sets else set()
 
 
+def _groupable_fields(events: tuple[str, ...]) -> set[str]:
+    """Schema fields of an identifier or code kind in every listed event."""
+    return {
+        name
+        for name in _schema_fields(events)
+        if all(AUDIT_FAMILIES[event].get(name) in GROUPABLE_KINDS for event in events)
+    }
+
+
 def _check_group_by(value: Any, source: str, events: tuple[str, ...]) -> str:
     _need(isinstance(value, str), "group_by must be a string")
     if value in GROUP_COLUMNS[source]:
         return str(value)
     name = str(value).removeprefix(_DETAILS_PREFIX)
     ok = source == "audit_events" and value.startswith(_DETAILS_PREFIX)
-    _need(ok and name in _schema_fields(events), f"group_by {value!r} is not allowed")
+    _need(ok and name in _groupable_fields(events), f"group_by {value!r} is not allowed")
     return str(value)
 
 
@@ -210,6 +226,12 @@ def _check_text(
     return str(value)
 
 
+def _check_outcome(raw: Mapping[str, Any], source: str) -> str:
+    outcome = _check_text(raw, "outcome", _CODE_RE)
+    _need(not outcome or source == "audit_events", "outcome is only allowed on audit_events")
+    return outcome
+
+
 def _build_rule(raw: Mapping[str, Any], origin: str) -> Rule:
     unknown = sorted(set(raw) - _KNOWN_KEYS)
     _need(not unknown, f"unknown keys {unknown}")
@@ -234,7 +256,7 @@ def _build_rule(raw: Mapping[str, Any], origin: str) -> Rule:
         ),
         threshold=_check_threshold(raw, detector),
         where=_check_where(raw.get("where"), source, events),
-        outcome=_check_text(raw, "outcome", _CODE_RE),
+        outcome=_check_outcome(raw, source),
         description=_check_text(raw, "description", None),
         enabled=enabled,
         origin=origin,

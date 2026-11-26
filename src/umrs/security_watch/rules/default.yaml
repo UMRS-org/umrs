@@ -13,15 +13,18 @@
 #          `group_by`; a group with at least `threshold` rows is a hit.
 #   match  every group with at least one matching row is a hit.
 # `where` narrows on details fields the event's schema names (exact match).
-rules_version: "2026.11.27-1"
+# auth.failed and egress.denied rows carry no actor (an identity refusal has
+# no identity yet; the egress fetcher runs below any request), so those
+# rules group by a details field, never by actor (review S-D61a).
+rules_version: "2026.11.27-2"
 rules:
-  - id: auth-failure-burst-actor
-    description: Repeated identity refusals for one actor at UMRS.
+  - id: auth-failure-burst-surface
+    description: Repeated identity refusals on one UMRS surface (API or ZMQ session).
     severity: medium
     source: audit_events
     detector: burst
     events: [auth.failed]
-    group_by: actor
+    group_by: details.surface
     window_seconds: 300
     threshold: 20
 
@@ -36,12 +39,12 @@ rules:
     threshold: 30
 
   - id: egress-deny-spike
-    description: An actor keeps hitting the egress policy.
+    description: The egress policy keeps refusing fetches of one host.
     severity: medium
     source: audit_events
     detector: burst
     events: [egress.denied]
-    group_by: actor
+    group_by: details.host
     window_seconds: 600
     threshold: 20
 
