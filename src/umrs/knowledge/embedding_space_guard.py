@@ -36,9 +36,7 @@ from umrs.knowledge.embedding_spaces import (
     space_to_row,
 )
 
-SELECT_SPACES_SQL = (
-    f"SELECT {', '.join(COLUMNS)} FROM {TABLE} ORDER BY space_id"
-)
+SELECT_SPACES_SQL = f"SELECT {', '.join(COLUMNS)} FROM {TABLE} ORDER BY space_id"
 INSERT_IF_ABSENT_SQL = (
     f"INSERT INTO {TABLE} ({', '.join(COLUMNS)}) VALUES ("
     + ", ".join(f"${i}" for i in range(1, len(COLUMNS) + 1))
@@ -68,9 +66,7 @@ def _seedable(
     """Declared spaces the registry holds no row for (by id or model name)."""
     ids = {s.space_id for s in registry}
     names = {s.model_name for s in registry}
-    return [
-        s for s in declared if s.space_id not in ids and s.model_name not in names
-    ]
+    return [s for s in declared if s.space_id not in ids and s.model_name not in names]
 
 
 def _as_site_row(space: EmbeddingSpace) -> EmbeddingSpace:

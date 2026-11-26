@@ -200,13 +200,19 @@ def _check_name(name: Any, what: str) -> None:
 
 
 def _check_identity(space: EmbeddingSpace) -> None:
-    if not isinstance(space.space_id, str) or not _SPACE_ID_RE.fullmatch(space.space_id):
+    if not isinstance(space.space_id, str) or not _SPACE_ID_RE.fullmatch(
+        space.space_id
+    ):
         raise _invalid(f"space_id {space.space_id!r} must match {SPACE_ID_PATTERN}")
     _check_name(space.model_name, "model_name")
     for name in space.legacy_names:
         _check_name(name, "legacy name")
     dim = space.dimension
-    if isinstance(dim, bool) or not isinstance(dim, int) or not 0 < dim <= MAX_DIMENSION:
+    if (
+        isinstance(dim, bool)
+        or not isinstance(dim, int)
+        or not 0 < dim <= MAX_DIMENSION
+    ):
         raise _invalid(f"dimension {dim!r} must be an integer in 1..{MAX_DIMENSION}")
 
 
@@ -297,9 +303,7 @@ def _single(found: Sequence[EmbeddingSpace], name: str) -> EmbeddingSpace | None
     return found[0] if found else None
 
 
-def resolve_space(
-    name: str, spaces: Iterable[EmbeddingSpace]
-) -> EmbeddingSpace | None:
+def resolve_space(name: str, spaces: Iterable[EmbeddingSpace]) -> EmbeddingSpace | None:
     """The ACTIVE space ``name`` denotes, or None.
 
     Exact matches first; only when none, basename matches. More than one

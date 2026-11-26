@@ -38,9 +38,7 @@ def get_space(conn: Any, space_id: str) -> EmbeddingSpace | None:
     raise NotImplementedError("kn-s5-02")
 
 
-def register_space(
-    conn: Any, space: EmbeddingSpace, *, replace: bool = False
-) -> bool:
+def register_space(conn: Any, space: EmbeddingSpace, *, replace: bool = False) -> bool:
     """Write ``space`` (``validate_space`` first). Returns True when a new
     row was inserted, False when an existing row was replaced.
 

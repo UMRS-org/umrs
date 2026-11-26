@@ -145,10 +145,14 @@ def cmd_seed_site(args: argparse.Namespace, _store: Any = None) -> int:
 # ── parsers (wired by umrs.cli.admin.main) ──────────────────────────────────
 
 
-def _add_register_parser(sub: argparse._SubParsersAction) -> None:
+def _add_register_parser(
+    sub: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
     reg = sub.add_parser("register", help="Register (or --replace) a space")
     reg.add_argument("--space-id", required=True)
-    reg.add_argument("--model-name", required=True, help="the name vectors are stored under")
+    reg.add_argument(
+        "--model-name", required=True, help="the name vectors are stored under"
+    )
     reg.add_argument("--dimension", required=True, type=int)
     reg.add_argument("--model-ref", default="", help="hub id the weights came from")
     reg.add_argument("--revision", default="", help="pinned snapshot hash")
@@ -164,7 +168,9 @@ def _add_register_parser(sub: argparse._SubParsersAction) -> None:
     reg.set_defaults(func=cmd_register)
 
 
-def add_embedding_space_parsers(sub: argparse._SubParsersAction) -> None:
+def add_embedding_space_parsers(
+    sub: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
     """The ``embedding-space`` verbs on ``sub`` (``dest="action"``)."""
     list_p = sub.add_parser("list", help="List registered spaces")
     list_p.add_argument("--all", action="store_true", help="include retired spaces")
