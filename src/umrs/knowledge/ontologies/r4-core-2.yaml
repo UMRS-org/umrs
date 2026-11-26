@@ -11,11 +11,11 @@
 # `status: deprecated` + `replaced_by` here.
 ontology: r4-core
 version: "2"
-iri_base: "tag:r-ccs.riken.jp,2026:r4/core#"
+iri_base: "https://github.com/R-CCS-HPBD/r4/ns/core#"
 origin: minted
 description: Core classes, relations and attributes of the R4 knowledge spine.
 prefixes:
-  r4: "tag:r-ccs.riken.jp,2026:r4/core#"
+  r4: "https://github.com/R-CCS-HPBD/r4/ns/core#"
   prov: "http://www.w3.org/ns/prov#"
   sosa: "http://www.w3.org/ns/sosa/"
   oa: "http://www.w3.org/ns/oa#"

@@ -175,10 +175,12 @@ def test_bundled_refs():
     assert sorted(bundled_by_ref()) == [CORE_REF, STD_REF]
 
 
-def test_core_imports_std_and_lives_in_the_tag_namespace():
+def test_core_imports_std_and_lives_in_the_project_namespace():
+    # ADR-081 D-3 as amended 2026-11-27: the core namespace names the project,
+    # never a deployment site, so every install mints the same IRIs.
     core = bundled_by_ref()[CORE_REF]
     assert core.imports == (STD_REF,)
-    assert core.iri_base.startswith("tag:")
+    assert core.iri_base == "https://github.com/R-CCS-HPBD/r4/ns/core#"
     terms = {t.term_id: t for t in core.terms}
     assert terms[UNCLASSIFIED].kind == "class"
     assert terms[RELATED_TO].kind == "relation"
