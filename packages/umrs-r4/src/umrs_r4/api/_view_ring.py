@@ -33,7 +33,7 @@ import re
 import threading
 from collections import OrderedDict, deque
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, TypeGuard
 
 # Defaults: a turn of a busy session emits a few hundred ops; 2,000 ops or
 # 4 MiB keeps several turns of resume window per session.
@@ -59,7 +59,7 @@ def valid_epoch(value: Any) -> bool:
     return isinstance(value, str) and _EPOCH_RE.fullmatch(value) is not None
 
 
-def safe_seq(value: Any) -> bool:
+def safe_seq(value: Any) -> TypeGuard[int]:
     """A seq the client applies: a positive integer up to 2**53 - 1."""
     return type(value) is int and 0 < value <= MAX_SAFE_INT
 

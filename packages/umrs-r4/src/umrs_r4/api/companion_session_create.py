@@ -61,7 +61,7 @@ def _now_iso() -> str:
 def session_payload(session_id: str, body: SessionCreateBody, project: str, now: str) -> str:
     """The first journal payload, in ``CompanionSessionStore.save()``'s shape."""
     name = body.name.strip() or f"Session {now[:16].replace('T', ' ')}"
-    metadata = {"venue": body.venue, "interaction_mode": body.mode}
+    metadata: dict[str, str] = {"venue": body.venue, "interaction_mode": body.mode}
     if project:
         metadata["project_id"] = project
     return json.dumps(
