@@ -14,7 +14,10 @@ the emitter's ``epoch`` (a restarted worker counts ``seq`` from 1 again
 under a new epoch) and ``gen``, a process-local generation that changes
 whenever the ring starts over, so a reader knows its cursor no longer
 applies. Bounds: ``max_ops`` and ``max_bytes`` per session, ``max_sessions``
-sessions (least recently written first out).
+sessions (least recently written first out), and ``max_total_bytes`` over
+all sessions (least recently written first out). The emitter's snapshot is
+held in the op sequence too, so a live or resuming reader gets it in order
+(a client that misses it sees a seq gap and goes stale).
 
 Thread-safe: rail posts arrive on the event loop, fan-out notifications on
 a listener thread. A reader waits with :meth:`ViewRing.wait`, which any
@@ -26,6 +29,7 @@ from __future__ import annotations
 import asyncio
 import itertools
 import json
+import re
 import threading
 from collections import OrderedDict, deque
 from dataclasses import dataclass, field
@@ -36,10 +40,28 @@ from typing import Any
 DEFAULT_MAX_OPS = 2000
 DEFAULT_MAX_BYTES = 4 * 1024 * 1024
 DEFAULT_MAX_SESSIONS = 512
+# Over all sessions of one process: 512 sessions x 4 MiB would be 2 GiB.
+DEFAULT_MAX_TOTAL_BYTES = 256 * 1024 * 1024
+# The client takes only a JavaScript safe integer as seq (``Number.isSafeInteger``).
+MAX_SAFE_INT = 2**53 - 1
 
 _GENERATIONS = itertools.count(1)
 
 Key = tuple[str, str]  # (owner, session_id)
+
+
+_EPOCH_RE = re.compile(r"[A-Za-z0-9._-]{0,64}")
+
+
+def valid_epoch(value: Any) -> bool:
+    """An emitter run id: up to 64 of ``A-Z a-z 0-9 . _ -`` (it goes on the
+    SSE ``id:`` line, so never a line break)."""
+    return isinstance(value, str) and _EPOCH_RE.fullmatch(value) is not None
+
+
+def safe_seq(value: Any) -> bool:
+    """A seq the client applies: a positive integer up to 2**53 - 1."""
+    return type(value) is int and 0 < value <= MAX_SAFE_INT
 
 
 @dataclass
@@ -70,6 +92,13 @@ class SessionRing:
     def pinned_usable(self) -> bool:
         """The emitter's snapshot can start a stream: the ops after it are held."""
         return self.pinned is not None and self.contiguous_from(self.pinned.seq)
+
+    def footprint(self) -> int:
+        """Bytes held: the ops, plus the snapshot once it left the op sequence."""
+        pinned = self.pinned
+        if pinned is None or (self.ops and self.ops[0].seq <= pinned.seq):
+            return self.size
+        return self.size + len(pinned.data)
 
 
 @dataclass(frozen=True)
@@ -109,10 +138,12 @@ class ViewRing:
         max_ops: int = DEFAULT_MAX_OPS,
         max_bytes: int = DEFAULT_MAX_BYTES,
         max_sessions: int = DEFAULT_MAX_SESSIONS,
+        max_total_bytes: int = DEFAULT_MAX_TOTAL_BYTES,
     ) -> None:
         self.max_ops = max_ops
         self.max_bytes = max_bytes
         self.max_sessions = max_sessions
+        self.max_total_bytes = max_total_bytes
         self._lock = threading.Lock()
         self._rings: OrderedDict[Key, SessionRing] = OrderedDict()
         self._waiters: dict[Key, set[tuple[asyncio.AbstractEventLoop, asyncio.Event]]] = {}
@@ -129,6 +160,7 @@ class ViewRing:
                     outcome.accepted += 1
                 else:
                     outcome.ignored += 1
+            self._keep_budget(key)
         self._wake(key)
         return outcome
 
@@ -152,9 +184,24 @@ class ViewRing:
             self._rings.popitem(last=False)
         return ring, reset
 
+    def _keep_budget(self, keep: Key) -> None:
+        """Drop the least recently written sessions (never ``keep``) while
+        all rings together hold more than ``max_total_bytes``."""
+        total = sum(ring.footprint() for ring in self._rings.values())
+        for key in list(self._rings):
+            if total <= self.max_total_bytes:
+                return
+            if key != keep:
+                total -= self._rings.pop(key).footprint()
+
+    def total_bytes(self) -> int:
+        """Bytes held over all sessions (tests, diagnostics)."""
+        with self._lock:
+            return sum(ring.footprint() for ring in self._rings.values())
+
     def _add(self, ring: SessionRing, op: dict[str, Any]) -> bool:
-        seq = int(op["seq"])
-        if seq <= ring.head:
+        seq = op.get("seq")
+        if not safe_seq(seq) or seq <= ring.head:
             return False  # replay-safe: a duplicate changes nothing
         if seq > ring.head + 1:
             self._restart_at(ring, seq)
@@ -163,7 +210,6 @@ class ViewRing:
         ring.native = True
         if op.get("op") == "session.snapshot":
             ring.pinned = entry
-            return True
         ring.ops.append(entry)
         ring.size += len(entry.data)
         self._trim(ring)

@@ -20,9 +20,10 @@ import logging
 import select
 import threading
 import uuid
+import weakref
 from typing import Any
 
-from umrs_r4.api._view_ring import ViewRing
+from umrs_r4.api._view_ring import ViewRing, safe_seq, valid_epoch
 
 logger = logging.getLogger(__name__)
 
@@ -81,14 +82,16 @@ def apply_payload(ring: ViewRing, origin: str, payload: str) -> bool:
     if message is None:
         return False
     key = (str(message["u"]), str(message["s"]))
-    epoch = str(message.get("e") or "")
-    if isinstance(message.get("gap"), int):
+    epoch = message.get("e") or ""
+    if not valid_epoch(epoch):
+        return False
+    if safe_seq(message.get("gap")):
         ring.mark_gap(key, epoch, message["gap"])
         return True
     ops = message.get("ops")
     if not isinstance(ops, list):
         return False
-    ring.append(key, epoch, [op for op in ops if isinstance(op, dict) and "seq" in op])
+    ring.append(key, epoch, [op for op in ops if isinstance(op, dict) and safe_seq(op.get("seq"))])
     return True
 
 
@@ -180,6 +183,16 @@ class Listener:
             apply_payload(self.ring, self.origin, note.payload)
 
 
+class StreamSlot:
+    """One open owner stream (see :meth:`ViewHub.open_stream`)."""
+
+    def __init__(self, slots: weakref.WeakSet[StreamSlot]) -> None:
+        self._slots = slots
+
+    def release(self) -> None:
+        self._slots.discard(self)
+
+
 class ViewHub:
     """This process's ring, its fan-out identity and its listener."""
 
@@ -189,6 +202,26 @@ class ViewHub:
         self.origin = uuid.uuid4().hex
         self._listener: Listener | None = None
         self._lock = threading.Lock()
+        self._streams: dict[str, weakref.WeakSet[StreamSlot]] = {}
+
+    def open_stream(self, owner: str, limit: int = 16) -> StreamSlot | None:
+        """A slot for one more open stream of ``owner``; None at ``limit``.
+
+        Held weakly: a stream that never started (its client gone before the
+        first frame) gives its slot back when it is collected.
+        """
+        with self._lock:
+            slots = self._streams.setdefault(owner, weakref.WeakSet())
+            if len(slots) >= limit:
+                return None
+            slot = StreamSlot(slots)
+            slots.add(slot)
+            return slot
+
+    def open_streams(self, owner: str) -> int:
+        with self._lock:
+            slots = self._streams.get(owner)
+            return 0 if slots is None else len(slots)
 
     def ensure_listener(self) -> None:
         """Start the listener once, when a pool exists (no pool: one process)."""
