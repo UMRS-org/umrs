@@ -6,14 +6,7 @@ row's installation-local member ids into the bundle's ``members`` block.
 
 from __future__ import annotations
 
-from tests._lane_pending import pending
-from umrs.knowledge import catalog_member_identity
 from umrs.knowledge.catalog_member_identity import member_identities
-
-pytestmark = pending(
-    "s-d39a-02",
-    lambda: catalog_member_identity.member_identities({}, [], [], [], "g-default"),
-)
 
 _DEFAULT = "g-default"
 _GRAPHS = [{"graph_id": "g-2", "name": "spectra"}, {"graph_id": "g-3", "name": None}]
@@ -113,3 +106,9 @@ def test_inputs_are_not_mutated() -> None:
     member_identities(row, graphs, _SKILLS, _MCPS, _DEFAULT)
     assert row == _row()
     assert graphs == _GRAPHS
+
+
+def test_a_str_where_a_list_belongs_reads_as_empty() -> None:
+    row = {"member_graph_ids": "g-2", "embedding_model_ids": "e5"}
+    out = member_identities(row, _GRAPHS, _SKILLS, _MCPS, _DEFAULT)
+    assert (out["graphs"], out["embedding_models"], out["unresolved"]) == ([], [], 0)

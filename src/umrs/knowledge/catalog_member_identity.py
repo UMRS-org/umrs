@@ -74,7 +74,10 @@ def member_identities(
 def _member_ids(row: dict[str, Any], key: str) -> list[str]:
     """Distinct non-empty str ids from ``row[key]``, first occurrence kept."""
     ids: list[str] = []
-    for item in row.get(key) or []:
+    items = row.get(key)
+    if not isinstance(items, list):
+        return ids
+    for item in items:
         if isinstance(item, str) and item and item not in ids:
             ids.append(item)
     return ids
