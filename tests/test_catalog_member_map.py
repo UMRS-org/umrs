@@ -37,9 +37,7 @@ def _members() -> dict:
     return {
         "graphs": [{"default": True, "name": ""}, {"default": False, "name": "spectra"}],
         "skills": [{"scope": "project", "name": "fit", "version": "1.0.0"}],
-        "mcp_servers": [
-            {"name": "microscope", "version": "0.2.0", "trust_class": "local-safe"}
-        ],
+        "mcp_servers": [{"name": "microscope", "version": "0.2.0", "trust_class": "local-safe"}],
         "embedding_models": ["intfloat/e5-base-v2"],
         "unresolved": 0,
     }

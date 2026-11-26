@@ -14,9 +14,7 @@ _SKILLS = [
     {"skill_id": "sk-1", "scope": "project", "name": "fit", "version": "1.0.0"},
     {"skill_id": "sk-2", "scope": "system", "name": "plot", "version": None},
 ]
-_MCPS = [
-    {"server_id": "mcp-1", "name": "microscope", "version": "0.2.0", "trust_class": "x"}
-]
+_MCPS = [{"server_id": "mcp-1", "name": "microscope", "version": "0.2.0", "trust_class": "x"}]
 
 
 def _row(**over) -> dict:
