@@ -294,6 +294,34 @@ def matches(space: EmbeddingSpace, name: str) -> bool:
     return matches_exactly(space, name) or matches_by_basename(space, name)
 
 
+def shared_name(space: EmbeddingSpace, other: EmbeddingSpace) -> str | None:
+    """The first name two spaces both answer to (exact or basename, status
+    ignored), or None. Two rows sharing a name make it ambiguous forever."""
+    for name in space_names(space):
+        if matches(other, name):
+            return name
+    for name in space_names(other):
+        if matches(space, name):
+            return name
+    return None
+
+
+def require_names_free(space: EmbeddingSpace, others: Iterable[EmbeddingSpace]) -> None:
+    """Refuse ``space`` when a name of it is owned by another space (any
+    status, a different ``space_id``): ``EmbeddingSpaceError``
+    (:data:`CODE_NAME_TAKEN`) naming both ids and the name."""
+    for other in others:
+        if other.space_id == space.space_id:
+            continue
+        name = shared_name(space, other)
+        if name is not None:
+            raise EmbeddingSpaceError(
+                CODE_NAME_TAKEN,
+                f"name {name!r} is shared by spaces {space.space_id!r} "
+                f"and {other.space_id!r}",
+            )
+
+
 def _single(found: Sequence[EmbeddingSpace], name: str) -> EmbeddingSpace | None:
     ids = sorted({s.space_id for s in found})
     if len(ids) > 1:

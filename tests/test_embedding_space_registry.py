@@ -240,6 +240,47 @@ def test_a_site_declaration_never_resurrects_a_retired_row():
     assert conn.inserted == []
 
 
+# Review KN-S5 (2026-11-27): seeding checked only space_id and model_name,
+# so a declared space reusing another row's name (legacy or bare) was seeded.
+ACME_STEALS_E5 = EmbeddingSpace(
+    space_id="acme",
+    model_name="/models/acme",
+    dimension=768,
+    legacy_names=("e5-base-v2",),
+    source="site",
+)
+
+
+def test_a_site_space_reusing_a_registered_name_is_refused_not_seeded():
+    conn = _Conn([BUNDLED_SPACE])
+    with pytest.raises(EmbeddingSpaceError) as err:
+        _require(conn, "/models/acme", site=[ACME_STEALS_E5])
+    assert err.value.code == es.CODE_NAME_TAKEN
+    assert conn.inserted == []
+    # the bundled space still resolves (the seed would have made it ambiguous)
+    assert _require(conn, "/opt/umrs/models/e5-base-v2")[0] == BUNDLED_SPACE
+
+
+def test_a_site_space_never_resurrects_a_retired_name_under_a_new_id():
+    retired = dataclasses.replace(BUNDLED_SPACE, status="retired")
+    again = EmbeddingSpace(
+        space_id="e5_again", model_name="intfloat/e5-base-v2", dimension=768, source="site"
+    )
+    conn = _Conn([retired])
+    with pytest.raises(EmbeddingSpaceError) as err:
+        _require(conn, "intfloat/e5-base-v2", site=[again])
+    assert err.value.code == es.CODE_NAME_TAKEN
+    assert conn.inserted == []
+
+
+def test_a_site_space_reusing_a_bundled_name_is_refused_on_an_empty_registry():
+    conn = _Conn([])
+    with pytest.raises(EmbeddingSpaceError) as err:
+        _require(conn, "/models/acme", site=[ACME_STEALS_E5])
+    assert err.value.code == es.CODE_NAME_TAKEN
+    assert conn.inserted == []
+
+
 def test_a_missing_registry_table_is_named():
     with pytest.raises(EmbeddingRegistryUnavailable) as err:
         _require(_Conn(missing_table=True), "/models/e5-base-v2")

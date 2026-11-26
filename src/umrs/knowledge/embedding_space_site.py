@@ -32,6 +32,7 @@ from umrs.knowledge.embedding_spaces import (
     STATUS_ACTIVE,
     EmbeddingSpace,
     EmbeddingSpaceError,
+    shared_name,
     validate_space,
 )
 
@@ -115,18 +116,21 @@ def _space_from_entry(entry: Any, index: int) -> EmbeddingSpace:
 
 
 def _check_duplicate(
-    space: EmbeddingSpace,
-    index: int,
-    space_ids: set[str],
-    model_names: set[str],
+    space: EmbeddingSpace, index: int, earlier: list[EmbeddingSpace]
 ) -> None:
     prefix = _entry_prefix(index)
-    if space.space_id in space_ids:
+    if any(other.space_id == space.space_id for other in earlier):
         raise _invalid(prefix, f"duplicate space_id {space.space_id!r}")
-    if space.model_name in model_names:
+    if any(other.model_name == space.model_name for other in earlier):
         raise _invalid(prefix, f"duplicate model_name {space.model_name!r}")
-    space_ids.add(space.space_id)
-    model_names.add(space.model_name)
+    # Review 2026-11-27: two entries answering to one name (legacy or
+    # basename) parsed, and seeding both made that name ambiguous.
+    for other in earlier:
+        name = shared_name(space, other)
+        if name is not None:
+            raise _invalid(
+                prefix, f"name {name!r} is also a name of space {other.space_id!r}"
+            )
 
 
 def spaces_from_site(knowledge: Mapping[str, Any] | None) -> list[EmbeddingSpace]:
@@ -154,7 +158,8 @@ def spaces_from_site(knowledge: Mapping[str, Any] | None) -> list[EmbeddingSpace
       passed through ``validate_space``; its error is re-raised with the
       entry prefix (keep the original code ``CODE_INVALID``).
     - two entries with the same ``space_id``, or the same ``model_name``,
-      → error naming the later index.
+      → error naming the later index; so do two entries sharing any name
+      (``embedding_spaces.shared_name``: legacy names, basename matches).
 
     Returns the spaces in file order.
     """
@@ -169,11 +174,9 @@ def spaces_from_site(knowledge: Mapping[str, Any] | None) -> list[EmbeddingSpace
         raise _invalid(_LIST_PREFIX, "embedding_spaces must be a list")
 
     spaces: list[EmbeddingSpace] = []
-    space_ids: set[str] = set()
-    model_names: set[str] = set()
     for index, entry in enumerate(declared):
         space = _space_from_entry(entry, index)
-        _check_duplicate(space, index, space_ids, model_names)
+        _check_duplicate(space, index, spaces)
         spaces.append(space)
     return spaces
 

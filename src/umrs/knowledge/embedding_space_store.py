@@ -19,15 +19,13 @@ from typing import Any
 from umrs.knowledge.embedding_spaces import (
     CODE_EXISTS,
     CODE_INVALID,
-    CODE_NAME_TAKEN,
     COLUMNS,
     TABLE,
     VALID_STATUSES,
     EmbeddingSpace,
     EmbeddingSpaceError,
-    matches,
+    require_names_free,
     space_from_row,
-    space_names,
     space_to_row,
     validate_space,
 )
@@ -46,31 +44,6 @@ _REPLACE_SQL = (
 def _as_space(row: Any) -> EmbeddingSpace:
     """One plain-cursor row as a validated space."""
     return space_from_row(dict(zip(COLUMNS, row, strict=True)))
-
-
-def _name_conflict(space: EmbeddingSpace, other: EmbeddingSpace) -> str | None:
-    """The first name shared by two different spaces, if any."""
-    for name in space_names(space):
-        if matches(other, name):
-            return name
-    for name in space_names(other):
-        if matches(space, name):
-            return name
-    return None
-
-
-def _check_names(space: EmbeddingSpace, rows: Sequence[EmbeddingSpace]) -> None:
-    """Refuse a name owned by another row, including a retired one."""
-    for other in rows:
-        if other.space_id == space.space_id:
-            continue
-        name = _name_conflict(space, other)
-        if name is not None:
-            raise EmbeddingSpaceError(
-                CODE_NAME_TAKEN,
-                f"name {name!r} is shared by spaces {space.space_id!r} "
-                f"and {other.space_id!r}",
-            )
 
 
 def list_spaces(conn: Any, *, include_retired: bool = False) -> list[EmbeddingSpace]:
@@ -123,7 +96,7 @@ def register_space(conn: Any, space: EmbeddingSpace, *, replace: bool = False) -
     """
     validate_space(space)
     rows = list_spaces(conn, include_retired=True)
-    _check_names(space, rows)
+    require_names_free(space, rows)
     exists = any(row.space_id == space.space_id for row in rows)
     if exists and not replace:
         raise EmbeddingSpaceError(
@@ -144,10 +117,19 @@ def seed_spaces(conn: Any, spaces: Sequence[EmbeddingSpace]) -> list[str]:
     Per space: ``validate_space``; one ``INSERT INTO <TABLE> (<COLUMNS>)
     VALUES (%s, ...) ON CONFLICT DO NOTHING`` with ``space_to_row(space)``;
     it counts as inserted when ``cursor.rowcount == 1``. Never updates an
-    existing row (a retired row stays retired)."""
-    inserted: list[str] = []
+    existing row (a retired row stays retired).
+
+    Before any write, every space is checked against every row (any status)
+    with ``require_names_free``: a space reusing another row's name raises
+    ``CODE_NAME_TAKEN`` and nothing is inserted (review 2026-11-27: the
+    seed made that name ambiguous for every writer, or brought a retired
+    space's model back under a new id)."""
+    rows = list_spaces(conn, include_retired=True)
     for space in spaces:
         validate_space(space)
+        require_names_free(space, rows)
+    inserted: list[str] = []
+    for space in spaces:
         cur = conn.cursor()
         cur.execute(f"{_INSERT_SQL} ON CONFLICT DO NOTHING", space_to_row(space))
         if cur.rowcount == 1:

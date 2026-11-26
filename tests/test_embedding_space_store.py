@@ -226,6 +226,27 @@ def test_seed_inserts_only_absent_spaces_in_input_order():
     assert all("ON CONFLICT" in sql.upper() for sql in db.writes())
 
 
+def test_seed_refuses_a_space_reusing_another_rows_name():
+    # Review KN-S5: seed-site inserted a space whose legacy name another row
+    # owns; every later lookup of that name then failed as ambiguous.
+    steals = dataclasses.replace(CLIP, legacy_names=("e5-base-v2",))
+    db = _Db(BUNDLED_SPACE)
+    with pytest.raises(EmbeddingSpaceError) as err:
+        store.seed_spaces(db, [steals])
+    assert err.value.code == CODE_NAME_TAKEN and "clip_b16" in str(err.value)
+    assert db.writes() == []
+
+
+def test_seed_refuses_a_retired_rows_name_under_a_new_id():
+    retired = dataclasses.replace(ME5B, status="retired")
+    again = dataclasses.replace(ME5B, space_id="me5b_again", model_name="/opt/me5b")
+    db = _Db(retired)
+    with pytest.raises(EmbeddingSpaceError) as err:
+        store.seed_spaces(db, [again])
+    assert err.value.code == CODE_NAME_TAKEN
+    assert db.writes() == []
+
+
 def test_seed_validates_each_space():
     with pytest.raises(EmbeddingSpaceError):
         store.seed_spaces(_Db(), [dataclasses.replace(CLIP, dimension=0)])

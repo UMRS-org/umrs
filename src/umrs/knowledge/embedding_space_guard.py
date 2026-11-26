@@ -10,7 +10,9 @@ inside the artifact's transaction, before any vector is written:
 3. on a miss, consult the site file's ``knowledge.embedding_spaces``: a
    declared space that the registry does not already hold (same
    ``space_id`` or ``model_name``, in any status — a retired row is never
-   resurrected) is inserted and admitted;
+   resurrected) is inserted and admitted, unless one of its names belongs
+   to another row (any status), which raises ``EmbeddingSpaceError``
+   (``CODE_NAME_TAKEN``) and inserts nothing;
 4. otherwise refuse with :class:`UnregisteredEmbeddingModel`.
 
 The site-file reader is passed in (``site_spaces``) and called only on a
@@ -31,6 +33,7 @@ from umrs.knowledge.embedding_spaces import (
     EmbeddingRegistryUnavailable,
     EmbeddingSpace,
     UnregisteredEmbeddingModel,
+    require_names_free,
     resolve_space,
     space_from_row,
     space_to_row,
@@ -88,5 +91,9 @@ async def require_writer_space(
     space = resolve_space(model_name, candidates)
     if space is None:
         raise UnregisteredEmbeddingModel(model_name)
+    # A declared space reusing a name another row (any status) owns is
+    # refused, not seeded: the seed would make that name ambiguous for every
+    # writer, or revive a retired space's model under a new id.
+    require_names_free(space, registry or [BUNDLED_SPACE])
     await conn.execute(INSERT_IF_ABSENT_SQL, *space_to_row(space))
     return space

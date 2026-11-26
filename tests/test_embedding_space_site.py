@@ -149,6 +149,27 @@ def test_a_duplicate_model_name_names_the_later_entry():
     assert msg.startswith(_entry_prefix(1)) and "/models/me5b" in msg
 
 
+def test_two_entries_sharing_a_name_name_the_later_entry():
+    # Review KN-S5: only space_id and model_name were compared, so two
+    # entries sharing a legacy (or bare) name parsed, and the second seed
+    # made the shared name ambiguous for every writer.
+    other = {
+        "space_id": "other",
+        "model_name": "/models/other",
+        "dimension": 8,
+        "legacy_names": ["intfloat/multilingual-e5-base"],
+    }
+    msg = _message(_refused({"embedding_spaces": [ME5B, other]}))
+    assert msg.startswith(_entry_prefix(1))
+    assert "intfloat/multilingual-e5-base" in msg and "me5b" in msg
+
+
+def test_a_bare_name_matching_another_entrys_path_is_refused():
+    other = {"space_id": "other", "model_name": "/opt/x/me5b", "dimension": 8}
+    msg = _message(_refused({"embedding_spaces": [ME5B, other]}))
+    assert msg.startswith(_entry_prefix(1))
+
+
 def test_site_embedding_spaces_reads_the_site_config(monkeypatch):
     from umrs.orchestrator import site_config
 
