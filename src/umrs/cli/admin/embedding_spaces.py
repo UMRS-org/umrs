@@ -32,6 +32,8 @@ from umrs.knowledge import embedding_space_site, embedding_space_store
 from umrs.knowledge.embedding_spaces import (
     COLUMNS,
     SOURCE_ADMIN,
+    STATUS_ACTIVE,
+    STATUS_RETIRED,
     EmbeddingSpace,
     EmbeddingSpaceError,
 )
@@ -84,11 +86,10 @@ def registry_conn() -> Iterator[Any]:
 def space_as_dict(space: EmbeddingSpace) -> dict[str, Any]:
     """``{column: value}`` for every name in COLUMNS (tuples as lists),
     plus ``"index_name": space.index_name``."""
-    data = {
-        column: list(value) if isinstance(value, tuple) else value
-        for column in COLUMNS
-        for value in (getattr(space, column),)
-    }
+    data: dict[str, Any] = {}
+    for column in COLUMNS:
+        value = getattr(space, column)
+        data[column] = list(value) if isinstance(value, tuple) else value
     data["index_name"] = space.index_name
     return data
 
@@ -152,7 +153,7 @@ def space_from_args(args: argparse.Namespace) -> EmbeddingSpace:
         query_prefix=args.query_prefix,
         document_prefix=args.document_prefix,
         legacy_names=tuple(args.legacy_name or ()),
-        status="active",
+        status=STATUS_ACTIVE,
         source=SOURCE_ADMIN,
     )
 
@@ -190,13 +191,13 @@ def cmd_retire(args: argparse.Namespace, _store: Any = None) -> int:
     """``retire``: ``embedding_space_store.set_status(conn, args.space_id,
     "retired")``; True → print ``retired <space_id>``, EXIT_OK; False →
     stderr ``error: no embedding space <space_id>``, EXIT_REFUSED."""
-    return _set_status(args, "retired", "retired")
+    return _set_status(args, STATUS_RETIRED, "retired")
 
 
 def cmd_activate(args: argparse.Namespace, _store: Any = None) -> int:
     """``activate``: as ``cmd_retire`` with status ``"active"`` and the
     word ``activated``."""
-    return _set_status(args, "active", "activated")
+    return _set_status(args, STATUS_ACTIVE, "activated")
 
 
 def _seed_dry_run(conn: Any, declared: list[EmbeddingSpace]) -> int:

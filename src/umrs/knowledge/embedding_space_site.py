@@ -93,11 +93,7 @@ def _entry_values(entry: Mapping[str, Any], prefix: str) -> dict[str, Any]:
     for key in _STRING_KEYS:
         if key in entry and not isinstance(entry[key], str):
             raise _invalid(prefix, f"{key} must be a string")
-    values = {
-        key: value
-        for key, value in entry.items()
-        if key in REQUIRED_KEYS | OPTIONAL_KEYS
-    }
+    values = dict(entry)  # keys already checked by _check_keys
     for key in _LIST_KEYS:
         if key in values:
             values[key] = _string_tuple(values[key], key, prefix)
