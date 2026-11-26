@@ -11,7 +11,6 @@ import copy
 from typing import Any
 
 import pytest
-from _kn_s7_pending import pending
 from umrs.knowledge.ontologies import (
     OntologyDocError,
     bundled_by_ref,
@@ -20,8 +19,6 @@ from umrs.knowledge.ontologies import (
     parse_doc,
 )
 from umrs.knowledge.term_types import BUCKETS, CORE_REF, RELATED_TO, STD_REF, UNCLASSIFIED
-
-pytestmark = pending(expand_curie, parse_doc, load_bundled, bundled_by_ref)
 
 DOC: dict[str, Any] = {
     "ontology": "demo",

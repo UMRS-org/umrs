@@ -4,9 +4,8 @@ Hermetic half (runs now): batch refusals, untyped writers keep the exact
 pre-W2a statements, and the fallbacks when the database has no typed
 columns or no seeded registry.
 
-Composed half (``@pending`` until kn-s7-01…05 land; the Postgres tests also
-need a migrated database): undeclared attr -> ``content.undeclared`` + gap;
-unknown relation -> ``r4:relatedTo``; enforce refuses the whole batch and
+Composed half (the Postgres tests need a migrated database): undeclared
+attr -> ``content.undeclared`` + gap; unknown relation -> ``r4:relatedTo``; enforce refuses the whole batch and
 keeps ``graph_version``; legacy rows stay valid; the raw-SQL mint agrees with
 ``prepare_row``; the bundled seed applies offline.
 """
@@ -21,14 +20,13 @@ import uuid
 from typing import Any
 
 import pytest
-from _kn_s7_pending import pending
 from umrs.knowledge import rag_upload_mint as mint
 from umrs.knowledge import store as store_mod
 from umrs.knowledge import term_registry as reg
 from umrs.knowledge import typed_write as tw
 from umrs.knowledge.edge_typing import prepare_edge
 from umrs.knowledge.node_typing import prepare_row
-from umrs.knowledge.ontologies import bundled_by_ref, load_bundled
+from umrs.knowledge.ontologies import bundled_by_ref
 from umrs.knowledge.ontologies.seed_sql import render_seed_sql
 from umrs.knowledge.store import KnowledgeEdge, KnowledgeNode, KnowledgeStore
 from umrs.knowledge.term_closure import admitted_set, build_closure
@@ -38,8 +36,6 @@ from umrs.knowledge.term_types import (
     OntologyViolationError,
     TypingContext,
 )
-
-COMPOSED = (load_bundled, bundled_by_ref, build_closure, admitted_set, prepare_row, prepare_edge)
 
 
 @pytest.fixture(autouse=True)
@@ -185,14 +181,13 @@ def test_batch_with_an_unseeded_registry_writes_untyped_rows_and_no_audit():
     assert not any("knowledge_write_batches" in s for s in sqls)
 
 
-# ── composed (pending the worker queue) ──────────────────────────────────────
+# ── composed (bundled vocabulary + typing rules) ──────────────────────────────────────
 
 
 def _core_ctx() -> TypingContext:
     return TypingContext.from_snapshot(reg.bundled_snapshot())
 
 
-@pending(*COMPOSED)
 def test_bundled_core_context_resolves_legacy_slugs():
     ctx = _core_ctx()
     assert ctx.resolve("part_of", "relation").term_id == "r4:partOf"  # type: ignore[union-attr]
@@ -200,7 +195,6 @@ def test_bundled_core_context_resolves_legacy_slugs():
     assert ctx.is_a("r4:Paper", "prov:Entity")
 
 
-@pending(*COMPOSED)
 def test_raw_mint_classes_agree_with_prepare_row():
     ctx = _core_ctx()
     doc = prepare_row(ctx, NodeDraft("d", "file", mint.MINT_DOC_CLASS))
@@ -349,7 +343,6 @@ def warn_batch() -> dict[str, Any]:
 
 
 @needs_pg
-@pending(*COMPOSED, render_seed_sql)
 def test_warn_batch_types_nodes_and_moves_undeclared_attrs(warn_batch):
     img = warn_batch["nodes"][f"img-{warn_batch['project']}"]
     assert (img["node_class"], img["node_type"]) == ("r4:Image", "file")
@@ -358,7 +351,6 @@ def test_warn_batch_types_nodes_and_moves_undeclared_attrs(warn_batch):
 
 
 @needs_pg
-@pending(*COMPOSED, render_seed_sql)
 def test_warn_batch_unknown_relation_falls_back_to_related_to(warn_batch):
     project = warn_batch["project"]
     unknown, part = warn_batch["edges"][f"e1-{project}"], warn_batch["edges"][f"e2-{project}"]
@@ -368,7 +360,6 @@ def test_warn_batch_unknown_relation_falls_back_to_related_to(warn_batch):
 
 
 @needs_pg
-@pending(*COMPOSED, render_seed_sql)
 def test_warn_batch_counts_gaps_and_audits_the_actor(warn_batch):
     assert {("attribute", "colour"), ("relation", "frobs")} <= warn_batch["gaps"]
     assert warn_batch["batch"]["origin_actor"] == "agent"
@@ -434,7 +425,6 @@ async def _enforce(url: str, project: str) -> dict[str, Any]:
 
 
 @needs_pg
-@pending(*COMPOSED, render_seed_sql)
 def test_enforce_graph_refuses_the_whole_batch_and_keeps_its_version():
     _seed_bundled(_pg_url() or "")
     project = f"p-kns7-{uuid.uuid4().hex[:8]}"
@@ -473,7 +463,6 @@ async def _legacy_and_typed(url: str, project: str) -> dict[str, Any]:
 
 
 @needs_pg
-@pending(*COMPOSED, render_seed_sql)
 def test_legacy_rows_stay_valid_and_a_single_typed_edge_falls_back():
     _seed_bundled(_pg_url() or "")
     project = f"p-kns7-{uuid.uuid4().hex[:8]}"

@@ -11,7 +11,6 @@ import os
 import uuid
 
 import pytest
-from _kn_s7_pending import pending
 from umrs.knowledge.ontologies.seed_sql import (
     HEADER,
     TERM_COLUMNS,
@@ -22,9 +21,6 @@ from umrs.knowledge.ontologies.seed_sql import (
     sql_text_array,
 )
 from umrs.knowledge.term_types import OntologyDoc, TermSpec
-
-pytestmark = pending(sql_text, sql_bool, sql_text_array, sql_jsonb, render_seed_sql)
-
 
 # ── literals ─────────────────────────────────────────────────────────────────
 

@@ -6,7 +6,6 @@ Pure tests over a hand-built vocabulary. Task kn-s7-04 implements
 
 from __future__ import annotations
 
-from _kn_s7_pending import pending
 from umrs.knowledge.edge_typing import prepare_edge
 from umrs.knowledge.term_types import (
     EdgeDraft,
@@ -14,8 +13,6 @@ from umrs.knowledge.term_types import (
     TermSpec,
     TypingContext,
 )
-
-pytestmark = pending(prepare_edge)
 
 
 def _term(term_id: str, kind: str, **kw: object) -> TermSpec:

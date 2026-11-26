@@ -7,21 +7,14 @@ migration run seeds the registry with no fetch and no admin step. The YAML in
 
     python -m umrs.knowledge.ontologies > src/umrs/migrations/<NNNN>_knowledge_terms_seed.sql
 
-Integration step of KN-S7: generate the file once kn-s7-01/02/05 have
-landed (number: the next free one after the term and typed-column
-migrations, taken at land time).
+Renumbering the seed (a later migration number at merge time) keeps its
+text; only a YAML change needs a regeneration.
 """
 
 from __future__ import annotations
 
-from _kn_s7_pending import pending
-from umrs.knowledge.ontologies import bundled_by_ref
 from umrs.knowledge.ontologies.__main__ import bundled_seed_sql
-from umrs.knowledge.ontologies.seed_sql import render_seed_sql
-from umrs.knowledge.term_closure import admitted_set, build_closure
 from umrs.migrations import get_migration_files
-
-pytestmark = pending(bundled_by_ref, build_closure, admitted_set, render_seed_sql)
 
 
 def _seed_files() -> list[tuple[str, str]]:

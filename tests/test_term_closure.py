@@ -7,7 +7,6 @@ and ``admitted_set``.
 from __future__ import annotations
 
 import pytest
-from _kn_s7_pending import pending
 from umrs.knowledge.term_closure import (
     ClosureError,
     admitted_set,
@@ -15,8 +14,6 @@ from umrs.knowledge.term_closure import (
     closure_rows,
 )
 from umrs.knowledge.term_types import OntologyDoc, TermSpec
-
-pytestmark = pending(build_closure, closure_rows, admitted_set)
 
 
 def _t(term_id: str, kind: str = "class", parents: tuple[str, ...] = ()) -> TermSpec:

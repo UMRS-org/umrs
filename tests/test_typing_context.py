@@ -9,7 +9,6 @@ from __future__ import annotations
 import math
 
 import pytest
-from _kn_s7_pending import pending
 from umrs.knowledge.node_typing import check_datatype, prepare_row
 from umrs.knowledge.term_types import (
     NodeDraft,
@@ -17,8 +16,6 @@ from umrs.knowledge.term_types import (
     TermSpec,
     TypingContext,
 )
-
-pytestmark = pending(check_datatype, prepare_row)
 
 
 def _cls(term_id: str, bucket: str, parents: tuple[str, ...] = (), **kw: object) -> TermSpec:
