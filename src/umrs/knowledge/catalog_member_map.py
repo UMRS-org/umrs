@@ -86,4 +86,102 @@ def map_members(members: Any, resolver: MemberResolver) -> MemberMapping:
     Each id list keeps first-seen order with no repeats; ``unmapped``
     keeps every label in order (repeats allowed).
     """
-    raise NotImplementedError("s-d39a-03")
+    mapping = MemberMapping()
+    if not isinstance(members, dict):
+        return mapping
+    _map_graphs(_entries(members, "graphs"), resolver, mapping)
+    _map_skills(_entries(members, "skills"), resolver, mapping)
+    _map_mcp_servers(_entries(members, "mcp_servers"), resolver, mapping)
+    _map_embeddings(_entries(members, "embedding_models"), mapping)
+    return mapping
+
+
+def _entries(members: dict[Any, Any], kind: str) -> list[Any]:
+    entries = members.get(kind)
+    if not isinstance(entries, list):
+        return []
+    return entries
+
+
+def _entry_name(entry: dict[Any, Any]) -> str | None:
+    name = entry.get("name")
+    if not isinstance(name, str) or not name:
+        return None
+    return name
+
+
+def _append_id(ids: list[str], local_id: str) -> None:
+    if local_id not in ids:
+        ids.append(local_id)
+
+
+def _map_graphs(
+    entries: list[Any], resolver: MemberResolver, mapping: MemberMapping
+) -> None:
+    for entry in entries:
+        if not isinstance(entry, dict):
+            mapping.unmapped.append("malformed:graph")
+            continue
+        if entry.get("default") is True:
+            _append_id(mapping.member_graph_ids, resolver.default_graph_id())
+            continue
+        name = _entry_name(entry)
+        if name is None:
+            mapping.unmapped.append("malformed:graph")
+            continue
+        graph_id = resolver.graph_id_by_name(name)
+        if graph_id is None:
+            mapping.unmapped.append(f"graph:{name}")
+            continue
+        _append_id(mapping.member_graph_ids, graph_id)
+
+
+def _map_skills(
+    entries: list[Any], resolver: MemberResolver, mapping: MemberMapping
+) -> None:
+    for entry in entries:
+        if not isinstance(entry, dict):
+            mapping.unmapped.append("malformed:skill")
+            continue
+        name = _entry_name(entry)
+        if name is None:
+            mapping.unmapped.append("malformed:skill")
+            continue
+        scope = str(entry.get("scope") or "")
+        version = str(entry.get("version") or "")
+        skill_id = resolver.skill_id(scope, name, version)
+        if skill_id is None:
+            mapping.unmapped.append(f"skill:{scope}:{name}@{version}")
+            continue
+        _append_id(mapping.skill_ids, skill_id)
+
+
+def _map_mcp_servers(
+    entries: list[Any], resolver: MemberResolver, mapping: MemberMapping
+) -> None:
+    for entry in entries:
+        if not isinstance(entry, dict):
+            mapping.unmapped.append("malformed:mcp")
+            continue
+        name = _entry_name(entry)
+        if name is None:
+            mapping.unmapped.append("malformed:mcp")
+            continue
+        version = str(entry.get("version") or "")
+        resolved = resolver.mcp_server(name, version)
+        if resolved is None:
+            mapping.unmapped.append(f"mcp:{name}@{version}")
+            continue
+        server_id, trust_class = resolved
+        _append_id(mapping.mcp_server_ids, server_id)
+        mapping.mcp_trust_classes[server_id] = trust_class
+
+
+def _map_embeddings(entries: list[Any], mapping: MemberMapping) -> None:
+    for entry in entries:
+        if not isinstance(entry, str):
+            mapping.unmapped.append("malformed:embedding")
+            continue
+        if not entry:
+            continue
+        _append_id(mapping.embedding_model_ids, entry)

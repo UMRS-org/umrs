@@ -59,4 +59,90 @@ def member_identities(
       Not found: no entry; ``unresolved`` counts it (once per distinct id).
     - ``embedding_models`` keeps every distinct non-empty str id verbatim.
     """
-    raise NotImplementedError("s-d39a-02")
+    graphs, graph_missing = _graph_identities(row, graph_rows, default_graph_id)
+    skills, skill_missing = _skill_identities(row, skill_rows)
+    mcp_servers, mcp_missing = _mcp_identities(row, mcp_rows)
+    return {
+        "graphs": graphs,
+        "skills": skills,
+        "mcp_servers": mcp_servers,
+        "embedding_models": _member_ids(row, "embedding_model_ids"),
+        "unresolved": graph_missing + skill_missing + mcp_missing,
+    }
+
+
+def _member_ids(row: dict[str, Any], key: str) -> list[str]:
+    """Distinct non-empty str ids from ``row[key]``, first occurrence kept."""
+    ids: list[str] = []
+    for item in row.get(key) or []:
+        if isinstance(item, str) and item and item not in ids:
+            ids.append(item)
+    return ids
+
+
+def _index_rows(rows: list[dict[str, Any]], id_key: str) -> dict[str, dict[str, Any]]:
+    """Registry rows indexed by their id key."""
+    return {str(r.get(id_key) or ""): r for r in rows}
+
+
+def _graph_identities(
+    row: dict[str, Any],
+    graph_rows: list[dict[str, Any]],
+    default_graph_id: str,
+) -> tuple[list[dict[str, Any]], int]:
+    """Graph identities plus the count of ids no registry row resolved."""
+    by_id = _index_rows(graph_rows, "graph_id")
+    entries: list[dict[str, Any]] = []
+    unresolved = 0
+    for graph_id in _member_ids(row, "member_graph_ids"):
+        if graph_id == default_graph_id:
+            entries.append({"default": True, "name": ""})
+        elif graph_id in by_id:
+            name = by_id[graph_id].get("name")
+            entries.append({"default": False, "name": str(name or "")})
+        else:
+            unresolved += 1
+    return entries, unresolved
+
+
+def _skill_identities(
+    row: dict[str, Any], skill_rows: list[dict[str, Any]]
+) -> tuple[list[dict[str, Any]], int]:
+    """Skill identities plus the count of ids no registry row resolved."""
+    by_id = _index_rows(skill_rows, "skill_id")
+    entries: list[dict[str, Any]] = []
+    unresolved = 0
+    for skill_id in _member_ids(row, "skill_ids"):
+        found = by_id.get(skill_id)
+        if found is None:
+            unresolved += 1
+        else:
+            entries.append(
+                {
+                    "scope": str(found.get("scope") or ""),
+                    "name": str(found.get("name") or ""),
+                    "version": str(found.get("version") or ""),
+                }
+            )
+    return entries, unresolved
+
+
+def _mcp_identities(
+    row: dict[str, Any], mcp_rows: list[dict[str, Any]]
+) -> tuple[list[dict[str, Any]], int]:
+    """MCP identities (no trust class) plus the unresolved-id count."""
+    by_id = _index_rows(mcp_rows, "server_id")
+    entries: list[dict[str, Any]] = []
+    unresolved = 0
+    for server_id in _member_ids(row, "mcp_server_ids"):
+        found = by_id.get(server_id)
+        if found is None:
+            unresolved += 1
+        else:
+            entries.append(
+                {
+                    "name": str(found.get("name") or ""),
+                    "version": str(found.get("version") or ""),
+                }
+            )
+    return entries, unresolved

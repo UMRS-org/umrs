@@ -21,6 +21,14 @@ from __future__ import annotations
 from typing import Any
 
 
+def _chain_entry(row: dict[str, Any]) -> dict[str, str]:
+    """One chain entry: a new dict with both fields read as strings."""
+    return {
+        "version": str(row.get("version") or ""),
+        "change_note": str(row.get("change_note") or ""),
+    }
+
+
 def change_note_chain(
     versions: list[dict[str, Any]], upto_version: str
 ) -> list[dict[str, str]]:
@@ -35,7 +43,15 @@ def change_note_chain(
     equals ``upto_version``. When no row has that version, every row is
     returned. Rows that are not dicts are skipped.
     """
-    raise NotImplementedError("s-d39a-01")
+    chain: list[dict[str, str]] = []
+    for row in versions:
+        if not isinstance(row, dict):
+            continue
+        entry = _chain_entry(row)
+        chain.append(entry)
+        if entry["version"] == upto_version:
+            break
+    return chain
 
 
 def catalog_block(
@@ -61,4 +77,11 @@ def catalog_block(
     An empty ``record`` (the project has no catalog) returns ``{}`` and
     ignores the other arguments: the block is never invented.
     """
-    raise NotImplementedError("s-d39a-01")
+    if not record:
+        return {}
+    block = dict(record)
+    block["catalog_id"] = str(record.get("catalog_id") or "")
+    block["change_notes"] = [dict(entry) for entry in chain]
+    block["members"] = dict(members)
+    block["origin_fingerprint"] = str(fingerprint or "")
+    return block
