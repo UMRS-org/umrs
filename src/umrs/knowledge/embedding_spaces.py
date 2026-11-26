@@ -1,0 +1,379 @@
+"""The embedding-space registry (ADR-083 D-1, decision KN-3, slice KN-S5).
+
+A **space** is one encoder's vector space: every vector in
+``knowledge_node_embeddings`` carries the ``model_name`` it was encoded
+under, and the registry (``knowledge_embedding_spaces``) says which names
+belong to which space. Writers refuse a vector whose model name resolves to
+no active space, so two models never share a space by accident.
+
+Where spaces come from, in both deploy modes (hosted fronts and a
+self-hosted R4 + UMRS):
+
+- the migration seeds ONE row, the bundled e5-base-v2 text space
+  (:data:`BUNDLED_SPACE`), with the names sites stage it under, so a
+  stand-alone install has an active space with no admin step;
+- the site file's ``knowledge.embedding_spaces`` declares more
+  (``embedding_space_site``); the writer seeds a declared space on its
+  first write, and ``umrs-server admin embedding-space seed-site`` seeds
+  them all;
+- an admin registers, retires and re-activates spaces with
+  ``umrs-server admin embedding-space`` (``umrs.cli.admin.embedding_spaces``).
+
+Name resolution (:func:`resolve_space`): a name matches a space when it
+equals the space's ``model_name`` or one of its ``legacy_names`` (after
+trimming whitespace and trailing slashes); a **bare** registered name (one
+without ``/``) also matches any path whose last segment is that name, the
+convention sites already stage models by (``/models/e5-base-v2``,
+``/opt/umrs/models/e5-base-v2`` and ``intfloat/e5-base-v2`` are one space).
+Exact matches win over basename matches; two different spaces matching at
+the same step is an error, never a guess.
+
+Identifier safety: ``space_id`` becomes part of an index name
+(``hnsw_<space_id>``, slice KN-S6) and ``model_name`` part of a partial
+index predicate, so both are restricted to the character sets
+:data:`SPACE_ID_PATTERN` and :data:`MODEL_NAME_PATTERN` here and by CHECK
+constraints in the migration.
+"""
+
+from __future__ import annotations
+
+import re
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass, field
+from typing import Any
+
+from umrs.knowledge.text_embedder import (
+    BUNDLED_TEXT_EMBEDDER_DIM,
+    BUNDLED_TEXT_EMBEDDER_DIR,
+    BUNDLED_TEXT_EMBEDDER_REPO,
+    BUNDLED_TEXT_EMBEDDER_REVISION,
+    embedding_space,
+)
+
+TABLE = "knowledge_embedding_spaces"
+
+# Same patterns as the migration's CHECK constraints (a test compares them).
+SPACE_ID_PATTERN = r"^[a-z0-9][a-z0-9_]{0,47}$"
+MODEL_NAME_PATTERN = r"^[A-Za-z0-9._/:@+-]{1,255}$"
+_SPACE_ID_RE = re.compile(SPACE_ID_PATTERN)
+_MODEL_NAME_RE = re.compile(MODEL_NAME_PATTERN)
+
+STATUS_ACTIVE = "active"
+STATUS_RETIRED = "retired"
+VALID_STATUSES = frozenset({STATUS_ACTIVE, STATUS_RETIRED})
+VALID_MODALITIES = frozenset({"text", "image", "video", "audio", "volume"})
+VALID_METRICS = frozenset({"cosine"})
+VALID_LOCALITIES = frozenset({"site"})
+SOURCE_BUNDLED = "bundled"
+SOURCE_SITE = "site"
+SOURCE_ADMIN = "admin"
+VALID_SOURCES = frozenset({SOURCE_BUNDLED, SOURCE_SITE, SOURCE_ADMIN})
+MAX_DIMENSION = 16000
+MAX_PREFIX_CHARS = 64
+
+# Error codes (named refusals; the writer's error message starts with one).
+CODE_INVALID = "knowledge.embedding_space_invalid"
+CODE_AMBIGUOUS = "knowledge.embedding_space_ambiguous"
+CODE_UNREGISTERED = "knowledge.embedding_space_unregistered"
+CODE_EXISTS = "knowledge.embedding_space_exists"
+CODE_NAME_TAKEN = "knowledge.embedding_space_name_taken"
+CODE_REGISTRY_UNAVAILABLE = "knowledge.embedding_space_registry_unavailable"
+
+# Column order of every SELECT/INSERT on the registry (``space_to_row``
+# returns values in this order; ``space_from_row`` reads these keys).
+COLUMNS: tuple[str, ...] = (
+    "space_id",
+    "model_name",
+    "model_ref",
+    "revision",
+    "dimension",
+    "modalities",
+    "metric",
+    "query_prefix",
+    "document_prefix",
+    "locality",
+    "legacy_names",
+    "status",
+    "source",
+)
+
+
+class EmbeddingSpaceError(ValueError):
+    """An invalid space, an ambiguous name or a registry conflict.
+
+    ``code`` is one of the ``CODE_*`` constants; ``str(exc)`` starts with it.
+    """
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(f"{code}: {message}")
+        self.code = code
+
+
+class UnregisteredEmbeddingModel(RuntimeError):
+    """A writer was asked to store vectors of a model no active space owns.
+
+    Not ``permanent`` (the embed job's failure record): registering the
+    space and re-running the embed repairs it, no re-ingest needed.
+    """
+
+    code = CODE_UNREGISTERED
+    permanent = False
+
+    def __init__(self, model_name: str) -> None:
+        super().__init__(
+            f"{CODE_UNREGISTERED}: no active embedding space owns model "
+            f"{model_name!r}; declare it in site.yaml knowledge.embedding_spaces "
+            "or run `umrs-server admin embedding-space register` "
+            "(ADR-083 D-1)"
+        )
+        self.model_name = model_name
+
+
+class EmbeddingRegistryUnavailable(RuntimeError):
+    """The registry table cannot be read (not migrated, or the read failed)."""
+
+    code = CODE_REGISTRY_UNAVAILABLE
+    permanent = False
+
+
+@dataclass(frozen=True)
+class EmbeddingSpace:
+    """One registry row. ``index_name`` is derived, never stored apart."""
+
+    space_id: str
+    model_name: str
+    dimension: int
+    model_ref: str = ""
+    revision: str = ""
+    modalities: tuple[str, ...] = ("text",)
+    metric: str = "cosine"
+    query_prefix: str = ""
+    document_prefix: str = ""
+    locality: str = "site"
+    legacy_names: tuple[str, ...] = field(default_factory=tuple)
+    status: str = STATUS_ACTIVE
+    source: str = SOURCE_ADMIN
+
+    @property
+    def index_name(self) -> str:
+        """The per-space partial HNSW index name (ADR-083 D-2, slice KN-S6)."""
+        return f"hnsw_{self.space_id}"
+
+    @property
+    def active(self) -> bool:
+        return self.status == STATUS_ACTIVE
+
+
+# The bundled text space: the migration seeds exactly this row.
+BUNDLED_SPACE_ID = "e5_base_v2"
+BUNDLED_SPACE = EmbeddingSpace(
+    space_id=BUNDLED_SPACE_ID,
+    model_name=BUNDLED_TEXT_EMBEDDER_DIR,
+    dimension=BUNDLED_TEXT_EMBEDDER_DIM,
+    model_ref=BUNDLED_TEXT_EMBEDDER_REPO,
+    revision=BUNDLED_TEXT_EMBEDDER_REVISION,
+    modalities=("text",),
+    metric="cosine",
+    query_prefix="query: ",
+    document_prefix="passage: ",
+    locality="site",
+    legacy_names=(
+        BUNDLED_TEXT_EMBEDDER_REPO,
+        "/models/e5-base-v2",
+        embedding_space(BUNDLED_TEXT_EMBEDDER_DIR),
+    ),
+    status=STATUS_ACTIVE,
+    source=SOURCE_BUNDLED,
+)
+
+
+# ── validation (identifier safety: implemented here, not delegated) ─────────
+
+
+def _invalid(message: str) -> EmbeddingSpaceError:
+    return EmbeddingSpaceError(CODE_INVALID, message)
+
+
+def _check_name(name: Any, what: str) -> None:
+    if not isinstance(name, str) or not _MODEL_NAME_RE.fullmatch(name):
+        raise _invalid(f"{what} {name!r} must match {MODEL_NAME_PATTERN}")
+
+
+def _check_identity(space: EmbeddingSpace) -> None:
+    if not isinstance(space.space_id, str) or not _SPACE_ID_RE.fullmatch(space.space_id):
+        raise _invalid(f"space_id {space.space_id!r} must match {SPACE_ID_PATTERN}")
+    _check_name(space.model_name, "model_name")
+    for name in space.legacy_names:
+        _check_name(name, "legacy name")
+    dim = space.dimension
+    if isinstance(dim, bool) or not isinstance(dim, int) or not 0 < dim <= MAX_DIMENSION:
+        raise _invalid(f"dimension {dim!r} must be an integer in 1..{MAX_DIMENSION}")
+
+
+def _check_one_of(value: Any, allowed: frozenset[str], what: str) -> None:
+    if value not in allowed:
+        raise _invalid(f"{what} {value!r} must be one of {sorted(allowed)}")
+
+
+def _check_shape(space: EmbeddingSpace) -> None:
+    if not space.modalities:
+        raise _invalid("modalities must not be empty")
+    for modality in space.modalities:
+        _check_one_of(modality, VALID_MODALITIES, "modality")
+    _check_one_of(space.metric, VALID_METRICS, "metric")
+    _check_one_of(space.locality, VALID_LOCALITIES, "locality")
+    _check_one_of(space.status, VALID_STATUSES, "status")
+    _check_one_of(space.source, VALID_SOURCES, "source")
+
+
+def _check_texts(space: EmbeddingSpace) -> None:
+    for what in ("model_ref", "revision", "query_prefix", "document_prefix"):
+        value = getattr(space, what)
+        if not isinstance(value, str):
+            raise _invalid(f"{what} must be a string")
+        if any(ord(ch) < 32 and ch != " " for ch in value):
+            raise _invalid(f"{what} must not contain control characters")
+    for what in ("query_prefix", "document_prefix"):
+        if len(getattr(space, what)) > MAX_PREFIX_CHARS:
+            raise _invalid(f"{what} is longer than {MAX_PREFIX_CHARS} characters")
+
+
+def validate_space(space: EmbeddingSpace) -> EmbeddingSpace:
+    """Return ``space`` unchanged, or raise ``EmbeddingSpaceError`` (code
+    :data:`CODE_INVALID`) naming the first bad field."""
+    _check_identity(space)
+    _check_shape(space)
+    _check_texts(space)
+    return space
+
+
+# ── names and resolution ────────────────────────────────────────────────────
+
+
+def normalize_name(name: str) -> str:
+    """Trim whitespace and trailing slashes (``"/m/e5/ "`` → ``"/m/e5"``)."""
+    return str(name or "").strip().rstrip("/")
+
+
+def space_names(space: EmbeddingSpace) -> tuple[str, ...]:
+    """The space's ``model_name`` then its ``legacy_names``, normalized,
+    without empties or duplicates, first occurrence kept."""
+    seen: dict[str, None] = {}
+    for name in (space.model_name, *space.legacy_names):
+        norm = normalize_name(name)
+        if norm:
+            seen.setdefault(norm, None)
+    return tuple(seen)
+
+
+def matches_exactly(space: EmbeddingSpace, name: str) -> bool:
+    """``name`` (normalized) is one of :func:`space_names`. Status ignored."""
+    norm = normalize_name(name)
+    return bool(norm) and norm in space_names(space)
+
+
+def matches_by_basename(space: EmbeddingSpace, name: str) -> bool:
+    """A bare registered name (no ``/``) equals ``name``'s last path
+    segment (:func:`umrs.knowledge.text_embedder.embedding_space`).
+    Status ignored."""
+    norm = normalize_name(name)
+    if not norm:
+        return False
+    base = embedding_space(norm)
+    return any("/" not in bare and bare == base for bare in space_names(space))
+
+
+def matches(space: EmbeddingSpace, name: str) -> bool:
+    """Exact or basename match (status ignored)."""
+    return matches_exactly(space, name) or matches_by_basename(space, name)
+
+
+def _single(found: Sequence[EmbeddingSpace], name: str) -> EmbeddingSpace | None:
+    ids = sorted({s.space_id for s in found})
+    if len(ids) > 1:
+        raise EmbeddingSpaceError(
+            CODE_AMBIGUOUS, f"model {name!r} matches spaces {ids}"
+        )
+    return found[0] if found else None
+
+
+def resolve_space(
+    name: str, spaces: Iterable[EmbeddingSpace]
+) -> EmbeddingSpace | None:
+    """The ACTIVE space ``name`` denotes, or None.
+
+    Exact matches first; only when none, basename matches. More than one
+    distinct space at the deciding step raises ``EmbeddingSpaceError``
+    (:data:`CODE_AMBIGUOUS`). Retired spaces never resolve."""
+    active = [s for s in spaces if s.active]
+    exact = _single([s for s in active if matches_exactly(s, name)], name)
+    if exact is not None:
+        return exact
+    return _single([s for s in active if matches_by_basename(s, name)], name)
+
+
+def require_space(name: str, spaces: Iterable[EmbeddingSpace]) -> EmbeddingSpace:
+    """:func:`resolve_space`, or ``UnregisteredEmbeddingModel``."""
+    space = resolve_space(name, spaces)
+    if space is None:
+        raise UnregisteredEmbeddingModel(normalize_name(name) or str(name))
+    return space
+
+
+# ── rows ────────────────────────────────────────────────────────────────────
+
+
+def _text_tuple(value: Any) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        raise _invalid(f"expected a list of strings, got {value!r}")
+    return tuple(str(v) for v in value)
+
+
+def space_from_row(row: Mapping[str, Any]) -> EmbeddingSpace:
+    """A registry row (psycopg2 RealDict, asyncpg Record or plain dict keyed
+    by :data:`COLUMNS`) as a validated :class:`EmbeddingSpace`. Array
+    columns become tuples; NULL text columns become ``""``."""
+
+    def text(key: str, default: str = "") -> str:
+        value = row[key]
+        return default if value is None else str(value)
+
+    return validate_space(
+        EmbeddingSpace(
+            space_id=text("space_id"),
+            model_name=text("model_name"),
+            dimension=int(row["dimension"]),
+            model_ref=text("model_ref"),
+            revision=text("revision"),
+            modalities=_text_tuple(row["modalities"]),
+            metric=text("metric", "cosine"),
+            query_prefix=text("query_prefix"),
+            document_prefix=text("document_prefix"),
+            locality=text("locality", "site"),
+            legacy_names=_text_tuple(row["legacy_names"]),
+            status=text("status", STATUS_ACTIVE),
+            source=text("source", SOURCE_ADMIN),
+        )
+    )
+
+
+def space_to_row(space: EmbeddingSpace) -> tuple[Any, ...]:
+    """Values in :data:`COLUMNS` order (arrays as lists), after validation."""
+    validate_space(space)
+    return (
+        space.space_id,
+        space.model_name,
+        space.model_ref,
+        space.revision,
+        space.dimension,
+        list(space.modalities),
+        space.metric,
+        space.query_prefix,
+        space.document_prefix,
+        space.locality,
+        list(space.legacy_names),
+        space.status,
+        space.source,
+    )

@@ -71,7 +71,9 @@ class _Pool:
         self.executed.append((sql, args))
         return self.delete_status if sql.startswith("DELETE") else "UPDATE 1"
 
-    async def fetch(self, _sql, ids):
+    async def fetch(self, _sql, ids=()):
+        # () = the embedding-space registry read (KN-S5): empty registry,
+        # which stands for the bundled space the e5-base-v2 MODEL is in.
         return [row for row in self.rows if row[0] in ids]
 
     async def fetchval(self, _sql, *_args):
