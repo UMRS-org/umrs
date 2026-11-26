@@ -601,6 +601,8 @@ FILES_ERRORS = {
     "files.bucket_taken": 409,
     "files.bucket_create_failed": 500,
     "files.bucket_registry_unavailable": 503,
+    # ADR-115 D-4 (MB-S2b, 2026-11-27): an unknown /files/list delimiter or field.
+    "files.list_option_invalid": 400,
 }
 
 HPCACCESS_ERRORS = {

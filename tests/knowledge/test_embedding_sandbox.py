@@ -300,6 +300,9 @@ class _StampPool:
     async def fetchval(self, *_args):
         return 1  # the artifact row and the writer's own file node exist
 
+    async def fetch(self, *_args):
+        return []  # the embedding-space registry (KN-S5): empty = bundled
+
     async def execute(self, sql, *args):
         self.updates.append((sql, args))
 
@@ -325,7 +328,9 @@ async def test_embed_stamps_the_artifact_only_after_vectors_are_written(monkeypa
     from umrs.jobs import knowledge_adapters as ka
     from umrs.jobs.knowledge_adapters import KnowledgeEmbedResult
 
-    monkeypatch.setenv("UMRS_KNOWLEDGE_EMBED_MODEL", "/srv/models/e5")
+    # A name of the bundled e5-base-v2 space (KN-S5: the writer refuses an
+    # unregistered model).
+    monkeypatch.setenv("UMRS_KNOWLEDGE_EMBED_MODEL", "/srv/models/e5-base-v2")
     store, result = _Store(), KnowledgeEmbedResult()
     embedded = {"chunks": [{"text": "a"}, {"text": "b"}], "vectors": [[0.1, 0.2, 0.3]] * 2}
     await ka._write_embedded_chunks(store, "art-1", "p", "", embedded, result)
@@ -337,7 +342,7 @@ async def test_embed_stamps_the_artifact_only_after_vectors_are_written(monkeypa
     assert delete_sql.startswith("DELETE FROM knowledge_nodes")
     assert vectors_sql.startswith("DELETE FROM knowledge_node_embeddings")
     assert "embedding_status = 'current'" in sql
-    assert args == ("/srv/models/e5", 3, "art-1", "fixed-v0", 2, 2)
+    assert args == ("/srv/models/e5-base-v2", 3, "art-1", "fixed-v0", 2, 2)
 
     empty_store = _Store()
     await ka._write_embedded_chunks(

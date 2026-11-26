@@ -9,6 +9,9 @@ a site at another pre-staged model directory.
 The configured value is also the embedding-space name written to
 ``knowledge_node_embeddings.model_name`` (ADR-083), and the RAG service's query
 encoder defaults to it, so queries and stored vectors share one space.
+Since slice KN-S5 the name must resolve to an active row of the embedding-space
+registry (``umrs.knowledge.embedding_spaces``) or the embed writer refuses it;
+the bundled model's names are seeded there by migration.
 
 Staging CLI (image build, ``standalone.sh embedder pull``, operators)::
 
@@ -27,6 +30,9 @@ BUNDLED_TEXT_EMBEDDER_REPO = "intfloat/e5-base-v2"
 # The commit the stand-alone stack ran on when the bundle was adopted.
 BUNDLED_TEXT_EMBEDDER_REVISION = "f52bf8ec8c7124536f0efb74aca902b2995e5bcd"
 BUNDLED_TEXT_EMBEDDER_DIR = "/opt/umrs/models/e5-base-v2"
+# Its vector size; the registry's bundled space row (ADR-083 D-1, slice
+# KN-S5: ``umrs.knowledge.embedding_spaces.BUNDLED_SPACE``) records it.
+BUNDLED_TEXT_EMBEDDER_DIM = 768
 
 # Weights, config and tokenizer of a sentence-transformers model — not the
 # ONNX/OpenVINO variants or the duplicate pytorch_model.bin (half the size).

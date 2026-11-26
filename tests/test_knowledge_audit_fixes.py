@@ -106,6 +106,9 @@ class _TxConn:
     async def fetchval(self, *_args):
         return 1
 
+    async def fetch(self, *_args):
+        return []  # the embedding-space registry (KN-S5): empty = bundled
+
     async def execute(self, *_args):
         return "DELETE 0"
 
@@ -286,7 +289,7 @@ class TestEmbedOneArtifact:
         monkeypatch.setattr(
             ka, "_read_bounded", lambda *_a, **_k: ka._Bounded(text.encode(), len(text.encode()))
         )
-        model_dir = str(tmp_path / "fake-model")
+        model_dir = str(tmp_path / "e5-base-v2")  # a bundled-space name (KN-S5)
         monkeypatch.setenv("UMRS_KNOWLEDGE_EMBED_MODEL", model_dir)
         store = _CapturingStore()
         embedder = _FakeEmbedder()

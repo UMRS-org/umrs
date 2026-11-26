@@ -125,7 +125,9 @@ def _chunks(db: _Db) -> list[str]:
 
 @pytest.fixture(autouse=True)
 def _site(monkeypatch):
-    monkeypatch.setenv("UMRS_KNOWLEDGE_EMBED_MODEL", "/srv/models/e5")
+    # A name of the bundled e5-base-v2 space (the writer refuses an
+    # unregistered model since KN-S5).
+    monkeypatch.setenv("UMRS_KNOWLEDGE_EMBED_MODEL", "/srv/models/e5-base-v2")
     monkeypatch.delenv("UMRS_KNOWLEDGE_CHUNK_SCHEME", raising=False)
 
 

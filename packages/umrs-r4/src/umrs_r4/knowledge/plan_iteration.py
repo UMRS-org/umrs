@@ -46,6 +46,7 @@ from typing import Any
 from umrs.knowledge.loop import LoopIteration, LoopPhase, LoopStatus, ResearchLoop
 
 from r4_contracts import loop_plan
+from umrs_r4.venues.venue_sessions import ENDED_STATES
 
 logger = logging.getLogger(__name__)
 
@@ -173,7 +174,7 @@ def _reported(last: dict[str, Any]) -> dict[str, Any]:
 def _worker_ended(venue: dict[str, Any], last: dict[str, Any]) -> dict[str, Any] | None:
     """A failed run when the worker's session ended with no attempt running."""
     if (
-        venue.get("state") not in ("failed", "stopped")
+        venue.get("state") not in ENDED_STATES
         or last.get("status") == "running"
     ):
         return None
@@ -430,6 +431,9 @@ class PlanIterationEngine:
         if verdict is not True:
             summary = _not_run(number, f"approval_rejected:{PLAN_RUN}")
             return _record(loop, number, summary, "rejected")
+        # The loop's clock ran while a human decided (D-32, ADR-067): the run
+        # gets what is left now, never the figure read before the ask.
+        remaining = remaining_wallclock_sec(loop)
         summary = self._executor.run(loop, number, remaining, self._cancel_check)
         return _record(loop, number, summary, "completed")
 

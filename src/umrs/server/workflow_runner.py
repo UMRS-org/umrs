@@ -65,8 +65,9 @@ from umrs.server.step_router import (
     resolve_waiting,
 )
 from umrs.server.step_trust import (
-    HPC_LANES,
     LEGACY_IN_PROCESS,
+    PODMAN_STAGED_LANE,
+    STAGED_LANES,
     is_uploaded_step,
     step_image_refusal,
     uploaded_code_lane,
@@ -1630,7 +1631,9 @@ def _workflow_executor_name(
 
     *run_identity* is ``(user_id, verified project[, has intent])``: the
     project is the gateway-verified one, never the ``params.project_id``
-    claim; a signed intent (ADR-112 B2) decides a ``user_account`` run."""
+    claim; a signed intent (ADR-112 B2) decides a ``user_account`` run.
+    A site that opted into the local staged podman lane (ADR-091) runs the
+    uploaded code there: this host's compute, no HPC account involved."""
     worker = _executor_name_from_execution_mode(workflow_json.get("execution_mode"))
     if injected:
         return worker, ""
@@ -1641,6 +1644,8 @@ def _workflow_executor_name(
         return _builtin_lane(_legacy_uploaded_lane(worker, source_path), run_identity)
     if not lane:
         return None, _NO_HPC_LANE
+    if lane == PODMAN_STAGED_LANE:
+        return lane, ""
     refusal = _uploaded_lane_refusal(lane, run_identity)
     return (None, refusal) if refusal else (lane, "")
 
@@ -1744,12 +1749,13 @@ def _split_step_lanes(
     worker: str | None,
 ) -> Any:
     """The run's executor, or :class:`_StepLanes` when uploaded code was sent
-    to the HPC lane (*worker*) while the workflow asked for another lane and
-    also carries platform-template steps."""
+    to a staged lane (*worker*: the HPC lane or the local podman lane of
+    ADR-091) while the workflow asked for another lane and also carries
+    platform-template steps."""
     template_worker = _executor_name_from_execution_mode(
         workflow_json.get("execution_mode")
     )
-    if worker not in HPC_LANES or template_worker == worker:
+    if worker not in STAGED_LANES or template_worker == worker:
         return executor
     uploaded = sum(
         is_uploaded_step(str(s.get("entrypoint") or ""), source_path)

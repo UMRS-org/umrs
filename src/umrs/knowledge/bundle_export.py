@@ -54,7 +54,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from . import bundle_raw, canonical_identity
+from . import bundle_raw, canonical_identity, catalog_identity, catalog_origin
 from .bundle_reader import CHUNK_TEXT_MAX_CHARS, ExportBundleWriter, is_chunk_row
 from .retrieval.hydrate import artifact_slice, stored_text
 from .store import KnowledgeStore
@@ -173,6 +173,73 @@ def _model_basename(model_path: str) -> str:
     if not model_path:
         return ""
     return model_path.rstrip("/").rsplit("/", 1)[-1]
+
+
+_CATALOG_ROW_SQL = (
+    "SELECT catalog_id, name, version, description, ontology, licence,"
+    " contributors, provenance, redaction_rules, member_graph_ids, skill_ids,"
+    " mcp_server_ids, embedding_model_ids FROM scientific_catalogs"
+    " WHERE project_id = $1 AND status = 'active'"
+    " ORDER BY created_at DESC LIMIT 1"
+)
+_CHAIN_SQL = (
+    "SELECT version, change_note FROM scientific_catalogs"
+    " WHERE project_id = $1 AND name = $2 ORDER BY created_at, catalog_id"
+)
+# Member lookups stay inside the exporting project ($2): the create route
+# stores member ids as given, so an id of another project's graph, skill or
+# server must read as unresolved, never as its name (review 2026-11-27). The
+# scopes match the import's SqlMemberResolver: own graphs, own project and
+# system skills (user skills are never mapped), own and global MCP servers
+# (0140 registry key: NULL, '' and padding mean global).
+_GRAPHS_SQL = (
+    "SELECT graph_id, name FROM knowledge_graphs"
+    " WHERE graph_id = ANY($1::text[]) AND project_id = $2"
+)
+_SKILLS_SQL = (
+    "SELECT skill_id, scope, name, version FROM skills"
+    " WHERE skill_id = ANY($1::text[])"
+    " AND (scope = 'system' OR (scope = 'project' AND project_id = $2))"
+)
+_MCPS_SQL = (
+    "SELECT server_id, name, version FROM mcp_servers"
+    " WHERE server_id = ANY($1::text[])"
+    " AND COALESCE(TRIM(project_id), '') IN ('', $2)"
+)
+_MEMBER_KEYS = (
+    "member_graph_ids",
+    "skill_ids",
+    "mcp_server_ids",
+    "embedding_model_ids",
+)
+
+
+def _catalog_record(row: Any) -> dict[str, Any]:
+    """The descriptive catalog record (pre-S-D39a keys plus ``catalog_id``)."""
+    return {
+        "catalog_id": str(row.get("catalog_id") or ""),
+        "name": str(row["name"] or ""),
+        "version": str(row["version"] or ""),
+        "description": str(row["description"] or ""),
+        "ontology": str(row["ontology"] or ""),
+        "licence": str(row["licence"] or ""),
+        "contributors": _json_list(row["contributors"]),
+        "provenance": _json_dict(row["provenance"]),
+        "redaction_rules": _json_list(row["redaction_rules"]),
+    }
+
+
+def _catalog_members(
+    members: dict[str, Any],
+    graphs: list[dict[str, Any]],
+    skills: list[dict[str, Any]],
+    mcps: list[dict[str, Any]],
+    default_graph: str,
+) -> dict[str, Any]:
+    """Seam to ``catalog_member_identity.member_identities`` (lazy import)."""
+    from .catalog_member_identity import member_identities
+
+    return member_identities(members, graphs, skills, mcps, default_graph)
 
 
 def _json_list(value: Any) -> list[Any]:
@@ -1020,30 +1087,72 @@ class KnowledgeExportEngine:
 
         Read back verbatim into the manifest so an import can re-register
         the catalog (D-40 bundle = catalog object). {} when the project has
-        no catalog row or the registry is unreachable.
+        no catalog row or the registry is unreachable. DEC-D39 (S-D39a):
+        the record also carries the catalog identity (``catalog_id``,
+        ``change_notes``, ``members`` by content identity,
+        ``origin_fingerprint``); see ``_with_catalog_identity``.
         """
         try:
             row = await self._store._pool.fetchrow(  # type: ignore[union-attr]
-                "SELECT name, version, description, ontology, licence, contributors,"
-                " provenance, redaction_rules FROM scientific_catalogs"
-                " WHERE project_id = $1 AND status = 'active'"
-                " ORDER BY created_at DESC LIMIT 1",
-                project_id,
+                _CATALOG_ROW_SQL, project_id
             )
             if row is None:
                 return {}
-            return {
-                "name": str(row["name"] or ""),
-                "version": str(row["version"] or ""),
-                "description": str(row["description"] or ""),
-                "ontology": str(row["ontology"] or ""),
-                "licence": str(row["licence"] or ""),
-                "contributors": _json_list(row["contributors"]),
-                "provenance": _json_dict(row["provenance"]),
-                "redaction_rules": _json_list(row["redaction_rules"]),
-            }
+            record = _catalog_record(row)
         except Exception:  # noqa: BLE001 — catalog block is best-effort
             return {}
+        return await self._with_catalog_identity(project_id, row, record)
+
+    async def _with_catalog_identity(
+        self, project_id: str, row: Any, record: dict[str, Any]
+    ) -> dict[str, Any]:
+        """``record`` plus the DEC-D39 identity keys; the plain record when
+        building them fails (logged; the descriptive block still ships)."""
+        try:
+            from .graph_registry import default_graph_id
+
+            members = {k: _json_list(row.get(k)) for k in _MEMBER_KEYS}
+            chain = await self._read_rows(_CHAIN_SQL, project_id, record["name"])
+            graphs = await self._read_rows(
+                _GRAPHS_SQL, members["member_graph_ids"], project_id
+            )
+            skills = await self._read_rows(
+                _SKILLS_SQL, members["skill_ids"], project_id
+            )
+            mcps = await self._read_rows(
+                _MCPS_SQL, members["mcp_server_ids"], project_id
+            )
+            identities = _catalog_members(
+                members, graphs, skills, mcps, default_graph_id(project_id)
+            )
+            return catalog_identity.catalog_block(
+                record,
+                catalog_identity.change_note_chain(chain, record["version"]),
+                identities,
+                await self._installation_fingerprint(),
+            )
+        except Exception as exc:  # noqa: BLE001 — identity is additive metadata
+            logger.warning("catalog identity skipped for %s: %s", project_id, exc)
+            return record
+
+    async def _read_rows(self, query: str, *args: Any) -> list[dict[str, Any]]:
+        """Run one read; [] on any failure (a missing table reads as empty)."""
+        try:
+            rows = await self._store._pool.fetch(query, *args)  # type: ignore[union-attr]
+            return [dict(r) for r in rows]
+        except Exception:  # noqa: BLE001 — best-effort metadata read
+            return []
+
+    async def _installation_fingerprint(self) -> str:
+        """This installation's fingerprint (0144); "" when unreadable."""
+        try:
+            row = await self._store._pool.fetchrow(  # type: ignore[union-attr]
+                "SELECT installation_id FROM umrs_installation WHERE singleton"
+            )
+        except Exception:  # noqa: BLE001 — pre-0144 database
+            return ""
+        installation_id = row.get("installation_id") if row is not None else ""
+        return catalog_origin.installation_fingerprint(str(installation_id or ""))
 
     def _resolve_export_snapshot(self, project_id: str) -> Any | None:
         """The checked reconciliation snapshot this export consumes (ADR-032
