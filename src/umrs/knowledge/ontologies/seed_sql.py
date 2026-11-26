@@ -37,10 +37,11 @@ Values are separated by ``", "``. Literals: :func:`sql_text`,
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
-from ..term_types import OntologyDoc
+from ..term_types import OntologyDoc, TermSpec, bundled_record_id
 
 __all__ = [
     "HEADER",
@@ -88,24 +89,136 @@ TERM_COLUMNS: tuple[str, ...] = (
 def sql_text(value: str | None) -> str:
     """``NULL`` for None, else the value in single quotes with every ``'``
     doubled (standard_conforming_strings; backslashes stay as they are)."""
-    raise NotImplementedError("kn-s7-05")
+    if value is None:
+        return "NULL"
+    return "'" + value.replace("'", "''") + "'"
 
 
 def sql_bool(value: bool) -> str:
     """``true`` / ``false``."""
-    raise NotImplementedError("kn-s7-05")
+    return "true" if value else "false"
 
 
 def sql_text_array(values: Iterable[str]) -> str:
     """``'{}'::text[]`` when empty, else ``ARRAY['a', 'b']::text[]`` (items
     through :func:`sql_text`, order kept)."""
-    raise NotImplementedError("kn-s7-05")
+    items = [sql_text(value) for value in values]
+    if not items:
+        return "'{}'::text[]"
+    return f"ARRAY[{', '.join(items)}]::text[]"
 
 
 def sql_jsonb(value: Any) -> str:
     """``sql_text(json.dumps(value, sort_keys=True, ensure_ascii=False)) +
     '::jsonb'``; a Mapping becomes a dict and a tuple a list first."""
-    raise NotImplementedError("kn-s7-05")
+    return (
+        sql_text(json.dumps(_json_value(value), sort_keys=True, ensure_ascii=False))
+        + "::jsonb"
+    )
+
+
+def _json_value(value: Any) -> Any:
+    """``value`` with Mappings as dicts and tuples as lists, recursively."""
+    if isinstance(value, Mapping):
+        return {key: _json_value(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return [_json_value(item) for item in value]
+    if isinstance(value, list):
+        return [_json_value(item) for item in value]
+    return value
+
+
+def _statement(
+    table: str, columns: Sequence[str], values: Sequence[str], conflict: str = ""
+) -> str:
+    """One single-line INSERT statement."""
+    return (
+        f"INSERT INTO {table} ({', '.join(columns)}) VALUES ({', '.join(values)}) "
+        f"ON CONFLICT {conflict}DO NOTHING;\n"
+    )
+
+
+def _ontology_statement(doc: OntologyDoc) -> str:
+    """The ``knowledge_ontologies`` row of one document."""
+    classes = sorted(term.term_id for term in doc.terms if term.kind == "class")
+    relations = sorted(term.term_id for term in doc.terms if term.kind == "relation")
+    transitive = sorted(
+        term.term_id
+        for term in doc.terms
+        if term.kind == "relation" and term.transitive
+    )
+    values = (
+        sql_text(bundled_record_id(doc.ref)),
+        sql_text(doc.ontology_id),
+        sql_text(doc.version),
+        sql_jsonb(classes),
+        sql_jsonb(relations),
+        sql_jsonb(transitive),
+        sql_text(doc.description),
+        sql_text("system"),
+        "NULL",
+        sql_text(doc.iri_base),
+        sql_jsonb(doc.prefixes),
+        sql_jsonb(list(doc.imports)),
+        sql_jsonb(doc.profile),
+    )
+    columns = (
+        "record_id",
+        "ontology_id",
+        "version",
+        "entity_types",
+        "relation_types",
+        "transitive_relations",
+        "description",
+        "owner_id",
+        "project_id",
+        "iri_base",
+        "prefixes",
+        "imports",
+        "profile",
+    )
+    return _statement("knowledge_ontologies", columns, values)
+
+
+def _term_statement(term: TermSpec) -> str:
+    """The ``knowledge_terms`` row of one term, in TERM_COLUMNS order."""
+    values = (
+        sql_text(term.term_id),
+        sql_text(term.iri),
+        sql_text(term.kind),
+        sql_text(term.label),
+        sql_jsonb(list(term.synonyms)),
+        sql_text(term.definition),
+        sql_text_array(term.parents),
+        sql_text(term.bucket),
+        sql_text_array(term.domain_classes),
+        sql_text_array(term.range_classes),
+        sql_text(term.datatype),
+        sql_text(term.unit),
+        sql_bool(term.transitive),
+        sql_bool(term.functional),
+        sql_text(term.inverse_of),
+        sql_text_array(term.aliases),
+        sql_jsonb(term.mappings),
+        sql_text_array(term.required_on),
+        sql_text(term.origin),
+        sql_bool(term.verified),
+        sql_text(term.source),
+        sql_text(term.status),
+        sql_text(term.replaced_by),
+    )
+    return _statement("knowledge_terms", TERM_COLUMNS, values, "(term_id) ")
+
+
+def _sorted_terms(docs: Sequence[OntologyDoc]) -> list[TermSpec]:
+    """Every document's terms by term_id; a duplicate term id is an error."""
+    terms: dict[str, TermSpec] = {}
+    for doc in docs:
+        for term in doc.terms:
+            if term.term_id in terms:
+                raise ValueError(f"term {term.term_id} is defined by two documents")
+            terms[term.term_id] = term
+    return [terms[term_id] for term_id in sorted(terms)]
 
 
 def render_seed_sql(
@@ -115,4 +228,32 @@ def render_seed_sql(
 ) -> str:
     """The seed migration text (module contract). ``admitted`` maps each
     doc ref to its ``term_id -> via`` set."""
-    raise NotImplementedError("kn-s7-05")
+    lines = [HEADER]
+    lines.extend(
+        _ontology_statement(doc) for doc in sorted(docs, key=lambda doc: doc.ref)
+    )
+    lines.extend(_term_statement(term) for term in _sorted_terms(docs))
+    for ancestor, descendant in sorted(closure):
+        values = (
+            sql_text(ancestor),
+            sql_text(descendant),
+            str(closure[(ancestor, descendant)]),
+        )
+        lines.append(
+            _statement(
+                "knowledge_term_closure", ("ancestor", "descendant", "depth"), values
+            )
+        )
+    rows = sorted(
+        (bundled_record_id(ref), term_id, via)
+        for ref, terms in admitted.items()
+        for term_id, via in terms.items()
+    )
+    for record_id, term_id, via in rows:
+        values = (sql_text(record_id), sql_text(term_id), sql_text(via))
+        lines.append(
+            _statement(
+                "knowledge_ontology_terms", ("record_id", "term_id", "via"), values
+            )
+        )
+    return "".join(lines)

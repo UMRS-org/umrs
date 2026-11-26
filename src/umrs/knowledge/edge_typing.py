@@ -26,9 +26,39 @@ only decides ``relation_class``.
 
 from __future__ import annotations
 
-from .term_types import EdgeDraft, PreparedEdge, TypingContext
+from .term_types import (
+    REL_RAW_KEY,
+    RELATED_TO,
+    UNCLASSIFIED,
+    EdgeDraft,
+    Gap,
+    PreparedEdge,
+    TermSpec,
+    TypingContext,
+    Violation,
+)
 
 __all__ = ["prepare_edge"]
+
+
+def _endpoint_violation(
+    ctx: TypingContext,
+    term: TermSpec,
+    code: str,
+    endpoint_class: str | None,
+    admitted: tuple[str, ...],
+    edge_id: str,
+) -> Violation | None:
+    """The domain/range violation of one endpoint, or None when it is admitted.
+
+    A check is skipped when the term declares no classes or the endpoint
+    class is unknown (None or ``r4:Unclassified``).
+    """
+    if not admitted or endpoint_class is None or endpoint_class == UNCLASSIFIED:
+        return None
+    if ctx.under_any(endpoint_class, admitted):
+        return None
+    return Violation(code, edge_id, f"{term.term_id}: {endpoint_class}")
 
 
 def prepare_edge(
@@ -39,4 +69,40 @@ def prepare_edge(
     target_class: str | None = None,
 ) -> PreparedEdge:
     """Apply the module rules to one edge; never raises on bad input."""
-    raise NotImplementedError("kn-s7-04")
+    raw = draft.relation_class or draft.relation_type
+    content = dict(draft.content)
+    term = ctx.resolve(raw, "relation")
+    if term is None:
+        content[REL_RAW_KEY] = raw
+        gaps = (Gap("relation", raw, draft.edge_id),) if raw else ()
+        return PreparedEdge(
+            relation_class=RELATED_TO,
+            content=content,
+            gaps=gaps,
+            violations=(Violation("relation_unknown", draft.edge_id, raw),),
+        )
+    violations = tuple(
+        found
+        for found in (
+            _endpoint_violation(
+                ctx,
+                term,
+                "relation_domain",
+                source_class,
+                term.domain_classes,
+                draft.edge_id,
+            ),
+            _endpoint_violation(
+                ctx,
+                term,
+                "relation_range",
+                target_class,
+                term.range_classes,
+                draft.edge_id,
+            ),
+        )
+        if found is not None
+    )
+    return PreparedEdge(
+        relation_class=term.term_id, content=content, violations=violations
+    )
