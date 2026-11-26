@@ -556,3 +556,55 @@ def test_the_table_refuses_unsafe_identifiers(pg, column, value):
     )
     with pytest.raises(psycopg2.errors.CheckViolation), pg.cursor() as cur:
         cur.execute(sql, [row[c] for c in es.COLUMNS])
+
+
+# ── Postgres: the writer guard on a real asyncpg connection (review) ────────
+
+
+async def _guard_on_pg(schema: str, steps):
+    import asyncpg
+
+    conn = await asyncpg.connect(_db_url(), server_settings={"search_path": schema})
+    try:
+        return [await step(conn) for step in steps]
+    finally:
+        await conn.close()
+
+
+def _pg_require(name, site=()):
+    async def step(conn):
+        try:
+            space = await guard.require_writer_space(conn, name, site_spaces=lambda: list(site))
+        except (UnregisteredEmbeddingModel, EmbeddingSpaceError) as exc:
+            return type(exc).__name__
+        return space.space_id
+
+    return step
+
+
+async def _pg_ids(conn):
+    return [r["space_id"] for r in await conn.fetch("SELECT space_id FROM knowledge_embedding_spaces ORDER BY 1")]
+
+
+@_needs_pg
+def test_pg_the_guard_admits_seeds_and_refuses_on_asyncpg(pg):
+    with pg.cursor() as cur:
+        cur.execute("SELECT current_schema()")
+        (schema,) = cur.fetchone()
+    steps = [
+        _pg_require("/models/e5-base-v2"),
+        _pg_require("/models/me5b", site=[ME5B]),
+        _pg_require("/models/me5b", site=[ME5B]),
+        _pg_require("/models/acme", site=[ACME_STEALS_E5]),
+        _pg_require("/models/bge-m3"),
+        _pg_ids,
+    ]
+    got = asyncio.run(_guard_on_pg(schema, steps))
+    assert got == [
+        "e5_base_v2",
+        "me5b",
+        "me5b",
+        "EmbeddingSpaceError",
+        "UnregisteredEmbeddingModel",
+        ["e5_base_v2", "me5b"],
+    ]
