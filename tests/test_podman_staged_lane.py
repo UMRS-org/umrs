@@ -35,6 +35,8 @@ from umrs.server import workflow_runner as wr
 from umrs.server.podman_staged_step_executor import (
     LOCAL_CAPS,
     PodmanStagedStepExecutor,
+    out_tar,
+    read_reply,
 )
 from umrs.server.remote_slurm_step_executor import STEP_TIMEOUT_METADATA_KEY
 from umrs.server.step_executor import (
@@ -560,6 +562,45 @@ def test_an_unsupported_gpu_form_is_refused(podman, root, tree, opted_in, monkey
     ex = _executor(podman, root, gpu_form="nvidia-devices")
     with pytest.raises(StepExecutionError, match="gpu_form"):
         _video(ex, tree, metadata={EXECUTOR_GPU_METADATA_KEY: True})
+
+
+def _out_dir(tmp_path: Path) -> Path:
+    out = tmp_path / "wd" / "out" / OUT_BUCKET
+    out.mkdir(parents=True)
+    return out
+
+
+def _shapes(out: Path, tmp_path: Path) -> dict:
+    return {
+        "fifo": lambda: os.mkfifo(out / "f"),
+        "hard link": lambda: os.link(tmp_path / "host.txt", out / "h"),
+        "deep tree": lambda: (out / ("d/" * 70)).mkdir(parents=True),
+        "linked dir": lambda: (out / "l").symlink_to(tmp_path),
+    }
+
+
+@pytest.mark.parametrize("shape", ["fifo", "hard link", "deep tree", "linked dir"])
+def test_out_shapes_a_step_can_leave_are_refused(tmp_path, shape):
+    out = _out_dir(tmp_path)
+    (tmp_path / "host.txt").write_text("host file")
+    _shapes(out, tmp_path)[shape]()
+    with open(os.devnull, "wb") as sink, pytest.raises(StepExecutionError):
+        out_tar(str(tmp_path / "wd"), sink, 1000)
+
+
+def test_a_linked_reply_is_refused(tmp_path):
+    (tmp_path / "wd" / "reply").mkdir(parents=True)
+    (tmp_path / "host.json").write_text("{}")
+    (tmp_path / "wd" / "reply" / "output.json").symlink_to(tmp_path / "host.json")
+    with pytest.raises(StepExecutionError, match="link"):
+        read_reply(str(tmp_path / "wd"))
+
+
+def test_an_oversized_reply_is_refused(tmp_path):
+    (tmp_path / "wd" / "reply").mkdir(parents=True)
+    (tmp_path / "wd" / "reply" / "output.json").write_bytes(b" " * 65)
+    with pytest.raises(StepExecutionError, match="exceeds 64 bytes"):
+        read_reply(str(tmp_path / "wd"), cap=64)
 
 
 def test_a_relative_workdir_root_refuses_by_name(podman, tree, opted_in):

@@ -110,6 +110,8 @@ _STAGE_TOPS = frozenset({"in", "src"})
 _DEFAULT_SECONDS = 3600.0
 _LOG_TAIL_CHARS = 1000
 _CHUNK = 1024 * 1024
+#: Directory levels below ``out/`` walked (one descriptor each), at most.
+_MAX_OUT_DEPTH = 64
 _TRUE = frozenset({"1", "true", "yes", "on"})
 #: The podman CLI's own environment: what it needs to find its store and
 #: socket, nothing of the server's (no credential, no endpoint, no proxy).
@@ -343,6 +345,8 @@ def _add_tree(
         if not stat.S_ISDIR(mode):
             _add_file(tar, dir_fd, name, rel)
             continue
+        if rel.count("/") >= _MAX_OUT_DEPTH:
+            raise StepExecutionError("worker", "/work/out is nested too deep")
         sub = _open_dir_at(dir_fd, name)
         try:
             _add_tree(tar, sub, f"{rel}/", budget)
