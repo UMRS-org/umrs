@@ -25,25 +25,11 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
-from tests._lane_pending import pending
-from umrs.knowledge import catalog_identity, catalog_member_identity, catalog_member_map
 from umrs.knowledge.bundle_export import KnowledgeExportEngine
 from umrs.knowledge.bundle_import import KnowledgeImportEngine, KnowledgeImportResult
 from umrs.knowledge.graph_registry import default_graph_id
 
 _SRC_FP = "inst-" + "a" * 32
-
-_after_01 = pending("s-d39a-01", lambda: catalog_identity.change_note_chain([], "x"))
-_after_02 = pending(
-    "s-d39a-02",
-    lambda: catalog_member_identity.member_identities({}, [], [], [], "g"),
-)
-_after_03 = pending("s-d39a-03", lambda: catalog_member_map.map_members(None, None))
-
-
-def _all_tasks(fn: Any) -> Any:
-    return _after_01(_after_02(_after_03(fn)))
-
 
 # ── fakes ──────────────────────────────────────────────────────────────────
 
@@ -200,6 +186,16 @@ def test_mapping_failure_is_named_and_the_row_still_registers() -> None:
     assert "member_graph_ids" not in catalogs.spec
 
 
+def test_unmapped_labels_from_the_bundle_are_bounded() -> None:
+    graphs = [{"default": False, "name": f"g{i}"} for i in range(300)]
+    catalogs = _RecordingCatalogs(_Resolver())
+    result = _register(catalogs, _block(members={"graphs": graphs}))
+    assert len(result.catalog_members_unmapped) == 257
+    assert result.catalog_members_unmapped[-1] == "+44 more"
+    origin = catalogs.specs[0]["provenance"]["origin"]
+    assert origin["unmapped_members"] == result.catalog_members_unmapped
+
+
 def test_pre_identity_bundle_still_registers() -> None:
     legacy = {"name": "mof-defects", "version": "0.3.0", "licence": "CC-BY-4.0"}
     catalogs = _RecordingCatalogs()
@@ -274,7 +270,6 @@ _MAPPED_MEMBERS = {
 }
 
 
-@_all_tasks
 async def test_in_memory_export_carries_identity_not_local_ids(tmp_path) -> None:
     block = (await _export_block(_SourcePool(), "src-proj", tmp_path))["catalog"]
     assert (block["catalog_id"], block["origin_fingerprint"][:5]) == ("scat-src-v2", "inst-")
@@ -283,7 +278,6 @@ async def test_in_memory_export_carries_identity_not_local_ids(tmp_path) -> None
     assert block["members"]["graphs"][0] == {"default": True, "name": ""}
 
 
-@_all_tasks
 async def test_in_memory_round_trip_keeps_version_and_remaps_members(tmp_path) -> None:
     manifest = await _export_block(_SourcePool(), "src-proj", tmp_path)
     catalogs = _RecordingCatalogs(_Resolver())
@@ -487,7 +481,6 @@ def _seed_source_catalog(store: Any) -> dict[str, Any]:
     return store.create(spec=second, owner_id="alice")
 
 
-@_all_tasks
 async def test_pg_round_trip_origin_version_members_idempotent(pg_conn, tmp_path) -> None:
     from umrs.api.bundle_restore import _CatalogRestoreAdapter
     from umrs.scientific_catalogs.store import ScientificCatalogStore

@@ -9,13 +9,7 @@ from __future__ import annotations
 
 import copy
 
-from tests._lane_pending import pending
-from umrs.knowledge import catalog_identity
 from umrs.knowledge.catalog_identity import catalog_block, change_note_chain
-
-pytestmark = pending(
-    "s-d39a-01", lambda: catalog_identity.change_note_chain([], "0.1.0")
-)
 
 _VERSIONS = [
     {"version": "0.1.0", "change_note": "first"},

@@ -1390,6 +1390,7 @@ class KnowledgeImportEngine:
             logger.warning("catalog member mapping failed: %s", exc)
             result.catalog_members_unmapped = ["members:mapping_failed"]
             return None
+        mapping.unmapped = catalog_origin.bounded_labels(mapping.unmapped)
         result.catalog_members_unmapped = list(mapping.unmapped)
         return mapping
 
@@ -1410,7 +1411,9 @@ def _catalog_spec_from_manifest(
     not mapped). The bundle's ``catalog_id`` is only ever the origin label.
     """
     block = manifest.get("catalog")
-    name = str(block.get("name") or "").strip() if isinstance(block, dict) else ""
+    if not isinstance(block, dict):
+        return None
+    name = str(block.get("name") or "").strip()
     if not name:
         return None
     fields = _catalog_fields(block, manifest.get("ownership") or {})

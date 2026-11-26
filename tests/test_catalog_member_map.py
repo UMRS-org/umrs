@@ -7,8 +7,6 @@ the bundle's own ids and trust classes are never used.
 
 from __future__ import annotations
 
-from tests._lane_pending import pending
-from umrs.knowledge import catalog_member_map
 from umrs.knowledge.catalog_member_map import MemberMapping, map_members
 
 
@@ -33,11 +31,6 @@ class _Resolver:
         if (name, version) == ("microscope", "0.2.0"):
             return ("mcp-local-1", "front-end")
         return None
-
-
-pytestmark = pending(
-    "s-d39a-03", lambda: catalog_member_map.map_members(None, _Resolver())
-)
 
 
 def _members() -> dict:

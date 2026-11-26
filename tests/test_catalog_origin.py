@@ -87,3 +87,12 @@ def test_version_note_picks_the_last_entry_for_the_version() -> None:
     ]
     assert co.version_note(chain, "0.1.0") == "b"
     assert co.version_note(chain, "0.2.0") == ""
+
+
+def test_unmapped_labels_are_bounded_and_counted() -> None:
+    assert co.bounded_labels(["graph:a", "skill:b"]) == ["graph:a", "skill:b"]
+    many = [f"graph:{'x' * (co.MAX_LABEL_CHARS + 9)}"] * (co.MAX_UNMAPPED_LABELS + 3)
+    kept = co.bounded_labels(many)
+    assert len(kept) == co.MAX_UNMAPPED_LABELS + 1
+    assert {len(label) for label in kept[:-1]} == {co.MAX_LABEL_CHARS}
+    assert kept[-1] == "+3 more"

@@ -98,6 +98,24 @@ def clean_change_notes(value: Any) -> list[dict[str, str]]:
     return entries[-MAX_CHANGE_NOTES:]
 
 
+MAX_UNMAPPED_LABELS = 256
+MAX_LABEL_CHARS = 200
+
+
+def bounded_labels(labels: list[str]) -> list[str]:
+    """Unmapped-member labels, bounded like the change-note chain.
+
+    The labels quote bundle-supplied names, so the import result and
+    ``provenance.origin`` keep at most the FIRST ``MAX_UNMAPPED_LABELS``,
+    each cut to ``MAX_LABEL_CHARS``; a cut list ends with ``"+N more"``.
+    """
+    kept = [str(label)[:MAX_LABEL_CHARS] for label in labels[:MAX_UNMAPPED_LABELS]]
+    extra = len(labels) - len(kept)
+    if extra > 0:
+        kept.append(f"+{extra} more")
+    return kept
+
+
 def version_note(chain: list[dict[str, str]], version: str) -> str:
     """The change note recorded for ``version`` in a cleaned chain ("" if none)."""
     for entry in reversed(chain):
