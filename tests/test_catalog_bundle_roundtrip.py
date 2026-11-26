@@ -520,3 +520,53 @@ _PG_MAPPED = {
     "mcp_server_ids": ["mcp-dst-1"],
     "mcp_trust_classes": {"mcp-dst-1": "front-end"},
 }
+
+
+# ── review (2026-11-27): registry keys and the export's project boundary ──
+
+
+def test_pg_resolver_reads_blank_and_padded_project_ids_as_the_registry_does(
+    pg_conn,
+) -> None:
+    """0140: NULL, '' and padded ids all mean global; padding never hides a
+    project's own row (the resolver read only ``project_id IS NULL``)."""
+    rows = (
+        "INSERT INTO mcp_servers (server_id, name, version, url, project_id, trust_class)"
+        " VALUES ('mcp-blank', 'probe', '1.0', 'http://x', '', 'local-safe'),"
+        " ('mcp-pad', 'stage', '1.0', 'http://x', ' dst-proj ', 'front-end')"
+    )
+    with pg_conn.cursor() as cur:
+        cur.execute(rows)
+    pg_conn.commit()
+    dst = _resolver(pg_conn, "dst-proj")
+    assert dst.mcp_server("probe", "1.0") == ("mcp-blank", "local-safe")
+    assert dst.mcp_server("stage", "1.0") == ("mcp-pad", "front-end")
+
+
+def _seed_foreign_members(store: Any) -> None:
+    """A src-proj catalog naming other-proj's graph/skill/server and a user skill."""
+    from umrs.scientific_catalogs.store import CatalogSpec
+
+    foreign = CatalogSpec(
+        project_id="src-proj",
+        name="probe",
+        version="1.0.0",
+        member_graph_ids=["g-other-secret"],
+        skill_ids=["sk-other", "sk-user", "sk-sys"],
+        mcp_server_ids=["mcp-other"],
+    )
+    store.create(spec=foreign, owner_id="mallory")
+
+
+async def test_pg_export_never_names_another_projects_members(pg_conn, tmp_path) -> None:
+    """The create route takes member ids as given, so the export must not
+    resolve ids outside the exporting project (their names would leak)."""
+    from umrs.scientific_catalogs.store import ScientificCatalogStore
+
+    _seed(pg_conn)
+    _seed_foreign_members(ScientificCatalogStore(pg_conn))
+    manifest = await _export_block(_AsyncPg(pg_conn), "src-proj", tmp_path)
+    members = manifest["catalog"]["members"]
+    assert (members["graphs"], members["mcp_servers"]) == ([], [])
+    assert members["skills"] == [{"scope": "system", "name": "plot", "version": "2.0.0"}]
+    assert members["unresolved"] == 4

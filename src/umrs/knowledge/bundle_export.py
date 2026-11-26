@@ -186,12 +186,25 @@ _CHAIN_SQL = (
     "SELECT version, change_note FROM scientific_catalogs"
     " WHERE project_id = $1 AND name = $2 ORDER BY created_at, catalog_id"
 )
-_GRAPHS_SQL = "SELECT graph_id, name FROM knowledge_graphs WHERE graph_id = ANY($1::text[])"
+# Member lookups stay inside the exporting project ($2): the create route
+# stores member ids as given, so an id of another project's graph, skill or
+# server must read as unresolved, never as its name (review 2026-11-27). The
+# scopes match the import's SqlMemberResolver: own graphs, own project and
+# system skills (user skills are never mapped), own and global MCP servers
+# (0140 registry key: NULL, '' and padding mean global).
+_GRAPHS_SQL = (
+    "SELECT graph_id, name FROM knowledge_graphs"
+    " WHERE graph_id = ANY($1::text[]) AND project_id = $2"
+)
 _SKILLS_SQL = (
-    "SELECT skill_id, scope, name, version FROM skills WHERE skill_id = ANY($1::text[])"
+    "SELECT skill_id, scope, name, version FROM skills"
+    " WHERE skill_id = ANY($1::text[])"
+    " AND (scope = 'system' OR (scope = 'project' AND project_id = $2))"
 )
 _MCPS_SQL = (
-    "SELECT server_id, name, version FROM mcp_servers WHERE server_id = ANY($1::text[])"
+    "SELECT server_id, name, version FROM mcp_servers"
+    " WHERE server_id = ANY($1::text[])"
+    " AND COALESCE(TRIM(project_id), '') IN ('', $2)"
 )
 _MEMBER_KEYS = (
     "member_graph_ids",
@@ -1100,9 +1113,15 @@ class KnowledgeExportEngine:
 
             members = {k: _json_list(row.get(k)) for k in _MEMBER_KEYS}
             chain = await self._read_rows(_CHAIN_SQL, project_id, record["name"])
-            graphs = await self._read_rows(_GRAPHS_SQL, members["member_graph_ids"])
-            skills = await self._read_rows(_SKILLS_SQL, members["skill_ids"])
-            mcps = await self._read_rows(_MCPS_SQL, members["mcp_server_ids"])
+            graphs = await self._read_rows(
+                _GRAPHS_SQL, members["member_graph_ids"], project_id
+            )
+            skills = await self._read_rows(
+                _SKILLS_SQL, members["skill_ids"], project_id
+            )
+            mcps = await self._read_rows(
+                _MCPS_SQL, members["mcp_server_ids"], project_id
+            )
             identities = _catalog_members(
                 members, graphs, skills, mcps, default_graph_id(project_id)
             )

@@ -8,8 +8,10 @@ query is filtered to what that project may reference:
 - skills:  ``scope='project'`` rows of the target project, or
            ``scope='system'`` rows; user-scoped skills are never mapped
            (they belong to a person, not to the catalog's project);
-- MCP:     servers of the target project, else global ones
-           (``project_id IS NULL``); the trust class is the local registry's.
+- MCP:     servers of the target project, else global ones; the project key
+           is the registry's (0140): NULL, '' and padding all mean global,
+           padding never hides the project's own row. The trust class is
+           the local registry's.
 
 A bundle can therefore never make an imported catalog point at another
 project's graph, skill or server. A failed lookup reads as "no match" and
@@ -46,8 +48,8 @@ _SYSTEM_SKILL_SQL = (
 _MCP_SQL = (
     "SELECT server_id, trust_class FROM mcp_servers"
     " WHERE name = %s AND version = %s"
-    " AND (project_id = %s OR project_id IS NULL)"
-    " ORDER BY (project_id IS NULL), server_id LIMIT 1"
+    " AND COALESCE(TRIM(project_id), '') IN ('', %s)"
+    " ORDER BY (COALESCE(TRIM(project_id), '') = ''), server_id LIMIT 1"
 )
 
 
