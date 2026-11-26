@@ -137,6 +137,9 @@ def create_catalog(
     """
     _require_project_scope(body.project_id, identity)
     body.mcp_trust_classes = _resolve_mcp_trust_classes(request, body.mcp_server_ids)
+    # DEC-D39: origin is recorded by the bundle import only, never by a caller.
+    body.origin_catalog_id = ""
+    body.origin_fingerprint = ""
     owner = (identity.user_id or "").strip() or "unknown"
     return store.create(spec=body, owner_id=owner)
 

@@ -69,6 +69,9 @@ def _tuple_from_dict(d: dict) -> tuple:
         d["status"],
         d["created_at"],
         d["updated_at"],
+        d.get("access", []),
+        d.get("origin_catalog_id", ""),
+        d.get("origin_fingerprint", ""),
     )
 
 
@@ -101,6 +104,8 @@ class _Conn:
             change_note,
             redact,
             owner,
+            origin_id,
+            origin_fp,
         ) = params
         triple = (pid, name, version)
         if triple not in self._triples:
@@ -124,6 +129,8 @@ class _Conn:
                 "change_note": change_note,
                 "redaction_rules": redact,
                 "owner_id": owner,
+                "origin_catalog_id": origin_id,
+                "origin_fingerprint": origin_fp,
                 "status": "active",
                 "created_at": now,
                 "updated_at": now,
@@ -606,3 +613,32 @@ def test_row_dict_reads_legacy_rows_without_declaration() -> None:
     d = ScientificCatalogStore._row_dict(legacy)
     assert d["mcp_trust_classes"] == {}
     assert d["owner_id"] == "alice"
+    assert (d["origin_catalog_id"], d["origin_fingerprint"]) == ("", "")
+
+
+class TestOriginColumns:
+    """S-D39a (DEC-D39, 0144): origin is stored for the import and never
+    taken from a route caller."""
+
+    def test_store_records_origin_from_spec(self) -> None:
+        store = ScientificCatalogStore(_Conn())
+        spec = _spec(origin_catalog_id="scat-src", origin_fingerprint="inst-" + "a" * 32)
+        row = store.create(spec=spec, owner_id="bundle-import")
+        assert row["origin_catalog_id"] == "scat-src"
+        assert row["origin_fingerprint"] == "inst-" + "a" * 32
+
+    def test_local_row_reads_empty_origin(self) -> None:
+        row = ScientificCatalogStore(_Conn()).create(spec=_spec(), owner_id="alice")
+        assert (row["origin_catalog_id"], row["origin_fingerprint"]) == ("", "")
+
+    def test_route_clears_caller_supplied_origin(self) -> None:
+        store = ScientificCatalogStore(_Conn())
+        body = _spec(origin_catalog_id="scat-forged", origin_fingerprint="inst-" + "b" * 32)
+        resp = _client(store).post(
+            "/umrs/scientific-catalogs",
+            json=body.model_dump(),
+            headers=_headers("alice"),
+        )
+        assert resp.status_code == 201, resp.text
+        assert resp.json()["origin_catalog_id"] == ""
+        assert resp.json()["origin_fingerprint"] == ""
