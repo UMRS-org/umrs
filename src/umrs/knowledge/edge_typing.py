@@ -1,7 +1,7 @@
 """Edge typing rules of the knowledge spine (ADR-081 D-4/D-5, slice KN-S7).
 
 ``prepare_edge`` is the edge half of the choke point (``prepare_row`` in
-``umrs.knowledge.typing`` is the node half). Pure; never raises on bad
+``umrs.knowledge.node_typing`` is the node half). Pure; never raises on bad
 input; the caller raises for an enforce-mode graph.
 
 Rules:

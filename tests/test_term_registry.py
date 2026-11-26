@@ -194,24 +194,47 @@ async def _registry_round_trip(url: str, tag: str) -> dict[str, Any]:
         await conn.close()
 
 
-@needs_pg
-def test_registry_round_trip_on_postgres():
+@pytest.fixture(scope="module")
+def round_trip() -> dict[str, Any]:
+    if not _pg_url():
+        pytest.skip("needs UMRS_TEST_DB_URL or the CI job's POSTGRES_*")
     tag = f"t{uuid.uuid4().hex[:8]}"
     seen = asyncio.run(_registry_round_trip(_pg_url() or "", tag))
-    own = seen["own"]
+    return {**seen, "tag": tag}
+
+
+@needs_pg
+def test_bound_graph_reads_its_record_and_mode(round_trip):
+    own, tag = round_trip["own"], round_trip["tag"]
     assert (own.ontology_ref, own.mode) == (f"demo-{tag}@1", "enforce")
     assert sorted(t.term_id for t in own.terms) == [f"{tag}:A", f"{tag}:B", f"{tag}:r"]
     assert (f"{tag}:A", f"{tag}:B", 1) in own.closure
-    by_id = {t.term_id: t for t in own.terms}
+
+
+@needs_pg
+def test_term_rows_round_trip(round_trip):
+    tag = round_trip["tag"]
+    by_id = {t.term_id: t for t in round_trip["own"].terms}
     assert (by_id[f"{tag}:B"].bucket, by_id[f"{tag}:B"].parents) == ("file", (f"{tag}:A",))
-    # another project never reads this project's record
-    other = seen["other"]
+
+
+@needs_pg
+def test_another_project_never_reads_this_projects_record(round_trip):
+    other = round_trip["other"]
     assert other is None or (other.ontology_ref, other.mode) == (CORE_REF, "warn")
-    assert seen["gap_n"] == 3
-    batch = seen["batch"]
+
+
+@needs_pg
+def test_gaps_accumulate(round_trip):
+    assert round_trip["gap_n"] == 3
+
+
+@needs_pg
+def test_batch_row_and_graph_version(round_trip):
+    batch = round_trip["batch"]
     assert batch["origin_actor"] == "agent"
     assert json.loads(batch["counts"]) == {"nodes": 2}
     assert json.loads(batch["violations"]) == [
         {"code": "class_unknown", "subject_id": "n1", "detail": "x:Y"}
     ]
-    assert seen["version"] == 1
+    assert round_trip["version"] == 1

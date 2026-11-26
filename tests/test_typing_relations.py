@@ -1,4 +1,4 @@
-"""ADR-081 D-4/D-5 edge typing rules: ``umrs.knowledge.typing_relations``.
+"""ADR-081 D-4/D-5 edge typing rules: ``umrs.knowledge.edge_typing``.
 
 Pure tests over a hand-built vocabulary. Task kn-s7-04 implements
 ``prepare_edge``.
@@ -13,7 +13,7 @@ from umrs.knowledge.term_types import (
     TermSpec,
     TypingContext,
 )
-from umrs.knowledge.typing_relations import prepare_edge
+from umrs.knowledge.edge_typing import prepare_edge
 
 pytestmark = pending(prepare_edge)
 

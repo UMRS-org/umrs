@@ -36,8 +36,8 @@ from umrs.knowledge.term_types import (
     OntologyViolationError,
     TypingContext,
 )
-from umrs.knowledge.typing import prepare_row
-from umrs.knowledge.typing_relations import prepare_edge
+from umrs.knowledge.node_typing import prepare_row
+from umrs.knowledge.edge_typing import prepare_edge
 
 COMPOSED = (load_bundled, bundled_by_ref, build_closure, admitted_set, prepare_row, prepare_edge)
 
@@ -294,24 +294,41 @@ async def _warn_batch(url: str, project: str) -> dict[str, Any]:
         await pool.close()
 
 
-@needs_pg
-@pending(*COMPOSED, render_seed_sql)
-def test_warn_batch_types_rows_moves_undeclared_attrs_and_counts_gaps():
+@pytest.fixture(scope="module")
+def warn_batch() -> dict[str, Any]:
+    if not _pg_url():
+        pytest.skip("needs UMRS_TEST_DB_URL or the CI job's POSTGRES_*")
     _seed_bundled(_pg_url() or "")
     project = f"p-kns7-{uuid.uuid4().hex[:8]}"
-    seen = asyncio.run(_warn_batch(_pg_url() or "", project))
-    img = seen["nodes"][f"img-{project}"]
+    return {**asyncio.run(_warn_batch(_pg_url() or "", project)), "project": project}
+
+
+@needs_pg
+@pending(*COMPOSED, render_seed_sql)
+def test_warn_batch_types_nodes_and_moves_undeclared_attrs(warn_batch):
+    img = warn_batch["nodes"][f"img-{warn_batch['project']}"]
     assert (img["node_class"], img["node_type"]) == ("r4:Image", "file")
     assert img["attrs"] == {"r4:pixelSize": 0.3}
     assert img["content"] == {"kind": "image", "undeclared": {"colour": "red"}}
-    unknown, part = seen["edges"][f"e1-{project}"], seen["edges"][f"e2-{project}"]
+
+
+@needs_pg
+@pending(*COMPOSED, render_seed_sql)
+def test_warn_batch_unknown_relation_falls_back_to_related_to(warn_batch):
+    project = warn_batch["project"]
+    unknown, part = warn_batch["edges"][f"e1-{project}"], warn_batch["edges"][f"e2-{project}"]
     assert (unknown["relation_class"], unknown["relation_type"]) == ("r4:relatedTo", "frobs")
     assert unknown["content"]["rel_raw"] == "frobs"
     assert part["relation_class"] == "r4:partOf"
-    assert {("attribute", "colour"), ("relation", "frobs")} <= seen["gaps"]
-    assert seen["batch"]["origin_actor"] == "agent"
-    assert seen["batch"]["counts"] == {"edges": 2, "nodes": 2}  # the pool decodes jsonb
-    assert seen["result"].mode == "warn" and seen["result"].ontology_ref == "r4-core@2"
+
+
+@needs_pg
+@pending(*COMPOSED, render_seed_sql)
+def test_warn_batch_counts_gaps_and_audits_the_actor(warn_batch):
+    assert {("attribute", "colour"), ("relation", "frobs")} <= warn_batch["gaps"]
+    assert warn_batch["batch"]["origin_actor"] == "agent"
+    assert warn_batch["batch"]["counts"] == {"edges": 2, "nodes": 2}  # the pool decodes jsonb
+    assert (warn_batch["result"].mode, warn_batch["result"].ontology_ref) == ("warn", "r4-core@2")
 
 
 async def _enforce(url: str, project: str) -> dict[str, Any]:

@@ -92,6 +92,6 @@ def test_no_untyped_knowledge_insert_outside_the_store():
         offenders += [f"{rel}:{line} {table}" for line, table in untyped_inserts(text)]
     assert offenders == [], (
         "raw knowledge INSERT without node_class/relation_class (ADR-081 D-4: write "
-        "through KnowledgeStore, or name the typed column via typing.prepare_row): "
+        "through KnowledgeStore, or name the typed column via node_typing.prepare_row): "
         + ", ".join(offenders)
     )

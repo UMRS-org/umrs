@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 _MINT_CAP = 100  # mirror the proxy cap: oversized uploads mint the first N chunks
 
 # ADR-081 W2a (KN-S7): the raw-SQL mint writes typed rows. Its rows are fixed
-# core shapes with no attrs, so ``typing.prepare_row`` over the bundled
+# core shapes with no attrs, so ``node_typing.prepare_row`` over the bundled
 # r4-core@2 context maps them to exactly these classes (a test holds the two
 # together). The class goes through a sub-select, so a database whose
 # registry is not seeded yet stores NULL (a legacy-valid row) instead of

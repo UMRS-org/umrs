@@ -1,4 +1,4 @@
-"""ADR-081 D-4/D-5 node typing rules: ``umrs.knowledge.typing`` (KN-S7).
+"""ADR-081 D-4/D-5 node typing rules: ``umrs.knowledge.node_typing`` (KN-S7).
 
 Pure tests over a hand-built vocabulary (no database, no package data).
 Task kn-s7-03 implements ``check_datatype`` and ``prepare_row``.
@@ -16,7 +16,7 @@ from umrs.knowledge.term_types import (
     TermSpec,
     TypingContext,
 )
-from umrs.knowledge.typing import check_datatype, prepare_row
+from umrs.knowledge.node_typing import check_datatype, prepare_row
 
 pytestmark = pending(check_datatype, prepare_row)
 

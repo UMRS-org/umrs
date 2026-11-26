@@ -9,8 +9,8 @@ This module is the seam between the pure pieces of the term registry:
 - ``umrs.knowledge.ontologies.seed_sql`` renders the seed migration;
 - ``umrs.knowledge.term_registry`` reads a :class:`RegistrySnapshot` for one
   graph from Postgres;
-- ``umrs.knowledge.typing`` (``prepare_row``) and
-  ``umrs.knowledge.typing_relations`` (``prepare_edge``) apply the D-4 rules
+- ``umrs.knowledge.node_typing`` (``prepare_row``) and
+  ``umrs.knowledge.edge_typing`` (``prepare_edge``) apply the D-4 rules
   to one row against a :class:`TypingContext`.
 
 Nothing here touches a database or the filesystem. Vocabulary constants

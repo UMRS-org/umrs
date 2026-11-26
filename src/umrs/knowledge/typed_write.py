@@ -42,8 +42,8 @@ from .term_types import (
     TypingContext,
     Violation,
 )
-from .typing import prepare_row
-from .typing_relations import prepare_edge
+from .node_typing import prepare_row
+from .edge_typing import prepare_edge
 
 if TYPE_CHECKING:
     from .store import KnowledgeEdge, KnowledgeNode

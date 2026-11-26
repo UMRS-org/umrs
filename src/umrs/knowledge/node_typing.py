@@ -1,5 +1,10 @@
 """Node typing rules of the knowledge spine (ADR-081 D-4/D-5, slice KN-S7).
 
+(Named ``node_typing``, not ``typing`` as decisions-2026-11-24 §5 wrote: a
+``typing.py`` in this directory shadows the standard library for every
+script run from here, e.g. ``ingest_models_stage.py``, which
+``test_knowledge_ingest_models`` caught on 2026-11-27.)
+
 ``prepare_row`` is the one pure choke point every node write goes through:
 ``KnowledgeStore.upsert_typed`` / ``upsert_node`` (typed rows) and the
 raw-SQL minting helpers call it with a :class:`TypingContext` resolved once
