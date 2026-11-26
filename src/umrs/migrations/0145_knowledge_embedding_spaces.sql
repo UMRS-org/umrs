@@ -1,4 +1,4 @@
--- 0144 (slice KN-S5): the embedding-space registry (ADR-083 D-1, decision KN-3).
+-- 0145 (slice KN-S5): the embedding-space registry (ADR-083 D-1, decision KN-3).
 --
 -- One row per encoder space. A vector in knowledge_node_embeddings belongs to
 -- the space whose model_name or legacy_names hold its model_name (a bare name

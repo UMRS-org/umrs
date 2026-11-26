@@ -1,4 +1,4 @@
--- 0144 (slice SH-H1a): the session and MCP hosts registry (ADR-098 D-4).
+-- 0149 (slice SH-H1a): the session and MCP hosts registry (ADR-098 D-4).
 --
 -- One row per host a site may place sandboxes on. The UMRS process's own
 -- host registers itself (launch mode `inline`, host id `local`), so placement

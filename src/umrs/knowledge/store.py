@@ -107,7 +107,7 @@ _SEARCH_TEXT_RECHECK_S = 60.0
 # pool) are dropped on the next store, and the memo is bounded.
 _SEARCH_TEXT_MEMO_MAX = 64
 _search_text_probes: dict[int, tuple[Any, bool, float]] = {}
-# The same memo shape for migration 0145's typed columns (ADR-081 W2a); probed
+# The same memo shape for migration 0147's typed columns (ADR-081 W2a); probed
 # only when a typed row is written, so untyped writers never see the probe.
 _typed_probes: dict[int, tuple[Any, bool, float]] = {}
 _ProbeMemo = dict[int, tuple[Any, bool, float]]
@@ -151,7 +151,7 @@ def _remember_search_text(pool: Any, present: bool) -> None:
 
 
 async def _has_typed_columns(pool: Any, conn: Any) -> bool:
-    """Does ``knowledge_nodes.node_class`` (migration 0145) exist?"""
+    """Does ``knowledge_nodes.node_class`` (migration 0147) exist?"""
     known = _known_probe(_typed_probes, pool)
     if known is not None:
         return known
@@ -159,7 +159,7 @@ async def _has_typed_columns(pool: Any, conn: Any) -> bool:
     _remember_probe(_typed_probes, pool, present)
     if not present:
         logger.info(
-            "knowledge_nodes.node_class absent (migration 0145): typed rows written untyped"
+            "knowledge_nodes.node_class absent (migration 0147): typed rows written untyped"
         )
     return present
 
@@ -242,7 +242,7 @@ class KnowledgeNode:
     # is ``content['chunk_md5']``. None = not given (an upsert keeps the
     # stored text while the chunk's md5 and header are unchanged).
     search_text: str | None = None
-    # ADR-081 W2a (0145, KN-S7): a writer that gives any of these writes a
+    # ADR-081 W2a (0147, KN-S7): a writer that gives any of these writes a
     # typed row through the graph's TypingContext (umrs.knowledge.typed_write);
     # all None/empty = the legacy untyped write, unchanged.
     node_class: str | None = None  # CURIE or alias, e.g. "r4:Document"
@@ -265,7 +265,7 @@ class KnowledgeEdge:
     confidence: float = 0.0
     created_at: datetime | None = None
     graph_id: str = ""
-    # ADR-081 W2a (0145, KN-S7): given = a typed write (relation_type keeps
+    # ADR-081 W2a (0147, KN-S7): given = a typed write (relation_type keeps
     # the writer's raw text either way).
     relation_class: str | None = None
 
@@ -595,7 +595,7 @@ class KnowledgeStore:
         self, node: KnowledgeNode, conn: Any, writer: str
     ) -> bool:
         """ADR-081 W2a: write ``node`` typed when the registry allows it.
-        False = the caller writes the untyped fallback (no 0145, or no seed).
+        False = the caller writes the untyped fallback (no 0147, or no seed).
         Raises OntologyViolationError for an enforce-mode graph."""
         async with self._typed_tx(conn) as db:
             if not await _has_typed_columns(self._pool, db):
@@ -626,10 +626,10 @@ class KnowledgeStore:
         ``knowledge_write_batches`` row and bump ``graph_version``. A
         malformed batch (unknown origin_actor, a row of another project or
         graph) raises ValueError first. Returns None when the database has no
-        typed columns (0145) or no seeded registry: the rows are then written
+        typed columns (0147) or no seeded registry: the rows are then written
         untyped (attrs kept in ``content["undeclared"]``) and no batch row is
         appended. A typed edge that repeats another edge's (source,
-        relation_class, target) under a new edge_id is refused by 0145's
+        relation_class, target) under a new edge_id is refused by 0147's
         unique index (asyncpg UniqueViolationError), except the warn-mode
         fallback ``r4:relatedTo``.
         """
@@ -678,7 +678,7 @@ class KnowledgeStore:
         ``natural_key`` is a typed write: it goes through the graph's
         TypingContext (``umrs.knowledge.typed_write``; warn mode rewrites,
         enforce mode raises OntologyViolationError) and its vocabulary gaps
-        are counted under ``writer``. Without 0145 or a seeded registry it is
+        are counted under ``writer``. Without 0147 or a seeded registry it is
         written untyped with its attrs in ``content["undeclared"]``. Untyped
         nodes take exactly the pre-W2a statements.
         """
@@ -723,7 +723,7 @@ class KnowledgeStore:
 
         ADR-081 W2a (KN-S7): an edge with ``relation_class`` is a typed write
         (``prepare_edge``: an unknown relation becomes ``r4:relatedTo`` with
-        ``content["rel_raw"]`` in warn mode); without 0145 or a seeded
+        ``content["rel_raw"]`` in warn mode); without 0147 or a seeded
         registry it is written untyped. ``relation_type`` keeps the writer's
         raw text either way."""
         if is_typed_edge(edge):

@@ -56,7 +56,7 @@ __all__ = [
     "is_typed_node",
 ]
 
-#: Does migration 0145 (``knowledge_nodes.node_class``) exist?
+#: Does migration 0147 (``knowledge_nodes.node_class``) exist?
 TYPED_COLUMNS_PROBE_SQL = (
     "SELECT EXISTS (SELECT 1 FROM pg_attribute "
     "WHERE attrelid = to_regclass('knowledge_nodes') AND attname = 'node_class' "

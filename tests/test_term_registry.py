@@ -2,7 +2,7 @@
 
 The hermetic half drives ``fetch_snapshot`` over a connection double; the
 Postgres half runs when ``UMRS_TEST_DB_URL`` (or the CI job's
-``POSTGRES_*``) names a migrated database (0144/0145 applied).
+``POSTGRES_*``) names a migrated database (0146/0147 applied).
 """
 
 from __future__ import annotations

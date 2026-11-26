@@ -38,7 +38,7 @@ _MIGRATION = (
     / "src"
     / "umrs"
     / "migrations"
-    / "0144_knowledge_embedding_spaces.sql"
+    / "0145_knowledge_embedding_spaces.sql"
 )
 ME5B = EmbeddingSpace(
     space_id="me5b",

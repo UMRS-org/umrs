@@ -276,7 +276,7 @@ def test_set_status_refuses_an_unknown_status_before_sql():
 
 _MIGRATION = (
     Path(__file__).resolve().parents[1]
-    / "src/umrs/migrations/0144_knowledge_embedding_spaces.sql"
+    / "src/umrs/migrations/0145_knowledge_embedding_spaces.sql"
 )
 
 

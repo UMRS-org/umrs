@@ -148,7 +148,7 @@ def test_untyped_edge_takes_the_legacy_statement():
     assert "relation_class" not in sql and params[4] == "frobs"
 
 
-def test_typed_node_without_0145_is_written_untyped_with_attrs_kept():
+def test_typed_node_without_0147_is_written_untyped_with_attrs_kept():
     conn = _Conn(typed=False, seeded=True)
     node = _node(node_class="image", attrs={"pixel_size": 1}, content={"kind": "image"})
     asyncio.run(KnowledgeStore(_Pool(conn)).upsert_node(node))

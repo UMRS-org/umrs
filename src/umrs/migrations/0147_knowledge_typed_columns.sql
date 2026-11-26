@@ -1,4 +1,4 @@
--- 0145: typed columns beside the 7-bucket facet (ADR-081 D-1, W2a; slice
+-- 0147: typed columns beside the 7-bucket facet (ADR-081 D-1, W2a; slice
 -- KN-S7 of decisions-2026-11-24).
 --
 -- Additive and idempotent; number provisional (taken at land time). Every

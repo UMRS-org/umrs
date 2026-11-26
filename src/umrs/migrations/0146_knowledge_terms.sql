@@ -1,4 +1,4 @@
--- 0144: term registry, closure, admitted sets, vocabulary gaps and write
+-- 0146: term registry, closure, admitted sets, vocabulary gaps and write
 -- batches (ADR-081 D-2/D-5/D-9, W2a; slice KN-S7 of decisions-2026-11-24).
 --
 -- Additive and idempotent. Number provisional: migration numbers are taken
@@ -23,7 +23,7 @@
 --
 -- Down (manual): DROP TABLE knowledge_write_batches, knowledge_vocab_gaps,
 -- knowledge_ontology_terms, knowledge_term_closure, knowledge_terms (after
--- 0145's columns are dropped); ALTER TABLE ... DROP COLUMN for the rest.
+-- 0147's columns are dropped); ALTER TABLE ... DROP COLUMN for the rest.
 
 CREATE TABLE IF NOT EXISTS knowledge_terms (
     term_id        TEXT PRIMARY KEY,
