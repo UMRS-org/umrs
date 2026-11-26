@@ -3,15 +3,12 @@
 from __future__ import annotations
 
 import pytest
-from tests.kn_s5_pending import until_implemented
 from umrs.knowledge import embedding_space_site as site
 from umrs.knowledge.embedding_spaces import (
     CODE_INVALID,
     EmbeddingSpace,
     EmbeddingSpaceError,
 )
-
-pytestmark = until_implemented("kn-s5-01", lambda: site.spaces_from_site(None))
 
 ME5B = {
     "space_id": "me5b",

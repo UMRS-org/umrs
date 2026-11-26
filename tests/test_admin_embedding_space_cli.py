@@ -12,7 +12,6 @@ import json
 from typing import Any
 
 import pytest
-from tests.kn_s5_pending import until_implemented
 from umrs.cli.admin import embedding_spaces as cli
 from umrs.cli.admin.main import build_parser
 from umrs.knowledge import embedding_space_site, embedding_space_store
@@ -24,8 +23,6 @@ from umrs.knowledge.embedding_spaces import (
     EmbeddingSpace,
     EmbeddingSpaceError,
 )
-
-pytestmark = until_implemented("kn-s5-03", lambda: cli.space_as_dict(BUNDLED_SPACE))
 
 CONN = object()
 ME5B = EmbeddingSpace(

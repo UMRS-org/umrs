@@ -14,7 +14,6 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from tests.kn_s5_pending import until_implemented
 from umrs.knowledge import embedding_space_store as store
 from umrs.knowledge import embedding_spaces as es
 from umrs.knowledge.embedding_spaces import (
@@ -25,8 +24,6 @@ from umrs.knowledge.embedding_spaces import (
     EmbeddingSpace,
     EmbeddingSpaceError,
 )
-
-pytestmark = until_implemented("kn-s5-02", lambda: store.list_spaces(None))
 
 ME5B = EmbeddingSpace(
     space_id="me5b",

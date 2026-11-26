@@ -290,11 +290,16 @@ class _WriterStore:
 
 
 def _write(monkeypatch, model: str) -> tuple[_WriterStore, Any]:
-    from umrs.jobs import knowledge_adapters as ka
     from umrs.knowledge import embedding_space_site
 
-    monkeypatch.setenv("UMRS_KNOWLEDGE_EMBED_MODEL", model)
     monkeypatch.setattr(embedding_space_site, "site_embedding_spaces", lambda: [])
+    return _run_writer(monkeypatch, model)
+
+
+def _run_writer(monkeypatch, model: str) -> tuple[_WriterStore, Any]:
+    from umrs.jobs import knowledge_adapters as ka
+
+    monkeypatch.setenv("UMRS_KNOWLEDGE_EMBED_MODEL", model)
     monkeypatch.setattr(ka, "_resolve_target", _same_target)
     store, result = _WriterStore(), ka.KnowledgeEmbedResult()
     embedded = {"chunks": [{"text": "a body", "start": 0, "end": 6}], "vectors": [[0.1, 0.2]]}
@@ -319,6 +324,36 @@ def test_the_embed_writer_admits_the_bundled_space(monkeypatch):
     store, result = _write(monkeypatch, "/models/e5-base-v2")
     assert result.failed_items == []
     assert [v[1] for v in store.vectors] == ["/models/e5-base-v2"]
+
+
+@pytest.fixture
+def me5b_site_file(tmp_path, monkeypatch):
+    """A real site.yaml declaring me5b, read through the real site reader."""
+    from umrs.orchestrator import site_config
+
+    site = tmp_path / "site.yaml"
+    site.write_text(
+        "name: t\nknowledge:\n  embedding_spaces:\n"
+        "    - {space_id: me5b, model_name: /models/me5b, dimension: 768}\n"
+    )
+    monkeypatch.setenv("UMRS_SITE_CONFIG", str(site))
+    site_config.reset_site_config()
+    yield site
+    site_config.reset_site_config()
+
+
+def test_the_embed_writer_seeds_a_space_from_the_real_site_file(monkeypatch, me5b_site_file):
+    store, result = _run_writer(monkeypatch, "/models/me5b")
+    assert result.failed_items == []
+    assert [v[1] for v in store.vectors] == ["/models/me5b"]
+    assert any(sql.startswith("INSERT INTO knowledge_embedding_spaces") for sql in store.conn.executed)
+
+
+def test_the_real_site_file_does_not_admit_an_undeclared_model(monkeypatch, me5b_site_file):
+    store, result = _run_writer(monkeypatch, "/models/bge-m3")
+    assert store.vectors == []
+    (failed,) = result.failed_items
+    assert failed["error"].startswith(CODE_UNREGISTERED)
 
 
 # ── the site file key ───────────────────────────────────────────────────────
