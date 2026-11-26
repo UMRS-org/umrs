@@ -261,10 +261,137 @@ def lookup(conn: Any, bucket: str, key: str, etag: str = "") -> ObjectProvenance
         found = cur.fetchone()
     if found is None:
         return legacy_record(bucket, key, etag)
+    return _row_from(found)
+
+
+_SELECT_MANY = (
+    f"SELECT {', '.join(_COLUMNS)} FROM object_provenance "
+    "WHERE bucket = ANY(%s) AND key = ANY(%s) ORDER BY created_at DESC"
+)
+
+#: One object a page or a run names: ``(bucket, key, etag)``; ``etag`` is
+#: the store's current one ("" when the caller never read it).
+ObjectRef = tuple[str, str, str]
+
+
+def _row_from(found: tuple[Any, ...]) -> ObjectProvenance:
     values = dict(zip(_COLUMNS, found, strict=True))
     ref = values["source_ref"]
     values["source_ref"] = json.loads(ref) if isinstance(ref, str) else dict(ref or {})
     return ObjectProvenance(**values)
+
+
+def _pick(
+    rows: dict[tuple[str, str], list[ObjectProvenance]], ref: ObjectRef
+) -> ObjectProvenance:
+    """The newest row of *ref*'s object at its etag (any etag when the caller
+    has none); a row of another version never describes this one."""
+    bucket, key, etag = ref
+    for row in rows.get((bucket, key), ()):
+        if etag in ("", row.etag):
+            return row
+    return legacy_record(bucket, key, etag)
+
+
+def _by_object(found: list[tuple[Any, ...]]) -> dict[tuple[str, str], list[ObjectProvenance]]:
+    """Rows (newest first) grouped by object, so a 1000-key page is matched
+    in one pass rather than keys x rows (review MB-S2b, 2026-11-27)."""
+    grouped: dict[tuple[str, str], list[ObjectProvenance]] = {}
+    for values in found:
+        row = _row_from(values)
+        grouped.setdefault((row.bucket, row.key), []).append(row)
+    return grouped
+
+
+def lookup_many(conn: Any, refs: list[ObjectRef]) -> dict[tuple[str, str], ObjectProvenance]:
+    """:func:`lookup` for a whole page in **one** SELECT (ADR-115 D-4: never
+    a query or a ``head_object`` per key), keyed by ``(bucket, key)``."""
+    if not refs:
+        return {}
+    buckets = sorted({bucket for bucket, _key, _etag in refs})
+    keys = sorted({key for _bucket, key, _etag in refs})
+    with conn.cursor() as cur:
+        cur.execute(_SELECT_MANY, (buckets, keys))
+        rows = _by_object(cur.fetchall())
+    return {(ref[0], ref[1]): _pick(rows, ref) for ref in refs}
+
+
+def _all_legacy(refs: list[ObjectRef]) -> dict[tuple[str, str], ObjectProvenance]:
+    return {(bucket, key): legacy_record(bucket, key, etag) for bucket, key, etag in refs}
+
+
+def _on_pooled(pool: Any, read: Any, fallback: Any, what: str) -> Any:
+    """``read(conn)`` on a pooled connection; *fallback* with no pool or on
+    any failure (a read path never fails because provenance is
+    unreachable: unverified is the safe reading)."""
+    if pool is None:
+        return fallback
+    try:
+        conn = pool.getconn()
+    except Exception:  # never fail the caller on provenance
+        logger.warning("provenance: no connection for %s", what, exc_info=True)
+        return fallback
+    try:
+        return read(conn)
+    except Exception:  # same: unverified is the safe reading
+        _rollback(conn)
+        logger.warning("provenance: %s failed", what, exc_info=True)
+        return fallback
+    finally:
+        pool.putconn(conn)
+
+
+def lookup_many_best_effort(
+    pool: Any, refs: list[ObjectRef]
+) -> dict[tuple[str, str], ObjectProvenance]:
+    """:func:`lookup_many` on a pooled connection; every object reads as
+    legacy (unverified, the safe answer) with no pool or on any failure, so
+    a listing never fails because the provenance table is unreachable."""
+    if not refs:
+        return {}
+    return _on_pooled(
+        pool,
+        lambda conn: lookup_many(conn, refs),
+        _all_legacy(refs),
+        f"a lookup of {len(refs)} objects",
+    )
+
+
+_SELECT_EXECUTION = (
+    f"SELECT {', '.join(_COLUMNS)} FROM ("
+    f"SELECT DISTINCT ON (bucket, key) {', '.join(_COLUMNS)}, created_at "
+    "FROM object_provenance "
+    "WHERE execution_id = %s AND bucket = ANY(%s) AND source_kind = 'step_output' "
+    "ORDER BY bucket, key, created_at DESC"
+    ") newest ORDER BY created_at, key"
+)
+
+
+def rows_of_execution(
+    conn: Any, execution_id: str, buckets: list[str]
+) -> list[ObjectProvenance]:
+    """The ``step_output`` rows one run wrote into *buckets* (its own bucket
+    pair), the newest version of each object, oldest object first. The
+    outputs route reads these when the run's in-memory record is gone (a
+    server restart): the rows still say what each step stored (review
+    MB-S2b, 2026-11-27)."""
+    with conn.cursor() as cur:
+        cur.execute(_SELECT_EXECUTION, (execution_id, sorted(set(buckets))))
+        return [_row_from(found) for found in cur.fetchall()]
+
+
+def rows_of_execution_best_effort(
+    pool: Any, execution_id: str, buckets: list[str]
+) -> list[ObjectProvenance]:
+    """:func:`rows_of_execution` on a pooled connection; none on failure."""
+    return list(
+        _on_pooled(
+            pool,
+            lambda conn: rows_of_execution(conn, execution_id, buckets),
+            [],
+            f"the outputs of {execution_id}",
+        )
+    )
 
 
 # ── the writers' one call each ──────────────────────────────────────────────
@@ -352,16 +479,21 @@ __all__ = [
     "SOURCE_KINDS",
     "HashedObject",
     "ObjectProvenance",
+    "ObjectRef",
     "Sha256Reader",
     "content_type_for",
     "hashed",
     "legacy_record",
     "live_etag",
     "lookup",
+    "lookup_many",
+    "lookup_many_best_effort",
     "provenance_pool",
     "provenance_row",
     "record",
     "record_best_effort",
     "record_step_outputs",
+    "rows_of_execution",
+    "rows_of_execution_best_effort",
     "set_provenance_pool",
 ]

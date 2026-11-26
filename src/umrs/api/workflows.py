@@ -3020,6 +3020,163 @@ async def get_execution_results(
     }
 
 
+# ── ADR-115 D-4 (slice MB-S2b): the run's declared outputs ─────────────────
+
+
+class ExecutionOutput(BaseModel):
+    """One object a step declared in ``output_keys``."""
+
+    step: str
+    bucket: str
+    key: str
+    #: The ``object_provenance`` row (else the legacy record) for objects in
+    #: the run's own bucket pair; None for any other bucket.
+    provenance: dict[str, Any] | None = None
+
+
+class ExecutionOutputsResponse(BaseModel):
+    """``GET …/executions/{execution_id}/outputs``."""
+
+    status: str = "ok"
+    execution_id: str
+    execution_status: str | None = None
+    #: ``run_record``: the live run's ``results.steps[*].output_keys``;
+    #: ``provenance``: the run's record is gone (a server restart), so its
+    #: ``step_output`` rows answer (objects staged steps stored; an
+    #: in-process step that wrote no row is not listed).
+    outputs_source: str = "run_record"
+    outputs: list[ExecutionOutput] = Field(default_factory=list)
+
+
+def _output_ref(raw: Any, default_bucket: str) -> tuple[str, str] | None:
+    """``(bucket, key)`` of one declared output: ``s3://b/k`` names its
+    bucket, a bare key lives in the run's ``-output`` bucket."""
+    text = str(raw or "").strip()
+    if text.startswith("s3://"):
+        bucket, _, key = text[len("s3://") :].partition("/")
+        return (bucket, key) if bucket and key else None
+    key = text.lstrip("/")
+    return (default_bucket, key) if key else None
+
+
+def _step_outputs(
+    step: str, body: Any, default_bucket: str, seen: set[tuple[str, str]]
+) -> list[ExecutionOutput]:
+    keys = body.get("output_keys") if isinstance(body, dict) else None
+    found: list[ExecutionOutput] = []
+    for raw in keys or []:
+        ref = _output_ref(raw, default_bucket)
+        if ref is not None and ref not in seen:
+            seen.add(ref)
+            found.append(ExecutionOutput(step=str(step), bucket=ref[0], key=ref[1]))
+    return found
+
+
+def _run_buckets(params: Any) -> tuple[str, str]:
+    bucket = str((params or {}).get("bucket") or "wf-runner")
+    return bucket, f"{bucket}-output"
+
+
+def declared_outputs(record: Any) -> list[ExecutionOutput]:
+    """The union of ``results.steps[*].output_keys`` in step order, each
+    object once (the first step that declared it). Nothing is listed or
+    HEAD-ed in the store: the run's own record says what it wrote."""
+    _input, output = _run_buckets(record.params)
+    seen: set[tuple[str, str]] = set()
+    outputs: list[ExecutionOutput] = []
+    for step, body in ((record.results or {}).get("steps") or {}).items():
+        outputs.extend(_step_outputs(step, body, output, seen))
+    return outputs
+
+
+def _joined_provenance(
+    pool: Any, record: Any, outputs: list[ExecutionOutput]
+) -> list[ExecutionOutput]:
+    """Provenance for the outputs in the run's own bucket pair, one SELECT.
+    A step that named a foreign bucket gets none: this route never reports
+    rows for a bucket the run does not own."""
+    from ..data_catalog.provenance import lookup_many_best_effort
+
+    own = set(_run_buckets(record.params))
+    refs = [(o.bucket, o.key, "") for o in outputs if o.bucket in own]
+    found = lookup_many_best_effort(pool, refs)
+    return [
+        o.model_copy(update={"provenance": found[(o.bucket, o.key)].as_dict()})
+        if (o.bucket, o.key) in found
+        else o
+        for o in outputs
+    ]
+
+
+def outputs_from_rows(pool: Any, job: Any) -> list[ExecutionOutput]:
+    """The outputs of a run whose in-memory record is gone (a server
+    restart empties the registry; every converge restarts the front): the
+    ``step_output`` rows its staged steps wrote, for its own bucket pair
+    only, one SELECT (review MB-S2b, 2026-11-27)."""
+    from ..data_catalog.provenance import rows_of_execution_best_effort
+
+    spec = getattr(job, "spec", None) or {}
+    execution_id = str(spec.get("execution_id") or "")
+    if not execution_id:
+        return []
+    rows = rows_of_execution_best_effort(
+        pool, execution_id, list(_run_buckets(spec.get("params")))
+    )
+    return [
+        ExecutionOutput(
+            step=str(row.step or ""), bucket=row.bucket, key=row.key, provenance=row.as_dict()
+        )
+        for row in rows
+    ]
+
+
+def _provenance_pool(request: Request) -> Any:
+    from ..data_catalog.provenance import provenance_pool
+
+    return getattr(request.app.state, "umrs_db_pool", None) or provenance_pool()
+
+
+@router.get(
+    "/executions/{execution_id}/outputs",
+    response_model=ExecutionOutputsResponse,
+    summary="The objects a run declared, joined to their provenance (ADR-115 D-4)",
+)
+async def get_execution_outputs(
+    execution_id: str,
+    request: Request,
+    identity: CallerIdentity = Depends(get_caller_identity),
+) -> ExecutionOutputsResponse:
+    """The union of the run's ``results.steps[*].output_keys`` with each
+    object's provenance (sha256, state, origin). The client never guesses a
+    ``runs/<id>/`` prefix. Visibility is the execution's (the same rule as
+    ``/results``): another project's run is 403. A run known only as a
+    durable job (its record lost to a restart) answers from its
+    ``step_output`` provenance rows (``outputs_source: provenance``).
+    # auth: edge-auth(nginx)
+    """
+    store = get_optional_job_store()
+    record, job = resolve_execution_context(execution_id, store=store)
+    enforce_http_execution_access(
+        identity, record=record, job=job, execution_id=execution_id
+    )
+    if record is None:
+        return ExecutionOutputsResponse(
+            execution_id=execution_id,
+            execution_status=_execution_payload_from_job(job)["status"],
+            outputs_source="provenance",
+            outputs=await asyncio.to_thread(outputs_from_rows, _provenance_pool(request), job),
+        )
+    linked_job = _get_job_for_record(store, record) if job is None else job
+    outputs = await asyncio.to_thread(
+        _joined_provenance, _provenance_pool(request), record, declared_outputs(record)
+    )
+    return ExecutionOutputsResponse(
+        execution_id=record.execution_id,
+        execution_status=_execution_payload(record, linked_job)["status"],
+        outputs=outputs,
+    )
+
+
 @router.post(
     "/executions/{execution_id}/cancel",
     operation_id="workflow_cancel",

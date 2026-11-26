@@ -463,6 +463,7 @@
       "files.filename_required": 400,
       "files.job_not_found": 404,
       "files.list_failed": 500,
+      "files.list_option_invalid": 400,
       "files.metadata_failed": 500,
       "files.not_found": 404,
       "files.presign_failed": 500,
