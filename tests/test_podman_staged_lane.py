@@ -124,9 +124,18 @@ code = (
     "from umrs.server import step_worker\n"
     "sys.exit(step_worker.main())\n"
 )
-sys.exit(subprocess.call(
+rc = subprocess.call(
     [sys.executable, "-c", code, mounts["/work/in"], mounts["/work/out"]], env=env
-))
+)
+if beh.get("deep"):  # a tree deeper than Python recurses
+    fd = os.open(mounts["/work/reply"], os.O_RDONLY)
+    for _ in range(beh["deep"]):
+        os.mkdir("d", dir_fd=fd)
+        fd, old = os.open("d", os.O_RDONLY, dir_fd=fd), fd
+        os.close(old)
+if beh.get("lock"):  # a directory the step made read-only for its owner
+    os.chmod(mounts["/work/reply"], 0o500)
+sys.exit(rc)
 """
 
 
@@ -601,6 +610,21 @@ def test_an_oversized_reply_is_refused(tmp_path):
     (tmp_path / "wd" / "reply" / "output.json").write_bytes(b" " * 65)
     with pytest.raises(StepExecutionError, match="exceeds 64 bytes"):
         read_reply(str(tmp_path / "wd"), cap=64)
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores the mode bits")
+def test_a_directory_the_step_locked_is_still_removed(podman, root, tree, opted_in):
+    podman.behave(lock=True)
+    result, _s3 = _video(_executor(podman, root), tree)
+    assert result.output_keys == [f"runs/{RUN}/s1/result/out.txt"]
+    assert list(root.iterdir()) == []  # not left behind on the host's disk
+
+
+def test_a_tree_deeper_than_python_recurses_is_still_removed(podman, root, tree, opted_in):
+    podman.behave(deep=1100)
+    result, _s3 = _video(_executor(podman, root), tree)
+    assert result.output_keys == [f"runs/{RUN}/s1/result/out.txt"]
+    assert list(root.iterdir()) == []
 
 
 def test_a_relative_workdir_root_refuses_by_name(podman, tree, opted_in):

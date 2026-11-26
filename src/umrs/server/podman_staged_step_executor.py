@@ -109,6 +109,7 @@ WORKDIR_DIRS = ("in", "out", "reply", "src", "log")
 _STAGE_TOPS = frozenset({"in", "src"})
 _DEFAULT_SECONDS = 3600.0
 _LOG_TAIL_CHARS = 1000
+_REMOVE_SECONDS = 600
 _CHUNK = 1024 * 1024
 #: Directory levels below ``out/`` walked (one descriptor each), at most.
 _MAX_OUT_DEPTH = 64
@@ -402,6 +403,40 @@ def _log_tail(workdir: str) -> str:
         return "<no log>"
 
 
+# ── removing the workdir the step shaped ────────────────────────────────────
+
+
+def remove_workdir(workdir: str) -> None:
+    """Remove *workdir* whatever shape the step left in ``out/`` or
+    ``reply/``: a directory it made read-only or unreadable for its owner, a
+    tree deeper than Python recurses (as the HPC lane's helper ``rmwd``
+    does). Never raises: a failure here must not replace the step's own
+    outcome; a workdir that stays is logged by name."""
+    try:
+        shutil.rmtree(workdir)
+    except FileNotFoundError:
+        return
+    except Exception:  # noqa: BLE001 — RecursionError too (one frame per level)
+        _force_remove(workdir)
+
+
+def _force_remove(workdir: str) -> None:
+    """``chmod -R u+rwX`` then ``rm -rf``: neither follows a link it meets,
+    neither recurses on the Python stack (POSIX tools, Linux and macOS)."""
+    for argv in (["chmod", "-R", "u+rwX", "--", workdir], ["rm", "-rf", "--", workdir]):
+        with contextlib.suppress(OSError, subprocess.SubprocessError):
+            subprocess.run(
+                argv,
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                timeout=_REMOVE_SECONDS,
+                env=podman_env(),
+                check=False,
+            )
+    if os.path.lexists(workdir):
+        logger.warning("podman-staged: step workdir %s could not be removed", workdir)
+
+
 @dataclass
 class _Binding:
     cancelled: Callable[[], bool] | None = None
@@ -574,7 +609,7 @@ class PodmanStagedStepExecutor:
         if self.keep_workdir:
             logger.info("podman-staged: keeping workdir %s", workdir)
             return
-        shutil.rmtree(workdir, ignore_errors=True)
+        remove_workdir(workdir)
 
     # ── the container ───────────────────────────────────────────────────────
 
@@ -736,5 +771,6 @@ __all__ = [
     "out_tar",
     "podman_env",
     "read_reply",
+    "remove_workdir",
     "staged_payload",
 ]
