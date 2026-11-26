@@ -38,9 +38,11 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from umrs.data_catalog.provenance import (
     HashedObject,
+    ObjectProvenance,
     ObjectRef,
     Sha256Reader,
     hashed,
+    legacy_record,
     lookup_many_best_effort,
     provenance_row,
     record_best_effort,
@@ -1142,13 +1144,21 @@ def _with_provenance(
     request: Request, bucket: str, objects: list[ListedObject]
 ) -> list[ListedObject]:
     """Each object's provenance in ONE batched SELECT for the page (never a
-    ``head_object`` or a query per key); legacy without a database."""
-    refs: list[ObjectRef] = [(bucket, obj.key, obj.etag or "") for obj in objects]
+    ``head_object`` or a query per key); legacy without a database. An
+    object listed without an ETag reads legacy too: no row can prove it
+    describes the listed version ("" would match any version's row)."""
+    refs: list[ObjectRef] = [(bucket, obj.key, obj.etag) for obj in objects if obj.etag]
     found = lookup_many_best_effort(getattr(request.app.state, "umrs_db_pool", None), refs)
     return [
-        obj.model_copy(update={"provenance": found[(bucket, obj.key)].as_dict()})
+        obj.model_copy(update={"provenance": _provenance_of(found, bucket, obj).as_dict()})
         for obj in objects
     ]
+
+
+def _provenance_of(
+    found: dict[tuple[str, str], ObjectProvenance], bucket: str, obj: ListedObject
+) -> ObjectProvenance:
+    return found.get((bucket, obj.key)) or legacy_record(bucket, obj.key, "")
 
 
 @router.get(

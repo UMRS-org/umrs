@@ -3040,6 +3040,11 @@ class ExecutionOutputsResponse(BaseModel):
     status: str = "ok"
     execution_id: str
     execution_status: str | None = None
+    #: ``run_record``: the live run's ``results.steps[*].output_keys``;
+    #: ``provenance``: the run's record is gone (a server restart), so its
+    #: ``step_output`` rows answer (objects staged steps stored; an
+    #: in-process step that wrote no row is not listed).
+    outputs_source: str = "run_record"
     outputs: list[ExecutionOutput] = Field(default_factory=list)
 
 
@@ -3067,8 +3072,8 @@ def _step_outputs(
     return found
 
 
-def _run_buckets(record: Any) -> tuple[str, str]:
-    bucket = str((record.params or {}).get("bucket") or "wf-runner")
+def _run_buckets(params: Any) -> tuple[str, str]:
+    bucket = str((params or {}).get("bucket") or "wf-runner")
     return bucket, f"{bucket}-output"
 
 
@@ -3076,7 +3081,7 @@ def declared_outputs(record: Any) -> list[ExecutionOutput]:
     """The union of ``results.steps[*].output_keys`` in step order, each
     object once (the first step that declared it). Nothing is listed or
     HEAD-ed in the store: the run's own record says what it wrote."""
-    _input, output = _run_buckets(record)
+    _input, output = _run_buckets(record.params)
     seen: set[tuple[str, str]] = set()
     outputs: list[ExecutionOutput] = []
     for step, body in ((record.results or {}).get("steps") or {}).items():
@@ -3092,7 +3097,7 @@ def _joined_provenance(
     rows for a bucket the run does not own."""
     from ..data_catalog.provenance import lookup_many_best_effort
 
-    own = set(_run_buckets(record))
+    own = set(_run_buckets(record.params))
     refs = [(o.bucket, o.key, "") for o in outputs if o.bucket in own]
     found = lookup_many_best_effort(pool, refs)
     return [
@@ -3100,6 +3105,28 @@ def _joined_provenance(
         if (o.bucket, o.key) in found
         else o
         for o in outputs
+    ]
+
+
+def outputs_from_rows(pool: Any, job: Any) -> list[ExecutionOutput]:
+    """The outputs of a run whose in-memory record is gone (a server
+    restart empties the registry; every converge restarts the front): the
+    ``step_output`` rows its staged steps wrote, for its own bucket pair
+    only, one SELECT (review MB-S2b, 2026-11-27)."""
+    from ..data_catalog.provenance import rows_of_execution_best_effort
+
+    spec = getattr(job, "spec", None) or {}
+    execution_id = str(spec.get("execution_id") or "")
+    if not execution_id:
+        return []
+    rows = rows_of_execution_best_effort(
+        pool, execution_id, list(_run_buckets(spec.get("params")))
+    )
+    return [
+        ExecutionOutput(
+            step=str(row.step or ""), bucket=row.bucket, key=row.key, provenance=row.as_dict()
+        )
+        for row in rows
     ]
 
 
@@ -3123,7 +3150,8 @@ async def get_execution_outputs(
     object's provenance (sha256, state, origin). The client never guesses a
     ``runs/<id>/`` prefix. Visibility is the execution's (the same rule as
     ``/results``): another project's run is 403. A run known only as a
-    durable job (no live record) declares no outputs yet.
+    durable job (its record lost to a restart) answers from its
+    ``step_output`` provenance rows (``outputs_source: provenance``).
     # auth: edge-auth(nginx)
     """
     store = get_optional_job_store()
@@ -3132,8 +3160,12 @@ async def get_execution_outputs(
         identity, record=record, job=job, execution_id=execution_id
     )
     if record is None:
-        status_ = _execution_payload_from_job(job)["status"]
-        return ExecutionOutputsResponse(execution_id=execution_id, execution_status=status_)
+        return ExecutionOutputsResponse(
+            execution_id=execution_id,
+            execution_status=_execution_payload_from_job(job)["status"],
+            outputs_source="provenance",
+            outputs=await asyncio.to_thread(outputs_from_rows, _provenance_pool(request), job),
+        )
     linked_job = _get_job_for_record(store, record) if job is None else job
     outputs = await asyncio.to_thread(
         _joined_provenance, _provenance_pool(request), record, declared_outputs(record)

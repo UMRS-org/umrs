@@ -487,3 +487,122 @@ def test_lookup_many_on_postgres(db_connection) -> None:
     )
     assert found[(OUT, "a.mp4")].etag == "e1" and found[(OUT, "a.mp4")].sha256 == SHA
     assert found[(OUT, "b.mp4")].legacy and found[(OWNED, "a.mp4")].legacy
+
+
+# ── review MB-S2b (2026-11-27) ──────────────────────────────────────────────
+
+
+class _S3NoEtag(_S3):
+    """A store whose listing carries no ETag (some S3-compatible gateways)."""
+
+    def _item(self, bucket: str, key: str) -> dict[str, Any]:
+        item = super()._item(bucket, key)
+        item.pop("ETag")
+        return item
+
+
+def test_an_object_listed_without_an_etag_reads_legacy(monkeypatch) -> None:
+    """Without the listed ETag no row can prove it describes this version:
+    the newest row of *any* version must not stand in for it."""
+    fake = _S3NoEtag()
+    monkeypatch.setattr(files, "get_s3_config", lambda: _Config(fake))
+    monkeypatch.setattr(files, "bucket_store", lambda *_a: _Config(fake))
+    monkeypatch.setattr(step_staging, "_bucket_registry", None)
+    ub.set_user_bucket_store(_Buckets())  # type: ignore[arg-type]
+    try:
+        fake.put(OWNED, "a.mp4", b"rewritten")
+        pool = _Pool([_row(OWNED, "a.mp4", _etag(b"clip"))])
+        [obj] = _list(_files_client(fake, pool=pool), fields="provenance")["objects"]
+    finally:
+        ub.set_user_bucket_store(None)
+    assert obj["etag"] is None
+    assert obj["provenance"]["source_kind"] == "legacy"
+
+
+class _Jobs:
+    def __init__(self, job: Any) -> None:
+        self.job = job
+
+    def list_jobs(self, **_kw: Any) -> list[Any]:
+        return [self.job]
+
+
+def _durable_only_run(monkeypatch: pytest.MonkeyPatch, execution_id: str) -> None:
+    """A finished run the registry no longer holds (a server restart): only
+    its durable job is left."""
+    from umrs.api import workflows as wf_api
+    from umrs.jobs.models import Job, JobStatus, JobType, RestartPolicy
+
+    now = datetime.now(timezone.utc)
+    job = Job(
+        job_id="job-restart",
+        project_id="project-a",
+        user_id="alice",
+        job_type=JobType.WORKFLOW_RUN,
+        spec={
+            "workflow_name": "wf",
+            "execution_id": execution_id,
+            "params": {"project_id": "project-a", "bucket": OWNED},
+        },
+        idempotency_key="idem-restart",
+        status=JobStatus.COMPLETED,
+        restart_policy=RestartPolicy.ON_CRASH,
+        created_at=now,
+        updated_at=now,
+        last_state_change_at=now,
+    )
+    monkeypatch.setattr(wf_api, "get_optional_job_store", lambda: _Jobs(job))
+
+
+def test_outputs_after_a_restart_come_from_the_runs_step_output_rows(
+    registry, monkeypatch
+) -> None:
+    """Every converge restarts the front and empties the in-memory registry;
+    the run's ``step_output`` provenance rows (execution id, step) still say
+    what it wrote, so its outputs do not vanish."""
+    _durable_only_run(monkeypatch, "wf-restart")
+    clip = "runs/wf-restart/detect/x.mp4"
+    pool = _Pool([_row(OUT, clip, "e1", execution_id="wf-restart")])
+    r = _wf_client(pool).get("/umrs/workflows/executions/wf-restart/outputs", headers=_caller())
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["execution_status"] == "succeeded"
+    assert body["outputs_source"] == "provenance"
+    [out] = body["outputs"]
+    assert (out["step"], out["bucket"], out["key"]) == ("detect", OUT, clip)
+    assert out["provenance"]["sha256"] == SHA
+    [(sql, params)] = pool.selects
+    assert "execution_id" in sql
+    assert params[0] == "wf-restart" and sorted(params[1]) == [OWNED, OUT]
+
+
+def test_outputs_of_a_live_run_say_they_come_from_its_record(registry) -> None:
+    _record, _pool, body = _outputs(registry)
+    assert body["outputs_source"] == "run_record"
+
+
+@pytest.mark.integration
+def test_rows_of_execution_on_postgres(db_connection) -> None:
+    cur = db_connection.cursor()
+    schema = f"mbs2b_{uuid.uuid4().hex[:12]}"
+    cur.execute(f"CREATE SCHEMA {schema}")
+    cur.execute(f"SET LOCAL search_path TO {schema}")
+    cur.execute(_MIGRATION.read_text())
+    for key, etag, run in (
+        ("runs/r/a.mp4", "e1", "r"),
+        ("runs/r/a.mp4", "e2", "r"),
+        ("runs/r/b.json", "e3", "r"),
+        ("runs/q/c.mp4", "e4", "q"),
+    ):
+        provenance.record(db_connection, _row(OUT, key, etag, execution_id=run))
+    provenance.record(db_connection, _row("elsewhere", "runs/r/d", "e5", execution_id="r"))
+    # one transaction stamps one now(): age the first version explicitly
+    cur.execute(
+        "UPDATE object_provenance SET created_at = now() - interval '1 hour' "
+        "WHERE etag = 'e1'"
+    )
+    rows =provenance.rows_of_execution(db_connection, "r", [OWNED, OUT])
+    assert sorted((row.key, row.etag) for row in rows) == [
+        ("runs/r/a.mp4", "e2"),
+        ("runs/r/b.json", "e3"),
+    ]
