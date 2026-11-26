@@ -23,11 +23,13 @@ from __future__ import annotations
 
 import argparse
 import contextlib
-from collections.abc import Iterator
+import json
+import sys
+from collections.abc import Callable, Iterator
 from typing import Any
 
-from umrs.knowledge import embedding_space_site, embedding_space_store  # noqa: F401
-from umrs.knowledge.embedding_spaces import (  # noqa: F401
+from umrs.knowledge import embedding_space_site, embedding_space_store
+from umrs.knowledge.embedding_spaces import (
     COLUMNS,
     SOURCE_ADMIN,
     EmbeddingSpace,
@@ -82,7 +84,30 @@ def registry_conn() -> Iterator[Any]:
 def space_as_dict(space: EmbeddingSpace) -> dict[str, Any]:
     """``{column: value}`` for every name in COLUMNS (tuples as lists),
     plus ``"index_name": space.index_name``."""
-    raise NotImplementedError("kn-s5-03")
+    data = {
+        column: list(value) if isinstance(value, tuple) else value
+        for column in COLUMNS
+        for value in (getattr(space, column),)
+    }
+    data["index_name"] = space.index_name
+    return data
+
+
+def _error(message: str) -> None:
+    print(f"error: {message}", file=sys.stderr)
+
+
+def _run_with_registry(operation: Callable[[Any], int]) -> int:
+    """Run one registry operation with the shared connection/error rules."""
+    try:
+        with registry_conn() as conn:
+            return operation(conn)
+    except RegistryUnavailable as exc:
+        _error(str(exc))
+        return EXIT_NO_DB
+    except EmbeddingSpaceError as exc:
+        _error(str(exc))
+        return EXIT_REFUSED
 
 
 def cmd_list(args: argparse.Namespace, _store: Any = None) -> int:
@@ -92,7 +117,22 @@ def cmd_list(args: argparse.Namespace, _store: Any = None) -> int:
     per space: ``f"{s.space_id}\\t{s.status}\\t{s.dimension}\\t{s.model_name}\\t"
     f"{','.join(s.legacy_names)}"``, or ``(no embedding spaces)`` when the
     list is empty. Return EXIT_OK."""
-    raise NotImplementedError("kn-s5-03")
+
+    def list_spaces(conn: Any) -> int:
+        spaces = embedding_space_store.list_spaces(conn, include_retired=args.all)
+        if args.json:
+            print(json.dumps([space_as_dict(space) for space in spaces], indent=2))
+        elif not spaces:
+            print("(no embedding spaces)")
+        else:
+            for space in spaces:
+                print(
+                    f"{space.space_id}\t{space.status}\t{space.dimension}\t"
+                    f"{space.model_name}\t{','.join(space.legacy_names)}"
+                )
+        return EXIT_OK
+
+    return _run_with_registry(list_spaces)
 
 
 def space_from_args(args: argparse.Namespace) -> EmbeddingSpace:
@@ -102,7 +142,19 @@ def space_from_args(args: argparse.Namespace) -> EmbeddingSpace:
     ``tuple(args.modality)`` or ``("text",)`` when empty/None;
     ``legacy_names`` = ``tuple(args.legacy_name or ())``; status
     ``"active"``; source ``SOURCE_ADMIN``. No validation here."""
-    raise NotImplementedError("kn-s5-03")
+    return EmbeddingSpace(
+        space_id=args.space_id,
+        model_name=args.model_name,
+        dimension=args.dimension,
+        model_ref=args.model_ref,
+        revision=args.revision,
+        modalities=tuple(args.modality or ()) or ("text",),
+        query_prefix=args.query_prefix,
+        document_prefix=args.document_prefix,
+        legacy_names=tuple(args.legacy_name or ()),
+        status="active",
+        source=SOURCE_ADMIN,
+    )
 
 
 def cmd_register(args: argparse.Namespace, _store: Any = None) -> int:
@@ -110,20 +162,59 @@ def cmd_register(args: argparse.Namespace, _store: Any = None) -> int:
     space_from_args(args), replace=args.replace)``; print
     ``registered <space_id>`` when it returns True, ``replaced <space_id>``
     when False. Return EXIT_OK."""
-    raise NotImplementedError("kn-s5-03")
+
+    def register(conn: Any) -> int:
+        space = space_from_args(args)
+        inserted = embedding_space_store.register_space(
+            conn, space, replace=args.replace
+        )
+        print(f"{'registered' if inserted else 'replaced'} {space.space_id}")
+        return EXIT_OK
+
+    return _run_with_registry(register)
+
+
+def _set_status(args: argparse.Namespace, status: str, word: str) -> int:
+    def set_status(conn: Any) -> int:
+        found = embedding_space_store.set_status(conn, args.space_id, status)
+        if not found:
+            _error(f"no embedding space {args.space_id}")
+            return EXIT_REFUSED
+        print(f"{word} {args.space_id}")
+        return EXIT_OK
+
+    return _run_with_registry(set_status)
 
 
 def cmd_retire(args: argparse.Namespace, _store: Any = None) -> int:
     """``retire``: ``embedding_space_store.set_status(conn, args.space_id,
     "retired")``; True → print ``retired <space_id>``, EXIT_OK; False →
     stderr ``error: no embedding space <space_id>``, EXIT_REFUSED."""
-    raise NotImplementedError("kn-s5-03")
+    return _set_status(args, "retired", "retired")
 
 
 def cmd_activate(args: argparse.Namespace, _store: Any = None) -> int:
     """``activate``: as ``cmd_retire`` with status ``"active"`` and the
     word ``activated``."""
-    raise NotImplementedError("kn-s5-03")
+    return _set_status(args, "active", "activated")
+
+
+def _seed_dry_run(conn: Any, declared: list[EmbeddingSpace]) -> int:
+    for space in declared:
+        existing = embedding_space_store.get_space(conn, space.space_id)
+        print(
+            f"{'already registered' if existing is not None else 'would seed'} "
+            f"{space.space_id}"
+        )
+    return EXIT_OK
+
+
+def _seed(conn: Any, declared: list[EmbeddingSpace]) -> int:
+    inserted = embedding_space_store.seed_spaces(conn, declared)
+    for space in declared:
+        word = "seeded" if space.space_id in inserted else "already registered"
+        print(f"{word} {space.space_id}")
+    return EXIT_OK
 
 
 def cmd_seed_site(args: argparse.Namespace, _store: Any = None) -> int:
@@ -139,7 +230,16 @@ def cmd_seed_site(args: argparse.Namespace, _store: Any = None) -> int:
     Without: ``inserted = embedding_space_store.seed_spaces(conn, declared)``;
     for each declared space in order print ``seeded <id>`` when its id is
     in ``inserted``, else ``already registered <id>``. Return EXIT_OK."""
-    raise NotImplementedError("kn-s5-03")
+    try:
+        declared = embedding_space_site.site_embedding_spaces()
+    except EmbeddingSpaceError as exc:
+        _error(str(exc))
+        return EXIT_REFUSED
+    if not declared:
+        print("no knowledge.embedding_spaces in the site file")
+        return EXIT_OK
+    operation = _seed_dry_run if args.dry_run else _seed
+    return _run_with_registry(lambda conn: operation(conn, declared))
 
 
 # ── parsers (wired by umrs.cli.admin.main) ──────────────────────────────────
