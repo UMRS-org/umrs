@@ -26,7 +26,9 @@ from dataclasses import dataclass
 from typing import Any
 
 from umrs.knowledge.embedding_spaces import (
+    CODE_INVALID,
     EmbeddingSpace,
+    EmbeddingSpaceError,
     IndexState,
     index_actions,
     uncovered_names,
@@ -72,7 +74,20 @@ def read_index_states(
     valid=bool(indisvalid), comment=comment)`` (``comment`` as returned,
     None stays None). A space without a row gets ``IndexState()`` (not
     existing). Rows naming no space in ``spaces`` are ignored."""
-    raise NotImplementedError("kn-s6-02")
+    if not spaces:
+        return {}
+
+    cur = conn.cursor()
+    cur.execute(INDEX_STATE_SQL, ([space.index_name for space in spaces],))
+    space_by_index = {space.index_name: space for space in spaces}
+    states = {space.space_id: IndexState() for space in spaces}
+    for relname, indisvalid, comment in cur.fetchall():
+        space = space_by_index.get(relname)
+        if space is not None:
+            states[space.space_id] = IndexState(
+                exists=True, valid=bool(indisvalid), comment=comment
+            )
+    return states
 
 
 def plan_index_work(
@@ -92,7 +107,23 @@ def plan_index_work(
     ``statements = actions(space, states.get(space.space_id, IndexState()))``;
     a space with no statements is left out; else append
     ``IndexWork(space.space_id, space.index_name, statements)``."""
-    raise NotImplementedError("kn-s6-02")
+    known_ids = {space.space_id for space in spaces}
+    requested = only or ()
+    for space_id in requested:
+        if space_id not in known_ids:
+            raise EmbeddingSpaceError(
+                CODE_INVALID, f"unknown embedding space id {space_id!r}"
+            )
+    selected = set(requested) if requested else None
+
+    work = []
+    for space in spaces:
+        if selected is not None and space.space_id not in selected:
+            continue
+        statements = actions(space, states.get(space.space_id, IndexState()))
+        if statements:
+            work.append(IndexWork(space.space_id, space.index_name, statements))
+    return work
 
 
 def apply_index_work(conn: Any, work: Sequence[IndexWork]) -> list[str]:
@@ -104,14 +135,28 @@ def apply_index_work(conn: Any, work: Sequence[IndexWork]) -> list[str]:
     ``CODE_NEEDS_AUTOCOMMIT`` and run nothing. One ``cur = conn.cursor()``;
     ``cur.execute(statement)`` (no parameters) per statement. A failing
     statement propagates its exception (statements after it do not run)."""
-    raise NotImplementedError("kn-s6-02")
+    if getattr(conn, "autocommit", False) is not True:
+        raise RuntimeError(
+            f"{CODE_NEEDS_AUTOCOMMIT}: index statements require an autocommit "
+            "connection"
+        )
+
+    cur = conn.cursor()
+    executed = []
+    for item in work:
+        for statement in item.statements:
+            cur.execute(statement)
+            executed.append(statement)
+    return executed
 
 
 def stored_model_names(conn: Any) -> list[str]:
     """Every distinct stored ``model_name`` (task kn-s6-02): ``cur =
     conn.cursor()``; ``cur.execute(STORED_NAMES_SQL)``; ``[str(row[0]) for
     row in cur.fetchall()]``."""
-    raise NotImplementedError("kn-s6-02")
+    cur = conn.cursor()
+    cur.execute(STORED_NAMES_SQL)
+    return [str(row[0]) for row in cur.fetchall()]
 
 
 def coverage_warnings(
@@ -128,4 +173,15 @@ def coverage_warnings(
     stored_list)``; when non-empty append exactly
     ``f"{space.space_id}: vectors stored under {', '.join(names)} are outside "
     f"{space.index_name}; register them as legacy names and rerun index"``."""
-    raise NotImplementedError("kn-s6-02")
+    stored_list = list(stored)
+    warnings = []
+    for space in spaces:
+        if not space.active:
+            continue
+        names = uncovered(space, stored_list)
+        if names:
+            warnings.append(
+                f"{space.space_id}: vectors stored under {', '.join(names)} are outside "
+                f"{space.index_name}; register them as legacy names and rerun index"
+            )
+    return warnings

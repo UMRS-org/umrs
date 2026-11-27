@@ -514,13 +514,17 @@ def index_signature(space: EmbeddingSpace) -> str:
     ``EmbeddingSpaceError``). Example for the bundled space:
     ``umrs-space:v1 space=e5_base_v2 dim=768 names=/opt/umrs/models/e5-base-v2,``
     ``intfloat/e5-base-v2,/models/e5-base-v2,e5-base-v2`` (one line)."""
-    raise NotImplementedError("kn-s6-01")
+    validate_space(space)
+    return (
+        f"{INDEX_COMMENT_PREFIX} space={space.space_id} "
+        f"dim={space.dimension} names={','.join(space_names(space))}"
+    )
 
 
 def comment_index_sql(space: EmbeddingSpace) -> str:
     """``f"COMMENT ON INDEX {space.index_name} IS '{index_signature(space)}'"``
     (task kn-s6-01). The signature holds no quote by construction."""
-    raise NotImplementedError("kn-s6-01")
+    return f"COMMENT ON INDEX {space.index_name} IS '{index_signature(space)}'"
 
 
 def index_actions(space: EmbeddingSpace, state: IndexState) -> tuple[str, ...]:
@@ -536,7 +540,17 @@ def index_actions(space: EmbeddingSpace, state: IndexState) -> tuple[str, ...]:
       ``(hnsw_index_ddl(space), comment_index_sql(space))``;
     - retired space: ``(drop_index_ddl(space),)`` when ``state.exists``,
       else ``()``."""
-    raise NotImplementedError("kn-s6-01")
+    if not space.active:
+        return (drop_index_ddl(space),) if state.exists else ()
+    if state.exists and state.valid and state.comment == index_signature(space):
+        return ()
+    if state.exists:
+        return (
+            drop_index_ddl(space),
+            hnsw_index_ddl(space),
+            comment_index_sql(space),
+        )
+    return hnsw_index_ddl(space), comment_index_sql(space)
 
 
 def uncovered_names(
@@ -549,4 +563,12 @@ def uncovered_names(
     when ``matches(space, name)`` is True and the normalized name is NOT in
     ``space_names(space)``. No duplicates (first occurrence kept); empty
     names are skipped. Status is ignored."""
-    raise NotImplementedError("kn-s6-01")
+    covered = space_names(space)
+    uncovered: dict[str, None] = {}
+    for name in stored_names:
+        normalized = normalize_name(name)
+        if not normalized:
+            continue
+        if matches(space, name) and normalized not in covered:
+            uncovered.setdefault(normalized, None)
+    return tuple(uncovered)

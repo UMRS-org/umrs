@@ -29,7 +29,11 @@ import sys
 from collections.abc import Callable, Iterator
 from typing import Any
 
-from umrs.knowledge import embedding_space_site, embedding_space_store
+from umrs.knowledge import (
+    embedding_space_index,
+    embedding_space_site,
+    embedding_space_store,
+)
 from umrs.knowledge.embedding_spaces import (
     COLUMNS,
     SOURCE_ADMIN,
@@ -306,7 +310,32 @@ def cmd_index(args: argparse.Namespace, _store: Any = None) -> int:
 
     Call the modules through their module objects (as above) so tests can
     patch them."""
-    raise NotImplementedError("kn-s6-03")
+
+    def operation(conn: Any) -> int:
+        spaces = embedding_space_store.list_spaces(conn, include_retired=True)
+        states = embedding_space_index.read_index_states(conn, spaces)
+        work = embedding_space_index.plan_index_work(
+            spaces, states, only=args.space or None
+        )
+        warnings = embedding_space_index.coverage_warnings(
+            spaces, embedding_space_index.stored_model_names(conn)
+        )
+        for line in warnings:
+            print(f"warning: {line}", file=sys.stderr)
+        if not work:
+            print("all embedding-space indexes are current")
+            return EXIT_OK
+        if args.dry_run:
+            for item in work:
+                for statement in item.statements:
+                    print(f"would run: {statement}")
+            return EXIT_OK
+        ran = embedding_space_index.apply_index_work(conn, work)
+        for statement in ran:
+            print(f"ran: {statement}")
+        return EXIT_OK
+
+    return _run_with_index_conn(operation)
 
 
 # ── parsers (wired by umrs.cli.admin.main) ──────────────────────────────────
