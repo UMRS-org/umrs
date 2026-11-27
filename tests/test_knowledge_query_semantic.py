@@ -17,11 +17,16 @@ from datetime import datetime, timezone
 
 import httpx
 import pytest
+from space_registry_fake import REGISTRY_MARKER, registry_row
 from umrs.api import knowledge_query as kq
 
 _WHEN = datetime(2026, 10, 9, tzinfo=timezone.utc)
 _CHUNK = json.dumps({"kind": "chunk", "excerpt": "Encapsulation slows moisture ingress."})
-_SIM_ROW = ("node-chunk-a-0", "/models/e5-base-v2", 768, _WHEN, "chunk 0 of a", "p1", 0.12, _CHUNK)
+# ANN rows (KN-S6): the columns, then the matched content, then the distance.
+_SIM_ROW = ("node-chunk-a-0", "/models/e5-base-v2", 2, _WHEN, "chunk 0 of a", "p1", _CHUNK, 0.12)
+_REGISTRY = [
+    registry_row("t_e5", "/models/e5-base-v2", 2, legacy_names=("intfloat/e5-base-v2",))
+]
 _TABLE_ROW = ("node-chunk-a-0", "/models/e5-base-v2", 768, _WHEN, "chunk 0 of a", "p1")
 
 
@@ -67,8 +72,13 @@ class _Pool:
         pass
 
 
-def _rows(sim=None, table=None):
-    return lambda sql: (sim or []) if "<=>" in sql else (table or [])
+def _rows(sim=None, table=None, registry=_REGISTRY):
+    def rows_for(sql):
+        if REGISTRY_MARKER in sql:
+            return list(registry)
+        return (sim or []) if "<=>" in sql else (table or [])
+
+    return rows_for
 
 
 def _encoder(model="/models/e5-base-v2", vector=(0.1, 0.2), reason=""):
@@ -92,12 +102,22 @@ def test_encoder_vector_runs_the_similarity_lane_in_one_space():
     hits = backend.search_embeddings("moisture damage", project_id="p1", limit=5)
 
     assert enc.calls == ["moisture damage"]
-    sql, params = pool.cur.queries[0]
-    assert "<=> %s::vector" in sql and "(e.model_name = %s OR e.model_name LIKE %s)" in sql
-    assert params == ("[0.1,0.2]", "p1", "/models/e5-base-v2", "%/e5-base-v2", 5)
     assert hits[0]["metadata"]["lane"] == "similarity"
     assert hits[0]["score"] == pytest.approx(0.88)
     assert backend.lane_report == {"lane": "similarity", "model": "/models/e5-base-v2"}
+
+
+def test_the_similarity_read_is_one_registered_space_on_its_index():
+    pool = _Pool(_rows(sim=[_SIM_ROW]))
+    kq._EmbeddingsSearchBackend(pool, encoder=_encoder()).search_embeddings(
+        "q", project_id="p1", limit=5
+    )
+    registry, (sql, params) = pool.cur.queries
+    assert REGISTRY_MARKER in registry[0]
+    assert "e.model_name IN ('/models/e5-base-v2', 'intfloat/e5-base-v2')" in sql
+    assert "ORDER BY (e.embedding)::vector(2) <=> (%s::vector)::vector(2) LIMIT %s" in sql
+    assert " LIKE " not in sql
+    assert params == ("[0.1,0.2]", "p1", "[0.1,0.2]", 100, 5)
 
 
 def test_similarity_hit_carries_the_matched_text():
@@ -140,7 +160,7 @@ def test_empty_space_is_no_evidence_and_names_the_space():
     pool = _Pool(_rows(sim=[], table=[_TABLE_ROW]))
     backend = kq._EmbeddingsSearchBackend(pool, encoder=_encoder(model="intfloat/e5-base-v2"))
     assert backend.search_embeddings("q", project_id="p1") == []
-    assert len(pool.cur.queries) == 1  # no lexical second pass
+    assert len(pool.cur.queries) == 2  # the registry, the ANN read; no lexical pass
     assert backend.lane_report["lane"] == "similarity"
     assert "'intfloat/e5-base-v2'" in backend.lane_report["reason"]
 
@@ -272,9 +292,23 @@ def test_a_space_is_the_model_basename():
     assert {embedding_space(n) for n in names} == {"e5-base-v2"}
 
 
-def test_like_wildcards_in_a_model_name_are_escaped():
+def test_an_unregistered_model_is_refused_by_name_without_a_vector_read():
+    """ADR-083 D-1 (KN-S6): no space owns the model, so no ranking at all."""
     pool = _Pool(_rows(sim=[_SIM_ROW]))
-    backend = kq._EmbeddingsSearchBackend(pool, encoder=_encoder(model="/m/all_MiniLM%v2"))
-    backend.search_embeddings("q", project_id="p1")
-    assert pool.cur.queries[0][1][3] == "%/all\\_MiniLM\\%v2"
+    backend = kq._EmbeddingsSearchBackend(pool, encoder=_encoder(model="/m/all-MiniLM-v2"))
+    assert backend.search_embeddings("q", project_id="p1") == []
+    assert backend.lane_report["lane"] == "unavailable"
+    assert backend.lane_report["reason"].startswith("knowledge.embedding_space_unregistered")
+    assert not any("<=>" in sql for sql, _p in pool.cur.queries)
+    assert backend.dense_hits is None
+
+
+def test_a_supplied_vector_of_another_dimension_is_refused_by_name():
+    pool = _Pool(_rows(sim=[_SIM_ROW]))
+    backend = kq._EmbeddingsSearchBackend(pool)
+    hits = backend.search_embeddings(
+        "q", project_id="p1", query_embedding=[0.1, 0.2, 0.3], model_name="/models/e5-base-v2"
+    )
+    assert hits == []
+    assert backend.lane_report["reason"].startswith("knowledge.embedding_dimension_mismatch")
 

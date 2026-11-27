@@ -409,3 +409,144 @@ def space_to_row(space: EmbeddingSpace) -> tuple[Any, ...]:
         space.status,
         space.source,
     )
+
+
+# ── index and filter SQL (ADR-083 D-2, slice KN-S6) ─────────────────────────
+#
+# One partial expression HNSW per space on the untyped 0075 column:
+#
+#   CREATE INDEX CONCURRENTLY IF NOT EXISTS hnsw_<space_id>
+#     ON knowledge_node_embeddings
+#     USING hnsw (((embedding)::vector(<D>)) vector_cosine_ops)
+#     WHERE model_name IN ('<name>', ...)
+#
+# The predicate lists the space's names (``space_names``: model_name, then
+# the legacy names). A read carries the same predicate, built by the same
+# function (:func:`space_filter_sql`), so the planner can prove it and use
+# the index. A row stored under another path that only basename-matches the
+# space is outside both; ``uncovered_names`` lists such paths so an admin can
+# register them as legacy names (and rebuild the index).
+#
+# Names are inlined as SQL literals: every name passed the MODEL_NAME_PATTERN
+# check (no quote, no backslash, no whitespace), and :func:`sql_literal`
+# re-checks it, so no value reaches DDL or a read unvalidated.
+
+HNSW_OPCLASS = "vector_cosine_ops"
+INDEX_COMMENT_PREFIX = "umrs-space:v1"
+_ALIAS_RE = re.compile(r"^[a-z_][a-z0-9_]{0,31}$")
+
+
+def sql_literal(name: str) -> str:
+    """``'name'`` for a name that matches :data:`MODEL_NAME_PATTERN`; anything
+    else raises ``EmbeddingSpaceError`` (:data:`CODE_INVALID`)."""
+    _check_name(name, "name")
+    return "'" + name + "'"
+
+
+def _names_sql(space: EmbeddingSpace) -> str:
+    names = space_names(space)
+    if not names:
+        raise _invalid(f"space {space.space_id!r} has no name")
+    return ", ".join(sql_literal(name) for name in names)
+
+
+def index_predicate_sql(space: EmbeddingSpace) -> str:
+    """The partial-index predicate: ``model_name IN ('a', 'b')``."""
+    validate_space(space)
+    return f"model_name IN ({_names_sql(space)})"
+
+
+def space_filter_sql(space: EmbeddingSpace, alias: str = "e") -> str:
+    """The read-side twin of :func:`index_predicate_sql` over ``alias``:
+    ``e.model_name IN ('a', 'b')``. Every vector read of the knowledge read
+    lanes carries a model filter, and the ANN reads carry exactly this one
+    (the KN-S6 fence test)."""
+    if not _ALIAS_RE.fullmatch(alias):
+        raise _invalid(f"alias {alias!r} is not a plain SQL identifier")
+    return f"{alias}.{index_predicate_sql(space)}"
+
+
+def vector_cast_sql(space: EmbeddingSpace, expr: str) -> str:
+    """``(<expr>)::vector(<D>)``, the index expression's cast. ``expr`` is
+    caller-written SQL (a column or a placeholder), never a value."""
+    validate_space(space)
+    return f"({expr})::vector({int(space.dimension)})"
+
+
+def hnsw_index_ddl(space: EmbeddingSpace, *, concurrently: bool = True) -> str:
+    """``CREATE INDEX [CONCURRENTLY] IF NOT EXISTS hnsw_<id> ...`` for one
+    space. CONCURRENTLY cannot run inside a transaction block."""
+    how = "CONCURRENTLY " if concurrently else ""
+    return (
+        f"CREATE INDEX {how}IF NOT EXISTS {space.index_name} "
+        "ON knowledge_node_embeddings USING hnsw "
+        f"(({vector_cast_sql(space, 'embedding')}) {HNSW_OPCLASS}) "
+        f"WHERE {index_predicate_sql(space)}"
+    )
+
+
+def drop_index_ddl(space: EmbeddingSpace, *, concurrently: bool = True) -> str:
+    """``DROP INDEX [CONCURRENTLY] IF EXISTS hnsw_<id>``."""
+    validate_space(space)
+    how = "CONCURRENTLY " if concurrently else ""
+    return f"DROP INDEX {how}IF EXISTS {space.index_name}"
+
+
+@dataclass(frozen=True)
+class IndexState:
+    """What the database holds under a space's index name.
+
+    ``exists``: a relation named ``hnsw_<space_id>`` exists; ``valid``: its
+    ``pg_index.indisvalid`` (False after a failed CONCURRENTLY build);
+    ``comment``: its ``obj_description`` (None when it has none)."""
+
+    exists: bool = False
+    valid: bool = False
+    comment: str | None = None
+
+
+def index_signature(space: EmbeddingSpace) -> str:
+    """The comment a current index of ``space`` carries (task kn-s6-01).
+
+    Exactly ``f"{INDEX_COMMENT_PREFIX} space={space.space_id} "
+    f"dim={space.dimension} names={','.join(space_names(space))}"``,
+    after ``validate_space(space)`` (an invalid space raises
+    ``EmbeddingSpaceError``). Example for the bundled space:
+    ``umrs-space:v1 space=e5_base_v2 dim=768 names=/opt/umrs/models/e5-base-v2,``
+    ``intfloat/e5-base-v2,/models/e5-base-v2,e5-base-v2`` (one line)."""
+    raise NotImplementedError("kn-s6-01")
+
+
+def comment_index_sql(space: EmbeddingSpace) -> str:
+    """``f"COMMENT ON INDEX {space.index_name} IS '{index_signature(space)}'"``
+    (task kn-s6-01). The signature holds no quote by construction."""
+    raise NotImplementedError("kn-s6-01")
+
+
+def index_actions(space: EmbeddingSpace, state: IndexState) -> tuple[str, ...]:
+    """The statements that bring ``state`` to the space's index, in order
+    (task kn-s6-01). All use the CONCURRENTLY forms (the defaults).
+
+    - ``space.active`` and ``state.exists and state.valid and
+      state.comment == index_signature(space)``: ``()`` (current);
+    - ``space.active`` and ``state.exists`` otherwise (invalid build, or a
+      stale/missing comment, e.g. after legacy names changed):
+      ``(drop_index_ddl(space), hnsw_index_ddl(space), comment_index_sql(space))``;
+    - ``space.active`` and not ``state.exists``:
+      ``(hnsw_index_ddl(space), comment_index_sql(space))``;
+    - retired space: ``(drop_index_ddl(space),)`` when ``state.exists``,
+      else ``()``."""
+    raise NotImplementedError("kn-s6-01")
+
+
+def uncovered_names(
+    space: EmbeddingSpace, stored_names: Iterable[str]
+) -> tuple[str, ...]:
+    """Stored ``model_name`` values that belong to ``space`` but sit outside
+    its index predicate (task kn-s6-01).
+
+    For each name of ``stored_names`` in order: keep ``normalize_name(name)``
+    when ``matches(space, name)`` is True and the normalized name is NOT in
+    ``space_names(space)``. No duplicates (first occurrence kept); empty
+    names are skipped. Status is ignored."""
+    raise NotImplementedError("kn-s6-01")
