@@ -41,6 +41,8 @@ from .models import (
     generate_attempt_id,
     generate_job_id,
 )
+from .read_query import JobKeysetPosition, JobReadFilters, page_sql, summary_sql
+from .read_summary import SummaryGroup
 from .schema import ensure_schema
 from .venue_names import (
     CLUSTER_VENUE_PREFIX,
@@ -985,13 +987,55 @@ class JobStore:
                 f"""
                     SELECT * FROM jobs
                     {where_clause}
-                    ORDER BY created_at DESC
+                    ORDER BY created_at DESC, job_id DESC
                     LIMIT %s OFFSET %s
                 """,
                 params + [limit, offset],
             )
 
             return [self._row_to_job(row) for row in cur.fetchall()]
+
+    def list_jobs_page(
+        self,
+        filters: JobReadFilters,
+        *,
+        after: JobKeysetPosition | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[Job]:
+        """One shaped page of jobs (ADR-105 D-6, slice S6a).
+
+        Same order as ``list_jobs`` (``created_at DESC, job_id DESC``); with
+        ``after``, only rows strictly after that keyset position. The
+        caller's scope is in ``filters`` (the route builds it from the
+        verified identity), never in the cursor.
+        """
+        sql, params = page_sql(filters, after=after, limit=limit, offset=offset)
+        with (
+            self._get_conn() as conn,
+            conn.cursor(cursor_factory=RealDictCursor) as cur,
+        ):
+            cur.execute(sql, params)
+            return [self._row_to_job(row) for row in cur.fetchall()]
+
+    def summarize_jobs(self, filters: JobReadFilters) -> list[SummaryGroup]:
+        """``summary=true``: one group per (status, job_type) under ``filters``."""
+        sql, params = summary_sql(filters)
+        with (
+            self._get_conn() as conn,
+            conn.cursor(cursor_factory=RealDictCursor) as cur,
+        ):
+            cur.execute(sql, params)
+            return [
+                SummaryGroup(
+                    status=str(row["status"]),
+                    kind=str(row["job_type"]),
+                    n=int(row["n"]),
+                    oldest=row["oldest"],
+                    newest=row["newest"],
+                )
+                for row in cur.fetchall()
+            ]
 
     def count_jobs(
         self,
