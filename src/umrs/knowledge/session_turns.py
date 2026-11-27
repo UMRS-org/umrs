@@ -316,6 +316,9 @@ def recorded_origin(spec: dict[str, Any]) -> str | None:
 
 #: Spec fields only the ingest route sets (a /save's tier).
 SERVER_ONLY_SPEC_FIELDS = ("kept_origin", "established_by")
+#: The work-level tag (ADR-108 D-4): set by the ingest/upload routes from a
+#: verified scope token, or by a scoped run's output ingest; never by a client.
+SCOPE_SPEC_FIELD = "scope_path"
 
 
 def client_spec_refusal(spec: Any) -> str | None:
@@ -330,6 +333,9 @@ def client_spec_refusal(spec: Any) -> str | None:
     named = [f for f in SERVER_ONLY_SPEC_FIELDS if f in spec]
     if named:
         return f"spec.{named[0]} is set by POST /umrs/k2/ingest only (a /save)"
+    if SCOPE_SPEC_FIELD in spec:
+        # ADR-108 D-4 (S-W3a): the tag comes only from a verified x-r4-scope.
+        return "spec.scope_path is set only from a verified x-r4-scope token"
     if SESSION_TURNS_KIND in _source_kinds(spec.get("sources")):
         return "session_turns sources are saved through POST /umrs/k2/ingest (/save)"
     return None
