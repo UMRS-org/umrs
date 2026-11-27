@@ -189,6 +189,8 @@ def strip_credential_headers(headers: dict[str, str]) -> dict[str, str]:
         "x-goog-api-key",
         "cookie",
         "proxy-authorization",
+        # ADR-098 D-5: the agent host's token proves the host to UMRS only.
+        "x-umrs-host-token",
     }
     return {k: v for k, v in headers.items() if k.lower() not in drop}
 
