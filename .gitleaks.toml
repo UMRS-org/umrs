@@ -45,8 +45,6 @@ regexes = [
   '''^\s*for k in \("prompt_tokens_p50", "prefill_tok_s_p50", "ttft_p50_s"\)\s*$''',
   # test_h1_scope_guard: an import path with a keyword argument, no value.
   '''^\s*HMAC_KEYWORD = "umrs\.api\._identity:verify_hmac=True"\s*$''',
-  # test_secret_broker_durable: two migration file names.
-  '''^\s*_MIGRATIONS = \("0085_secret_leases\.sql", "0124_secret_leases_venue\.sql"\)\s*$''',
 ]
 
 # test_intake_gate: a PEM header with the body "XYZ", fed to the intake gate to
