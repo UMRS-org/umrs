@@ -537,24 +537,36 @@ class TestPostgres:
     def test_cli_enroll_prints_token_once(self, pg_pool, monkeypatch, capsys):
         from umrs.cli.admin import hosts as cli
 
-        audits: list[dict] = []
-        monkeypatch.setattr("umrs.cli.admin.cascade.cli_db_pool", lambda: pg_pool)
-        monkeypatch.setattr(
-            "umrs.venues.session_audit.audit_venue",
-            lambda event, **kw: audits.append({"event": event, **kw}),
-        )
+        audits = _cli_harness(monkeypatch, pg_pool)
         args = SimpleNamespace(host_id="hostd-1", ttl=600, rekey=False, venue=VENUE)
         assert cli._cmd_enroll(args, None) == 0
         out = capsys.readouterr()
         token = out.out.strip()
-        assert token.startswith("umrs-enroll-") and token not in out.err
-        assert all(token not in repr(a) for a in audits)
+        assert token.startswith("umrs-enroll-")
+        assert token not in out.err
+        assert token not in repr(audits)
         assert [a["event"] for a in audits] == ["host.enroll"]
-        assert cli._cmd_enroll(args, None) == 0  # not enrolled yet: a new token
-        body = enrollment_request(token, generate_host_key())
-        redeem_enrollment(HostKeyStore(pg_pool, venue=VENUE), token, body["public_key"])
+
+    def test_cli_enrolled_host_and_unenroll(self, pg_pool, monkeypatch, capsys):
+        from umrs.cli.admin import hosts as cli
+
+        _cli_harness(monkeypatch, pg_pool)
+        _enrolled(HostKeyStore(pg_pool, venue=VENUE), "hostd-1")
+        args = SimpleNamespace(host_id="hostd-1", ttl=600, rekey=False, venue=VENUE)
         assert cli._cmd_enroll(args, None) == 1
         assert "enroll.already_enrolled" in capsys.readouterr().err
         unenroll = SimpleNamespace(host_id="hostd-1", reason="", venue=VENUE)
         assert cli._cmd_unenroll(unenroll, None) == 0
         assert cli._cmd_unenroll(unenroll, None) == 1
+        assert cli._cmd_enroll(args, None) == 0
+
+
+def _cli_harness(monkeypatch: Any, pool: Any) -> list[dict]:
+    """The CLI against the scratch schema; audit lines captured, not sent."""
+    audits: list[dict] = []
+    monkeypatch.setattr("umrs.cli.admin.cascade.cli_db_pool", lambda: pool)
+    monkeypatch.setattr(
+        "umrs.venues.session_audit.audit_venue",
+        lambda event, **kw: audits.append({"event": event, **kw}),
+    )
+    return audits
