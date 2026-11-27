@@ -1570,6 +1570,12 @@ def _hpc_script_backend() -> OrchestratorBackend:
     return build_hpc_script_services()["backend"]
 
 
+def _object_verify_backend() -> OrchestratorBackend:
+    from .object_verify import ObjectVerifyBackend
+
+    return ObjectVerifyBackend()
+
+
 def _mcp_server_backend() -> OrchestratorBackend:
     from .mcp_server import build_mcp_server_services
 
@@ -1581,6 +1587,9 @@ _LAZY_BACKENDS: dict[JobType, Callable[[], OrchestratorBackend]] = {
     JobType.RESEARCH_LOOP: _research_loop_backend,
     JobType.HPC_SCRIPT: _hpc_script_backend,
     JobType.MCP_SERVER: _mcp_server_backend,
+    # ADR-115 D-5 (MB-S2c): OBJECT_VERIFY re-reads one object and records
+    # its SHA-256 verdict on object_provenance.
+    JobType.OBJECT_VERIFY: _object_verify_backend,
 }
 
 
@@ -1677,6 +1686,9 @@ def create_status_checker(
     from .data_ingestion import DataIngestionStatusChecker
 
     checker.register(JobType.DATA_INGESTION, DataIngestionStatusChecker())
+    from .object_verify import ObjectVerifyStatusChecker
+
+    checker.register(JobType.OBJECT_VERIFY, ObjectVerifyStatusChecker())
     checker.register(JobType.CLEANUP, CleanupStatusChecker(registry=registry))
 
     if include_model_download:

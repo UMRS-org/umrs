@@ -11,6 +11,7 @@ Endpoints:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import logging
 import os
@@ -31,21 +32,30 @@ from fastapi import (
     HTTPException,
     Query,
     Request,
+    Response,
     UploadFile,
     status,
 )
 from pydantic import BaseModel, ConfigDict, Field
 
 from umrs.data_catalog.provenance import (
+    CREATE_ONLY,
+    CREATE_ONLY_PREFIXES,
+    SERVER_ONLY,
+    SERVER_ONLY_PREFIXES,
     HashedObject,
     ObjectProvenance,
     ObjectRef,
     Sha256Reader,
     hashed,
     legacy_record,
+    live_etag,
     lookup_many_best_effort,
+    output_prefix_rule,
     provenance_row,
     record_best_effort,
+    release_create_only,
+    reserve_create_only,
 )
 from umrs.shared.storage.s3_config import S3Config, get_s3_config
 from umrs.shared.storage.s3_presign import (
@@ -426,14 +436,22 @@ def _charge_upload_quota(
     "/upload",
     response_model=UploadResponse,
     summary="Upload a file through UMRS",
-    description="Upload a file into project-scoped object storage without returning presigned URLs.",
+    description=(
+        "Upload a file into project-scoped object storage without returning "
+        "presigned URLs. In an ``-output`` bucket, ``runs/`` is written by the "
+        "server only (403) and ``reviews/`` is create-only: the save that "
+        "creates the key gets 201, any later or concurrent one 409. "
+        "``create_only=true`` asks the same of any key (ADR-115 D-11)."
+    ),
 )
 async def upload_file(
     request: Request,
+    response: Response,
     file: UploadFile = File(None),
     key: str | None = Form(None),
     purpose: str | None = Form("uploads"),
     bucket: str | None = Form(None),
+    create_only: bool = Form(False),
     project_id: str = Depends(get_project_id),
     config: S3Config = Depends(get_project_s3_config),
     x_user_id: str | None = Header(None),
@@ -445,53 +463,278 @@ async def upload_file(
     if not file.filename:
         raise_typed(PlatformError.files("filename_required", "Filename required"))
     if bucket:
-        return await _upload_to_owned_bucket(
-            request, file, bucket, key, x_user_id, project_id
+        target = _owned_bucket_target(file, bucket, key, x_user_id, project_id)
+    else:
+        target = _project_target(file, key, purpose, config, project_id)
+    target.create_only = _client_write_rule(target.bucket, target.key, create_only)
+    body = await _write_upload(request, file, target, x_user_id, project_id)
+    if target.create_only:
+        response.status_code = status.HTTP_201_CREATED
+    return body
+
+
+# -- server-only and create-only prefixes (ADR-115 D-11, slice MB-S2c) --------
+
+
+def _client_write_rule(bucket: str, key: str, create_only: bool = False) -> bool:
+    """403 ``files.prefix_write_denied`` for a client write under a
+    server-only prefix (``runs/`` in an ``-output`` bucket: step collection
+    writes there); else whether the write must create the key (``reviews/``
+    in an ``-output`` bucket, or the caller asked)."""
+    rule = output_prefix_rule(bucket, key)
+    if rule == SERVER_ONLY:
+        raise_typed(
+            PlatformError.files(
+                "prefix_write_denied",
+                f"{key!r} in {bucket!r} is under a server-only prefix "
+                f"({', '.join(SERVER_ONLY_PREFIXES)}): step collection writes it, "
+                "a client never does",
+            )
+        )
+    return create_only or rule == CREATE_ONLY
+
+
+def _guard_presigned_write(request: PresignRequest, bucket: str, key: str) -> None:
+    """A presigned PUT goes to the store directly, so the server can neither
+    hash it nor arbitrate create-only: refused under both prefixes."""
+    if request.operation != PresignedOperation.UPLOAD:
+        return
+    if _client_write_rule(bucket, key):
+        raise_typed(
+            PlatformError.files(
+                "prefix_write_denied",
+                f"{key!r} in {bucket!r} is create-only "
+                f"({', '.join(CREATE_ONLY_PREFIXES)}): save it through "
+                "POST /umrs/files/upload, never a presigned PUT",
+            )
         )
 
-    object_key = validate_key(key or _upload_key(file.filename, purpose), project_id)
-    bucket = config.bucket
-    content_type = file.content_type or "application/octet-stream"
-    # Streamed like the owned-bucket branch: `await file.read()` held the
-    # whole upload in memory (2026-10-21: a 1 GiB upload, +1 GiB peak RSS).
-    s3_client = config.get_client()
+
+def _refuse_prefixed_delete(bucket: str, key: str) -> None:
+    """Deleting a step output or a write-once record is a write as well."""
+    if _client_write_rule(bucket, key):
+        raise_typed(
+            PlatformError.files(
+                "prefix_write_denied",
+                f"{key!r} in {bucket!r} is a write-once record "
+                f"({', '.join(CREATE_ONLY_PREFIXES)}): it is never deleted by a client",
+            )
+        )
+
+
+def _create_only_exists(bucket: str, key: str) -> NoReturn:
+    raise_typed(
+        PlatformError.files(
+            "create_only_exists",
+            f"{key!r} in {bucket!r} already exists or is being saved; "
+            "a create-only key is written once (save under a new key)",
+        )
+    )
+
+
+def _reserve_on(pool: Any, bucket: str, key: str, origin: dict[str, Any]) -> bool:
+    """:func:`reserve_create_only` on a pooled connection, committed; a
+    database failure is 503 (fail closed: no claim, no write)."""
+    try:
+        conn = pool.getconn()
+    except Exception as exc:  # noqa: BLE001 — no claim possible: refuse the write
+        _create_only_unavailable(exc)
+    try:
+        won = reserve_create_only(conn, bucket, key, **origin)
+        conn.commit()
+        return won
+    except Exception as exc:  # noqa: BLE001 — same: never write without the claim
+        with contextlib.suppress(Exception):
+            conn.rollback()
+        _create_only_unavailable(exc)
+    finally:
+        pool.putconn(conn)
+
+
+def _create_only_unavailable(cause: Exception | None = None) -> NoReturn:
+    raise_typed(
+        PlatformError.files(
+            "create_only_unavailable",
+            "A create-only save needs the provenance database, which is not "
+            "reachable; nothing was written",
+        ),
+        cause=cause,
+    )
+
+
+def _claim_create_only(
+    request: Request, s3_client: Any, target: _UploadTarget, uploader: str | None
+) -> Any:
+    """Claim ``target`` for this save before its PUT: 409 when the key exists
+    (also one written before create-only existed) or another save claimed
+    it; 503 with no database. Returns the pool the claim lives in."""
+    pool = getattr(request.app.state, "umrs_db_pool", None)
+    if pool is None:
+        _create_only_unavailable()
+    if live_etag(s3_client, target.bucket, target.key) is not None:
+        _create_only_exists(target.bucket, target.key)
+    origin = {
+        "source_kind": target.source_kind,
+        "uploader": uploader,
+        "project_id": target.project_id,
+    }
+    if not _reserve_on(pool, target.bucket, target.key, origin):
+        _create_only_exists(target.bucket, target.key)
+    return pool
+
+
+def _release_claim(pool: Any, bucket: str, key: str) -> None:
+    """Best effort: a save whose PUT failed gives its key back."""
+    try:
+        conn = pool.getconn()
+    except Exception:  # noqa: BLE001 — the key stays claimed; a new key still saves
+        logger.warning("create-only release: no connection for %s/%s", bucket, key)
+        return
+    try:
+        release_create_only(conn, bucket, key)
+        conn.commit()
+    except Exception:  # noqa: BLE001 — same
+        with contextlib.suppress(Exception):
+            conn.rollback()
+        logger.warning("create-only release failed for %s/%s", bucket, key)
+    finally:
+        pool.putconn(conn)
+
+
+# -- the one write path of /upload ---------------------------------------------
+
+
+class _UploadTarget:
+    """Where one ``/upload`` writes, and how."""
+
+    def __init__(
+        self,
+        bucket: str,
+        key: str,
+        s3_client: Any,
+        metadata: dict[str, str],
+        project_id: str | None,
+    ) -> None:
+        self.bucket = bucket
+        self.key = key
+        self.s3_client = s3_client
+        self.metadata = metadata
+        self.project_id = project_id
+        self.create_only = False
+
+    @property
+    def source_kind(self) -> str:
+        if output_prefix_rule(self.bucket, self.key) == CREATE_ONLY:
+            return "review_record"
+        return "local_upload"
+
+
+def _project_target(
+    file: UploadFile,
+    key: str | None,
+    purpose: str | None,
+    config: S3Config,
+    project_id: str,
+) -> _UploadTarget:
+    """The caller project's namespaced key in its store bucket."""
+    filename = file.filename or ""  # upload_file refused an empty one
+    object_key = validate_key(key or _upload_key(filename, purpose), project_id)
+    metadata = {"project_id": project_id, "filename": _safe_filename(filename)}
+    return _UploadTarget(config.bucket, object_key, config.get_client(), metadata, project_id)
+
+
+def _owned_bucket_target(
+    file: UploadFile,
+    bucket: str,
+    key: str | None,
+    x_user_id: str | None,
+    project_id: str | None,
+) -> _UploadTarget:
+    """A raw key in a bucket the caller owns or is shared (ADR-079/080)."""
+    _require_owned_bucket(bucket, x_user_id)
+    filename = _safe_filename(file.filename or "")
+    object_key = _raw_key(key or filename)
+    client = bucket_store(bucket, project_id, get_s3_config()).get_client()
+    return _UploadTarget(bucket, object_key, client, {"filename": filename}, project_id)
+
+
+async def _put_streamed(file: UploadFile, target: _UploadTarget, content_type: str) -> Sha256Reader:
+    """Stream the body to the store, hashing it (never held in memory:
+    2026-10-21, a 1 GiB upload was +1 GiB peak RSS)."""
     reader = Sha256Reader(file.file)
     try:
         await asyncio.to_thread(
-            s3_client.upload_fileobj,
+            target.s3_client.upload_fileobj,
             reader,
-            bucket,
-            object_key,
-            ExtraArgs={
-                "ContentType": content_type,
-                "Metadata": {
-                    "project_id": project_id,
-                    "filename": _safe_filename(file.filename),
-                },
-            },
+            target.bucket,
+            target.key,
+            ExtraArgs={"ContentType": content_type, "Metadata": target.metadata},
         )
     except ClientError as e:
-        logger.error("S3 error uploading file: %s", e)
+        logger.error("S3 error uploading to %s: %s", target.bucket, e)
         raise_typed(
             PlatformError.files("upload_failed", "Failed to upload file"), cause=e
         )
+    return reader
 
-    content_md5 = reader.md5.hexdigest()
+
+async def _store_charged(
+    request: Request,
+    file: UploadFile,
+    target: _UploadTarget,
+    content_type: str,
+    x_user_id: str | None,
+) -> Sha256Reader:
+    """PUT, then the disk-budget charge (a refusal deletes the bytes)."""
+    reader = await _put_streamed(file, target, content_type)
     _charge_upload_quota(
-        request, s3_client, bucket, object_key, (content_md5, reader.size), x_user_id
+        request,
+        target.s3_client,
+        target.bucket,
+        target.key,
+        (reader.md5.hexdigest(), reader.size),
+        x_user_id,
     )
-    stored = hashed(bucket, object_key, reader, content_type)
-    _record_upload(request, s3_client, stored, project_id, x_user_id)
+    return reader
 
-    # The md5 stands in for the ETag (a multipart ETag differs); ingest
-    # re-reads the live ETag when they disagree (data_catalog.ingest).
-    _fire_post_upload_ingest(
-        s3_client, bucket, object_key, content_md5, project_id, x_user_id, file.filename
-    )
+
+async def _write_upload(
+    request: Request,
+    file: UploadFile,
+    target: _UploadTarget,
+    x_user_id: str | None,
+    project_id: str | None,
+) -> UploadResponse:
+    """Claim (create-only), store, charge, record provenance, fire ingest."""
+    content_type = file.content_type or "application/octet-stream"
+    claim = None
+    if target.create_only:
+        claim = _claim_create_only(request, target.s3_client, target, _header_str(x_user_id))
+    try:
+        reader = await _store_charged(request, file, target, content_type, x_user_id)
+    except BaseException:
+        if claim is not None:
+            _release_claim(claim, target.bucket, target.key)
+        raise
+    stored = hashed(target.bucket, target.key, reader, content_type)
+    _record_upload(request, target.s3_client, stored, project_id, x_user_id, target.source_kind)
+    if project_id:
+        # W4: every upload fires the ingest event so `triggers: on: ingest`
+        # work. The md5 stands in for the ETag (a multipart ETag differs);
+        # ingest re-reads the live ETag when they disagree (data_catalog.ingest).
+        _fire_post_upload_ingest(
+            target.s3_client,
+            target.bucket,
+            target.key,
+            reader.md5.hexdigest(),
+            project_id,
+            x_user_id,
+            file.filename or "",
+        )
     return UploadResponse(
-        key=object_key,
-        bucket=bucket,
-        uri=f"s3://{bucket}/{object_key}",
+        key=target.key,
+        bucket=target.bucket,
+        uri=f"s3://{target.bucket}/{target.key}",
         size=reader.size,
         content_type=content_type,
         filename=file.filename,
@@ -672,6 +915,7 @@ async def _generate_presigned_url_impl(
         await _await_download_readiness(request, project_id)
 
     key = validate_key(request.key, project_id, warn_on_rename=True)
+    _guard_presigned_write(request, bucket, key)
     ttl_sec = min(request.ttl_sec or config.default_ttl, config.max_ttl)
 
     try:
@@ -795,6 +1039,7 @@ async def delete_file(
 
     key = validate_key(file_id, project_id, warn_on_rename=True)
     bucket_name = _namespace_bucket(bucket, config, x_user_id)
+    _refuse_prefixed_delete(bucket_name, key)
 
     try:
         s3_client = config.get_client()
@@ -886,10 +1131,12 @@ def _record_upload(
     stored: HashedObject,
     project_id: str | None,
     x_user_id: str | None,
+    source_kind: str = "local_upload",
 ) -> None:
-    """Provenance row (``local_upload``, server-hashed, so ``verified``) and
+    """Provenance row (``local_upload``, or ``review_record`` for a
+    create-only save under ``reviews/``; server-hashed, so ``verified``) and
     one ``data.upload`` audit row for an object this route just stored
-    (ADR-115 D-2/D-12, slice MB-S2a). Neither ever fails the upload: with no
+    (ADR-115 D-2/D-12, slices MB-S2a/MB-S2c). Neither ever fails the upload: with no
     database pool, or no ETag from the store, the object stays legacy."""
     from umrs.audit.security_events import emit_data
 
@@ -900,7 +1147,7 @@ def _record_upload(
         row = provenance_row(
             s3_client,
             stored,
-            "local_upload",
+            source_kind,
             uploader=uploader,
             project_id=project_id or None,
         )
@@ -914,66 +1161,8 @@ def _record_upload(
         size=stored.size,
         sha256=stored.sha256,
         content_type=stored.content_type,
-        source_kind="local_upload",
+        source_kind=source_kind,
         provenance=written,
-    )
-
-
-async def _upload_to_owned_bucket(
-    request: Request,
-    file: UploadFile,
-    bucket: str,
-    key: str | None,
-    x_user_id: str | None,
-    project_id: str | None = None,
-) -> UploadResponse:
-    _require_owned_bucket(bucket, x_user_id)
-    object_key = _raw_key(key or _safe_filename(file.filename or ""))
-    content_type = file.content_type or "application/octet-stream"
-    s3_client = bucket_store(bucket, project_id, get_s3_config()).get_client()
-    reader = Sha256Reader(file.file)
-    try:
-        await asyncio.to_thread(
-            s3_client.upload_fileobj,
-            reader,
-            bucket,
-            object_key,
-            ExtraArgs={
-                "ContentType": content_type,
-                "Metadata": {"filename": _safe_filename(file.filename or "")},
-            },
-        )
-    except ClientError as e:
-        logger.error("S3 error uploading to owned bucket %s: %s", bucket, e)
-        raise_typed(
-            PlatformError.files("upload_failed", "Failed to upload file"), cause=e
-        )
-    _charge_upload_quota(
-        request, s3_client, bucket, object_key,
-        (reader.md5.hexdigest(), reader.size), x_user_id,
-    )
-    stored = hashed(bucket, object_key, reader, content_type)
-    _record_upload(request, s3_client, stored, project_id, x_user_id)
-    if project_id:
-        # W4: uploads into a personal/shared bucket must fire the same ingest
-        # event as the project-namespaced path so `triggers: on: ingest` work.
-        _fire_post_upload_ingest(
-            s3_client,
-            bucket,
-            object_key,
-            reader.md5.hexdigest(),
-            project_id,
-            x_user_id,
-            file.filename or "",
-        )
-    return UploadResponse(
-        key=object_key,
-        bucket=bucket,
-        uri=f"s3://{bucket}/{object_key}",
-        size=reader.size,
-        content_type=content_type,
-        filename=file.filename,
-        sha256=reader.sha256.hexdigest(),
     )
 
 

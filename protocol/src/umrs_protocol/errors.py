@@ -603,6 +603,13 @@ FILES_ERRORS = {
     "files.bucket_registry_unavailable": 503,
     # ADR-115 D-4 (MB-S2b, 2026-11-27): an unknown /files/list delimiter or field.
     "files.list_option_invalid": 400,
+    # ADR-115 D-11 (MB-S2c, 2026-11-27): a client write under a server-only
+    # prefix (runs/) or a presigned write/delete under a create-only one
+    # (reviews/) in an -output bucket; a create-only key already saved; a
+    # create-only save with no provenance database to claim the key in.
+    "files.prefix_write_denied": 403,
+    "files.create_only_exists": 409,
+    "files.create_only_unavailable": 503,
 }
 
 HPCACCESS_ERRORS = {

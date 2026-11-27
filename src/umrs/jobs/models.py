@@ -77,6 +77,9 @@ class JobType(Enum):
     # phenom — registered now, dispatch-blocked with a typed 400 at submit
     # until the benchmark executor (and the ground-truth suite format) lands.
     DOMAIN_BENCHMARK = "domain_benchmark"
+    # ADR-115 D-5 (MB-S2c, 2026-11-27): re-read one object inside UMRS and
+    # record its SHA-256 verdict (verified | mismatch) on object_provenance.
+    OBJECT_VERIFY = "object_verify"
     # Note: CONTEXT_RETENTION and CONVERSATION_SUMMARIZE excluded from selective merge
 
 
@@ -187,6 +190,12 @@ DEFAULT_BACKOFFS: dict[JobType, dict[str, Any]] = {
     JobType.DATA_INGESTION: {
         "delays": [10, 30, 60],
         "max_attempts": 4,
+    },
+    JobType.OBJECT_VERIFY: {
+        # A re-read that found no verdict (store hiccup, object changed while
+        # read) retries; a verdict (verified or mismatch) completes the job.
+        "delays": [10, 30, 60],
+        "max_attempts": 3,
     },
     JobType.KNOWLEDGE_INGEST: {
         "delays": [30, 60, 120],

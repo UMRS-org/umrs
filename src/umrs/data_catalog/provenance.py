@@ -34,6 +34,19 @@ owner's bucket) would get this server's hash recorded as ``verified``:
 
 (2026-11-24, review of MB-S2a: the first cut marked any ETag the HEAD
 returned ``verified``.)
+
+Slice MB-S2c (2026-11-27) adds:
+
+* :func:`verify_object` (the ``OBJECT_VERIFY`` job, ``umrs.jobs.object_verify``,
+  and in-process callers): re-read the object inside UMRS and record
+  ``verified`` or ``mismatch`` (named reason) on its row; a legacy object
+  gets a row on demand. It raises instead of guessing when there is no
+  database or the object changed while it was read;
+* :func:`output_prefix_rule`: ``runs/`` in an ``-output`` bucket is
+  server-only, ``reviews/`` create-only (ADR-115 D-11);
+* :func:`reserve_create_only`: the reservation row (``etag`` =
+  :data:`RESERVED_ETAG`) a create-only save inserts before its PUT, so two
+  concurrent saves to one key cannot both win (D-10). Reads skip it.
 """
 
 from __future__ import annotations
@@ -53,6 +66,11 @@ SOURCE_KINDS = frozenset(
 )
 SHA256_STATES = frozenset({"pending", "verified", "mismatch"})
 DEFAULT_CONTENT_TYPE = "application/octet-stream"
+
+#: The ``etag`` of a create-only reservation row (ADR-115 D-10/D-11, slice
+#: MB-S2c): never a store ETag (those are hex, with an optional ``-<parts>``),
+#: so it never describes an object version and every read skips it.
+RESERVED_ETAG = "create-only:reserved"
 
 _COLUMNS = (
     "bucket",
@@ -249,6 +267,7 @@ def _rollback(conn: Any) -> None:
 _SELECT = (
     f"SELECT {', '.join(_COLUMNS)} FROM object_provenance "
     "WHERE bucket = %s AND key = %s AND (%s = '' OR etag = %s) "
+    f"AND etag <> '{RESERVED_ETAG}' "
     "ORDER BY created_at DESC LIMIT 1"
 )
 
@@ -288,7 +307,7 @@ def _pick(
     has none); a row of another version never describes this one."""
     bucket, key, etag = ref
     for row in rows.get((bucket, key), ()):
-        if etag in ("", row.etag):
+        if row.etag != RESERVED_ETAG and etag in ("", row.etag):
             return row
     return legacy_record(bucket, key, etag)
 
@@ -473,14 +492,279 @@ def record_step_outputs(
     return written
 
 
+
+# ── server-only and create-only prefixes (ADR-115 D-11, slice MB-S2c) ─────────
+
+#: Run output buckets are ``<input bucket>-output`` (``workflow_runner``).
+OUTPUT_BUCKET_SUFFIX = "-output"
+#: Written by step collection only (``runs/<run_id>/<step>/``): a client
+#: write through the files routes is refused.
+SERVER_ONLY_PREFIXES = ("runs/",)
+#: Write-once records (review saves): a client write must create the key.
+CREATE_ONLY_PREFIXES = ("reviews/",)
+
+SERVER_ONLY = "server_only"
+CREATE_ONLY = "create_only"
+
+
+def output_prefix_rule(bucket: str, key: str) -> str | None:
+    """:data:`SERVER_ONLY`, :data:`CREATE_ONLY` or None for a client write of
+    *key* into *bucket*. Only ``-output`` buckets carry the rule; the key is
+    read as the store will name it (a leading ``/`` is dropped, as the files
+    route drops it)."""
+    if not str(bucket or "").endswith(OUTPUT_BUCKET_SUFFIX):
+        return None
+    path = str(key or "").lstrip("/")
+    if path.startswith(SERVER_ONLY_PREFIXES):
+        return SERVER_ONLY
+    if path.startswith(CREATE_ONLY_PREFIXES):
+        return CREATE_ONLY
+    return None
+
+
+_RESERVE = (
+    "INSERT INTO object_provenance "
+    "(bucket, key, etag, size, sha256_state, source_kind, uploader, project_id) "
+    "VALUES (%s, %s, %s, 0, 'pending', %s, %s, %s) "
+    "ON CONFLICT (bucket, key, etag) DO NOTHING"
+)
+_RELEASE = "DELETE FROM object_provenance WHERE bucket = %s AND key = %s AND etag = %s"
+
+
+def reserve_create_only(
+    conn: Any,
+    bucket: str,
+    key: str,
+    *,
+    source_kind: str = "review_record",
+    uploader: str | None = None,
+    project_id: str | None = None,
+) -> bool:
+    """Claim *key* before its PUT (the caller commits): True for the one
+    caller that inserted the reservation row, False when a save to that key
+    already claimed it. The primary key ``(bucket, key, etag)`` with the
+    fixed :data:`RESERVED_ETAG` makes the insert the arbiter, so two
+    concurrent saves cannot both win. The row stays after the PUT: the key
+    is written once, ever. A crash between the claim and the PUT leaves the
+    key claimed (a later save is 409; the reviewer saves under a new
+    timestamped key)."""
+    if source_kind not in SOURCE_KINDS:
+        raise ValueError(f"unknown provenance source_kind {source_kind!r}")
+    with conn.cursor() as cur:
+        cur.execute(
+            _RESERVE, (bucket, key, RESERVED_ETAG, source_kind, uploader, project_id)
+        )
+        return int(getattr(cur, "rowcount", 0) or 0) == 1
+
+
+def release_create_only(conn: Any, bucket: str, key: str) -> None:
+    """Drop the reservation of a save whose PUT failed (the caller commits),
+    so the reviewer can retry the same key."""
+    with conn.cursor() as cur:
+        cur.execute(_RELEASE, (bucket, key, RESERVED_ETAG))
+
+
+# ── OBJECT_VERIFY: re-read an object inside UMRS (ADR-115 D-5, MB-S2c) ────────
+
+_CHUNK = 1024 * 1024
+#: Concurrent re-reads per process: a verify re-reads up to 8 GiB, and a
+#: bounded pool keeps the store and the API workers free (plan risk row).
+_VERIFY_SLOTS = threading.BoundedSemaphore(2)
+
+
+class ObjectUnreadable(RuntimeError):
+    """The object is gone, has no ETag, or changed while it was re-read: no
+    verdict (the job fails and the scheduler may retry it)."""
+
+
+@dataclass(frozen=True)
+class VerifyOutcome:
+    """One ``OBJECT_VERIFY`` verdict on the version the store holds now."""
+
+    bucket: str
+    key: str
+    etag: str
+    size: int
+    sha256: str
+    sha256_state: str
+    #: Why the state is ``mismatch`` (None when ``verified``).
+    reason: str | None = None
+    #: The row's origin (``legacy`` when UMRS held none before this verify).
+    source_kind: str = "legacy"
+    #: The hash of the bytes this verify read (differs from ``sha256``, the
+    #: recorded one, on a ``sha256_differs`` mismatch).
+    observed_sha256: str = ""
+
+    def as_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class _Reread:
+    size: int
+    sha256: str
+    md5: str
+
+
+def _reread(s3_client: Any, bucket: str, key: str) -> _Reread:
+    """Hash every byte of the object as the store serves it now."""
+    try:
+        body = s3_client.get_object(Bucket=bucket, Key=key)["Body"]
+    except Exception as exc:
+        raise ObjectUnreadable(f"{bucket}/{key} could not be read: {exc}") from exc
+    reader = Sha256Reader(body)
+    try:
+        while reader.read(_CHUNK):
+            pass
+    finally:
+        close = getattr(body, "close", None)
+        if callable(close):
+            close()
+    return _Reread(reader.size, reader.sha256.hexdigest(), reader.md5.hexdigest())
+
+
+def _mismatch_reason(
+    got: _Reread, head: dict[str, Any], etag: str, expected: tuple[str | None, str]
+) -> str | None:
+    """The first way the bytes differ from what they should be, else None.
+
+    *expected* is ``(recorded sha256, declared sha256)``: the hash UMRS
+    recorded when it stored this version, and one the caller declared (an
+    intake item's). A single-part ETag is the MD5 of the version's bytes, the
+    same rule the writers use (``_state_for``), so bytes changed under an
+    unchanged ETag are caught even for a legacy object."""
+    recorded, declared = expected
+    length = head.get("ContentLength")
+    checks = (
+        (isinstance(length, int) and length != got.size, "size_differs"),
+        ("-" not in etag and etag.lower() != got.md5, "etag_not_body_md5"),
+        (bool(recorded) and recorded != got.sha256, "sha256_differs"),
+        (bool(declared) and declared.lower() != got.sha256, "declared_sha256_differs"),
+    )
+    return next((reason for failed, reason in checks if failed), None)
+
+
+_UPSERT_VERIFIED = (
+    "INSERT INTO object_provenance "
+    "(bucket, key, etag, size, sha256, sha256_state, content_type, source_kind, "
+    "source_ref, verified_at) "
+    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, "
+    "CASE WHEN %s = 'verified' THEN now() END) "
+    "ON CONFLICT (bucket, key, etag) DO UPDATE SET "
+    "sha256_state = EXCLUDED.sha256_state, "
+    "sha256 = COALESCE(object_provenance.sha256, EXCLUDED.sha256), "
+    "verified_at = EXCLUDED.verified_at"
+)
+
+
+def _write_verdict(conn: Any, outcome: VerifyOutcome, content_type: Any) -> None:
+    """Upsert the verdict on the version's row. A recorded hash is kept (it
+    is what the bytes should be); a legacy object gets a row carrying the
+    hash UMRS just computed."""
+    ref = json.dumps({"verified_by": "object_verify", "reason": outcome.reason})
+    with conn.cursor() as cur:
+        cur.execute(
+            _UPSERT_VERIFIED,
+            (
+                outcome.bucket,
+                outcome.key,
+                outcome.etag,
+                outcome.size,
+                outcome.sha256,
+                outcome.sha256_state,
+                content_type if isinstance(content_type, str) else None,
+                outcome.source_kind,
+                ref,
+                outcome.sha256_state,
+            ),
+        )
+
+
+def _live_version(s3_client: Any, bucket: str, key: str) -> tuple[dict[str, Any], str]:
+    head = _head(s3_client, bucket, key)
+    etag = _etag_of(head)
+    if etag is None:
+        raise ObjectUnreadable(f"{bucket}/{key} has no readable version")
+    return head, etag
+
+
+def verify_object(
+    s3_client: Any,
+    conn: Any,
+    bucket: str,
+    key: str,
+    *,
+    declared_sha256: str = "",
+) -> VerifyOutcome:
+    """Re-read ``bucket/key`` inside UMRS, compare, and record the verdict on
+    *conn* (the caller commits).
+
+    ``verified`` when the bytes match everything known about the version
+    (its ETag, the hash UMRS recorded, a declared hash); ``mismatch``
+    otherwise, with the reason. A legacy object (no row) is attested on
+    demand: it gets a row with the computed hash. Raises
+    :class:`ObjectUnreadable` when the object is gone or changed while it
+    was read (the ETag before and after differ): no verdict then."""
+    head, etag = _live_version(s3_client, bucket, key)
+    with _VERIFY_SLOTS:
+        got = _reread(s3_client, bucket, key)
+    if _live_version(s3_client, bucket, key)[1] != etag:
+        raise ObjectUnreadable(f"{bucket}/{key} changed while it was verified")
+    row = lookup(conn, bucket, key, etag)
+    reason = _mismatch_reason(got, head, etag, (row.sha256, declared_sha256))
+    outcome = VerifyOutcome(
+        bucket=bucket,
+        key=key,
+        etag=etag,
+        size=got.size,
+        sha256=row.sha256 or got.sha256,
+        sha256_state="mismatch" if reason else "verified",
+        reason=reason,
+        source_kind=row.source_kind,
+        observed_sha256=got.sha256,
+    )
+    _write_verdict(conn, outcome, head.get("ContentType"))
+    return outcome
+
+
+def verify_object_pooled(
+    pool: Any, s3_client: Any, bucket: str, key: str, *, declared_sha256: str = ""
+) -> VerifyOutcome:
+    """:func:`verify_object` on a pooled connection, committed. Unlike the
+    writers' best-effort calls this one raises: a verify with nowhere to
+    record its verdict has not happened."""
+    if pool is None:
+        raise ObjectUnreadable("no provenance database: OBJECT_VERIFY needs one")
+    conn = pool.getconn()
+    try:
+        outcome = verify_object(
+            s3_client, conn, bucket, key, declared_sha256=declared_sha256
+        )
+        conn.commit()
+        return outcome
+    except Exception:
+        _rollback(conn)
+        raise
+    finally:
+        pool.putconn(conn)
+
+
 __all__ = [
+    "CREATE_ONLY",
+    "CREATE_ONLY_PREFIXES",
     "DEFAULT_CONTENT_TYPE",
+    "OUTPUT_BUCKET_SUFFIX",
+    "RESERVED_ETAG",
+    "SERVER_ONLY",
+    "SERVER_ONLY_PREFIXES",
     "SHA256_STATES",
     "SOURCE_KINDS",
     "HashedObject",
     "ObjectProvenance",
     "ObjectRef",
+    "ObjectUnreadable",
     "Sha256Reader",
+    "VerifyOutcome",
     "content_type_for",
     "hashed",
     "legacy_record",
@@ -488,12 +772,17 @@ __all__ = [
     "lookup",
     "lookup_many",
     "lookup_many_best_effort",
+    "output_prefix_rule",
     "provenance_pool",
     "provenance_row",
     "record",
     "record_best_effort",
     "record_step_outputs",
+    "release_create_only",
+    "reserve_create_only",
     "rows_of_execution",
     "rows_of_execution_best_effort",
     "set_provenance_pool",
+    "verify_object",
+    "verify_object_pooled",
 ]
