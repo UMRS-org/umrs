@@ -3,10 +3,7 @@
 from __future__ import annotations
 
 import pytest
-from _a105_s6a_pending import pending
 from umrs.api.read_fields import MAX_FIELDS, FieldsError, parse_fields, project
-
-pytestmark = pending("a105-s6a-03")
 
 ALLOWED = frozenset({"job_id", "status", "job_type", "created_at"})
 

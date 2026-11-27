@@ -20,7 +20,6 @@ from datetime import datetime, timedelta
 from typing import Any
 
 import pytest
-from _a105_s6a_pending import ALL_TASKS, pending
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from umrs.api import jobs as jobs_api
@@ -35,8 +34,6 @@ from umrs.server.workflow_execution_registry import (
 )
 
 from umrs_protocol.errors import ERROR_CODE_HEADER
-
-pytestmark = pending(*ALL_TASKS)
 
 T0 = datetime(2026, 11, 1)
 ALICE = CallerIdentity(user_id="alice", project_id="pa", is_admin=False)

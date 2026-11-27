@@ -6,7 +6,6 @@ import math
 from datetime import datetime, timezone
 
 import pytest
-from _a105_s6a_pending import pending
 from umrs.api.workflow_execution_list import (
     EXECUTION_FIELDS,
     ExecutionPosition,
@@ -18,8 +17,6 @@ from umrs.api.workflow_execution_list import (
 )
 from umrs.jobs.read_summary import SummaryGroup
 from umrs.server.workflow_execution_registry import ExecutionRecord, StepProgress
-
-pytestmark = pending("a105-s6a-05")
 
 
 def _rec(eid: str, ts: float, status: str = "running", wf: str = "wf") -> ExecutionRecord:

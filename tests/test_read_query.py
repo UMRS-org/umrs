@@ -5,7 +5,6 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 import pytest
-from _a105_s6a_pending import pending
 from umrs.jobs.read_query import (
     MAX_LIMIT,
     JobKeysetPosition,
@@ -16,8 +15,6 @@ from umrs.jobs.read_query import (
     summary_sql,
     where_clause,
 )
-
-pytestmark = pending("a105-s6a-01")
 
 T = datetime(2026, 11, 20, 8, 15, 30, 123456)
 AFTER = JobKeysetPosition(created_at=T, job_id="job-b")

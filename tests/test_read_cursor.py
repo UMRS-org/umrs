@@ -8,7 +8,6 @@ import json
 import re
 
 import pytest
-from _a105_s6a_pending import pending
 from umrs.api.read_cursor import (
     MALFORMED,
     MAX_CURSOR_LEN,
@@ -18,8 +17,6 @@ from umrs.api.read_cursor import (
     encode_cursor,
     scope_key,
 )
-
-pytestmark = pending("a105-s6a-02")
 
 POS = {"c": "2026-11-20T08:15:30.123456", "j": "job-b"}
 

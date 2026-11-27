@@ -4,10 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from _a105_s6a_pending import pending
 from umrs.jobs.read_summary import SummaryGroup, fold_summary
-
-pytestmark = pending("a105-s6a-04")
 
 D1 = datetime(2026, 11, 1, 9, 0)
 D2 = datetime(2026, 11, 5, 12, 30)
