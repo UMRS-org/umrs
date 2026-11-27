@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import Any
 
 from umrs.jobs.secret_broker import SecretLease
@@ -30,7 +31,7 @@ from umrs.jobs.secret_broker import SecretLease
 class LeaseVerdict:
     ok: bool
     # token_invalid | lease_expired | lease_revoked | lease_kind_mismatch |
-    # lease_unbound | sid_mismatch | ip_mismatch | source_not_in_lease
+    # lease_unbound | lease_too_long | sid_mismatch | ip_mismatch | source_not_in_lease
     reason: str = ""
     lease: SecretLease | None = None
     source_id: str = ""
@@ -91,6 +92,9 @@ def check_lease(
 # (no schema change); ``secret_name`` names it for the audit trail.
 WORKSTATION_KIND = "workstation"
 WORKSTATION_SECRET_NAME = "workstation-inference"
+# A workstation lease's whole life (issue to lifetime cap), renewals included.
+WORKSTATION_MAX_LIFETIME_SECONDS = 3600
+_WORKSTATION_MAX_LIFETIME = timedelta(seconds=WORKSTATION_MAX_LIFETIME_SECONDS)
 
 
 def is_workstation_lease(lease: SecretLease | None) -> bool:
@@ -117,13 +121,25 @@ def check_route_lease(
         return verdict
     if is_workstation_lease(verdict.lease) != workstation:
         return LeaseVerdict(ok=False, reason="lease_kind_mismatch", lease=lease)
-    if workstation and not _names_owner_and_project(verdict.lease):
-        return LeaseVerdict(ok=False, reason="lease_unbound", lease=lease)
+    unfit = _workstation_unfit(verdict.lease) if workstation else ""
+    if unfit:
+        return LeaseVerdict(ok=False, reason=unfit, lease=lease)
     return verdict
 
 
-def _names_owner_and_project(lease: SecretLease | None) -> bool:
-    return bool(lease and lease.owner_id and lease.project)
+def _workstation_unfit(lease: SecretLease | None) -> str:
+    """Why a workstation lease may not ride the edge route, ``""`` if fit.
+
+    The generic ``POST /umrs/secrets/lease`` also mints ``tier=workstation``
+    with any lifetime cap (or none) and lets the holder renew up to it, so the
+    short-lived rule (DEC-037) is re-checked here, not trusted to the issuer.
+    """
+    if not (lease and lease.owner_id and lease.project):
+        return "lease_unbound"
+    cap = lease.max_lifetime_at
+    if cap is None or cap - lease.issued_at > _WORKSTATION_MAX_LIFETIME:
+        return "lease_too_long"
+    return ""
 
 
 def lease_by_token(pool: Any, token: str) -> SecretLease | None:

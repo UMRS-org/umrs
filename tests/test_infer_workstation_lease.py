@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import socket
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 
 import httpx
 import pytest
@@ -58,6 +59,8 @@ def _ws_lease(**over):
         "egress_ip": "",
         "owner_id": "alice",
         "project": "proj-open",
+        # within the workstation cap (``_lease`` issued it 5 minutes ago)
+        "max_lifetime_at": datetime.now(timezone.utc) + timedelta(minutes=55),
     }
     base.update(over)
     return _lease(**base)
@@ -331,3 +334,51 @@ class TestIssueThenRelay:
             user_id="mallory", project_id="proj-open"
         )
         assert api.client.delete(f"/umrs/infer/leases/{body['lease_id']}").status_code == 404
+
+
+# ── review (S-D37-3): the edge route admits short-lived leases only ────────
+
+
+class TestGenericBrokerLeaseOnTheEdge:
+    """A ``tier=workstation`` lease minted through the generic
+    ``POST /umrs/secrets/lease`` may set any lifetime cap (or none) and be
+    renewed up to it: a long-lived bearer token for the unauthenticated
+    edge route. ``/w/`` refuses a lease whose lifetime cap is absent or
+    longer than the workstation maximum."""
+
+    def _generic(self, **over):
+        broker = SecretBroker(db_pool=None, venue="site-a")
+        kwargs = {
+            "lease_seconds": 7200,
+            "tier": WORKSTATION_KIND,
+            "owner_id": "alice",
+            "session_id": "ws-1",
+            "source_ids": ("src-a",),
+            "default_source_id": "src-a",
+            "project": "proj-open",
+        }
+        kwargs.update(over)
+        lease, _token = broker.issue_lease("job-g", "x", "inference", **kwargs)
+        return lease
+
+    def test_lease_without_a_lifetime_cap_is_refused(self, monkeypatch):
+        h = _Harness(monkeypatch, self._generic())
+        resp = h.call()
+        assert (resp.status_code, resp.json()["error"]) == (401, "lease_too_long")
+        assert h.upstream == []
+
+    def test_lease_with_a_long_lifetime_cap_is_refused(self, monkeypatch):
+        h = _Harness(monkeypatch, self._generic(max_lifetime_seconds=10**7))
+        resp = h.call()
+        assert (resp.status_code, resp.json()["error"]) == (401, "lease_too_long")
+        assert h.upstream == []
+
+    def test_lease_within_the_cap_is_admitted(self, monkeypatch):
+        lease = self._generic(lease_seconds=900, max_lifetime_seconds=3600)
+        h = _Harness(monkeypatch, lease)
+        assert h.call().status_code == 200
+
+    def test_issue_api_cap_matches_the_relay_cap(self):
+        from umrs.infer_proxy import leases
+
+        assert infer_leases.MAX_TTL_SECONDS == leases.WORKSTATION_MAX_LIFETIME_SECONDS

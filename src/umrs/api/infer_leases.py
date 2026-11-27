@@ -32,7 +32,11 @@ from typing import Any
 from fastapi import APIRouter, Depends, Request, status
 from pydantic import BaseModel, Field
 
-from umrs.infer_proxy.leases import WORKSTATION_KIND, WORKSTATION_SECRET_NAME
+from umrs.infer_proxy.leases import (
+    WORKSTATION_KIND,
+    WORKSTATION_MAX_LIFETIME_SECONDS,
+    WORKSTATION_SECRET_NAME,
+)
 from umrs.knowledge.access_scope import CallerScope, writable_project_for
 from umrs.shared.project_data_class import (
     PUBLIC_PROVIDER_KINDS,
@@ -52,7 +56,7 @@ router = APIRouter(
 )
 
 DEFAULT_TTL_SECONDS = 900
-MAX_TTL_SECONDS = 3600
+MAX_TTL_SECONDS = WORKSTATION_MAX_LIFETIME_SECONDS
 MAX_SOURCES = 8
 # The edge route the client sends provider calls to (gateway-relative).
 RELAY_PREFIX = "/gw/infer"
