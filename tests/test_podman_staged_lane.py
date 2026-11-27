@@ -82,6 +82,7 @@ _STEP_ENV = (
     "UMRS_STEP_EXECUTOR_TIMEOUT",
     "UMRS_STEP_GPU",
     "UMRS_STEP_WORKDIR",
+    "UMRS_STEP_USER",
 )
 
 FAKE_PODMAN = r"""#!__PYTHON__
@@ -439,6 +440,33 @@ def run_call(podman, root, tree, opted_in, monkeypatch) -> dict:
 )
 def test_the_argv_carries_the_hardening_flags(run_call, flag):
     assert flag in run_call["argv"]
+
+
+def test_the_step_runs_as_this_process_by_default(run_call):
+    assert f"--user={os.getuid()}:{os.getgid()}" in run_call["argv"]
+
+
+def test_a_containerised_server_names_the_host_user(
+    podman, root, tree, opted_in, monkeypatch
+):
+    """S-D64-3: a UMRS in a container is root there, but its files belong to
+    the host user that runs rootless podman; ``--user=0:0`` under keep-id
+    maps to a subordinate uid that cannot read the staged workdir."""
+    monkeypatch.setenv("UMRS_STEP_USER", "4242:4343")
+    _video(_executor(podman, root), tree)
+    [call] = podman.runs()
+    users = [a for a in call["argv"] if a.startswith("--user=")]
+    assert users == ["--user=4242:4343"]
+
+
+@pytest.mark.parametrize("bad", ["root", "1000", "1000:", "0:0 --privileged", "-1:0"])
+def test_a_malformed_step_user_refuses_before_anything_runs(
+    podman, root, tree, opted_in, monkeypatch, bad
+):
+    monkeypatch.setenv("UMRS_STEP_USER", bad)
+    with pytest.raises(StepExecutionError, match="UMRS_STEP_USER"):
+        _video(_executor(podman, root), tree)
+    assert podman.runs() == [] and list(root.iterdir()) == []
 
 
 def test_the_argv_names_the_image_and_our_entrypoint(run_call):
