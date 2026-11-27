@@ -27,6 +27,7 @@ the per-host load come in as arguments.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -93,16 +94,20 @@ def parse_cpus(value: Any) -> float:
     return _number(value) or 0.0
 
 
+#: podman's ``--memory`` grammar (go-units RAMInBytes): a number, an
+#: optional unit, an optional ``i`` and ``b`` (``16g``, ``16gb``, ``16GiB``).
+_MEMORY_RE = re.compile(r"^(\d+(?:\.\d+)?) ?([kmgtp]?)i?b?$")
+_MEMORY_GIB = {"": 1 / 1024**3, "k": 1 / 1024**2, "m": 1 / 1024, "g": 1.0}
+_MEMORY_GIB.update({"t": 1024.0, "p": 1024.0**2})
+
+
 def parse_memory_gb(value: Any) -> float:
-    """A podman ``--memory`` size (``16g``, ``512m``, ``1t``, bytes) in GiB."""
-    text = str(value or "").strip().lower()
-    units = {"k": 1 / 1024**2, "m": 1 / 1024, "g": 1.0, "t": 1024.0}
-    scale = units.get(text[-1:]) if text else None
-    raw = text[:-1] if scale is not None else text
-    number = _number(raw)
-    if number is None:
+    """A podman ``--memory`` size (``16g``, ``16GiB``, ``512mb``, bytes) in
+    GiB; anything off the grammar → 0 (asks nothing)."""
+    match = _MEMORY_RE.match(str(value or "").strip().lower())
+    if match is None:
         return 0.0
-    return number * scale if scale is not None else number / 1024**3
+    return float(match.group(1)) * _MEMORY_GIB[match.group(2)]
 
 
 def effective_isolation(host: HostRecord) -> dict[str, str]:

@@ -153,6 +153,22 @@ def test_parse_memory(raw, gib):
     assert parse_memory_gb(raw) == pytest.approx(gib)
 
 
+@pytest.mark.parametrize(
+    ("raw", "gib"),
+    [("16gb", 16.0), ("16GiB", 16.0), ("16Gb", 16.0), ("512MB", 0.5), ("1024kb", 1 / 1024)],
+)
+def test_parse_memory_reads_every_podman_unit_spelling(raw, gib):
+    """Review SH-H2: podman's ``--memory`` takes ``16gb``/``16GiB``; they
+    parsed as 0 GiB, so a host's ``memory_gb`` capacity never refused them."""
+    assert parse_memory_gb(raw) == pytest.approx(gib)
+
+
+def test_memory_capacity_refuses_a_gb_spelled_worker_size():
+    req = PlacementRequest(memory_gb=parse_memory_gb("16gb"))
+    exc = refused([host("local", capacity={"memory_gb": 8})], req)
+    assert exc.detail["refused"] == {"resources": 1}
+
+
 def test_parse_cpus():
     assert parse_cpus("8") == 8.0
     assert parse_cpus("") == 0.0
@@ -390,6 +406,19 @@ def test_admin_null_lifts_a_lower_label_requirement():
     assert placement_labels(limits) == ()
 
 
+def test_a_project_admin_label_rule_replaces_the_site_admin_rule():
+    """Labels fold like every admin limit (ADR-099 amendment, corrected in
+    the SH-H2 review): the specific admin rule replaces the site's; the
+    project and user admin rules and the owner rule add up."""
+    limits = _limits(
+        _rule("site", "", "admin", {"placement": {"labels": ["zone=a"]}}),
+        _rule("project", "p", "admin", {"placement": {"labels": ["gpu"]}}),
+        _rule("user", "u", "admin", {"placement": {"labels": ["arch=x86_64"]}}),
+        _rule("project", "p", "owner", {"placement": {"labels": ["fast"]}}),
+    )
+    assert placement_labels(limits) == ("gpu", "arch=x86_64", "fast")
+
+
 def test_owner_labels_never_count_as_widening():
     admin = _limits(_rule("site", "", "admin", {"placement": {"labels": ["gpu"]}}))
     check_owner_rule({"placement": {"labels": ["zone=a"]}}, admin)
@@ -535,3 +564,31 @@ def test_host_load_counts_live_sessions_per_host_at_this_site(pool):
     assert host_load(pool, "site-a") == {"local": 2, "h-b": 1}
     assert host_load(pool, "site-c") == {}
     assert host_load(None, "site-a") == {}
+
+
+# ── the hosts registry switched off (review SH-H2) ─────────────────────────
+
+
+def test_hosts_registry_switched_off_places_on_the_inline_host(monkeypatch):
+    """``UMRS_HOSTS_ENABLED=false`` turns the registry loop off, so the
+    inline host never registers: placement read the empty Postgres registry
+    and refused every start ``no_host``. Off now means this process's inline
+    host alone (the service's in-memory registry), as without a pool."""
+    from umrs_r4.api.companion_venue import _host_sources
+
+    monkeypatch.setenv("UMRS_HOSTS_ENABLED", "false")
+    registry, load = _host_sources(object(), "site-a")
+    assert registry is None
+    assert callable(load)
+    monkeypatch.setenv("UMRS_HOSTS_ENABLED", "true")
+    registry, _ = _host_sources(object(), "site-a")
+    assert isinstance(registry, HostRegistry)
+
+
+def test_hosts_enabled_flag():
+    from umrs.hosts.janitor import hosts_enabled
+
+    assert hosts_enabled({}) is True
+    for off in ("false", "0", "no", " FALSE "):
+        assert hosts_enabled({"UMRS_HOSTS_ENABLED": off}) is False
+    assert hosts_enabled({"UMRS_HOSTS_ENABLED": "true"}) is True

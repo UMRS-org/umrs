@@ -27,7 +27,7 @@ from __future__ import annotations
 import logging
 import os
 import threading
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -233,6 +233,15 @@ def extension_host_sessions(db_pool: Any) -> list[HostSessions]:
     return built
 
 
+def hosts_enabled(env: Mapping[str, str] | None = None) -> bool:
+    """``UMRS_HOSTS_ENABLED`` (default on). Off, the inline host never
+    registers, so placement must not read the database registry either: it
+    places on this process's inline host alone (review SH-H2)."""
+    source = os.environ if env is None else env
+    flag = source.get("UMRS_HOSTS_ENABLED", "true").strip().lower()
+    return flag not in ("false", "0", "no")
+
+
 def _site_extra() -> dict[str, Any]:
     """``site.yaml`` ``extra`` ({} when unreadable: the inline host then
     reports the default ``crun``/``squid-only`` isolation, never better)."""
@@ -290,6 +299,7 @@ __all__ = [
     "down_after_seconds",
     "extension_host_sessions",
     "heartbeat_seconds",
+    "hosts_enabled",
     "site_inline_profile",
     "start_inline_host",
 ]

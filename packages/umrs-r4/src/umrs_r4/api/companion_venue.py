@@ -153,14 +153,19 @@ def build_venue_service(pool: Any) -> FrontendVenueService:
 def _host_sources(pool: Any, site: str) -> tuple[Any, Any]:
     """ADR-098 D-9 (SH-H2): the site's Postgres hosts registry and its live
     sessions per host; ``(None, None)`` without a pool (the service then
-    places on its own inline host alone)."""
+    places on its own inline host alone). With the registry switched off
+    (``UMRS_HOSTS_ENABLED=false``) the inline host never registers, so the
+    service places on its own inline host too (review SH-H2: it read the
+    empty table and refused every start ``no_host``)."""
     if pool is None:
         return None, None
     from umrs.hosts import HostRegistry
+    from umrs.hosts.janitor import hosts_enabled
 
     from umrs_r4.quotas.host_load import host_load
 
-    return HostRegistry(pool, venue=site), lambda: host_load(pool, site)
+    registry = HostRegistry(pool, venue=site) if hosts_enabled() else None
+    return registry, lambda: host_load(pool, site)
 
 
 def _typed(exc: VenueError) -> None:
