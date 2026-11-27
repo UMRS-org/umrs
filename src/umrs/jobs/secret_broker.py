@@ -266,11 +266,12 @@ class SecretBroker:
             f"scope={scope} ttl={lease_seconds}s name={secret_name}",
         )
 
+        # The secret's name stays in the audit row only (CodeQL
+        # py/clear-text-logging-sensitive-data); the log names the lease.
         logger.info(
-            "Secret lease issued: %s (job=%s name=%s scope=%s ttl=%ds)",
+            "Secret lease issued: %s (job=%s scope=%s ttl=%ds)",
             lease.lease_id,
             job_id,
-            secret_name,
             scope,
             lease_seconds,
         )
