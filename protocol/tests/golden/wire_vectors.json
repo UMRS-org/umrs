@@ -424,6 +424,8 @@
       "companionvenue.bad_request": 400,
       "companionvenue.conflict": 409,
       "companionvenue.forbidden": 403,
+      "companionvenue.host_unavailable": 409,
+      "companionvenue.no_host": 503,
       "companionvenue.not_found": 404,
       "companionvenue.provision_failed": 502,
       "companionvenue.question_closed": 409,

@@ -107,6 +107,8 @@ def site_defaults(env: Mapping[str, str] | None = None) -> dict[str, Any]:
             "concurrent_user": concurrent_per_user(env),
             "concurrent_project": None,
         },
+        "placement": {"labels": None},
+        "mcp": {"max_instances": None},
     }
 
 
@@ -146,14 +148,26 @@ def _cap_intersection(a: Any, b: Any) -> Any:
     ]
 
 
+def _modes_intersection(a: Any, b: Any) -> list[str]:
+    a = list(WEB_MODES) if a is None else a
+    b = list(WEB_MODES) if b is None else b
+    return [m for m in WEB_MODES if m in a and m in b]
+
+
+def _labels_union(a: Any, b: Any) -> list[str] | None:
+    """Required labels: both layers' requirements (None = no requirement)."""
+    return list(dict.fromkeys([*(a or []), *(b or [])])) or None
+
+
+_STRICTEST = {
+    "modes": _modes_intersection,
+    "domains": _cap_intersection,
+    "labels": _labels_union,
+}
+
+
 def _strictest(kind: str, a: Any, b: Any) -> Any:
-    if kind == "modes":
-        a = list(WEB_MODES) if a is None else a
-        b = list(WEB_MODES) if b is None else b
-        return [m for m in WEB_MODES if m in a and m in b]
-    if kind == "domains":
-        return _cap_intersection(a, b)
-    return _min_number(a, b)
+    return _STRICTEST.get(kind, _min_number)(a, b)
 
 
 def _rule_value(kind: str, value: Any) -> Any:
@@ -354,6 +368,8 @@ def _owner_field_problem(
     kind: str, value: Any, cap: Any, field_name: str, capped_by: str
 ) -> PolicyError | None:
     """The refusal of one owner field wider than the admin value, else None."""
+    if kind == "labels":  # a requirement more is narrower, never wider
+        return None
     if kind == "modes":
         wider = _wider_modes(value, cap)
     elif kind == "domains":
@@ -489,7 +505,10 @@ def resolve_session_policy(
             "lifetime",
             "budget",
             "sessions",
+            "placement",
+            "mcp",
         )
+        if key in limits
     }
     policy["web"] = {"mode": mode, "domains": domains if mode == "allowlist" else []}
     origin = {k: v for k, v in limits["origin"].items() if not k.startswith("web.")}

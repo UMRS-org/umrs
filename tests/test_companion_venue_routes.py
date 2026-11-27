@@ -253,6 +253,17 @@ class FakeSealed:
         return self.rows.get((owner, name))
 
 
+def _sensitive_front():
+    """A hosts registry whose inline front the site declares a sensitive tier
+    (ADR-098 D-7, SH-H2): without it a sensitive project's session is refused
+    at placement, after the ADR-062 source gate these tests exercise."""
+    from umrs.hosts import HostRegistry
+
+    registry = HostRegistry(None, venue="site-a")
+    registry.register("local", isolation={"tier": "sensitive"})
+    return registry
+
+
 def _meta(name: str, *, tombstoned=None, allow_host: str | None = None):
     # provider_kind: pushed sources are public providers (ADR-062's class).
     # allow_host absent → a commercial public host (never institutional).
@@ -1099,6 +1110,7 @@ class TestDataClassGate:
                 )
             }
         )
+        harness.service.host_registry = _sensitive_front()
         r = harness.client.post(
             "/umrs/companion/sessions/sess-1/venue/start",
             json={"web_policy": "public", "source_refs": ["rikyu-main"], "project": "proj-s"},
@@ -1167,6 +1179,7 @@ class TestDataClassGate:
         harness.service._sealed = FakeSealed(
             {("alice", "inst-main"): _meta("inst-main", allow_host="https://llm.example.ac.jp")}
         )
+        harness.service.host_registry = _sensitive_front()
         r = harness.client.post(
             "/umrs/companion/sessions/sess-1/venue/start",
             json={"web_policy": "public", "source_refs": ["inst-main"], "project": "proj-s"},

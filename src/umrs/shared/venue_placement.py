@@ -74,6 +74,21 @@ def validate_placement(placement: str) -> str:
     return placement
 
 
+def pinned_host(placement: str) -> str:
+    """The host a ``cpu:<host>`` placement pins, ``""`` for any other venue.
+
+    Grammar only; a ``cpu:`` value off the grammar is a :class:`PlacementError`
+    (never ``""``, which would drop the pin). Host placement
+    (``umrs.hosts.placement``, SH-H2) checks the pin against
+    :func:`declared_cpu_hosts` **and** the hosts registry, and never places a
+    pinned session on another host."""
+    if not placement.startswith("cpu:"):
+        return ""
+    if not PLACEMENT_RE.match(placement):
+        raise PlacementError(f"invalid placement {placement!r}: expected cpu:<host>")
+    return placement[len("cpu:") :]
+
+
 def validate_trust_class(placement: str, trust_class: str) -> str:
     """Cross-check a trust class against its placement (ADR-061 map)."""
     if trust_class not in TRUST_CLASSES:

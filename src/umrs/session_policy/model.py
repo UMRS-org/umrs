@@ -11,7 +11,9 @@ Rule document (every key optional; ``null`` = no limit at this layer)::
      "lifetime": {"idle_s": int, "wall_clock_s": int},
      "budget": {"tokens_per_day_user": int, "tokens_per_day_project": int,
                 "rpm_user": int},
-     "sessions": {"concurrent_user": int, "concurrent_project": int}}
+     "sessions": {"concurrent_user": int, "concurrent_project": int},
+     "placement": {"labels": ["key", "key=value", ...]},
+     "mcp": {"max_instances": int}}
 
 Counts and token budgets are integers >= 1 or ``null`` (no limit): ``0`` is
 refused (``sessionpolicy.invalid``) rather than read as either "no limit" or
@@ -20,6 +22,12 @@ refused (``sessionpolicy.invalid``) rather than read as either "no limit" or
 ``web.domains`` is a domain CAP (squid ``dstdomain`` entries); an empty
 list is the same as no cap. ``web.suggested_domains`` is a hint for the
 session-open question, never a limit.
+
+``placement.labels`` (ADR-098 D-9, SH-H2) are host labels a session's host
+must carry: ``key`` (set) or ``key=value``. Layers add requirements (the
+union), so an owner rule can only narrow; ``null`` lifts a lower layer's.
+``mcp.max_instances`` caps a project's live MCP server instances (ADR-098
+D-10; the MCP executor enforces it, SH-M2).
 """
 
 from __future__ import annotations
@@ -39,6 +47,8 @@ MIN_LIFETIME_S = 60
 # Counts and token budgets: null = no limit, so 0 would only mean "block
 # everything", which RS-1 does not offer (a disabled account is the block).
 MIN_COUNT = 1
+MAX_LABELS = 16
+_LABEL_RE = re.compile(r"^[a-z0-9][a-z0-9._/-]{0,62}(=[A-Za-z0-9._-]{1,63})?$")
 _DOMAIN_RE = re.compile(r"^\.?[a-z0-9-]+(\.[a-z0-9-]+)+$")
 
 # section -> field -> kind ("modes" | "domains" | "count" | "seconds")
@@ -51,6 +61,8 @@ RULE_FIELDS: dict[str, dict[str, str]] = {
         "rpm_user": "count",
     },
     "sessions": {"concurrent_user": "count", "concurrent_project": "count"},
+    "placement": {"labels": "labels"},
+    "mcp": {"max_instances": "count"},
 }
 
 
@@ -149,6 +161,22 @@ def normalize_domains(raw: Any, field_name: str) -> list[str]:
     return out
 
 
+def normalize_labels(raw: Any, field_name: str) -> list[str]:
+    """Required host labels: ``key`` or ``key=value``, at most 16, deduped."""
+    if not isinstance(raw, (list, tuple)):
+        raise _invalid(field_name, f"{field_name} must be a list of labels")
+    if len(raw) > MAX_LABELS:
+        raise _invalid(field_name, f"{field_name}: at most {MAX_LABELS} labels")
+    out: list[str] = []
+    for item in raw:
+        label = item.strip() if isinstance(item, str) else ""
+        if not _LABEL_RE.match(label):
+            raise _invalid(field_name, f"{field_name}: {item!r} is not key or key=value")
+        if label not in out:
+            out.append(label)
+    return out
+
+
 def _modes(raw: Any, field_name: str) -> list[str]:
     if not isinstance(raw, (list, tuple)) or not raw:
         raise _invalid(field_name, f"{field_name} must be a non-empty list of modes")
@@ -178,6 +206,8 @@ def _field_value(kind: str, raw: Any, field_name: str) -> Any:
         return _modes(raw, field_name)
     if kind == "domains":
         return normalize_domains(raw, field_name)
+    if kind == "labels":
+        return normalize_labels(raw, field_name)
     minimum = MIN_LIFETIME_S if kind == "seconds" else MIN_COUNT
     return _integer(raw, field_name, minimum)
 
@@ -191,6 +221,19 @@ def limit_value(value: Any) -> int | None:
     if isinstance(value, bool) or not isinstance(value, int) or value < MIN_COUNT:
         return None
     return value
+
+
+def placement_labels(policy: Any) -> tuple[str, ...]:
+    """The host labels a resolved policy requires (``placement.labels``)."""
+    part = policy.get("placement") if isinstance(policy, dict) else None
+    labels = part.get("labels") if isinstance(part, dict) else None
+    return tuple(str(x) for x in labels) if isinstance(labels, list) else ()
+
+
+def mcp_max_instances(policy: Any) -> int | None:
+    """``mcp.max_instances`` as an enforcer reads it (:func:`limit_value`)."""
+    part = policy.get("mcp") if isinstance(policy, dict) else None
+    return limit_value(part.get("max_instances") if isinstance(part, dict) else None)
 
 
 def _section(name: str, raw: Any, scope: str) -> dict[str, Any]:

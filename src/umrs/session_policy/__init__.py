@@ -20,6 +20,8 @@ from .model import (
     WebChoice,
     domain_within,
     limit_value,
+    mcp_max_instances,
+    placement_labels,
     validate_rule_doc,
 )
 from .resolve import (
@@ -53,6 +55,8 @@ __all__ = [
     "effective_limits_for",
     "legacy_web_default",
     "limit_value",
+    "mcp_max_instances",
+    "placement_labels",
     "resolve_session_policy",
     "site_defaults",
     "validate_rule_doc",
