@@ -57,6 +57,8 @@ MAX_TOKEN_SECONDS = 300
 CLOCK_SKEW_S = 30
 #: Typed code of a lease presented from another host (ADR-098 D-6).
 HOST_MISMATCH = "rail.host_mismatch"
+#: Enrollment refusal: only a ``--rekey`` token may replace an enrolled key.
+ALREADY_ENROLLED = "enroll.already_enrolled"
 #: 401 reasons; :data:`HOST_MISMATCH` is the only 403.
 HOST_AUTH_REASONS = (
     "host_token_invalid",
@@ -134,6 +136,8 @@ class _Enrollment:
     host_id: str
     expires_at: datetime
     used_at: datetime | None = None
+    #: Issued with ``--rekey``: may replace an enrolled key (else refused).
+    rekey: bool = False
 
 
 @dataclass
@@ -142,10 +146,17 @@ class _MemoryIdentity:
     keys: dict[tuple[str, str], HostKey] = field(default_factory=dict)
 
     def add_enrollment(
-        self, venue: str, token_hash: str, host_id: str, ttl_s: int, _by: str
+        self,
+        venue: str,
+        token_hash: str,
+        host_id: str,
+        ttl_s: int,
+        _by: str,
+        rekey: bool = False,
     ) -> datetime:
         expires = _now() + timedelta(seconds=ttl_s)
-        self.enrollments[(venue, token_hash)] = _Enrollment(host_id, expires)
+        row = _Enrollment(host_id, expires, rekey=rekey)
+        self.enrollments[(venue, token_hash)] = row
         return expires
 
     def consume(self, venue: str, token_hash: str, key: HostKey) -> str:
@@ -154,6 +165,8 @@ class _MemoryIdentity:
         if reason:
             return reason
         assert row is not None
+        if not row.rekey and (venue, row.host_id) in self.keys:
+            return ALREADY_ENROLLED
         row.used_at = _now()
         key.host_id, key.enrolled_at = row.host_id, _now()
         self.keys[(venue, row.host_id)] = key
@@ -190,11 +203,17 @@ def _enrollment_refusal(row: Any, now: datetime) -> str:
 _CONSUME_SQL = (
     "UPDATE host_enrollments SET used_at = now() WHERE venue = %s"
     " AND token_hash = %s AND used_at IS NULL AND expires_at > now()"
-    " RETURNING host_id"
+    " RETURNING host_id, rekey"
 )
 _PROBE_SQL = (
     "SELECT host_id, expires_at, used_at FROM host_enrollments"
     " WHERE venue = %s AND token_hash = %s"
+)
+#: A plain (not ``--rekey``) token only adds a key: an enrolled host is kept.
+_KEY_INSERT_SQL = (
+    "INSERT INTO host_keys (venue, host_id, public_key, key_id)"
+    " VALUES (%s, %s, %s, %s) ON CONFLICT (venue, host_id) DO NOTHING"
+    " RETURNING host_id"
 )
 _KEY_UPSERT_SQL = (
     "INSERT INTO host_keys (venue, host_id, public_key, key_id)"
@@ -224,14 +243,21 @@ class _PgIdentity:
         self._pool = pool
 
     def add_enrollment(
-        self, venue: str, token_hash: str, host_id: str, ttl_s: int, by: str
+        self,
+        venue: str,
+        token_hash: str,
+        host_id: str,
+        ttl_s: int,
+        by: str,
+        rekey: bool = False,
     ) -> datetime:
         sql = (
             "INSERT INTO host_enrollments (token_hash, venue, host_id, created_by,"
-            " expires_at) VALUES (%s, %s, %s, %s, now() + make_interval(secs => %s))"
-            " RETURNING expires_at"
+            " expires_at, rekey) VALUES (%s, %s, %s, %s,"
+            " now() + make_interval(secs => %s), %s) RETURNING expires_at"
         )
-        rows = self._run([(sql, (token_hash, venue, host_id, by, float(ttl_s)))])
+        params = (token_hash, venue, host_id, by, float(ttl_s), bool(rekey))
+        rows = self._run([(sql, params)])
         return rows[0][0]
 
     def consume(self, venue: str, token_hash: str, key: HostKey) -> str:
@@ -259,7 +285,9 @@ class _PgIdentity:
                 return _enrollment_refusal(found, _now()) or "enroll.token_invalid"
             key.host_id = str(row[0])
             params = (venue, key.host_id, b64url(key.public_key), key.key_id)
-            cur.execute(_KEY_UPSERT_SQL, params)
+            cur.execute(_KEY_UPSERT_SQL if row[1] else _KEY_INSERT_SQL, params)
+            if not row[1] and cur.fetchone() is None:
+                return ALREADY_ENROLLED  # rolled back: the token stays unused
         return ""
 
     def key(self, venue: str, host_id: str) -> HostKey | None:
@@ -312,17 +340,25 @@ class HostKeyStore:
         return self._venue
 
     def add_enrollment(
-        self, token_hash: str, host_id: str, ttl_s: int, created_by: str = ""
+        self,
+        token_hash: str,
+        host_id: str,
+        ttl_s: int,
+        created_by: str = "",
+        *,
+        rekey: bool = False,
     ) -> datetime:
         return self._backend.add_enrollment(
-            self.venue, token_hash, host_id, ttl_s, created_by
+            self.venue, token_hash, host_id, ttl_s, created_by, rekey
         )
 
     def consume_enrollment(self, token_hash: str, public_key: bytes) -> HostKey:
         """Use the token once and store ``public_key`` for its host, atomically.
 
         Raises :class:`EnrollmentError` (``enroll.token_invalid``,
-        ``enroll.token_used``, ``enroll.token_expired``)."""
+        ``enroll.token_used``, ``enroll.token_expired``, or
+        ``enroll.already_enrolled`` when a token issued without ``rekey``
+        meets a host that enrolled meanwhile; that token stays unused)."""
         key = HostKey("", self.venue, public_key, key_id(public_key))
         reason = self._backend.consume(self.venue, token_hash, key)
         if reason:
@@ -402,7 +438,9 @@ def _parse(token: str, venue: str) -> tuple[str, bytes, HostClaims]:
     try:
         signed, payload, signature = _split(token)
         return signed, signature, _claims(payload, venue)
-    except (ValueError, KeyError, TypeError) as exc:
+    except (ValueError, KeyError, TypeError, OverflowError, RecursionError) as exc:
+        # Claims are read before the signature, so this is unauthenticated
+        # input: inf (OverflowError) and deep nesting (RecursionError) too.
         raise HostAuthError("host_token_invalid") from exc
 
 
@@ -485,6 +523,7 @@ def lease_host_refusal(lease: Any, presented: str) -> str:
 
 
 __all__ = [
+    "ALREADY_ENROLLED",
     "CLOCK_SKEW_S",
     "HOST_AUTH_REASONS",
     "HOST_MISMATCH",

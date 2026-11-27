@@ -25,6 +25,7 @@ from datetime import datetime
 from typing import Any
 
 from umrs.hosts.identity import (
+    ALREADY_ENROLLED,
     EnrollmentError,
     HostKey,
     HostKeyStore,
@@ -87,17 +88,19 @@ def issue_enrollment(
     """Admin side: a one-time token for ``host_id``.
 
     A host that already has a key is refused (``enroll.already_enrolled``)
-    unless ``rekey``: the new key replaces the old one when redeemed."""
+    unless ``rekey``: the new key replaces the old one when redeemed. The
+    token remembers ``rekey``: a plain token redeemed after its host enrolled
+    through another token is refused the same way and never rekeys."""
     check_host_id(host_id)
     ttl = _check_ttl(ttl_s)
     if not rekey and store.public_key(host_id) is not None:
         raise EnrollmentError(
-            "enroll.already_enrolled",
+            ALREADY_ENROLLED,
             f"host {host_id!r} is enrolled: pass --rekey to replace its key",
         )
     token = ENROLL_TOKEN_PREFIX + secrets.token_urlsafe(32)
     expires = store.add_enrollment(
-        enrollment_token_hash(token), host_id, ttl, created_by
+        enrollment_token_hash(token), host_id, ttl, created_by, rekey=rekey
     )
     return IssuedEnrollment(host_id, store.venue, token, expires)
 

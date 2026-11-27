@@ -36,7 +36,10 @@ CREATE TABLE IF NOT EXISTS host_enrollments (
     created_by  TEXT NOT NULL DEFAULT '',
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
     expires_at  TIMESTAMPTZ NOT NULL,
-    used_at     TIMESTAMPTZ
+    used_at     TIMESTAMPTZ,
+    -- Issued with --rekey: may replace an enrolled key. A plain token
+    -- redeemed after its host enrolled is refused and stays unused.
+    rekey       BOOLEAN NOT NULL DEFAULT false
 );
 
 COMMENT ON TABLE host_enrollments IS
