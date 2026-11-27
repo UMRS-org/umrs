@@ -1,11 +1,13 @@
 """The dense lane of the retrieval core, and the query encoder it reads (ADR-093 D-2).
 
-Exact cosine (``<=>``) over the 0075 node vectors, in ONE embedding space
-(the basename rule of ``knowledge_query._similarity_hits``, ADR-083 D-2),
-chunk nodes only, under the ADR-050 visibility predicate, plus a graph
-predicate when the caller selected graphs. A pool of ``limit`` candidates per
-query variant — larger than the ``k`` the cut keeps (ADR-083 D-2's
-over-fetch shape).
+Cosine (``<=>``) over the 0075 node vectors, in ONE registered embedding
+space (ADR-083 D-1/D-2, slice KN-S6): the query model resolves through the
+space registry, the read carries the space's partial-index predicate and
+runs as a filtered ANN read on ``hnsw_<space_id>`` re-sorted by exact
+distance (``ann.py``), chunk nodes only, under the ADR-050 visibility
+predicate, plus a graph predicate when the caller selected graphs. A pool of
+``limit`` candidates per query variant — larger than the ``k`` the cut keeps
+(ADR-083 D-2's over-fetch shape).
 
 Legacy mode (``spec.threshold`` set) runs the K3 similarity statement itself
 — no chunk-kind predicate, no window, ``LIMIT k`` — so the ids and their
@@ -26,9 +28,11 @@ from typing import Any
 import httpx
 
 from umrs.knowledge.access_scope import artifact_alive_predicate, visibility_predicate
+from umrs.knowledge.embedding_spaces import EmbeddingSpace
 from umrs.knowledge.graph_registry import default_graph_id
 from umrs.knowledge.text_embedder import embedding_space
 
+from . import ann
 from .types import BatchEncoder, Candidate, LaneResult, RetrieveSpec
 
 logger = logging.getLogger(__name__)
@@ -122,7 +126,11 @@ def _exclude_clause(spec: RetrieveSpec) -> tuple[str, list[Any]]:
 
 def scope_clause(spec: RetrieveSpec, model: str) -> tuple[str, list[Any]]:
     """``WHERE`` body over ``n``/``e``: visibility, graphs, one space, chunks
-    whose artifact is alive (wave F; legacy mode keeps its old statement)."""
+    whose artifact is alive (wave F; legacy mode keeps its old statement).
+
+    The exact reads (the calibrated null, the graph hop) use this name-based
+    space rule; the ANN read uses :func:`chunk_scope_clause` plus the
+    registry space filter (``ann.ann_query``)."""
     gate, params = gate_clause(spec)
     exclude, exclude_params = _exclude_clause(spec)
     sql = (
@@ -130,6 +138,18 @@ def scope_clause(spec: RetrieveSpec, model: str) -> tuple[str, list[Any]]:
         f"AND n.content->>'kind' = 'chunk' AND {artifact_alive_predicate('n')}{exclude}"
     )
     return sql, [*params, model, same_space_pattern(model), *exclude_params]
+
+
+def chunk_scope_clause(spec: RetrieveSpec) -> tuple[str, list[Any]]:
+    """:func:`scope_clause` without its model filter: the ANN read adds the
+    space's index predicate instead (ADR-083 D-2, slice KN-S6)."""
+    gate, params = gate_clause(spec)
+    exclude, exclude_params = _exclude_clause(spec)
+    sql = (
+        f"{gate} AND n.content->>'kind' = 'chunk' "
+        f"AND {artifact_alive_predicate('n')}{exclude}"
+    )
+    return sql, [*params, *exclude_params]
 
 
 # ── the lane ────────────────────────────────────────────────────────────────
@@ -167,32 +187,65 @@ def _legacy_sql(spec: RetrieveSpec) -> str:
     )
 
 
-def _variant_rows(
-    pool: Any, vector: Sequence[float], model: str, spec: RetrieveSpec, limit: int
-) -> list[tuple]:
-    """``(node_id, content, distance, in_scope, stamp)`` rows for one query
-    vector; ``stamp`` is the scope's latest ``updated_at`` (the null key)."""
-    if (
+def _legacy_mode(spec: RetrieveSpec) -> bool:
+    return (
         spec.threshold is not None
         and spec.graph_ids is None
         and not spec.exclude_graph_ids
-    ):
-        params = [
-            vector_literal(vector),
-            spec.project_id,
-            model,
-            same_space_pattern(model),
-            limit,
-        ]
-        return [(*row, None) for row in query_rows(pool, _legacy_sql(spec), params)]
-    where, params = scope_clause(spec, model)
-    sql = (
-        "SELECT e.node_id, n.content::text, (e.embedding <=> %s::vector) AS distance, "
-        "count(*) OVER () AS in_scope, max(e.updated_at) OVER () AS stamp "
-        f"{_FROM}WHERE {where} "
-        "ORDER BY distance ASC, e.node_id LIMIT %s"
     )
-    return query_rows(pool, sql, [vector_literal(vector), *params, limit])
+
+
+def _legacy_rows(
+    pool: Any, vector: Sequence[float], model: str, spec: RetrieveSpec, limit: int
+) -> list[tuple]:
+    """The pre-ADR-093 K3 statement, unchanged (acceptance receipt 4)."""
+    params = [
+        vector_literal(vector),
+        spec.project_id,
+        model,
+        same_space_pattern(model),
+        limit,
+    ]
+    return query_rows(pool, _legacy_sql(spec), params)
+
+
+#: The dense lane's ANN columns: ``(node_id, content, distance)`` rows.
+_DENSE_COLUMNS = (("e.node_id", "node_id"), ("n.content::text", "content"))
+
+
+def _ann_rows(
+    pool: Any,
+    vector: Sequence[float],
+    space: EmbeddingSpace,
+    spec: RetrieveSpec,
+    limit: int,
+) -> list[tuple]:
+    """``(node_id, content, distance)`` rows for one query vector: the space's
+    HNSW pool re-sorted by exact distance (ADR-083 D-2, ``ann.ann_query``)."""
+    where, params = chunk_scope_clause(spec)
+    sql, args = ann.ann_query(
+        space,
+        columns=_DENSE_COLUMNS,
+        where=where,
+        where_params=params,
+        vector=vector,
+        k=limit,
+    )
+    return query_rows(pool, sql, args)
+
+
+def _scope_count(
+    pool: Any, space: EmbeddingSpace, spec: RetrieveSpec
+) -> tuple[int, str | None]:
+    """The scope's vector count in ``space`` and its latest ``updated_at``
+    (any re-embed moves it: the calibrated null's cache key)."""
+    where, params = chunk_scope_clause(spec)
+    sql, args = ann.count_query(space, where=where, where_params=params)
+    rows = query_rows(pool, sql, args)
+    if not rows:
+        return 0, None
+    stamp = rows[0][1] if len(rows[0]) > 1 else None
+    return int(rows[0][0] or 0), None if stamp is None else str(stamp)
 
 
 def _merge_variant(
@@ -209,17 +262,58 @@ def _merge_variant(
             candidate.lane_ranks[f"{LANE}#{variant}"] = rank
 
 
-def _in_scope(rows: list[tuple]) -> int | None:
-    if not rows:
-        return 0
-    value = rows[0][3]
-    return int(value) if value is not None else None
+class _Scan:
+    """What one dense scan found, over every query variant."""
+
+    def __init__(self) -> None:
+        self.found: dict[str, Candidate] = {}
+        self.in_scope: int | None = None
+        self.stamp: str | None = None
+        self.space: EmbeddingSpace | None = None
+
+    def merge(self, rows: list[tuple], variant: int, multi: bool) -> None:
+        _merge_variant(self.found, rows, variant, multi)
 
 
-def _stamp(rows: list[tuple]) -> str | None:
-    """The scope's latest ``updated_at`` (any re-embed moves it), as text."""
-    value = rows[0][4] if rows and len(rows[0]) > 4 else None
-    return None if value is None else str(value)
+def _scan(
+    pool: Any, vectors: list[list[float]], model: str, spec: RetrieveSpec, limit: int
+) -> _Scan:
+    scan, multi = _Scan(), len(vectors) > 1
+    if _legacy_mode(spec):
+        for variant, vector in enumerate(vectors):
+            rows = _legacy_rows(pool, vector, model, spec, limit)
+            if variant == 0 and not rows:
+                scan.in_scope = 0  # the old statement's "nothing in scope"
+            scan.merge(rows, variant, multi)
+        return scan
+    scan.space = ann.query_space(pool, model)
+    scan.in_scope, scan.stamp = _scope_count(pool, scan.space, spec)
+    for variant, vector in enumerate(vectors):
+        scan.merge(_ann_rows(pool, vector, scan.space, spec, limit), variant, multi)
+    return scan
+
+
+def _failure_reason(exc: Exception) -> str:
+    """A named refusal keeps its code (``knowledge.embedding_space_*``)."""
+    code = getattr(exc, "code", None)
+    if isinstance(code, str) and code.startswith("knowledge."):
+        return f"dense lane refused ({code})"
+    if str(exc).startswith(ann.CODE_DIMENSION):
+        return f"dense lane refused ({ann.CODE_DIMENSION})"
+    return f"dense lane failed ({type(exc).__name__})"
+
+
+def _scan_info(scan: _Scan, model: str, variants: int) -> dict[str, Any]:
+    info: dict[str, Any] = {
+        "in_scope": scan.in_scope,
+        "space": embedding_space(model),
+        "variants": variants,
+        "stamp": scan.stamp,
+    }
+    if scan.space is not None:
+        info["space_id"] = scan.space.space_id
+        info["index"] = scan.space.index_name
+    return info
 
 
 def dense_lane(
@@ -235,40 +329,33 @@ def dense_lane(
     A candidate's ``cosine`` is its best over the variants; ``lane_ranks``
     carries ``dense#i`` per variant when there are several, so the fusion
     stage can RRF the variant rankings. ``info["in_scope"]`` is the number of
-    vectors the scan ranked (``None`` in legacy mode, which keeps the old
-    statement exactly).
+    vectors in scope in the query's space (``None`` in legacy mode, which
+    keeps the old statement exactly).
+
+    Outside legacy mode the query model must resolve to one registered space
+    (``ann.query_space``) and every variant is one ANN read on that space's
+    ``hnsw_<space_id>`` (ADR-083 D-2); an unregistered model or a vector of
+    the wrong dimension is an ``unavailable`` lane with the refusal's code.
     """
     started = time.perf_counter()
-    found: dict[str, Candidate] = {}
-    in_scope: int | None = 0
-    stamp: str | None = None
     try:
-        for variant, vector in enumerate(vectors):
-            rows = _variant_rows(pool, vector, model, spec, limit)
-            if variant == 0:
-                in_scope, stamp = _in_scope(rows), _stamp(rows)
-            _merge_variant(found, rows, variant, len(vectors) > 1)
+        scan = _scan(pool, vectors, model, spec, limit)
     except Exception as exc:  # noqa: BLE001 — a lane reports, it never raises
         logger.warning("dense lane failed: %s", exc)
         return LaneResult(
             name=LANE,
             status="unavailable",
-            reason=f"dense lane failed ({type(exc).__name__})",
+            reason=_failure_reason(exc),
             ms=(time.perf_counter() - started) * 1000.0,
         )
     ordered = sorted(
-        found.values(), key=lambda c: (c.lane_ranks[LANE], -(c.cosine or 0.0))
+        scan.found.values(), key=lambda c: (c.lane_ranks[LANE], -(c.cosine or 0.0))
     )
     return LaneResult(
         name=LANE,
         candidates=ordered,
         ms=(time.perf_counter() - started) * 1000.0,
-        info={
-            "in_scope": in_scope,
-            "space": embedding_space(model),
-            "variants": len(vectors),
-            "stamp": stamp,
-        },
+        info=_scan_info(scan, model, len(vectors)),
     )
 
 

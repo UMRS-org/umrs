@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+from space_registry_fake import REGISTRY_MARKER, registry_row
 from umrs.api.knowledge_query import (
     _build_unified_search,
     _embeddings_backend_for,
@@ -156,6 +157,7 @@ _SIM_ROWS = [
         datetime(2026, 8, 23, tzinfo=timezone.utc),
         "chunk 0 of scan.h5",
         "spring8",
+        "{}",  # the matched content (ANN column order, KN-S6)
         0.05,  # nearest: cosine distance
     ),
     (
@@ -165,13 +167,24 @@ _SIM_ROWS = [
         datetime(2026, 8, 22, tzinfo=timezone.utc),
         "chunk 3 of run.md",
         "spring8",
+        "{}",
         0.40,
     ),
 ]
 
 
+def _with_space(rows, model, dim):
+    """A behavior answering the space registry (one space) and then ``rows``."""
+    registry = [registry_row("t_space", model, dim)]
+    return lambda sql, _params: registry if REGISTRY_MARKER in sql else rows
+
+
+def _vector_read(pool):
+    return next(q for q in pool._conn._cur.queries if "<=>" in q[0])
+
+
 def test_similarity_lane_ranks_by_distance_and_scores_similarity():
-    pool = _Pool(lambda _sql, _params: _SIM_ROWS)
+    pool = _Pool(_with_space(_SIM_ROWS, "intfloat/e5-base-v2", 768))
     backend = _EmbeddingsSearchBackend(pool)
     hits = backend.search_embeddings(
         "",
@@ -187,15 +200,15 @@ def test_similarity_lane_ranks_by_distance_and_scores_similarity():
 
 
 def test_similarity_lane_sql_uses_cosine_operator_and_literal():
-    pool = _Pool(lambda _sql, _params: _SIM_ROWS)
+    pool = _Pool(_with_space(_SIM_ROWS, "m", 2))
     backend = _EmbeddingsSearchBackend(pool)
     backend.search_embeddings("", project_id="spring8", query_embedding=[1.0, 2.0], model_name="m")
-    sql, params = pool._conn._cur.queries[0]
-    assert "<=> %s::vector" in sql
-    assert "ORDER BY distance ASC" in sql
+    sql, params = _vector_read(pool)
+    assert "(c.ann_vec <=> %s::vector) AS distance" in sql
+    assert "ORDER BY distance ASC, c.node_id LIMIT %s" in sql
     assert params[0] == "[1.0,2.0]"
     assert params[1] == "spring8"
-    assert "e.model_name = %s" in sql and params[2] == "m"
+    assert "e.model_name IN ('m')" in sql and params[-3:] == ("[1.0,2.0]", 100, 20)
 
 
 def test_no_vector_keeps_table_reader_lane():
@@ -218,15 +231,15 @@ def _scope(graph_ids=("g-exp",), defaults=()):
 
 
 def test_a_graph_scope_owns_the_similarity_rows_by_graph():
-    pool = _Pool(lambda _sql, _params: _SIM_ROWS)
+    pool = _Pool(_with_space(_SIM_ROWS, "m", 2))
     backend = _EmbeddingsSearchBackend(pool, graph_scope=_scope(("g-exp", "g-def"), ("spring8",)))
     backend.search_embeddings(
         "", project_id="spring8", limit=5, query_embedding=[1.0, 2.0], model_name="m"
     )
-    sql, params = pool._conn._cur.queries[0]
+    sql, params = _vector_read(pool)
     assert _SCOPED in sql
     assert "n.project_id = %s" not in sql
-    assert params == ("[1.0,2.0]", ["g-exp", "g-def"], ["spring8"], "m", "%/m", 5)
+    assert params == ("[1.0,2.0]", ["g-exp", "g-def"], ["spring8"], "[1.0,2.0]", 100, 5)
 
 
 def test_a_graph_scope_binds_the_table_reader_too():
@@ -240,10 +253,10 @@ def test_a_graph_scope_binds_the_table_reader_too():
 
 def test_an_empty_selection_reads_no_rows_rather_than_the_project():
     """Every named graph unreadable: the lane fails closed, never project-wide."""
-    pool = _Pool(lambda _sql, _params: [])
+    pool = _Pool(_with_space([], "m", 1))
     backend = _EmbeddingsSearchBackend(pool, graph_scope=_scope((), ()))
     backend.search_embeddings("", project_id="spring8", query_embedding=[1.0], model_name="m")
-    sql, params = pool._conn._cur.queries[0]
+    sql, params = _vector_read(pool)
     assert _SCOPED in sql and params[1:3] == ([], [])
 
 
@@ -268,7 +281,7 @@ def test_the_scope_of_a_selection_keeps_legacy_rows_for_default_graphs_only():
 
 
 def test_the_encoder_lane_keeps_its_hits_for_the_sufficiency_verdict():
-    pool = _Pool(lambda _sql, _params: [(*_SIM_ROWS[0], "{}"), (*_SIM_ROWS[1], "{}")])
+    pool = _Pool(_with_space(_SIM_ROWS, "intfloat/e5-base-v2", 2))
 
     def encoder(_query):
         return "intfloat/e5-base-v2", [0.1, 0.2], ""

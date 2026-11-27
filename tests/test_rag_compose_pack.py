@@ -320,8 +320,12 @@ class _Pool:
 
     def __init__(self, top_distance):
         content = '{"kind": "chunk", "artifact_id": "a", "chunk_index": 0, "text": "Alumina note."}'
+        from space_registry_fake import REGISTRY_MARKER, registry_row
+
         self.answers = [
+            (REGISTRY_MARKER, [registry_row("t_e5", "/models/e5-base-v2", 2)]),
             ("unnest(", [(i, 0.30 + 0.004 * (i % 5)) for i in range(30)]),
+            ("SELECT count(*)", [(40, None)]),
             ("<=>", [("node-chunk-g-a-0", content, top_distance, 40)]),
             ("LEFT JOIN", [("node-chunk-g-a-0", "g", content, None, "a.md", None, None)]),
         ]

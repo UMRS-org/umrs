@@ -28,6 +28,7 @@ PROJECT_B = "vis-live-b"
 PROJECTS = (PROJECT_A, PROJECT_B)
 TIERS = ("project", "system", "ambient")
 MODEL = "vis-live-probe-model"
+SPACE_ID = "vis_live_probe"
 
 
 def ci_shape_db_url() -> str | None:
@@ -64,6 +65,20 @@ def _cleanup(conn) -> None:
         cur.execute("DELETE FROM knowledge_node_embeddings WHERE node_id LIKE 'vis-live::%%'")
         cur.execute("DELETE FROM knowledge_nodes WHERE project_id = ANY(%s)", (list(PROJECTS),))
         cur.execute("DELETE FROM catalog_objects WHERE project_id = ANY(%s)", (list(PROJECTS),))
+        cur.execute("DELETE FROM knowledge_embedding_spaces WHERE space_id = %s", (SPACE_ID,))
+    conn.commit()
+
+
+def _register_space(conn) -> None:
+    """The similarity lane ranks registered spaces only (ADR-083 D-1, KN-S6)."""
+    from umrs.knowledge.embedding_spaces import COLUMNS, TABLE, EmbeddingSpace, space_to_row
+
+    space = EmbeddingSpace(space_id=SPACE_ID, model_name=MODEL, dimension=3)
+    with conn.cursor() as cur:
+        cur.execute(
+            f"INSERT INTO {TABLE} ({', '.join(COLUMNS)}) VALUES ({', '.join(['%s'] * len(COLUMNS))})",
+            space_to_row(space),
+        )
     conn.commit()
 
 
@@ -153,6 +168,7 @@ def pool():
     try:
         apply_migrations(conn)  # idempotent: applies only what is pending (0093 included)
         _cleanup(conn)
+        _register_space(conn)
         _seed_nodes(conn)
     finally:
         pg_pool.putconn(conn)

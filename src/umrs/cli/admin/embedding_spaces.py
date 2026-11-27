@@ -13,6 +13,7 @@ command::
     umrs-server admin embedding-space retire SPACE_ID
     umrs-server admin embedding-space activate SPACE_ID
     umrs-server admin embedding-space seed-site [--dry-run]
+    umrs-server admin embedding-space index [--space SPACE_ID ...] [--dry-run]
 
 Handlers call the store and site modules through their module objects
 (``embedding_space_store.list_spaces(...)``,
@@ -28,7 +29,11 @@ import sys
 from collections.abc import Callable, Iterator
 from typing import Any
 
-from umrs.knowledge import embedding_space_site, embedding_space_store
+from umrs.knowledge import (
+    embedding_space_index,
+    embedding_space_site,
+    embedding_space_store,
+)
 from umrs.knowledge.embedding_spaces import (
     COLUMNS,
     SOURCE_ADMIN,
@@ -69,6 +74,45 @@ def registry_conn() -> Iterator[Any]:
         raise
     finally:
         pool.putconn(conn)
+
+
+@contextlib.contextmanager
+def index_conn() -> Iterator[Any]:
+    """One AUTOCOMMIT psycopg2 connection (``CREATE INDEX CONCURRENTLY``
+    cannot run in a transaction block, slice KN-S6). The connection's
+    previous autocommit setting is restored before it goes back to the
+    pool. Raises :class:`RegistryUnavailable` when no database is
+    configured."""
+    from umrs.cli.admin.cascade import cli_db_pool
+
+    pool = cli_db_pool()
+    if pool is None:
+        raise RegistryUnavailable(
+            "no site database configured (DATABASE_URL / DB_HOST, or "
+            "UMRS_ADMIN_CLI_DB=off): the embedding-space registry lives there"
+        )
+    conn = pool.getconn()
+    previous = conn.autocommit
+    try:
+        conn.rollback()  # autocommit cannot change inside a transaction
+        conn.autocommit = True
+        yield conn
+    finally:
+        conn.autocommit = previous
+        pool.putconn(conn)
+
+
+def _run_with_index_conn(operation: Callable[[Any], int]) -> int:
+    """:func:`_run_with_registry`'s error rules on an :func:`index_conn`."""
+    try:
+        with index_conn() as conn:
+            return operation(conn)
+    except RegistryUnavailable as exc:
+        _error(str(exc))
+        return EXIT_NO_DB
+    except EmbeddingSpaceError as exc:
+        _error(str(exc))
+        return EXIT_REFUSED
 
 
 # ── handlers (slice task kn-s5-03) ──────────────────────────────────────────
@@ -243,6 +287,60 @@ def cmd_seed_site(args: argparse.Namespace, _store: Any = None) -> int:
     return _run_with_registry(lambda conn: operation(conn, declared))
 
 
+def cmd_index(args: argparse.Namespace, _store: Any = None) -> int:
+    """``index``: build, rebuild or drop the per-space HNSW indexes (slice
+    KN-S6, task kn-s6-03).
+
+    Return ``_run_with_index_conn(operation)`` where ``operation(conn)``:
+
+    1. ``spaces = embedding_space_store.list_spaces(conn, include_retired=True)``;
+    2. ``states = embedding_space_index.read_index_states(conn, spaces)``;
+    3. ``work = embedding_space_index.plan_index_work(spaces, states,
+       only=args.space or None)``;
+    4. for each line of ``embedding_space_index.coverage_warnings(spaces,
+       embedding_space_index.stored_model_names(conn))`` print
+       ``warning: <line>`` to stderr;
+    5. no work: print ``all embedding-space indexes are current``; return
+       EXIT_OK;
+    6. with ``args.dry_run``: for each item of ``work``, for each of its
+       statements, print ``would run: <statement>``; run nothing; return
+       EXIT_OK;
+    7. else ``embedding_space_index.require_iterative_scan(conn, work)``
+       (an old pgvector refuses a build, KN-S6 review), then
+       ``ran = embedding_space_index.apply_index_work(conn, work)``; print
+       ``ran: <statement>`` for each statement of ``ran``; return EXIT_OK.
+
+    Call the modules through their module objects (as above) so tests can
+    patch them."""
+
+    def operation(conn: Any) -> int:
+        spaces = embedding_space_store.list_spaces(conn, include_retired=True)
+        states = embedding_space_index.read_index_states(conn, spaces)
+        work = embedding_space_index.plan_index_work(
+            spaces, states, only=args.space or None
+        )
+        warnings = embedding_space_index.coverage_warnings(
+            spaces, embedding_space_index.stored_model_names(conn)
+        )
+        for line in warnings:
+            print(f"warning: {line}", file=sys.stderr)
+        if not work:
+            print("all embedding-space indexes are current")
+            return EXIT_OK
+        if args.dry_run:
+            for item in work:
+                for statement in item.statements:
+                    print(f"would run: {statement}")
+            return EXIT_OK
+        embedding_space_index.require_iterative_scan(conn, work)
+        ran = embedding_space_index.apply_index_work(conn, work)
+        for statement in ran:
+            print(f"ran: {statement}")
+        return EXIT_OK
+
+    return _run_with_index_conn(operation)
+
+
 # ── parsers (wired by umrs.cli.admin.main) ──────────────────────────────────
 
 
@@ -290,3 +388,11 @@ def add_embedding_space_parsers(
     )
     seed_p.add_argument("--dry-run", action="store_true")
     seed_p.set_defaults(func=cmd_seed_site)
+    index_p = sub.add_parser(
+        "index", help="Build, rebuild or drop the per-space HNSW indexes"
+    )
+    index_p.add_argument(
+        "--space", action="append", default=[], help="only this space id (repeatable)"
+    )
+    index_p.add_argument("--dry-run", action="store_true")
+    index_p.set_defaults(func=cmd_index)

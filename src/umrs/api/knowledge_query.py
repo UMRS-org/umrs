@@ -456,6 +456,18 @@ def _encode_query(query: str) -> tuple[str, list[float] | None, str]:
         return "", None, f"query encoder unavailable ({type(exc).__name__})"
 
 
+#: The K3 similarity lane's ANN columns (``ann.ann_query``).
+_SIMILARITY_COLUMNS = (
+    ("e.node_id", "node_id"),
+    ("e.model_name", "model_name"),
+    ("e.dimension", "dimension"),
+    ("e.created_at", "created_at"),
+    ("n.label", "label"),
+    ("n.project_id", "project_id"),
+    ("n.content::text", "content"),
+)
+
+
 class _EmbeddingsSearchBackend:
     """``search_api`` EmbeddingsSearchable port over migration-0075 rows.
 
@@ -469,9 +481,9 @@ class _EmbeddingsSearchBackend:
       embedding stays owned by
       ``umrs.api.rag_service.PrefixedSentenceTransformerEmbeddings``
       (R6.1 boundary) — this facade never loads a model; it only ranks
-      vectors. Scale note: exact scan (`<=>`) is fine well past the
-      current corpus size; the typed-shadow-column + HNSW migration is
-      the documented follow-up when rows cross ~100k.
+      vectors. Scale: one partial HNSW per registered space
+      (``hnsw_<space_id>``, ADR-083 D-2, slice KN-S6), over-fetched and
+      re-sorted by exact distance; an exact scan until the index is built.
 
     No mock/fake fallback is ever synthesized: without a query vector the
     lane stays table-reader.
@@ -526,6 +538,7 @@ class _EmbeddingsSearchBackend:
         query_embedding: list[float] | None = None,
         model_name: str | None = None,
     ) -> list[dict[str, Any]]:
+        self.lane_report = None
         if query_embedding:
             return self._similarity_hits(
                 query_embedding,
@@ -545,6 +558,8 @@ class _EmbeddingsSearchBackend:
         hits = self._similarity_hits(
             vector, model_name=model, project_id=project_id, limit=limit
         )
+        if self.lane_report is not None:  # the space refused the read
+            return []
         self.dense_model, self.dense_hits = model, hits
         self.lane_report = {"lane": "similarity", "model": model}
         if not hits:
@@ -588,42 +603,37 @@ class _EmbeddingsSearchBackend:
         project_id: str | None,
         limit: int,
     ) -> list[dict[str, Any]]:
-        """Cosine-distance ANN over 0075 rows using a pre-computed vector.
+        """Cosine ANN over 0075 rows using a pre-computed vector.
 
-        Ranks one embedding space only (ADR-083 D-2): vectors from another
-        model are not comparable, and a same-dimension model would mix
-        silently instead of failing. A space is the model's basename
-        (text_embedder.embedding_space), so the bundled model and a copy staged
-        at another path rank together.
+        Ranks one REGISTERED embedding space only (ADR-083 D-1/D-2, slice
+        KN-S6): the model resolves through the space registry, and the read
+        carries that space's partial-index predicate, so it runs on
+        ``hnsw_<space_id>`` when the index is built, re-sorted by exact
+        distance (``knowledge.retrieval.ann``). An unregistered model or a
+        vector of the wrong dimension is refused: ``lane_report`` names the
+        code and no hit is returned (never a cross-space ranking).
         """
         if not model_name:
             raise ValueError("a query vector needs the model_name of its space")
-        from umrs.knowledge.text_embedder import embedding_space
+        from umrs.knowledge.retrieval import ann
 
-        qv = "[" + ",".join(repr(float(v)) for v in query_embedding) + "]"
-        # Same space = same model name, or the same model staged elsewhere.
-        space = embedding_space(model_name).replace("\\", "\\\\")
-        same_space = "%/" + space.replace("%", "\\%").replace("_", "\\_")
-        gate, gate_params = self._gate(project_id)
-        conn = self._pool.getconn()
         try:
-            with conn:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        "SELECT e.node_id, e.model_name, e.dimension, e.created_at, "
-                        "n.label, n.project_id, (e.embedding <=> %s::vector) AS distance, "
-                        "n.content::text "
-                        "FROM knowledge_node_embeddings e "
-                        "JOIN knowledge_nodes n ON n.node_id = e.node_id "
-                        f"WHERE {gate} "
-                        "AND (e.model_name = %s OR e.model_name LIKE %s) "
-                        "ORDER BY distance ASC LIMIT %s",
-                        (qv, *gate_params, model_name, same_space, limit),
-                    )
-                    rows = cur.fetchall()
-        finally:
-            self._pool.putconn(conn)
-        return [self._hit(row) for row in rows]
+            space = ann.query_space(self._pool, model_name)
+            gate, gate_params = self._gate(project_id)
+            sql, params = ann.ann_query(
+                space,
+                columns=_SIMILARITY_COLUMNS,
+                where=gate,
+                where_params=gate_params,
+                vector=query_embedding,
+                k=limit,
+            )
+        except (LookupError, RuntimeError, ValueError) as exc:
+            self.lane_report = {"lane": "unavailable", "reason": str(exc)}
+            return []
+        rows = ann.fetch(self._pool, sql, params)
+        # (columns..., content, distance) -> _hit's (..., distance, content)
+        return [self._hit((*row[:6], row[7], row[6])) for row in rows]
 
     @staticmethod
     def _hit(row: tuple) -> dict[str, Any]:

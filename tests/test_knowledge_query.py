@@ -8,6 +8,7 @@ import types
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from space_registry_fake import REGISTRY_MARKER, registry_row
 from umrs.api import knowledge_query as kq
 from umrs.api.knowledge_query import router
 from umrs.data_catalog.schema import CatalogObjectMeta
@@ -492,7 +493,7 @@ class TestSufficiencyInTheResponse:
     def test_the_dense_and_lexical_verdict_is_in_the_k3_response(self, client, monkeypatch):
         """Nonsense finds nearest neighbours but no answer: K3 says so, so R4's
         knowledge_insufficient can fire although total_results is not zero."""
-        sim_row = ("n-1", "/models/e5-base-v2", 768, None, "chunk 0 of a", "proj-a", 0.31, "{}")
+        sim_row = ("n-1", "/models/e5-base-v2", 1, None, "chunk 0 of a", "proj-a", "{}", 0.31)
         emb = kq._EmbeddingsSearchBackend(
             _RowsPool([sim_row]), encoder=lambda _q: ("/models/e5-base-v2", [0.1], "")
         )
@@ -524,20 +525,24 @@ class TestSufficiencyInTheResponse:
 
 
 class _RowsPool:
-    """A pool whose every query returns ``rows``."""
+    """A pool whose every query returns ``rows``, except the embedding-space
+    registry read (KN-S6), which holds one 1-d space for the e5 path."""
 
     def __init__(self, rows) -> None:
         self.rows = rows
 
     def getconn(self):
         rows = self.rows
+        registry = [registry_row("t_e5", "/models/e5-base-v2", 1)]
 
         class _Cur:
-            def execute(self, *_a):
-                return None
+            sql = ""
+
+            def execute(self, sql, *_a):
+                self.sql = sql
 
             def fetchall(self):
-                return rows
+                return registry if REGISTRY_MARKER in self.sql else rows
 
             def __enter__(self):
                 return self

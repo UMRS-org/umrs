@@ -36,6 +36,7 @@ from typing import Any
 
 import numpy as np
 import pytest
+from space_registry_fake import ANN_MARKER, REGISTRY_MARKER, filter_names, registry_row
 from tests.s3_ranged import ranged
 from umrs.jobs import knowledge_adapters as ka
 from umrs.knowledge import bundle_export, chunking, embedding_metadata
@@ -380,12 +381,17 @@ class AsyncPool:
 _HYDRATE_MARKER = "AND a.project_id = n.project_id WHERE n.node_id = ANY(%s)"
 
 
+#: The registry row both paths resolve to (KN-S6): one space, OLD_MODEL a
+#: legacy name of it, at this test's dimension.
+_SPACE = registry_row("e5_base_v2", MODEL, DIM, legacy_names=(OLD_MODEL,))
+
+
 class _Cursor:
     """psycopg2's cursor over :class:`Db`: hydrate, the dense lane and the
     backfill."""
 
     def __init__(self, db: Db) -> None:
-        self.db, self.rows, self.rowcount = db, [], 0
+        self.db, self.rows, self.rowcount, self.sql = db, [], 0, ""
 
     def __enter__(self) -> _Cursor:
         return self
@@ -396,6 +402,7 @@ class _Cursor:
     def execute(self, sql: str, params: Sequence[Any] = ()) -> None:
         handler = next((h for marker, h in self._handlers() if marker in sql), None)
         assert handler is not None, f"unexpected SQL: {sql[:160]}"
+        self.sql = sql
         self.rows = handler(list(params))
 
     def _handlers(self) -> list[tuple[str, Any]]:
@@ -404,7 +411,9 @@ class _Cursor:
             (_HYDRATE_MARKER, self._hydrate_rows),
             (expand._SCOPE_SQL, self._scope_rows),
             ("GROUP BY 1, 2", self._chunk_counts),
-            ("count(*) OVER () AS in_scope", self._dense),
+            (REGISTRY_MARKER, lambda _p: [_SPACE]),
+            (ANN_MARKER, self._dense),
+            ("SELECT count(*), max(e.updated_at)", self._count),
             ("/* backfill:counts */", self._backfill_counts),
             ("/* backfill:rows */", self._backfill_rows),
             ("/* backfill:write */", self._backfill_write),
@@ -451,20 +460,30 @@ class _Cursor:
                 counts[key] = counts.get(key, 0) + 1
         return [(g, a, n) for (g, a), n in counts.items() if a in params[1]]
 
-    def _dense(self, params: list[Any]) -> list[tuple]:
-        query, project, model, pattern = np.asarray(json.loads(params[0])), *params[1:4]
-        like = _like(pattern)
-        scored = sorted(
-            (1.0 - float(np.dot(query, v["embedding"])), nid)
+    def _in_space(self, project: str) -> list[tuple[str, Any]]:
+        """Chunk vectors of ``project`` under the read's filtered names."""
+        names = set(filter_names(self.sql))
+        return [
+            (nid, v)
             for (nid, m), v in self.db.vectors.items()
-            if (m == model or like.match(m))
+            if m in names
             and self.db.nodes[nid]["project_id"] == project
             and self.db.nodes[nid]["content"].get("kind") == "chunk"
+        ]
+
+    def _dense(self, params: list[Any]) -> list[tuple]:
+        query, project = np.asarray(json.loads(params[0])), params[1]
+        scored = sorted(
+            (1.0 - float(np.dot(query, v["embedding"])), nid)
+            for nid, v in self._in_space(project)
         )
         return [
-            (nid, json.dumps(self.db.nodes[nid]["content"]), d, len(scored))
+            (nid, json.dumps(self.db.nodes[nid]["content"]), d)
             for d, nid in scored[: int(params[-1])]
         ]
+
+    def _count(self, params: list[Any]) -> list[tuple]:
+        return [(len(self._in_space(params[0])), None)]
 
     def _pending(self, project: str) -> list[tuple[str, dict[str, Any]]]:
         return [

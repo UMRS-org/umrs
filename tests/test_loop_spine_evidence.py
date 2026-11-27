@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
+from space_registry_fake import REGISTRY_MARKER, registry_row
 from umrs.api import rag_retrieve, rag_spine
 from umrs.knowledge.loop import AutonomousResearchLoop
 from umrs.knowledge.retrieval import hydrate as hydrate_mod
@@ -307,7 +308,10 @@ def test_search_takes_the_semantic_lane(monkeypatch):
     pool = _ClosingPool(
         [
             ("information_schema", []),
-            ("<=>", [("node-chunk-art-1-0", json.dumps(note), 0.1, 1)]),
+            # KN-S6: the dense lane resolves its space, counts, then ANN-reads.
+            (REGISTRY_MARKER, [registry_row("e5", "e5-base-v2", 1)]),
+            ("SELECT count(*)", [(1, None)]),
+            ("<=>", [("node-chunk-art-1-0", json.dumps(note), 0.1)]),
             (
                 "LEFT JOIN",
                 [
