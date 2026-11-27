@@ -14,7 +14,9 @@ In the docstrings below, examples are Python literals.
 from __future__ import annotations
 
 #: The columns a subtree condition may name (never caller text in SQL).
-SCOPE_COLUMNS = frozenset({"scope_path", "a.scope_path", "n.scope_path", "e.scope_path"})
+SCOPE_COLUMNS = frozenset(
+    {"scope_path", "a.scope_path", "n.scope_path", "e.scope_path"}
+)
 
 
 def subtree_like_pattern(path: str) -> str:
@@ -31,7 +33,10 @@ def subtree_like_pattern(path: str) -> str:
     scope's subtree is every row, never a pattern). ``path`` is otherwise
     used as given (no strip, no validation beyond emptiness).
     """
-    raise NotImplementedError("s-w3a-03")
+    if not path.strip():
+        raise ValueError("path must not be empty")
+    escaped = path.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return escaped + "/%"
 
 
 def subtree_condition(column: str, first_param: int) -> str:
@@ -45,7 +50,16 @@ def subtree_condition(column: str, first_param: int) -> str:
     "(scope_path = $3 OR scope_path LIKE $4 ESCAPE '\\')"``, i.e. the
     returned SQL holds exactly one backslash between the two quotes.
     """
-    raise NotImplementedError("s-w3a-03")
+    if column not in SCOPE_COLUMNS:
+        raise ValueError(f"unsupported scope column: {column}")
+    if (
+        isinstance(first_param, bool)
+        or not isinstance(first_param, int)
+        or first_param < 1
+    ):
+        raise ValueError("first_param must be an int of at least 1")
+    n = first_param
+    return f"({column} = ${n} OR {column} LIKE ${n + 1} ESCAPE '\\')"
 
 
 __all__ = ["SCOPE_COLUMNS", "subtree_condition", "subtree_like_pattern"]

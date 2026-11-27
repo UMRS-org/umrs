@@ -39,7 +39,10 @@ def updated_count(status: Any) -> int:
     non-negative integer such as ``"UPDATE"`` or ``"UPDATE x"``) gives 0.
     Surrounding whitespace is ignored.
     """
-    raise NotImplementedError("s-w3a-02")
+    words = str(status or "").strip().split()
+    if not words or not words[-1].isdigit():
+        return 0
+    return int(words[-1])
 
 
 async def tag_graph_rows(
@@ -62,7 +65,20 @@ async def tag_graph_rows(
     ``scope_path`` raises ``ValueError`` before any statement (the root
     scope is never written as a tag). Errors from ``db`` propagate.
     """
-    raise NotImplementedError("s-w3a-02")
+    if not scope_path:
+        raise ValueError("scope_path must not be empty")
+
+    nodes_tagged = 0
+    edges_tagged = 0
+    if node_ids:
+        nodes_tagged = updated_count(
+            await db.execute(TAG_NODES_SQL, project_id, list(node_ids), scope_path)
+        )
+    if edge_ids:
+        edges_tagged = updated_count(
+            await db.execute(TAG_EDGES_SQL, project_id, list(edge_ids), scope_path)
+        )
+    return nodes_tagged, edges_tagged
 
 
 __all__ = ["TAG_EDGES_SQL", "TAG_NODES_SQL", "tag_graph_rows", "updated_count"]

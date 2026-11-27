@@ -106,7 +106,11 @@ def scope_lineage(path: str) -> tuple[str, ...]:
     ``scope_path`` is in ``scope_lineage(P)`` (plus established and root
     rows; S-W3b).
     """
-    raise NotImplementedError("s-w3a-01")
+    cleaned = clean_scope_path(path)
+    if cleaned is None:
+        return ()
+    segments = cleaned.split("/")
+    return tuple("/".join(segments[:index]) for index in range(1, len(segments) + 1))
 
 
 def parent_scope(path: str) -> str | None:
@@ -118,7 +122,11 @@ def parent_scope(path: str) -> str | None:
     (the root has no parent). Merging a child re-tags its rows to this
     (S-W3c).
     """
-    raise NotImplementedError("s-w3a-01")
+    cleaned = clean_scope_path(path)
+    if cleaned is None:
+        raise ScopeOverlayError("the root scope has no parent")
+    parent = cleaned.rpartition("/")[0]
+    return parent or None
 
 
 __all__ = [
