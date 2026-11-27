@@ -6044,7 +6044,7 @@ def _artifact_ids(deduped: list[dict[str, Any]]) -> list[str]:
 async def _write_root_provenance(
     store: Any, deduped: list[dict[str, Any]], where: _ProvenanceWhere
 ) -> None:
-    """The pre-0150 provenance writes: the job node, each artifact's node,
+    """The pre-0151 provenance writes: the job node, each artifact's node,
     then each produced_by edge, one statement each; an edge that fails is
     logged by name and the rest still go in."""
     await store.upsert_node(_prod_job_node(where))

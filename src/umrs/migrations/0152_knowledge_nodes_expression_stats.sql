@@ -1,4 +1,4 @@
--- 0150 (slice KN-S6): planner statistics for the JSON keys the knowledge
+-- 0152 (slice KN-S6): planner statistics for the JSON keys the knowledge
 -- read lanes filter on (ADR-083 D-2).
 --
 -- The dense lane's ANN read joins knowledge_nodes and filters

@@ -1,7 +1,7 @@
 """The scope overlay's write side (ADR-108 D-4, slice S-W3a).
 
 A write under a work-level scope token lands proposed and tagged with the
-level's path in the ``scope_path`` column (migration 0150); a root write is
+level's path in the ``scope_path`` column (migration 0151); a root write is
 unchanged. Acceptance: scoped ingest stores the column, root ingest is
 unchanged, the migration is idempotent.
 
@@ -39,7 +39,7 @@ _MIGRATION = (
     / "src"
     / "umrs"
     / "migrations"
-    / "0150_knowledge_scope_path.sql"
+    / "0151_knowledge_scope_path.sql"
 )
 
 
@@ -114,7 +114,7 @@ def test_a_malformed_job_path_fails_the_ingest() -> None:
 # ── the artifact insert ─────────────────────────────────────────────────────
 
 
-def test_the_root_insert_statement_is_the_pre_0150_one() -> None:
+def test_the_root_insert_statement_is_the_pre_0151_one() -> None:
     sql, extra = store_mod._artifact_insert(None)
     assert (sql, extra) == (store_mod._INSERT_ARTIFACT_SQL, ())
     assert "scope_path" not in sql and "tier" not in sql
@@ -551,7 +551,7 @@ needs_pg = pytest.mark.skipif(
     not _pg_url(), reason="needs UMRS_TEST_DB_URL or the CI job's POSTGRES_*"
 )
 
-# The pre-0150 shape of the three tables, as far as 0150 and the store's
+# The pre-0151 shape of the three tables, as far as 0151 and the store's
 # artifact insert read it.
 _BASE_TABLES = """
 CREATE TABLE knowledge_artifacts (
@@ -571,7 +571,7 @@ CREATE TABLE knowledge_edges (
 
 @pytest.fixture()
 def scratch() -> Any:
-    """A scratch schema with the base tables and 0150 applied twice."""
+    """A scratch schema with the base tables and 0151 applied twice."""
     import psycopg2
 
     schema = f"sw3a_{uuid.uuid4().hex[:10]}"
@@ -603,7 +603,7 @@ def _columns(conn: Any, schema: str, table: str) -> dict[str, tuple[str, str | N
 
 
 @needs_pg
-def test_0150_adds_the_columns_idempotently(scratch: Any) -> None:
+def test_0151_adds_the_columns_idempotently(scratch: Any) -> None:
     conn, schema = scratch
     arts = _columns(conn, schema, "knowledge_artifacts")
     assert arts["scope_path"] == ("YES", None)
@@ -617,7 +617,7 @@ def test_0150_adds_the_columns_idempotently(scratch: Any) -> None:
 
 
 @needs_pg
-def test_0150_refuses_an_unknown_tier_and_an_empty_tag(scratch: Any) -> None:
+def test_0151_refuses_an_unknown_tier_and_an_empty_tag(scratch: Any) -> None:
     import psycopg2
 
     conn, _schema = scratch

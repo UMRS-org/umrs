@@ -1,4 +1,4 @@
--- 0150: the scope overlay's write side (ADR-108 D-4, slice S-W3a).
+-- 0151: the scope overlay's write side (ADR-108 D-4, slice S-W3a).
 --
 -- A write made under a work level's scope token lands proposed and tagged
 -- with the level's path (``s-ab12/loop-7/iter-3``). The tag is a plain TEXT
@@ -12,7 +12,7 @@
 --
 -- knowledge_artifacts gets the pair: ``tier`` (its ``status`` column is the
 -- lifecycle, active/deleted, and stays so) and ``scope_path``. Rows written
--- before 0150 are 'established': they came from the vetted chain or a root
+-- before 0151 are 'established': they came from the vetted chain or a root
 -- request. ``metadata.scope_path`` stamped by W2b is not copied into the
 -- column: it is JSON a raw spec could also have set, and the column is the
 -- server's record only (nothing issued scope tokens before W4).

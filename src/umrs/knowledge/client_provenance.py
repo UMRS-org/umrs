@@ -50,7 +50,7 @@ def attach_scope_path(descs: list[dict[str, Any]], scope_path: Any) -> None:
 
     S-W3a: the checked path also goes on the descriptor itself
     (``desc["scope_path"]``), which ``_store_one_artifact`` writes to the
-    0150 column with ``tier='proposed'``; the metadata copy stays for
+    0151 column with ``tier='proposed'``; the metadata copy stays for
     display. The root scope removes any descriptor key, so only this call
     decides a row's scope. A malformed path raises
     ``scope_overlay.ScopeOverlayError`` (never an untagged root write).

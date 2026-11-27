@@ -224,8 +224,8 @@ def test_the_fence_inventory_covers_every_read_lane_module():
 
 
 def test_the_expression_statistics_migration_exists():
-    """Without them the planner never takes the index (see 0150)."""
-    sql = (SRC / "migrations" / "0150_knowledge_nodes_expression_stats.sql").read_text()
+    """Without them the planner never takes the index (see 0152)."""
+    sql = (SRC / "migrations" / "0152_knowledge_nodes_expression_stats.sql").read_text()
     assert "ON (content->>'kind') FROM knowledge_nodes" in sql
     assert "ON (content->>'origin') FROM knowledge_nodes" in sql
 

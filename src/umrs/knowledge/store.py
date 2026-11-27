@@ -427,11 +427,11 @@ _INSERT_ARTIFACT_SQL = """INSERT INTO knowledge_artifacts
    SET updated_at = $10, status = 'active'
    WHERE knowledge_artifacts.project_id = EXCLUDED.project_id"""
 
-# ADR-108 D-4 (S-W3a, migration 0150): a write under a work-level scope lands
+# ADR-108 D-4 (S-W3a, migration 0151): a write under a work-level scope lands
 # proposed and tagged in the same statement, so no committed row is ever
 # scoped-but-established. A conflict on the id keeps the stored row's tier
 # and tag, as the root statement keeps its status. Root writes use the
-# statement above unchanged (they need no 0150 column).
+# statement above unchanged (they need no 0151 column).
 _INSERT_SCOPED_ARTIFACT_SQL = """INSERT INTO knowledge_artifacts
    (artifact_id, content_hash, kind, project_id, source_ref,
     size_bytes, mime_type, status, metadata, created_at, updated_at,
@@ -510,7 +510,7 @@ class KnowledgeStore:
 
         ``scope_path`` (ADR-108 D-4, checked by the caller): a new row lands
         ``tier='proposed'`` with that tag in the same statement; None (the
-        root scope) writes exactly the pre-0150 row.
+        root scope) writes exactly the pre-0151 row.
 
         That is ``artifact_id`` itself when it was inserted or reactivated,
         or the stored id when the project already holds the same bytes

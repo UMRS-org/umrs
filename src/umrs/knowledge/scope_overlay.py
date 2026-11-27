@@ -3,9 +3,9 @@
 A work level (loop, iteration, teamup member) acts under a signed scope
 token whose path names it, e.g. ``s-ab12/loop-7/iter-3``. What it writes
 lands **proposed** and **tagged** with that path, in the ``scope_path``
-column migration 0150 adds to ``knowledge_artifacts``, ``knowledge_nodes``
+column migration 0151 adds to ``knowledge_artifacts``, ``knowledge_nodes``
 and ``knowledge_edges``. ``NULL`` is the root scope: a root write is
-exactly as before 0150.
+exactly as before 0151.
 
 Where the path comes from, and only from there:
 
