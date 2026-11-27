@@ -761,6 +761,32 @@ class TestRail:
         )
         assert empty.json()["front"] is None
 
+    def test_rail_queue_claim_leaves_the_turn_queued(self, rail):
+        """ADR-057 D-8: the claimed turn stays queued until its ack."""
+        base = "/umrs/companion/sessions/sess-1/rail/queue"
+        first = rail.client.post(f"{base}/claim", headers=rail.rail_headers).json()["front"]
+        assert (first["content"], first["attempts"]) == ("hello remote", 1)
+        assert _venue_queue(rail)["chat_queue"][0]["claim_id"] == first["claim_id"]
+        again = rail.client.post(f"{base}/claim", headers=rail.rail_headers).json()["front"]
+        assert (again["id"], again["attempts"]) == (first["id"], 2)
+
+    def test_rail_queue_ack_removes_the_claimed_turn(self, rail):
+        base = "/umrs/companion/sessions/sess-1/rail/queue"
+        again = rail.client.post(f"{base}/claim", headers=rail.rail_headers).json()["front"]
+        ack = {"queue_id": again["id"], "claim_id": again["claim_id"]}
+        r = rail.client.post(f"{base}/ack", headers=rail.rail_headers, json=ack)
+        assert r.status_code == 200 and r.json()["outcome"] == "acked"
+        assert _venue_queue(rail)["chat_queue"] == []
+        repeat = rail.client.post(f"{base}/ack", headers=rail.rail_headers, json=ack)
+        assert repeat.json() == {"applied": False, "outcome": "absent", "queue": []}
+
+    def test_rail_queue_claim_and_ack_need_the_lease(self, rail):
+        base = "/umrs/companion/sessions/sess-1/rail/queue"
+        assert rail.client.post(f"{base}/claim", headers=H).status_code == 401
+        ack = {"queue_id": "q-1", "claim_id": "c-1"}
+        assert rail.client.post(f"{base}/ack", headers=H, json=ack).status_code == 401
+        assert len(_venue_queue(rail)["chat_queue"]) == 1
+
     def test_rail_heartbeat_renews_and_records_runtime(self, rail):
         lease_before = next(iter(rail.broker.list_leases(scope="inference")))
         expires_before = lease_before.expires_at
