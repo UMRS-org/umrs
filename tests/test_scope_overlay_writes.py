@@ -282,6 +282,92 @@ def test_a_client_built_spec_naming_scope_path_is_refused() -> None:
     assert client_spec_refusal({"sources": []}) is None
 
 
+# ── a scoped run's provenance rows (review of S-W3a, 2026-11-27) ───────────
+# ``enqueue_knowledge_ingest`` writes the run's artifact rows
+# (``_store_artifact_provenance``) before the ingest job runs, and its
+# produced_by graph rows (``_create_produced_by_edges``) beside it. Both
+# wrote root rows: the ingest then deduped onto the root artifact, so a
+# scoped run's outputs landed established and untagged.
+
+
+class _ProvenanceStore(_GraphStore):
+    def __init__(self) -> None:
+        super().__init__()
+        self.artifacts: list[dict[str, Any]] = []
+        self.rows: list[Any] = []
+
+    async def insert_artifact(self, **kwargs: Any) -> str:
+        self.artifacts.append(kwargs)
+        return str(kwargs["artifact_id"])
+
+    async def upsert_node(self, node: Any, conn: Any = None) -> None:
+        self.rows.append(node)
+        await super().upsert_node(node, conn)
+
+    async def upsert_edge(self, edge: Any, conn: Any = None) -> None:
+        self.rows.append(edge)
+        await super().upsert_edge(edge, conn)
+
+
+def _provenance_env(monkeypatch: pytest.MonkeyPatch) -> _ProvenanceStore:
+    fake = _ProvenanceStore()
+
+    @contextlib.asynccontextmanager
+    async def _pool() -> Any:
+        yield object()
+
+    async def _no_contribution(*_a: Any) -> None:
+        return None
+
+    monkeypatch.setattr(ka, "_resolve_knowledge_dsn", lambda: "postgresql://scratch")
+    monkeypatch.setattr(ka, "_open_pool", _pool)
+    monkeypatch.setattr(ka, "_record_workflow_contribution", _no_contribution)
+    monkeypatch.setattr(store_mod, "KnowledgeStore", lambda _pool: fake)
+    return fake
+
+
+_RUN_OUTPUT = [{"artifact_id": "a1", "content_hash": "h1", "kind": "document"}]
+_ATTEMPT = SimpleNamespace(attempt_id="t")
+
+
+@pytest.mark.parametrize(("spec", "want"), [({"scope_path": "s-1"}, "s-1"), ({}, None)])
+def test_a_scoped_run_provenance_artifact_row_carries_the_scope(
+    monkeypatch: pytest.MonkeyPatch, spec: dict[str, Any], want: str | None
+) -> None:
+    fake = _provenance_env(monkeypatch)
+    ka._store_artifact_provenance(_RUN_OUTPUT, "p", _job(spec), _ATTEMPT, "wf", "st")
+    assert fake.artifacts[0].get("scope_path") == want
+
+
+def test_a_scoped_run_produced_by_rows_land_proposed_and_tagged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = _provenance_env(monkeypatch)
+    tagged: list[tuple[Any, ...]] = []
+
+    async def _tag(db: Any, *args: Any) -> tuple[int, int]:
+        assert db is fake.conn and db.in_tx, "tags must join the write's transaction"
+        tagged.append(args)
+        return 2, 1
+
+    monkeypatch.setattr(tag, "tag_graph_rows", _tag)
+    job = _job({"scope_path": "s-1/loop-2"})
+    ka._create_produced_by_edges(_RUN_OUTPUT, "p", "u", job, _ATTEMPT, "wf", "st")
+    assert {row.status for row in fake.rows} == {"proposed"}
+    assert all(conn is fake.conn for _id, conn in fake.writes)
+    assert tagged == [
+        ("p", ["prod-job-j", "a1"], ["edge-a1-produced_by-j"], "s-1/loop-2")
+    ]
+
+
+def test_a_root_run_produced_by_rows_are_unchanged(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = _provenance_env(monkeypatch)
+    ka._create_produced_by_edges(_RUN_OUTPUT, "p", "u", _job({}), _ATTEMPT, "wf", "st")
+    assert [w[0] for w in fake.writes] == ["prod-job-j", "a1", "edge-a1-produced_by-j"]
+    assert {row.status for row in fake.rows} == {"established"}
+    assert all(conn is None for _id, conn in fake.writes)
+
+
 # ── task s-w3a-01: scope_lineage, parent_scope ──────────────────────────────
 
 
