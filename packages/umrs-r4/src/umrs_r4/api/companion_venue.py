@@ -12,7 +12,9 @@ Worker rail (lease-token principal — see ``_rail_identity``):
 
     GET  /umrs/companion/sessions/{sid}/rail/snapshot
     POST /umrs/companion/sessions/{sid}/rail/snapshot
-    POST /umrs/companion/sessions/{sid}/rail/queue/pop
+    POST /umrs/companion/sessions/{sid}/rail/queue/claim  (ADR-057 D-8)
+    POST /umrs/companion/sessions/{sid}/rail/queue/ack
+    POST /umrs/companion/sessions/{sid}/rail/queue/pop    (legacy alias)
     POST /umrs/companion/sessions/{sid}/rail/heartbeat
     POST /umrs/companion/sessions/{sid}/rail/approvals
     GET  /umrs/companion/sessions/{sid}/rail/approvals/{approval_id}
@@ -43,8 +45,10 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 from umrs.api.session_policy_errors import policy_typed  # re-export (U3 S1 item 5)
 from umrs.api.typed_errors import PlatformError, raise_typed
+from umrs.hosts.identity import HOST_TOKEN_HEADER
 from umrs.session_policy import PolicyError
 
+from umrs_r4.api._companion_queue_claim import QueueAckBody
 from umrs_r4.api._companion_session_bus import (
     SessionBusBindBody,
     SessionBusInboxBody,
@@ -62,6 +66,7 @@ from umrs_r4.api._rail_identity import (
     RailPrincipal,
     attest,
     bearer_token,
+    rail_host_keys,
     resolve_rail_principal,
     revoke_attestation,
 )
@@ -132,6 +137,8 @@ def build_venue_service(pool: Any) -> FrontendVenueService:
 
     config = FrontendVenueConfig.from_env()
     broker = get_broker()
+    site = _site_name()
+    hosts, load = _host_sources(pool, site)
     return FrontendVenueService(
         config=config,
         broker=broker,
@@ -139,11 +146,31 @@ def build_venue_service(pool: Any) -> FrontendVenueService:
         provisioner=FrontendPodmanProvisioner(broker, session_root=config.session_root),
         pool=pool,
         job_store=get_optional_job_store(),
-        site_name=_site_name(),
+        site_name=site,
         quota_check=_quota_check(pool),
         start_lock=_start_lock(pool),
         policy_store=PolicyRuleStore(pool),
+        host_registry=hosts,
+        host_load=load,
     )
+
+
+def _host_sources(pool: Any, site: str) -> tuple[Any, Any]:
+    """ADR-098 D-9 (SH-H2): the site's Postgres hosts registry and its live
+    sessions per host; ``(None, None)`` without a pool (the service then
+    places on its own inline host alone). With the registry switched off
+    (``UMRS_HOSTS_ENABLED=false``) the inline host never registers, so the
+    service places on its own inline host too (review SH-H2: it read the
+    empty table and refused every start ``no_host``)."""
+    if pool is None:
+        return None, None
+    from umrs.hosts import HostRegistry
+    from umrs.hosts.janitor import hosts_enabled
+
+    from umrs_r4.quotas.host_load import host_load
+
+    registry = HostRegistry(pool, venue=site) if hosts_enabled() else None
+    return registry, lambda: host_load(pool, site)
 
 
 def _typed(exc: VenueError) -> None:
@@ -196,32 +223,36 @@ class RailApprovalBody(BaseModel):
 # ── owner routes ───────────────────────────────────────────────────────────
 
 
-def _refuse_cpu_venue_on_frontend_rail(
-    request: Request, uid: str, session_id: str
-) -> None:
-    """D-48 (2026-09-22): sessions whose registry venue is cpu:<host> may
-    not start on the frontend rail — the cpu worker rail is the ROADMAP
-    3.2 leg; fail honest, never a silent frontend placement."""
+def _session_pin(request: Request, uid: str, session_id: str) -> str:
+    """The host a session's registry venue ``cpu:<host>`` pins, else "".
+
+    ADR-098 D-9 (SH-H2, 2026-11-27; was a 400 "frontend rail" refusal since
+    D-48 2026-09-22): placement runs the session on that host or refuses it
+    by name (``companionvenue.host_unavailable``), never on the front. An
+    unreadable venue refuses the start (503) instead of dropping the pin."""
+    from umrs.shared.venue_placement import PlacementError, pinned_host
+
     from umrs_r4.api.companion_sessions import snapshot_detail_row
 
     pool = getattr(request.app.state, "umrs_db_pool", None)
     if pool is None:
-        return
+        return ""
     conn = pool.getconn()
     try:
         row = snapshot_detail_row(conn, uid, session_id)
-    except Exception:  # noqa: BLE001 — venue lookup must not block a start
-        return
-    finally:
-        pool.putconn(conn)
-    if row and str(row.get("venue") or "").startswith("cpu:"):
+    except Exception as exc:  # noqa: BLE001 — fail closed: a pin is never lost
         raise_typed(
             PlatformError.companionvenue(
-                "bad_request",
-                f"session venue {row['venue']!r} may not start on the frontend rail "
-                "(cpu worker rail is the ROADMAP 3.2 leg)",
-            )
+                "unavailable", f"session venue unreadable: {type(exc).__name__}"
+            ),
+            cause=exc,
         )
+    finally:
+        pool.putconn(conn)
+    try:
+        return pinned_host(str((row or {}).get("venue") or ""))
+    except PlacementError as exc:
+        raise_typed(PlatformError.companionvenue("bad_request", str(exc)), cause=exc)
 
 
 def _checked_start_project(request: Request, requested: str) -> str:
@@ -252,7 +283,7 @@ async def start_venue(
     """
     uid = _uid(request)
     _pool(request)
-    _refuse_cpu_venue_on_frontend_rail(request, uid, session_id)
+    pin = _session_pin(request, uid, session_id)
     project = _checked_start_project(request, body.project)
     service = get_venue_service(request)
     try:
@@ -265,6 +296,7 @@ async def start_venue(
             web_policy=body.web_policy,
             web_allow_domains=body.web_allow_domains,
             project=project,
+            pin=pin,
         )
     except VenueError as exc:
         _typed(exc)
@@ -379,7 +411,8 @@ async def resume_venue(session_id: str, request: Request) -> dict[str, Any]:
 
 
 def rail_principal(request: Request, session_id: str) -> RailPrincipal:
-    """FastAPI dependency: lease-token principal or a named 401."""
+    """FastAPI dependency: host token (agent hosts), then the lease-token
+    principal; a named 401, or 403 ``rail.host_mismatch`` (ADR-098 D-6)."""
     service = get_venue_service(request)
     client_ip = request.client.host if request.client else ""
     try:
@@ -389,9 +422,17 @@ def rail_principal(request: Request, session_id: str) -> RailPrincipal:
             client_ip=client_ip,
             broker=service.broker,
             ip_check=service.config.rail_ip_check,
+            headers=request.headers,
+            host_keys=rail_host_keys(request.app.state),
         )
     except RailAuthError as exc:
-        raise_typed(PlatformError.companionvenue("unauthorized", exc.reason), cause=exc)
+        raise_typed(_rail_refusal(exc), cause=exc)
+
+
+def _rail_refusal(exc: RailAuthError) -> PlatformError:
+    if exc.host_mismatch:
+        return PlatformError.rail("host_mismatch", "lease is bound to another host")
+    return PlatformError.companionvenue("unauthorized", exc.reason)
 
 
 @router.get("/{session_id}/rail/snapshot", response_model=dict[str, Any])
@@ -496,6 +537,45 @@ async def rail_append_subagent_event(
     return result
 
 
+@router.post("/{session_id}/rail/queue/claim", response_model=dict[str, Any])
+async def rail_queue_claim(
+    session_id: str,
+    request: Request,
+    principal: RailPrincipal = Depends(rail_principal),
+) -> dict[str, Any]:
+    """Claim the next queued turn; it stays queued until acked (ADR-057 D-8).
+    # auth: lease-token
+    """
+    from umrs_r4.api._companion_queue_claim import worker_claim_row
+
+    pool = _pool(request)
+    conn = pool.getconn()
+    try:
+        return worker_claim_row(conn, principal.owner, session_id)
+    finally:
+        pool.putconn(conn)
+
+
+@router.post("/{session_id}/rail/queue/ack", response_model=dict[str, Any])
+async def rail_queue_ack(
+    session_id: str,
+    body: QueueAckBody,
+    request: Request,
+    principal: RailPrincipal = Depends(rail_principal),
+) -> dict[str, Any]:
+    """Remove a claimed turn after its reply is in the journal (ADR-057 D-8).
+    # auth: lease-token
+    """
+    from umrs_r4.api._companion_queue_claim import worker_ack_row
+
+    pool = _pool(request)
+    conn = pool.getconn()
+    try:
+        return worker_ack_row(conn, principal.owner, session_id, body)
+    finally:
+        pool.putconn(conn)
+
+
 @router.post("/{session_id}/rail/queue/pop", response_model=dict[str, Any])
 async def rail_queue_pop(
     session_id: str,
@@ -503,6 +583,9 @@ async def rail_queue_pop(
     principal: RailPrincipal = Depends(rail_principal),
 ) -> dict[str, Any]:
     """Pop the next queued turn (F9 owner-scope queue) for the worker.
+
+    Legacy alias of claim + ack in one step (ADR-057 D-8), kept for workers
+    that predate ``claim``: a worker that dies after the pop loses the turn.
     # auth: lease-token
     """
     from umrs_r4.api._companion_session_bus import worker_pop_row
@@ -664,6 +747,7 @@ _RAIL_GW_DROP_HEADERS = frozenset(
         "x-verified-project-memberships",
         "x-api-key",
         RAIL_ATTESTATION_HEADER,
+        HOST_TOKEN_HEADER,
     }
 )
 # ADR-092 slice 8: a plan-run worker reaches the traces family for its own

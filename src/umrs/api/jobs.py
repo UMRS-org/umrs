@@ -3,7 +3,8 @@ Job REST API (U-731 ~ U-735).
 
 Provides:
 - POST /umrs/jobs - Submit a new job
-- GET /umrs/jobs - List jobs with filters
+- GET /umrs/jobs - List jobs with filters; ``fields=`` projection, an
+  opaque ``cursor``, ``summary=true`` aggregates (ADR-105 D-6, S6a)
 - GET /umrs/jobs/{job_id} - Get job details with attempts
 - POST /umrs/jobs/{job_id}/cancel - Cancel a job
 - POST /umrs/jobs/{job_id}/retry - Force retry a job
@@ -14,9 +15,11 @@ Provides:
 import asyncio
 import logging
 import os
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
+from functools import partial
+from typing import Any, NoReturn
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -39,6 +42,13 @@ from ..jobs.models import (
     JobType,
     RestartPolicy,
 )
+from ..jobs.read_query import (
+    JobKeysetPosition,
+    JobReadFilters,
+    position_from_fields,
+    position_to_fields,
+)
+from ..jobs.read_summary import fold_summary
 from ..jobs.store import (
     DuplicateJobError,
     InvalidTransitionError,
@@ -46,6 +56,9 @@ from ..jobs.store import (
     JobStore,
     cross_site_venue_refusal,
 )
+from .read_cursor import decode_cursor, encode_cursor, scope_key
+from .read_fields import FieldsError, parse_fields, project
+from .read_shaping_models import ReadSummary
 from .request_headers import session_id_header
 from .typed_errors import PlatformError, raise_typed
 
@@ -241,6 +254,25 @@ def _enforce_spec_resources(
     for target_type, target_spec in _spec_targets(job_type, spec, fan_out_jobs):
         refusal = spec_resource_refusal(target_type, target_spec, user_id, is_admin)
         _deny_unless(refusal is None, refusal or "")
+
+
+def _enforce_spec_shape(
+    job_type: "JobType",
+    spec: dict[str, Any],
+    fan_out_jobs: list[dict[str, Any]] | None,
+) -> None:
+    """400 for an ``object_verify`` spec (parent or fan-out child) its lane
+    would refuse anyway: refused at submit, not after a stored job's
+    retries (review of MB-S2c, 2026-11-27)."""
+    from ..jobs.object_verify import validate_spec
+
+    for target_type, target_spec in _spec_targets(job_type, spec, fan_out_jobs):
+        if target_type != JobType.OBJECT_VERIFY:
+            continue
+        try:
+            validate_spec(target_spec if isinstance(target_spec, dict) else {})
+        except ValueError as exc:
+            raise_typed(PlatformError.jobs("bad_request", str(exc)), cause=exc)
 
 
 def _enforce_spec_project(
@@ -522,12 +554,26 @@ class JobResponse(BaseModel):
 
 
 class JobListResponse(BaseModel):
-    """Response for job listing."""
+    """Response for job listing.
+
+    ADR-105 D-6 (S6a) read shaping, additive: ``items`` carries the
+    ``fields=`` projection (``jobs`` is then empty), ``next_cursor`` the
+    position after this page, ``summary`` the ``summary=true`` aggregates
+    (``jobs`` empty, ``total`` = every matching job).
+    """
 
     jobs: list[JobResponse]
     total: int
     limit: int
     offset: int
+    items: list[dict[str, Any]] | None = Field(
+        default=None,
+        description="With fields=: the projected rows (job_id plus the asked fields)",
+    )
+    next_cursor: str | None = Field(
+        default=None, description="Pass as cursor= for the next page; null on the last page"
+    )
+    summary: ReadSummary | None = Field(default=None, description="Present with summary=true")
 
 
 class JobEvent(BaseModel):
@@ -739,6 +785,7 @@ async def create_job(
             x_verified_hmac,
         )
         _enforce_job_scope_policy(job_type, spec, user_id, project_id, is_admin)
+        _enforce_spec_shape(job_type, spec, request.fan_out_jobs)
         _enforce_spec_resources(job_type, spec, user_id, is_admin, request.fan_out_jobs)
         _enforce_spec_project(job_type, spec, project_id, request.fan_out_jobs)
         _enforce_endpoint_host_paths(
@@ -1034,12 +1081,166 @@ def _parse_job_type_filter(job_type: str | None) -> JobType | None:
         raise_typed(PlatformError.jobs("bad_request", f"Invalid job_type: {job_type}"))
 
 
+#: ``fields=`` names on ``job_list`` (every ``JobResponse`` key but the
+#: detail-only ``attempts``); ``job_id`` is always kept.
+JOB_LIST_FIELDS = frozenset(JobResponse.model_fields) - {"attempts"}
+_JOB_LIST_KEY_FIELDS = ("job_id",)
+
+
+def _job_list_filters(
+    caller: CallerIdentity,
+    project_id: str | None,
+    parsed_status: JobStatus | None,
+    parsed_type: JobType | None,
+) -> JobReadFilters:
+    """The effective filters: the scope comes from the verified caller.
+
+    project_id defaults to the caller's project when not explicitly given,
+    so that callers who accidentally pass an admin flag (or are behind a
+    misconfigured proxy) never see jobs from unrelated projects. The
+    gateway sends "caller_project_id" as a query param, not "project_id",
+    so an admin caller would otherwise see ALL jobs across ALL projects.
+    Non-admin callers cannot override project_id and see only their own
+    jobs: the owner filter goes into the query (applied after LIMIT it
+    paged over the whole project, so colleagues' newer jobs hid the
+    caller's own; 2026-10-21: limit=3 -> 0 of alice's 2 jobs).
+    """
+    if project_id is None or not caller.is_admin:
+        project_id = caller.project_id
+    return JobReadFilters(
+        project_id=project_id,
+        user_id=None if caller.is_admin else caller.user_id,
+        status=parsed_status.value if parsed_status else None,
+        job_type=parsed_type.value if parsed_type else None,
+    )
+
+
+def _job_list_scope(caller: CallerIdentity, filters: JobReadFilters) -> str:
+    """The cursor binding: the caller and every effective filter (S6a)."""
+    return scope_key(
+        {
+            "op": "job_list",
+            "caller": caller.user_id,
+            "caller_project": caller.project_id,
+            "admin": "1" if caller.is_admin else "0",
+            "project_id": filters.project_id,
+            "user_id": filters.user_id,
+            "status": filters.status,
+            "job_type": filters.job_type,
+        }
+    )
+
+
+def _job_list_bad_request(message: str, exc: Exception | None = None) -> NoReturn:
+    raise_typed(PlatformError.jobs("bad_request", message), cause=exc)
+
+
+def _job_list_after(
+    cursor: str | None, offset: int, scope: Callable[[], str]
+) -> JobKeysetPosition | None:
+    """The keyset position of ``cursor`` (None without one); typed 400s."""
+    if not cursor:
+        return None
+    if offset:
+        _job_list_bad_request("cursor and offset cannot be combined")
+    try:
+        return position_from_fields(decode_cursor(cursor, scope()))
+    except ValueError as exc:  # CursorError is a ValueError
+        _job_list_bad_request(str(exc), exc)
+
+
+def _job_list_fields(raw: str | None) -> tuple[str, ...] | None:
+    if not raw:
+        return None
+    try:
+        return parse_fields(raw, JOB_LIST_FIELDS, _JOB_LIST_KEY_FIELDS)
+    except FieldsError as exc:
+        _job_list_bad_request(str(exc), exc)
+
+
+def _job_list_rows(
+    store: JobStore,
+    filters: JobReadFilters,
+    after: JobKeysetPosition | None,
+    page: tuple[int, int],
+) -> list[Job]:
+    """``limit + 1`` rows (the extra one says a next page exists).
+
+    Without a cursor this stays ``store.list_jobs`` (same order since
+    S6a: ``created_at DESC, job_id DESC``); with one, the keyset page.
+    """
+    limit, offset = page
+    if after is not None:
+        return store.list_jobs_page(filters, after=after, limit=limit + 1)
+    return store.list_jobs(
+        project_id=filters.project_id,
+        status=JobStatus(filters.status) if filters.status else None,
+        job_type=JobType(filters.job_type) if filters.job_type else None,
+        limit=limit + 1,
+        offset=offset,
+        user_id=filters.user_id,
+    )
+
+
+def _job_list_next_cursor(
+    rows: list[Job], limit: int, scope: Callable[[], str]
+) -> str | None:
+    if len(rows) <= limit:
+        return None
+    last = rows[limit - 1]
+    position = JobKeysetPosition(created_at=last.created_at, job_id=last.job_id)
+    return encode_cursor(position_to_fields(position), scope())
+
+
+def _job_list_page_response(
+    jobs: list[Job],
+    page: tuple[int, int],
+    fields: tuple[str, ...] | None,
+    next_cursor: str | None,
+) -> JobListResponse:
+    limit, offset = page
+    rows = [_job_to_response(j) for j in jobs]
+    if fields is None:
+        return JobListResponse(
+            jobs=rows,
+            total=len(rows),
+            limit=limit,
+            offset=offset,
+            next_cursor=next_cursor,
+        )
+    items = [project(r.model_dump(mode="json"), fields) for r in rows]
+    return JobListResponse(
+        jobs=[],
+        total=len(items),
+        limit=limit,
+        offset=offset,
+        items=items,
+        next_cursor=next_cursor,
+    )
+
+
+def _job_list_summary(
+    store: JobStore, filters: JobReadFilters, page: tuple[int, int]
+) -> JobListResponse:
+    summary = ReadSummary(**fold_summary(store.summarize_jobs(filters)))
+    limit, offset = page
+    return JobListResponse(
+        jobs=[], total=summary.total, limit=limit, offset=offset, summary=summary
+    )
+
+
 @router.get(
     "",
     operation_id="job_list",
     response_model=JobListResponse,
     summary="List jobs",
-    description="List jobs with optional filters by project, status, and type.",
+    description=(
+        "List jobs with optional filters by project, status, and type, newest "
+        "first. Read shaping (ADR-105 D-6): `fields=` returns only those "
+        "columns in `items`; `next_cursor` is passed back as `cursor=` for the "
+        "next page; `summary=true` returns counts by status and type instead "
+        "of rows."
+    ),
 )
 async def list_jobs(
     project_id: str | None = Query(None, description="Filter by project ID"),
@@ -1049,53 +1250,43 @@ async def list_jobs(
     job_type: str | None = Query(None, description="Filter by job type"),
     limit: int = Query(100, ge=1, le=1000, description="Max results to return"),
     offset: int = Query(0, ge=0, description="Offset for pagination"),
+    cursor: str | None = Query(
+        None, description="next_cursor of the previous page (not with offset)"
+    ),
+    fields: str | None = Query(
+        None, description="Comma-separated columns to return (job_id always kept)"
+    ),
+    summary: bool = Query(
+        False, description="Counts by status and type instead of rows"
+    ),
     caller: CallerIdentity = Depends(get_caller_identity),
     store: JobStore = Depends(get_job_store),
 ) -> JobListResponse:
     """
-    List jobs (U-732).
+    List jobs (U-732; read shaping ADR-105 D-6, S6a).
 
-    Non-admin callers are restricted to their own project's jobs.
-
-    project_id defaults to the caller's project when not explicitly given,
-    so that callers who accidentally pass an admin flag (or are behind a
-    misconfigured proxy) never see jobs from unrelated projects.
+    Non-admin callers are restricted to their own jobs in their own
+    project (``_job_list_filters``). A cursor carries a position only and
+    is bound to the caller and the effective filters: it never widens the
+    scope.
     """
-    # Always default project_id to caller's project (defence-in-depth).
-    # Gateway sends "caller_project_id" as a query param, not "project_id",
-    # so an admin caller would otherwise see ALL jobs across ALL projects.
-    if project_id is None:
-        project_id = caller.project_id
-
-    # Non-admin callers cannot override project_id
-    if not caller.is_admin:
-        project_id = caller.project_id
-
-    parsed_status = _parse_status_filter(status_filter)
-    parsed_type = _parse_job_type_filter(job_type)
-
-    # Query jobs. A non-admin's owner filter goes into the query: applied
-    # after LIMIT it paged over the whole project, so colleagues' newer jobs
-    # hid the caller's own (2026-10-21: limit=3 -> 0 of alice's 2 jobs).
-    jobs = store.list_jobs(
-        project_id=project_id,
-        status=parsed_status,
-        job_type=parsed_type,
-        limit=limit,
-        offset=offset,
-        user_id=None if caller.is_admin else caller.user_id,
+    filters = _job_list_filters(
+        caller,
+        project_id,
+        _parse_status_filter(status_filter),
+        _parse_job_type_filter(job_type),
     )
-
-    # Non-admin callers only see their own jobs within the project
-    if not caller.is_admin:
-        jobs = [j for j in jobs if j.user_id == caller.user_id]
-
-    return JobListResponse(
-        jobs=[_job_to_response(j) for j in jobs],
-        total=len(jobs),  # Note: would need separate count query for true total
-        limit=limit,
-        offset=offset,
-    )
+    page = (limit, offset)
+    if summary:
+        return _job_list_summary(store, filters, page)
+    scope = partial(_job_list_scope, caller, filters)  # only when a cursor is used
+    after = _job_list_after(cursor, offset, scope)
+    projection = _job_list_fields(fields)
+    rows = _job_list_rows(store, filters, after, page)
+    next_cursor = _job_list_next_cursor(rows, limit, scope)
+    # Defence in depth: the query already pins a non-admin's owner.
+    jobs = [j for j in rows[:limit] if caller.is_admin or j.user_id == caller.user_id]
+    return _job_list_page_response(jobs, page, projection, next_cursor)
 
 
 _events_unwired_logged = False

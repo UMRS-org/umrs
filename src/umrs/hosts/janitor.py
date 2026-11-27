@@ -27,10 +27,11 @@ from __future__ import annotations
 import logging
 import os
 import threading
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+from umrs.hosts.placement import inline_host_profile
 from umrs.hosts.registry import HostRecord, HostRegistry
 from umrs.hosts.runtime import INLINE_HOST_ID
 from umrs.venues.session_audit import audit_venue
@@ -232,12 +233,46 @@ def extension_host_sessions(db_pool: Any) -> list[HostSessions]:
     return built
 
 
+def hosts_enabled(env: Mapping[str, str] | None = None) -> bool:
+    """``UMRS_HOSTS_ENABLED`` (default on). Off, the inline host never
+    registers, so placement must not read the database registry either: it
+    places on this process's inline host alone (review SH-H2)."""
+    source = os.environ if env is None else env
+    flag = source.get("UMRS_HOSTS_ENABLED", "true").strip().lower()
+    return flag not in ("false", "0", "no")
+
+
+def _site_extra() -> dict[str, Any]:
+    """``site.yaml`` ``extra`` ({} when unreadable: the inline host then
+    reports the default ``crun``/``squid-only`` isolation, never better)."""
+    try:
+        from umrs.orchestrator.site_config import load_site_config
+
+        extra = load_site_config().extra
+    except FileNotFoundError:  # no site file: a single node, default profile
+        return {}
+    except Exception:  # noqa: BLE001 — fail closed to the default profile
+        logger.warning("site config unreadable; inline host profile defaulted")
+        return {}
+    return extra if isinstance(extra, dict) else {}
+
+
+def site_inline_profile() -> dict[str, dict[str, Any]]:
+    """This site's inline host profile (labels, capacity, isolation)."""
+    return inline_host_profile(_site_extra())
+
+
 def start_inline_host(
     db_pool: Any, *, broker: Any = None, venue: str | None = None
 ) -> HostMaintenance:
     """Register this process's own host (``inline``) and start its loop."""
     registry = HostRegistry(db_pool, venue=venue)
-    registry.register(INLINE_HOST_ID, launch_mode="inline", roles=("session",))
+    registry.register(
+        INLINE_HOST_ID,
+        launch_mode="inline",
+        roles=("session",),
+        **site_inline_profile(),
+    )
     if broker is None:
         from umrs.jobs.secret_broker import SecretBroker
 
@@ -264,5 +299,7 @@ __all__ = [
     "down_after_seconds",
     "extension_host_sessions",
     "heartbeat_seconds",
+    "hosts_enabled",
+    "site_inline_profile",
     "start_inline_host",
 ]

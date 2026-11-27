@@ -82,6 +82,7 @@ from ..server.workflow_versions import (
 from ._access import checked_access, resource_caller
 from ._verified_headers import get_verified_memberships
 from .jobs import CallerIdentity, get_caller_identity, get_optional_job_store
+from .read_shaping_models import WorkflowExecutionListResponse
 from .request_headers import session_id_header
 from .typed_errors import PlatformError, raise_typed
 from .workflow_auth import (
@@ -92,6 +93,8 @@ from .workflow_auth import (
     strict_auth_mode,
     workflow_job_status,
 )
+from .workflow_execution_reads import ExecutionListQuery
+from .workflow_execution_reads import list_executions as _list_executions
 from .workflow_export import ExportResult, ExportTooLarge, build_export_zip
 from .workflow_models import (
     WorkflowCommitResponse,
@@ -1184,6 +1187,46 @@ async def save_run_definition(
     except ValueError as exc:
         raise_typed(PlatformError.workflows("bad_request", str(exc)), cause=exc)
     return {"status": "ok", "definition": _definition_payload(record_dict)}
+
+
+# Declared before ``/{workflow_name}``: FastAPI matches routes in order,
+# and "executions" must never be read as a workflow name.
+@router.get(
+    "/executions",
+    operation_id="workflow_executions",
+    response_model=WorkflowExecutionListResponse,
+    summary="List workflow executions",
+    description=(
+        "The caller's workflow executions since this UMRS started, newest "
+        "first (admins: every owner, or one with user_id). Read shaping "
+        "(ADR-105 D-6): `fields=` returns only those keys; `next_cursor` is "
+        "passed back as `cursor=`; `summary=true` returns counts by status "
+        "and workflow instead of rows."
+    ),
+)
+async def list_workflow_executions(
+    status: str | None = Query(
+        None, description="submitted|running|succeeded|failed|cancelled"
+    ),
+    user_id: str | None = Query(None, description="Admin only: one owner"),
+    limit: int = Query(50, ge=1, le=500, description="Max rows"),
+    cursor: str | None = Query(None, description="next_cursor of the previous page"),
+    fields: str | None = Query(
+        None, description="Comma-separated keys to return (execution_id always kept)"
+    ),
+    summary: bool = Query(False, description="Counts instead of rows"),
+    identity: CallerIdentity = Depends(get_caller_identity),
+) -> WorkflowExecutionListResponse:
+    """ADR-105 D-6 (S6a); visibility as ``workflow_status`` (per record)."""
+    query = ExecutionListQuery(
+        status=status,
+        owner=user_id,
+        limit=limit,
+        cursor=cursor,
+        fields=fields,
+        summary=summary,
+    )
+    return _list_executions(identity, query)
 
 
 @router.get("/run-definitions")

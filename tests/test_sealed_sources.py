@@ -25,6 +25,11 @@ SECRET = "sealed-secret"
 _MIGRATIONS = Path(__file__).resolve().parents[1] / "src/umrs/migrations"
 
 
+# 0150 binds leases to a host (ADR-098 D-6): the broker reads host_id.
+def _identity_migration() -> str:
+    return next(_MIGRATIONS.glob("*_host_identity.sql")).name
+
+
 def _headers(user: str, project: str, admin: bool = False) -> dict[str, str]:
     return {
         "X-User-ID": user,
@@ -65,6 +70,7 @@ def env(monkeypatch, tmp_path):
                 "0085_secret_leases.sql",
                 "0086_user_sources_sealed.sql",
                 "0124_secret_leases_venue.sql",
+                _identity_migration(),
             ):
                 cur.execute((_MIGRATIONS / mig).read_text())
     finally:

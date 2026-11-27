@@ -22,6 +22,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from umrs.api.typed_errors import PlatformError, raise_typed
 
+from umrs_r4.api._companion_queue_claim import new_queue_id
 from umrs_r4.api._companion_session_bus import (
     SessionBusBindBody,
     SessionBusInboxBody,
@@ -693,7 +694,9 @@ def _queue_apply(
         stamp = (client_id or "").strip() or uid or "unknown"
         entries.append(
             {
-                "id": f"q-{len(entries) + 1}",
+                # ADR-057 D-8: the id is the worker's idempotency key
+                # (metadata.queue_id); ``q-<len+1>`` repeated after a pop.
+                "id": new_queue_id(),
                 "content": content,
                 "client_id": stamp,
                 "added_at": now,

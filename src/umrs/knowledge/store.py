@@ -427,6 +427,27 @@ _INSERT_ARTIFACT_SQL = """INSERT INTO knowledge_artifacts
    SET updated_at = $10, status = 'active'
    WHERE knowledge_artifacts.project_id = EXCLUDED.project_id"""
 
+# ADR-108 D-4 (S-W3a, migration 0151): a write under a work-level scope lands
+# proposed and tagged in the same statement, so no committed row is ever
+# scoped-but-established. A conflict on the id keeps the stored row's tier
+# and tag, as the root statement keeps its status. Root writes use the
+# statement above unchanged (they need no 0151 column).
+_INSERT_SCOPED_ARTIFACT_SQL = """INSERT INTO knowledge_artifacts
+   (artifact_id, content_hash, kind, project_id, source_ref,
+    size_bytes, mime_type, status, metadata, created_at, updated_at,
+    tier, scope_path)
+   VALUES ($1, $2, $3, $4, $5, $6, $7, 'active', $8, $9, $10, 'proposed', $11)
+   ON CONFLICT (artifact_id) DO UPDATE
+   SET updated_at = $10, status = 'active'
+   WHERE knowledge_artifacts.project_id = EXCLUDED.project_id"""
+
+
+def _artifact_insert(scope_path: str | None) -> tuple[str, tuple[Any, ...]]:
+    """The insert statement and its extra parameters for the write's scope."""
+    if scope_path:
+        return _INSERT_SCOPED_ARTIFACT_SQL, (scope_path,)
+    return _INSERT_ARTIFACT_SQL, ()
+
 
 class KnowledgeStore:
     """Knowledge Postgres store using asyncpg pool.
@@ -481,9 +502,15 @@ class KnowledgeStore:
         size_bytes: int = 0,
         mime_type: str = "",
         metadata: dict[str, Any] | None = None,
+        *,
+        scope_path: str | None = None,
     ) -> str:
         """Insert (or reactivate) artifact metadata; return the artifact id
         that holds these bytes in the project.
+
+        ``scope_path`` (ADR-108 D-4, checked by the caller): a new row lands
+        ``tier='proposed'`` with that tag in the same statement; None (the
+        root scope) writes exactly the pre-0151 row.
 
         That is ``artifact_id`` itself when it was inserted or reactivated,
         or the stored id when the project already holds the same bytes
@@ -506,16 +533,18 @@ class KnowledgeStore:
         # datetime values for them — persist as ISO-8601 strings.
         ts = _utcnow().isoformat()
         params = (artifact_id, content_hash, kind, project_id, source_ref)
+        sql, scoped = _artifact_insert(scope_path)
         try:
             async with self._pool.acquire() as conn:
                 status = await conn.execute(
-                    _INSERT_ARTIFACT_SQL,
+                    sql,
                     *params,
                     size_bytes,
                     mime_type,
                     metadata or {},
                     ts,
                     ts,
+                    *scoped,
                 )
         except Exception as exc:
             if not (content_hash and is_unique_violation(exc)):

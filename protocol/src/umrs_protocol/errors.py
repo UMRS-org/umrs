@@ -349,6 +349,11 @@ COMPANIONVENUE_ERRORS = {
     # ADR-099 D-8: an answer to a remote ask_user question that is no longer
     # pending (answered from another client, expired, cancelled).
     "companionvenue.question_closed": 409,
+    # ADR-098 D-9 (SH-H2, 2026-11-27): host placement. A pinned host
+    # (cpu:<host>) that is undeclared, unregistered, draining, down or refused
+    # by a stage is never replaced by another host; no eligible host at all.
+    "companionvenue.host_unavailable": 409,
+    "companionvenue.no_host": 503,
 }
 
 # Session policy (ADR-099 D-2, D-3; remote-session plan RS-1): limit rules,
@@ -603,6 +608,13 @@ FILES_ERRORS = {
     "files.bucket_registry_unavailable": 503,
     # ADR-115 D-4 (MB-S2b, 2026-11-27): an unknown /files/list delimiter or field.
     "files.list_option_invalid": 400,
+    # ADR-115 D-11 (MB-S2c, 2026-11-27): a client write under a server-only
+    # prefix (runs/) or a presigned write/delete under a create-only one
+    # (reviews/) in an -output bucket; a create-only key already saved; a
+    # create-only save with no provenance database to claim the key in.
+    "files.prefix_write_denied": 403,
+    "files.create_only_exists": 409,
+    "files.create_only_unavailable": 503,
 }
 
 HPCACCESS_ERRORS = {
@@ -640,6 +652,12 @@ ONTOLOGY_ERRORS = {
     "ontology.forbidden": 403,
     "ontology.not_found": 404,
     "ontology.conflict": 409,
+}
+
+RAIL_ERRORS = {
+    # ADR-098 D-6 (SH-H1b, 2026-11-27): a host-bound lease presented with
+    # another host's token, on the worker rail or the inference proxy.
+    "rail.host_mismatch": 403,
 }
 
 
@@ -1037,6 +1055,15 @@ class PlatformError:
         )
 
     @classmethod
+    def rail(cls, name: str, message: str, **detail: Any) -> PlatformError:
+        return cls(
+            code=f"rail.{name}",
+            message=message,
+            http_status=RAIL_ERRORS[f"rail.{name}"],
+            detail=detail,
+        )
+
+    @classmethod
     def adaptive(cls, name: str, message: str, **detail: Any) -> PlatformError:
         return cls(
             code=f"adaptive.{name}",
@@ -1424,6 +1451,7 @@ def known_error_codes() -> dict[str, int]:
         WORKFLOWS2_ERRORS,
         HPCACCESS_ERRORS,
         ONTOLOGY_ERRORS,
+        RAIL_ERRORS,
     ):
         out.update(fam)
     return out

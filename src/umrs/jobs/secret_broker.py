@@ -71,6 +71,8 @@ class SecretLease:
     max_lifetime_at: datetime | None = None  # hard cap across renewals
     # The issuing site (0124): sites share umrs_db, accounts are per site.
     venue: str = ""
+    # The host the lease is bound to (ADR-098 D-6, 0150); '' = the inline host.
+    host_id: str = ""
 
     # Audit
     secret_hash: str = ""  # SHA-256 of issued secret value
@@ -105,6 +107,7 @@ class SecretLease:
             "project": self.project,
             "max_lifetime_at": _iso(self.max_lifetime_at),
             "venue": self.venue,
+            "host_id": self.host_id,
             "secret_hash": self.secret_hash,
             "access_count": self.access_count,
             "last_accessed_at": _iso(self.last_accessed_at),
@@ -189,6 +192,7 @@ class SecretBroker:
         egress_ip: str = "",
         project: str = "",
         max_lifetime_seconds: int | None = None,
+        host_id: str = "",
     ) -> tuple[SecretLease, str]:
         """Issue a new secret lease.
 
@@ -206,6 +210,7 @@ class SecretBroker:
             egress_ip: Sidecar egress IP the inference proxy binds to.
             project: Accounting project/group.
             max_lifetime_seconds: Hard cap across renewals (None = MAX_TTL).
+            host_id: Agent host the lease is bound to ('' = inline host).
 
         Returns:
             Tuple of (SecretLease, plaintext_secret).
@@ -247,6 +252,7 @@ class SecretBroker:
             project=project,
             max_lifetime_at=lifetime_cap,
             venue=self.venue,
+            host_id=host_id,
             secret_hash=secret_hash,
         )
 
@@ -260,11 +266,12 @@ class SecretBroker:
             f"scope={scope} ttl={lease_seconds}s name={secret_name}",
         )
 
+        # The secret's name stays in the audit row only (CodeQL
+        # py/clear-text-logging-sensitive-data); the log names the lease.
         logger.info(
-            "Secret lease issued: %s (job=%s name=%s scope=%s ttl=%ds)",
+            "Secret lease issued: %s (job=%s scope=%s ttl=%ds)",
             lease.lease_id,
             job_id,
-            secret_name,
             scope,
             lease_seconds,
         )
@@ -598,12 +605,14 @@ class SecretBroker:
                 lease_id, token_hash, job_id, secret_name, scope, owner_id,
                 bound_to_step, tier, session_id, source_ids, default_source_id,
                 egress_ip, project, issued_at, expires_at, max_lifetime_at,
-                is_revoked, revoked_at, access_count, last_accessed_at, venue
+                is_revoked, revoked_at, access_count, last_accessed_at, venue,
+                host_id
             ) VALUES (
                 %s, %s, %s, %s, %s, %s,
                 %s, %s, %s, %s::uuid[], %s::uuid,
                 %s::inet, %s, %s, %s, %s,
-                %s, %s, %s, %s, %s
+                %s, %s, %s, %s, %s,
+                %s
             ) ON CONFLICT (lease_id) DO NOTHING
         """
         conn = self._pool_conn()
@@ -633,6 +642,7 @@ class SecretBroker:
                         lease.access_count,
                         lease.last_accessed_at,
                         lease.venue,
+                        lease.host_id,
                     ),
                 )
             conn.commit()
@@ -745,6 +755,7 @@ class SecretBroker:
             revoked_at=row["revoked_at"],
             access_count=int(row["access_count"]),
             last_accessed_at=row["last_accessed_at"],
+            host_id=str(row.get("host_id") or ""),
             secret_hash=str(row["token_hash"]),
         )
 
@@ -752,7 +763,7 @@ class SecretBroker:
         SELECT lease_id, token_hash, job_id, secret_name, scope, owner_id,
                bound_to_step, tier, session_id, source_ids, default_source_id,
                egress_ip, project, issued_at, expires_at, max_lifetime_at,
-               is_revoked, revoked_at, access_count, last_accessed_at
+               is_revoked, revoked_at, access_count, last_accessed_at, host_id
           FROM secret_leases
     """
 

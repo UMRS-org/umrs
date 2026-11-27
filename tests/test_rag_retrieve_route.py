@@ -15,6 +15,7 @@ import httpx
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from space_registry_fake import REGISTRY_MARKER, registry_row
 from umrs.api import rag as rag_api
 from umrs.api import rag_retrieve, rag_spine
 from umrs.knowledge import llm_chat
@@ -353,6 +354,8 @@ def test_the_route_never_calls_a_chat_model(monkeypatch):
     )
     pool = _Pool(
         [
+            (REGISTRY_MARKER, [registry_row("t_e5", "/models/e5-base-v2", 2)]),
+            ("SELECT count(*)", [(3, None)]),
             ("<=>", [("node-chunk-g-a-0", content, 0.1, 3)]),
             ("LEFT JOIN", [("node-chunk-g-a-0", "g", content, None, "a.md", None, None)]),
         ]

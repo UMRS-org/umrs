@@ -32,6 +32,13 @@ import numpy as np
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from space_registry_fake import (
+    ANN_MARKER,
+    K3_ANN_MARKER,
+    REGISTRY_MARKER,
+    registry_row,
+    space_of,
+)
 from umrs.api import knowledge_query as kq
 from umrs.api import rag as rag_api
 from umrs.api import rag_retrieve, rag_spine
@@ -226,9 +233,16 @@ def _literal(value: str) -> np.ndarray:
     return vector / np.linalg.norm(vector)
 
 
-def _space(params: list[Any]) -> str:
-    pattern = next(p for p in params if isinstance(p, str) and p.startswith("%/"))
-    return pattern[2:].replace("\\_", "_").replace("\\%", "%")
+def _space(params: list[Any], sql: str = "") -> str:
+    return space_of(sql, params)
+
+
+#: The registry the vector lanes resolve their query model in (KN-S6): the
+#: corpus's two spaces at the corpus dimension.
+REGISTRY = (
+    registry_row("t_e5", MODEL, DIM),
+    registry_row("t_bge", OTHER_MODEL, DIM),
+)
 
 
 def _needle(pattern: str) -> str:
@@ -286,7 +300,8 @@ class FakeDB:
             ("/* lex:search */", self._lex_search),
             ("/* ident:search */", self._ident_search),
             ("information_schema.columns", self._column_probe),
-            ("count(*) OVER () AS in_scope", self._dense),
+            (REGISTRY_MARKER, self._registry),
+            (ANN_MARKER, self._ann),
             ("LEAST(", self._cosines),
             ("WITH scope AS MATERIALIZED", self._probes),
             (
@@ -321,10 +336,19 @@ class FakeDB:
 
     # dense, legacy, K3 similarity, cosines, null probes
 
-    def _dense(self, _sql: str, params: list[Any]) -> list[tuple]:
-        ranked = self.corpus.ranked(_literal(params[0]), _space(params), chunks_only=True)
+    def _registry(self, _sql: str, _params: list[Any]) -> list[tuple]:
+        return list(REGISTRY)
+
+    def _ann(self, sql: str, params: list[Any]) -> list[tuple]:
+        if K3_ANN_MARKER in sql:
+            return self._k3_ann(sql, params)
+        ranked = self.corpus.ranked(_literal(params[0]), _space(params, sql), chunks_only=True)
+        return [(n.node_id, json.dumps(n.content()), d) for d, n in ranked[: int(params[-1])]]
+
+    def _k3_ann(self, sql: str, params: list[Any]) -> list[tuple]:
+        ranked = self.corpus.ranked(_literal(params[0]), _space(params, sql), chunks_only=False)
         return [
-            (n.node_id, json.dumps(n.content()), d, len(ranked))
+            (n.node_id, MODEL, DIM, None, n.node_id, PROJECT, json.dumps(n.content()), d)
             for d, n in ranked[: int(params[-1])]
         ]
 
@@ -357,7 +381,7 @@ class FakeDB:
         return rows
 
     def _vector_count(self, _sql: str, params: list[Any]) -> list[tuple]:
-        return [(len(self.corpus.embedded(_space(params), chunks_only=True)),)]
+        return [(len(self.corpus.embedded(_space(params, _sql), chunks_only=True)),)]
 
     # hydration and the fetch handle
 

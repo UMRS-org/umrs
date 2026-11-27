@@ -1797,6 +1797,24 @@ def _unwritten(
     ]
 
 
+def _scope_kwargs(desc: dict[str, Any]) -> dict[str, str]:
+    """``{"scope_path": ...}`` for a descriptor ``attach_scope_path`` tagged
+    (ADR-108 D-4, S-W3a): the row lands proposed and tagged. A root
+    descriptor passes nothing, so its insert is exactly as before."""
+    from umrs.knowledge.scope_overlay import SCOPE_KEY
+
+    path = desc.get(SCOPE_KEY)
+    return {SCOPE_KEY: str(path)} if path else {}
+
+
+def _job_scope_kwargs(job: Any) -> dict[str, str]:
+    """``{"scope_path": ...}`` for a scoped job's own artifact writes, else
+    ``{}`` (ADR-108 D-4; a malformed path raises ``ScopeOverlayError``)."""
+    from umrs.knowledge.scope_overlay import SCOPE_KEY, scoped_spec_path
+
+    return _scope_kwargs({SCOPE_KEY: scoped_spec_path(getattr(job, "spec", None))})
+
+
 async def _store_one_artifact(
     store: Any, desc: dict[str, Any], project_id: str, deduped: dict[str, str]
 ) -> None:
@@ -1812,6 +1830,7 @@ async def _store_one_artifact(
         project_id=project_id,
         source_ref=desc.get("source_ref", ""),
         metadata=desc.get("metadata"),
+        **_scope_kwargs(desc),
     )
     if held_by and held_by != fresh:  # a concurrent upload stored the bytes
         deduped[fresh] = held_by
@@ -2527,13 +2546,23 @@ def _note_degraded(result: KnowledgeUnderstandResult, notes: list[str]) -> None:
 
 
 async def _write_rows(
-    store: Any, nodes: list, edges: list, artifact_id: str, result: KnowledgeUnderstandResult
+    store: Any,
+    nodes: list,
+    edges: list,
+    artifact_id: str,
+    result: KnowledgeUnderstandResult,
+    scope: tuple[str, str] | None = None,
 ) -> bool:
+    """Upsert the rows; ``scope`` = ``(project_id, scope_path)`` of a scoped
+    job (ADR-108 D-4) writes and tags them in one transaction."""
     try:
-        for node in nodes:
-            await store.upsert_node(node)
-        for edge in edges:
-            await store.upsert_edge(edge)
+        if scope is not None:
+            await _write_scoped_rows(store, nodes, edges, scope)
+        else:
+            for node in nodes:
+                await store.upsert_node(node)
+            for edge in edges:
+                await store.upsert_edge(edge)
     except Exception as exc:  # noqa: BLE001 — best-effort adapter path, reported not raised
         logger.error("Node/edge upsert failed: %s: %s", artifact_id, exc)
         result.failed_items.append(
@@ -2543,6 +2572,31 @@ async def _write_rows(
     result.nodes_created += len(nodes)
     result.edges_created += len(edges)
     return True
+
+
+async def _write_scoped_rows(
+    store: Any, nodes: list, edges: list, scope: tuple[str, str]
+) -> None:
+    """ADR-108 D-4 (S-W3a): a scoped pass's upserts and their ``scope_path``
+    tags on one connection in one transaction, so no proposed row is
+    committed untagged (it would read as a root proposal). The rows are
+    already proposed (``_tiered_rows``); ``tag_graph_rows`` tags only
+    untagged proposed rows."""
+    from umrs.knowledge.scope_tagging import tag_graph_rows
+
+    project_id, scope_path = scope
+    async with store._pool.acquire() as conn, conn.transaction():
+        for node in nodes:
+            await store.upsert_node(node, conn=conn)
+        for edge in edges:
+            await store.upsert_edge(edge, conn=conn)
+        await tag_graph_rows(
+            conn,
+            project_id,
+            [n.node_id for n in nodes],
+            [e.edge_id for e in edges],
+            scope_path,
+        )
 
 
 # A re-extraction (ADR-116 extractor bump) writes new semantic rows beside
@@ -2687,7 +2741,9 @@ async def _understand_one_artifact(
     # enters the two-tier graph as proposed — the establish seam (human) is
     # the only promotion; a vouched answer names its establisher.
     nodes, edges = _tiered_rows(nodes, edges, job, origin_actor)
-    if not await _write_rows(store, nodes, edges, artifact_id, result):
+    if not await _write_rows(
+        store, nodes, edges, artifact_id, result, _job_scope(job, project_id)
+    ):
         return
     await _drop_superseded_rows(
         store, (project_id, target_graph_id, artifact_id, ir.ir_id), edges
@@ -2767,17 +2823,31 @@ def _node_id_scope(project_id: str, graph_id: str) -> str:
     return f"{graph_id}-"
 
 
+def _job_scope(job: Any, project_id: str) -> tuple[str, str] | None:
+    """``(project_id, scope_path)`` for a scoped understand job, else None
+    (ADR-108 D-4; the path rides from the ingest spec, ``_run_scope_path``)."""
+    from umrs.knowledge.scope_overlay import scoped_spec_path
+
+    path = scoped_spec_path(getattr(job, "spec", None))
+    return (project_id, path) if path else None
+
+
 def _tiered_rows(nodes: list, edges: list, job: Any, origin_actor: str) -> tuple[list, list]:
     """The rows in the tier the job's spec gives them (``tier_stamp``):
     proposed and stamped for an agent origin or a kept /save answer; a
     vouched /save stamps its human-tier rows with the establisher (rows
     already proposed, e.g. K-1 extractions, keep their own stamp)."""
+    from umrs.knowledge.scope_overlay import scoped_spec_path, scoped_tier_stamp
     from umrs.knowledge.session_turns import tier_stamp
 
     proposed, stamp = tier_stamp(
         {**job.spec, "origin_actor": origin_actor},
         job.job_id,
         str(getattr(job, "user_id", "") or ""),
+    )
+    # ADR-108 D-4 (S-W3a): a scoped job never writes established rows.
+    proposed, stamp = scoped_tier_stamp(
+        proposed, stamp, scoped_spec_path(job.spec), job.job_id
     )
     if proposed:
         return _as_proposed_tier(nodes, edges, stamp=stamp)
@@ -5567,6 +5637,8 @@ def _store_artifact_provenance(
     try:
         from umrs.knowledge.store import KnowledgeStore
 
+        scope_kw = _job_scope_kwargs(job)
+
         async def _store_provenance():
             async with _open_pool() as pool:
                 if pool is None:
@@ -5590,6 +5662,9 @@ def _store_artifact_provenance(
                                 "workflow": workflow,
                                 "step": step,
                             },
+                            # ADR-108 D-4: written before the ingest job,
+                            # whose insert dedups onto this row.
+                            **scope_kw,
                         )
                         await _record_workflow_contribution(
                             pool, held_by or aid, project_id, job, f"{workflow}/{step}"
@@ -5781,6 +5856,9 @@ def _enqueue_understand_job(
                 "origin_actor": job.spec.get("origin_actor", ""),
                 # K1.6: a kept (proposed) or vouched (established) /save.
                 **tier_fields(job.spec),
+                # ADR-108 D-4 (S-W3a): a scoped ingest's graph rows land
+                # proposed and tagged with its scope.
+                **_run_scope_path(job),
                 # ADR-116 D-2: full | lite | off.
                 "extract_mode": _job_extract_mode(job, extract_mode),
             },
@@ -5805,14 +5883,27 @@ def _create_produced_by_edges(
     workflow: str,
     step: str,
 ) -> None:
-    """Create PRODUCED_BY edges in the knowledge graph (best-effort)."""
-    from umrs.knowledge.store import KnowledgeNode, KnowledgeStore
+    """Create PRODUCED_BY edges in the knowledge graph (best-effort).
+
+    ADR-108 D-4 (review of S-W3a): a scoped run's provenance rows land
+    proposed and tagged with its scope in one transaction, as its
+    extracted rows do; a root run's are written exactly as before."""
+    from umrs.knowledge.store import KnowledgeStore
 
     if not (deduped and _resolve_knowledge_dsn()):
         return
     try:
         # Named-graph ingestion (0069): provenance goes to the target graph.
-        graph_id = str(job.spec.get("graph_id") or "")
+        where = _ProvenanceWhere(
+            project_id=project_id,
+            user_id=user_id,
+            job=job,
+            attempt=attempt,
+            workflow=workflow,
+            step=step,
+            graph_id=str(job.spec.get("graph_id") or ""),
+        )
+        scope = _job_scope(job, project_id)
 
         async def _create_edges():
             async with _open_pool() as pool:
@@ -5825,83 +5916,10 @@ def _create_produced_by_edges(
                     )
                     return
                 store = KnowledgeStore(pool)
-                prod_entity_id = f"prod-job-{job.job_id}"
-                job_type = getattr(job, "job_type", "unknown")
-                job_type_value = (
-                    job_type.value if hasattr(job_type, "value") else job_type
-                )
-                # Create provenance node. The semantic role stays in the
-                # label; node_type must be one of ALLOWED_NODE_TYPES
-                # ("entity" covers job/provenance roles) — anything else
-                # violates knowledge_nodes_node_type_check.
-                await store.upsert_node(
-                    KnowledgeNode(
-                        node_id=prod_entity_id,
-                        project_id=project_id,
-                        label=f"job:{job.job_id}",
-                        node_type="entity",
-                        graph_id=graph_id,
-                        content={
-                            "job_id": job.job_id,
-                            "job_type": job_type_value,
-                            "workflow": workflow,
-                            "step": step,
-                            "user_id": user_id,
-                        },
-                        content_hash=_sha256_hex(
-                            f"provenance-{job.job_id}-{workflow}-{step}".encode()
-                        ),
-                        # NULL, not "": source_ir FKs into knowledge_ir and
-                        # an empty string matches no ir_id
-                        # (knowledge_nodes_source_ir_fkey).
-                        source_ir=None,
-                    )
-                )
-
-                # Artifact nodes: edge endpoints must resolve in
-                # knowledge_nodes (FK knowledge_edges_source_id_fkey —
-                # artifacts live in knowledge_artifacts, a different table).
-                await _upsert_artifact_nodes(
-                    store,
-                    deduped,
-                    project_id,
-                    job,
-                    attempt,
-                    workflow,
-                    step,
-                    graph_id=graph_id,
-                )
-
-                # Create PRODUCED_BY edges
-                for art in deduped:
-                    aid = art.get("artifact_id", "")
-                    if not aid:
-                        continue
-                    try:
-                        await _upsert_produced_edge(
-                            store,
-                            aid,
-                            prod_entity_id,
-                            project_id,
-                            job,
-                            attempt,
-                            workflow,
-                            step,
-                            graph_id=graph_id,
-                        )
-                    except Exception as edge_exc:
-                        # Authorization constraint: never silently swallow a
-                        # graph write failure — context needed for audit.
-                        logger.warning(
-                            "produced_by edge write failed "
-                            "source_node=%s (artifact/entity) "
-                            "target_node=%s (job/entity) "
-                            "relation=produced_by error=%r",
-                            aid,
-                            prod_entity_id,
-                            edge_exc,
-                            exc_info=True,
-                        )
+                if scope is not None:
+                    await _write_scoped_provenance(store, deduped, where, scope)
+                    return
+                await _write_root_provenance(store, deduped, where)
 
         try:
             _fire_coroutine(_create_edges(), "produced_by_edges")
@@ -5917,85 +5935,158 @@ def _create_produced_by_edges(
         logger.warning("_create_produced_by_edges aborted", exc_info=True)
 
 
-async def _upsert_artifact_nodes(
-    store: Any,
-    deduped: list[dict[str, Any]],
-    project_id: str,
-    job: Any,
-    attempt: Any,
-    workflow: str,
-    step: str,
-    graph_id: str = "",
-) -> None:
-    """Upsert artifact entity nodes so produced_by edge endpoints resolve.
+@dataclass(frozen=True)
+class _ProvenanceWhere:
+    """The run a set of provenance rows describes."""
+
+    project_id: str
+    user_id: str
+    job: Any
+    attempt: Any
+    workflow: str
+    step: str
+    graph_id: str = ""
+
+    @property
+    def prod_entity_id(self) -> str:
+        return f"prod-job-{self.job.job_id}"
+
+    @property
+    def attempt_id(self) -> str:
+        return getattr(self.attempt, "attempt_id", "")
+
+
+def _prod_job_node(where: _ProvenanceWhere) -> Any:
+    """The run's provenance node. The semantic role stays in the label;
+    node_type must be one of ALLOWED_NODE_TYPES ("entity" covers
+    job/provenance roles) — anything else violates
+    knowledge_nodes_node_type_check."""
+    from umrs.knowledge.store import KnowledgeNode
+
+    job = where.job
+    job_type = getattr(job, "job_type", "unknown")
+    return KnowledgeNode(
+        node_id=where.prod_entity_id,
+        project_id=where.project_id,
+        label=f"job:{job.job_id}",
+        node_type="entity",
+        graph_id=where.graph_id,
+        content={
+            "job_id": job.job_id,
+            "job_type": getattr(job_type, "value", job_type),
+            "workflow": where.workflow,
+            "step": where.step,
+            "user_id": where.user_id,
+        },
+        content_hash=_sha256_hex(
+            f"provenance-{job.job_id}-{where.workflow}-{where.step}".encode()
+        ),
+        # NULL, not "": source_ir FKs into knowledge_ir and an empty string
+        # matches no ir_id (knowledge_nodes_source_ir_fkey).
+        source_ir=None,
+    )
+
+
+def _artifact_node(art: dict[str, Any], where: _ProvenanceWhere) -> Any:
+    """An artifact's entity node, so produced_by edge endpoints resolve.
 
     ``knowledge_edges.source_id``/``target_id`` are FKs into
     ``knowledge_nodes``; artifact ids alone (knowledge_artifacts rows) do NOT
-    satisfy that invariant. Each deduplicated artifact gets an ``entity``
-    node carrying its provenance linkage.
-    """
+    satisfy that invariant."""
     from umrs.knowledge.store import KnowledgeNode
 
-    for art in deduped:
-        aid = art.get("artifact_id", "")
-        if not aid:
-            continue
-        await store.upsert_node(
-            KnowledgeNode(
-                node_id=aid,
-                project_id=project_id,
-                label=f"artifact:{aid}",
-                node_type="entity",
-                content={
-                    "content_hash": art.get("content_hash", ""),
-                    "kind": art.get("kind", ""),
-                    "source_ref": art.get("source_ref", ""),
-                    "produced_by_job_id": job.job_id,
-                    "produced_by_attempt_id": attempt.attempt_id
-                    if hasattr(attempt, "attempt_id")
-                    else "",
-                    "workflow": workflow,
-                    "step": step,
-                },
-                content_hash=_sha256_hex(f"artifact-node-{aid}".encode()),
-                # NULL, not "" (knowledge_nodes_source_ir_fkey).
-                source_ir=None,
-                graph_id=graph_id,
-            )
-        )
+    aid = art.get("artifact_id", "")
+    return KnowledgeNode(
+        node_id=aid,
+        project_id=where.project_id,
+        label=f"artifact:{aid}",
+        node_type="entity",
+        content={
+            "content_hash": art.get("content_hash", ""),
+            "kind": art.get("kind", ""),
+            "source_ref": art.get("source_ref", ""),
+            "produced_by_job_id": where.job.job_id,
+            "produced_by_attempt_id": where.attempt_id,
+            "workflow": where.workflow,
+            "step": where.step,
+        },
+        content_hash=_sha256_hex(f"artifact-node-{aid}".encode()),
+        # NULL, not "" (knowledge_nodes_source_ir_fkey).
+        source_ir=None,
+        graph_id=where.graph_id,
+    )
 
 
-async def _upsert_produced_edge(
-    store: Any,
-    aid: str,
-    prod_entity_id: str,
-    project_id: str,
-    job: Any,
-    attempt: Any,
-    workflow: str,
-    step: str,
-    graph_id: str = "",
-) -> None:
-    """Upsert one artifact → job produced_by edge (best-effort)."""
+def _produced_edge(aid: str, where: _ProvenanceWhere) -> Any:
+    """One artifact → job produced_by edge."""
     from umrs.knowledge.store import KnowledgeEdge
 
-    await store.upsert_edge(
-        KnowledgeEdge(
-            edge_id=f"edge-{aid}-produced_by-{job.job_id}",
-            project_id=project_id,
-            source_id=aid,
-            target_id=prod_entity_id,
-            relation_type="produced_by",
-            graph_id=graph_id,
-            content={
-                "workflow": workflow,
-                "step": step,
-                "attempt_id": attempt.attempt_id
-                if hasattr(attempt, "attempt_id")
-                else "",
-            },
-        )
+    return KnowledgeEdge(
+        edge_id=f"edge-{aid}-produced_by-{where.job.job_id}",
+        project_id=where.project_id,
+        source_id=aid,
+        target_id=where.prod_entity_id,
+        relation_type="produced_by",
+        graph_id=where.graph_id,
+        content={
+            "workflow": where.workflow,
+            "step": where.step,
+            "attempt_id": where.attempt_id,
+        },
     )
+
+
+def _artifact_ids(deduped: list[dict[str, Any]]) -> list[str]:
+    """The run's artifact ids, in order, skipping descriptors without one."""
+    return [aid for art in deduped if (aid := art.get("artifact_id", ""))]
+
+
+async def _write_root_provenance(
+    store: Any, deduped: list[dict[str, Any]], where: _ProvenanceWhere
+) -> None:
+    """The pre-0151 provenance writes: the job node, each artifact's node,
+    then each produced_by edge, one statement each; an edge that fails is
+    logged by name and the rest still go in."""
+    await store.upsert_node(_prod_job_node(where))
+    for art in deduped:
+        if art.get("artifact_id", ""):
+            await store.upsert_node(_artifact_node(art, where))
+    for aid in _artifact_ids(deduped):
+        try:
+            await store.upsert_edge(_produced_edge(aid, where))
+        except Exception as edge_exc:
+            # Authorization constraint: never silently swallow a graph
+            # write failure — context needed for audit.
+            logger.warning(
+                "produced_by edge write failed "
+                "source_node=%s (artifact/entity) "
+                "target_node=%s (job/entity) "
+                "relation=produced_by error=%r",
+                aid,
+                where.prod_entity_id,
+                edge_exc,
+                exc_info=True,
+            )
+
+
+async def _write_scoped_provenance(
+    store: Any,
+    deduped: list[dict[str, Any]],
+    where: _ProvenanceWhere,
+    scope: tuple[str, str],
+) -> None:
+    """ADR-108 D-4: a scoped run's provenance rows, proposed and stamped
+    like an agent's, written and tagged in one transaction
+    (``_write_scoped_rows``). A failure fails them all (logged by the
+    caller's guard); none is committed untagged."""
+    from umrs.knowledge.actors import AGENT_ACTOR
+
+    nodes = [_prod_job_node(where)]
+    nodes += [_artifact_node(art, where) for art in deduped if art.get("artifact_id")]
+    edges = [_produced_edge(aid, where) for aid in _artifact_ids(deduped)]
+    stamp = {"origin_actor": AGENT_ACTOR, "job_id": where.job.job_id}
+    nodes, edges = _as_proposed_tier(nodes, edges, stamp=stamp)
+    await _write_scoped_rows(store, nodes, edges, scope)
 
 
 def enqueue_knowledge_ingest(

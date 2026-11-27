@@ -46,11 +46,24 @@ def clean_provenance(raw: Any) -> dict[str, Any] | None:
 
 
 def attach_scope_path(descs: list[dict[str, Any]], scope_path: Any) -> None:
-    """Stamp the work level's scope path (ADR-108 D-3) on each artifact."""
-    path = str(scope_path or "").strip()[:600]
-    if not path:
+    """Stamp the work level's scope path (ADR-108 D-3) on each artifact.
+
+    S-W3a: the checked path also goes on the descriptor itself
+    (``desc["scope_path"]``), which ``_store_one_artifact`` writes to the
+    0151 column with ``tier='proposed'``; the metadata copy stays for
+    display. The root scope removes any descriptor key, so only this call
+    decides a row's scope. A malformed path raises
+    ``scope_overlay.ScopeOverlayError`` (never an untagged root write).
+    """
+    from umrs.knowledge.scope_overlay import SCOPE_KEY, clean_scope_path
+
+    path = clean_scope_path(scope_path)
+    if path is None:
+        for desc in descs:
+            desc.pop(SCOPE_KEY, None)
         return
     for desc in descs:
+        desc[SCOPE_KEY] = path
         meta = desc.get("metadata")
         if isinstance(meta, dict):
             meta["scope_path"] = path

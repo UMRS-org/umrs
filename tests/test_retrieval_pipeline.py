@@ -20,6 +20,7 @@ from pathlib import Path
 
 import httpx
 import pytest
+from space_registry_fake import REGISTRY_MARKER, registry_row
 from umrs.knowledge import llm_chat
 from umrs.knowledge.retrieval import calibrate, dense, pipeline
 from umrs.knowledge.retrieval import hydrate as hydrate_mod
@@ -423,7 +424,16 @@ def _corpus_pool(rows):
     """Dense rows (node_id, content, distance, in_scope) and hydrate rows."""
     hydrate_rows = [(n, "g", c, None, f"{n}.md", None, None) for n, c, _d, _s in rows]
     probes = [(i, 0.3) for i in range(len(calibrate.NULL_PROBES_V1))]
-    return FakePool([("unnest(", probes), ("<=>", rows), ("LEFT JOIN", hydrate_rows)])
+    count = [(rows[0][3] if rows else 0, None)]
+    return FakePool(
+        [
+            (REGISTRY_MARKER, [registry_row("t_e5", "/models/e5-base-v2", 2)]),
+            ("unnest(", probes),
+            ("SELECT count(*), max(e.updated_at)", count),
+            ("<=>", rows),
+            ("LEFT JOIN", hydrate_rows),
+        ]
+    )
 
 
 def test_the_retrieve_path_never_calls_a_chat_model(monkeypatch):
@@ -574,31 +584,94 @@ def test_legacy_mode_returns_b0_ids_in_b0_order():
 # ── the dense lane ──────────────────────────────────────────────────────────
 
 
-def test_the_dense_lane_scans_one_space_chunks_only_with_the_graph_rule():
-    pool = FakePool([("<=>", [("node-chunk-a-0", json.dumps(_content("a", 0)), 0.2, 12)])])
+def _space_pool(answers=(), *, model="m", dim=1):
+    """A FakePool whose registry holds one active space for ``model``."""
+    return FakePool([(REGISTRY_MARKER, [registry_row("t_space", model, dim)]), *answers])
+
+
+def _graph_scan():
+    """One dense scan over two selected graphs minus one, in a 2-d space."""
     from umrs.knowledge.graph_registry import default_graph_id
 
-    spec = _spec(graph_ids=("g-x", default_graph_id("p1")), exclude_graph_ids=("g-y",))
-    lane = dense.dense_lane(pool, [[1.0, 0.0]], "/models/e5-base-v2", spec, limit=50)
-    [(sql, params)] = pool.calls
-    assert "n.content->>'kind' = 'chunk'" in sql and "count(*) OVER ()" in sql
-    assert "(n.graph_id = ANY(%s) OR (n.graph_id = '' AND ('g-' || left(" in sql
-    assert "n.graph_id <> ALL(%s)" in sql and "ORDER BY distance ASC, e.node_id LIMIT %s" in sql
+    pool = _space_pool(
+        [
+            ("SELECT count(*)", [(12, None)]),
+            ("<=>", [("node-chunk-a-0", json.dumps(_content("a", 0)), 0.2)]),
+        ],
+        model="/models/e5-base-v2",
+        dim=2,
+    )
     selected = ["g-x", default_graph_id("p1")]
-    assert params[1:3] == (selected, selected)
-    assert params[-3:] == ("%/e5-base-v2", ["g-y"], 50)
+    spec = _spec(graph_ids=tuple(selected), exclude_graph_ids=("g-y",))
+    lane = dense.dense_lane(pool, [[1.0, 0.0]], "/models/e5-base-v2", spec, limit=50)
+    return lane, pool.calls, selected
+
+
+def test_the_dense_lane_scans_one_space_chunks_only_with_the_graph_rule():
+    _lane, calls, _selected = _graph_scan()
+    registry, count, (sql, _params) = calls
+    assert REGISTRY_MARKER in registry[0] and "SELECT count(*)" in count[0]
+    assert "n.content->>'kind' = 'chunk'" in sql and "count(*) OVER ()" not in sql
+    assert "e.model_name IN ('/models/e5-base-v2')" in sql and " LIKE " not in sql
+    assert "(n.graph_id = ANY(%s) OR (n.graph_id = '' AND ('g-' || left(" in sql
+    assert "n.graph_id <> ALL(%s)" in sql
+
+
+def test_the_dense_read_is_an_hnsw_pool_re_sorted_exactly():
+    _lane, calls, selected = _graph_scan()
+    _registry, count, (sql, params) = calls
+    assert "ORDER BY (e.embedding)::vector(2) <=> (%s::vector)::vector(2) LIMIT %s" in sql
+    assert sql.startswith("SET LOCAL hnsw.iterative_scan = relaxed_order; ")
+    assert sql.endswith("ORDER BY distance ASC, c.node_id LIMIT %s")
+    literal = dense.vector_literal([1.0, 0.0])
+    assert params == (literal, selected, selected, ["g-y"], literal, 100, 50)
+    assert count[1] == (selected, selected, ["g-y"])
+
+
+def test_the_dense_lane_reports_its_space_and_scope():
+    lane, _calls, _selected = _graph_scan()
     [c] = lane.candidates
     assert (c.cosine, c.artifact_id, lane.info["in_scope"]) == (pytest.approx(0.8), "a", 12)
+    assert (lane.info["space_id"], lane.info["index"]) == ("t_space", "hnsw_t_space")
 
 
 def test_a_shared_graph_never_reads_legacy_rows_of_another_project():
-    pool = FakePool()
+    pool = _space_pool()
     dense.dense_lane(pool, [[1.0]], "m", _spec(graph_ids=("g-shared",)), limit=5)
-    sql, params = pool.calls[0]
+    sql, params = next(call for call in pool.calls if "<=>" in call[0])
     # '' rows only of a project whose DEFAULT graph id is selected: g-shared is
     # no project's default graph, so none.
     assert f"(n.graph_id = '' AND {dense.DEFAULT_GRAPH_SQL} = ANY(%s))" in sql
     assert params[1:3] == (["g-shared"], ["g-shared"])
+
+
+def test_an_unregistered_query_model_is_an_unavailable_lane_by_name():
+    pool = _space_pool(model="other-model")
+    lane = dense.dense_lane(pool, [[1.0]], "m", _spec(), limit=5)
+    assert lane.status == "unavailable"
+    assert lane.reason == "dense lane refused (knowledge.embedding_space_unregistered)"
+    assert not any("<=>" in sql for sql, _p in pool.calls)
+
+
+def test_a_query_vector_of_another_dimension_is_refused_by_name():
+    lane = dense.dense_lane(_space_pool(dim=3), [[1.0]], "m", _spec(), limit=5)
+    assert lane.status == "unavailable"
+    assert lane.reason == "dense lane refused (knowledge.embedding_dimension_mismatch)"
+
+
+def test_an_empty_registry_stands_for_the_bundled_space():
+    pool = FakePool([("SELECT count(*)", [(0, None)])])
+    vector = [0.0] * 768
+    lane = dense.dense_lane(pool, [vector], "/opt/umrs/models/e5-base-v2", _spec(), limit=5)
+    assert lane.status == "ok" and lane.info["space_id"] == "e5_base_v2"
+    sql = next(sql for sql, _p in pool.calls if "<=>" in sql)
+    assert "ORDER BY (e.embedding)::vector(768) <=>" in sql
+
+
+def test_legacy_mode_never_reads_the_registry():
+    pool = FakePool([("<=>", [("n1", "{}", 0.1)])])
+    dense.dense_lane(pool, [[1.0]], "m", _spec(threshold=0.5), limit=5)
+    assert [REGISTRY_MARKER in sql for sql, _p in pool.calls] == [False]
 
 
 def test_query_variants_rank_separately_for_fusion():
@@ -611,7 +684,7 @@ def test_query_variants_rank_separately_for_fusion():
         return out
 
     lane = dense.dense_lane(
-        FakePool([("<=>", answer)]), [[1.0], [0.5]], "m", _spec(queries=("a", "b")), limit=5
+        _space_pool([("<=>", answer)]), [[1.0], [0.5]], "m", _spec(queries=("a", "b")), limit=5
     )
     by_id = {c.node_id: c for c in lane.candidates}
     assert by_id["y"].lane_ranks == {"dense": 1, "dense#0": 2, "dense#1": 1}
@@ -942,11 +1015,13 @@ def test_a_selected_default_graph_of_another_project_reads_its_legacy_rows():
 
 
 def test_the_dense_lane_reads_the_scopes_last_re_embed():
-    row = ("node-chunk-a-0", json.dumps(_content("a", 0)), 0.2, 12, "2026-10-10 01:00:00+00")
-    pool = FakePool([("<=>", [row])])
-    lane = dense.dense_lane(pool, [[1.0, 0.0]], "/models/e5-base-v2", _spec(), limit=50)
-    [(sql, _params)] = pool.calls
-    assert "count(*) OVER () AS in_scope, max(e.updated_at) OVER () AS stamp" in sql
+    count = (12, "2026-10-10 01:00:00+00")
+    row = ("node-chunk-a-0", json.dumps(_content("a", 0)), 0.2)
+    pool = _space_pool([("SELECT count(*)", [count]), ("<=>", [row])], dim=2)
+    lane = dense.dense_lane(pool, [[1.0, 0.0]], "m", _spec(), limit=50)
+    sql = next(sql for sql, _p in pool.calls if "SELECT count(*)" in sql)
+    assert sql.startswith("SELECT count(*), max(e.updated_at) FROM knowledge_node_embeddings")
+    assert "e.model_name IN ('m')" in sql
     assert (lane.info["in_scope"], lane.info["stamp"]) == (12, "2026-10-10 01:00:00+00")
 
 

@@ -17,7 +17,8 @@ profile). The guarantees are the HPC lane's, on this host:
    no-new-privileges, a read-only root, ``--unsetenv-all``, pids, memory and
    file-size limits, an image from the site's allow-list (``--pull=never``)
    and the staged mounts only. The podman CLI itself runs with a scrubbed
-   environment, so no ``AWS_*`` or other server variable reaches it.
+   environment, so no ``AWS_*`` or other server variable reaches it. The step
+   runs as :func:`step_user` under ``--userns=keep-id`` (rootless podman).
 4. The reply is ``reply/output.json`` — JSON of at most 4 MiB, opened without
    following a link; a step that wrote only a pickle fails by name (the
    server never unpickles what a step wrote).
@@ -40,6 +41,7 @@ import errno
 import logging
 import os
 import pickle
+import re
 import shutil
 import stat
 import subprocess
@@ -155,6 +157,33 @@ def _env_seconds() -> float:
         return float(_env("UMRS_STEP_EXECUTOR_TIMEOUT") or 0)
     except ValueError:
         return 0.0
+
+
+#: ``UMRS_STEP_USER``: numeric ``uid:gid`` only (no name lookup in the image).
+_STEP_USER_RE = re.compile(r"^[0-9]{1,10}:[0-9]{1,10}$")
+
+
+def step_user() -> str:
+    """The ``--user`` of a step container: ``UMRS_STEP_USER`` or this process.
+
+    Under ``--userns=keep-id`` the step must run as the uid that owns the
+    workdir on the podman host. A UMRS process on the host is that uid, so
+    the default is ``os.getuid():os.getgid()``. A containerised UMRS (the
+    stand-alone stack, S-D64-3) runs as root in its own user namespace, while
+    the files it creates belong to the host user that runs rootless podman:
+    ``--user=0:0`` maps to a subordinate uid that can read none of the staged
+    files (measured 2026-11-27). Such a deployment names the host user here.
+    A malformed value refuses the step by name.
+    """
+    raw = _env("UMRS_STEP_USER")
+    if not raw:
+        return f"{os.getuid()}:{os.getgid()}"
+    if not _STEP_USER_RE.match(raw):
+        raise StepExecutionError(
+            "setup",
+            f"UMRS_STEP_USER={raw!r} is not a numeric uid:gid; nothing was run",
+        )
+    return raw
 
 
 def podman_env() -> dict[str, str]:
@@ -507,6 +536,7 @@ class PodmanStagedStepExecutor:
         self, entrypoint: str, config: dict[str, Any], ctx: StepContext
     ) -> StepResult:
         self._check_lane(ctx)
+        step_user()  # a malformed UMRS_STEP_USER refuses before staging
         image = self._lane_image(ctx)
         gpu = self._gpu_devices(ctx)
         plan = build_stage_plan(ctx, caps=self.caps)
@@ -619,6 +649,7 @@ class PodmanStagedStepExecutor:
         """``podman run`` of one staged step (ADR-091 D-1): no network, every
         capability dropped, no new privileges, a read-only root, the
         container's environment the base set and the staged names only."""
+        user = step_user()
         argv = [
             self.podman_bin,
             "run",
@@ -635,7 +666,7 @@ class PodmanStagedStepExecutor:
             "--cap-drop=all",
             "--security-opt=no-new-privileges",
             "--userns=keep-id",
-            f"--user={os.getuid()}:{os.getgid()}",
+            f"--user={user}",
             f"--name={name or self._container_name(workdir)}",
             *self._limits(),
         ]
