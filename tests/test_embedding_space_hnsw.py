@@ -26,7 +26,6 @@ from typing import Any
 
 import numpy as np
 import pytest
-from kn_s6_pending import pending
 from space_registry_fake import REGISTRY_MARKER, registry_row
 from umrs.api import knowledge_query as kq
 from umrs.knowledge import embedding_space_index as esi
@@ -436,8 +435,6 @@ def test_the_null_is_recomputed_after_a_reindex(corpus):
 
 
 @live
-@pending("kn-s6-01", es.index_actions, es.index_signature, es.comment_index_sql)
-@pending("kn-s6-02", esi.read_index_states, esi.plan_index_work, esi.apply_index_work)
 def test_the_index_runner_converges_on_a_live_database(corpus):
     pool, _vectors = corpus
     conn = pool.getconn()

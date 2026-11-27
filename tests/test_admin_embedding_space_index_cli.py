@@ -11,7 +11,6 @@ import contextlib
 from typing import Any
 
 import pytest
-from kn_s6_pending import pending
 from umrs.cli.admin import embedding_spaces as cli
 from umrs.cli.admin.main import build_parser
 from umrs.knowledge import embedding_space_index, embedding_space_store
@@ -30,8 +29,6 @@ WORK = [
     IndexWork("me5b", "hnsw_me5b", ("CREATE me5b", "COMMENT me5b")),
     IndexWork("old", "hnsw_old", ("DROP old",)),
 ]
-
-implemented = pending("kn-s6-03", cli.cmd_index)
 
 
 @pytest.fixture()
@@ -92,14 +89,12 @@ def test_the_index_verb_parses_spaces_and_dry_run():
 # ── the handler ─────────────────────────────────────────────────────────────
 
 
-@implemented
 def test_index_builds_every_planned_statement(calls, capsys):
     assert _run(["index"]) == cli.EXIT_OK
     out = capsys.readouterr().out.splitlines()
     assert out == ["ran: CREATE me5b", "ran: COMMENT me5b", "ran: DROP old"]
 
 
-@implemented
 def test_index_calls_the_modules_in_order(calls):
     assert _run(["index"]) == cli.EXIT_OK
     assert _names(calls) == [
@@ -113,7 +108,6 @@ def test_index_calls_the_modules_in_order(calls):
     ]
 
 
-@implemented
 def test_index_passes_the_connection_and_results_along(calls):
     assert _run(["index"]) == cli.EXIT_OK
     assert calls[1] == ("list_spaces", (CONN,), {"include_retired": True})
@@ -126,13 +120,11 @@ def test_index_passes_the_connection_and_results_along(calls):
     assert calls[6] == ("apply_index_work", (CONN, WORK), {})
 
 
-@implemented
 def test_index_passes_the_selected_spaces(calls):
     assert _run(["index", "--space", "me5b"]) == cli.EXIT_OK
     assert calls[3][2] == {"only": ["me5b"]}
 
 
-@implemented
 def test_dry_run_prints_and_runs_nothing(calls, capsys):
     assert _run(["index", "--dry-run"]) == cli.EXIT_OK
     out = capsys.readouterr().out.splitlines()
@@ -140,7 +132,6 @@ def test_dry_run_prints_and_runs_nothing(calls, capsys):
     assert "apply_index_work" not in _names(calls)
 
 
-@implemented
 def test_nothing_to_do_says_so(monkeypatch, calls, capsys):
     _patch(monkeypatch, calls, embedding_space_index, "plan_index_work", [])
     assert _run(["index"]) == cli.EXIT_OK
@@ -148,7 +139,6 @@ def test_nothing_to_do_says_so(monkeypatch, calls, capsys):
     assert "apply_index_work" not in _names(calls)
 
 
-@implemented
 def test_coverage_warnings_go_to_stderr(monkeypatch, calls, capsys):
     _patch(monkeypatch, calls, embedding_space_index, "coverage_warnings", ["me5b: a", "x: b"])
     assert _run(["index", "--dry-run"]) == cli.EXIT_OK
@@ -157,7 +147,6 @@ def test_coverage_warnings_go_to_stderr(monkeypatch, calls, capsys):
     assert "warning" not in captured.out
 
 
-@implemented
 def test_an_unknown_space_is_refused(monkeypatch, calls, capsys):
     refusal = EmbeddingSpaceError(CODE_INVALID, "no space 'nope'")
     _patch(monkeypatch, calls, embedding_space_index, "plan_index_work", refusal)
@@ -165,7 +154,6 @@ def test_an_unknown_space_is_refused(monkeypatch, calls, capsys):
     assert capsys.readouterr().err.startswith(f"error: {CODE_INVALID}")
 
 
-@implemented
 def test_no_database_exits_with_its_code(monkeypatch, capsys):
     @contextlib.contextmanager
     def missing():

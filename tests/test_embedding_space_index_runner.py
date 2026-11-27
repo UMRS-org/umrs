@@ -12,7 +12,6 @@ from dataclasses import replace
 from typing import Any
 
 import pytest
-from kn_s6_pending import pending
 from umrs.knowledge import embedding_space_index as esi
 from umrs.knowledge.embedding_spaces import (
     CODE_INVALID,
@@ -21,14 +20,6 @@ from umrs.knowledge.embedding_spaces import (
     IndexState,
 )
 
-pytestmark = pending(
-    "kn-s6-02",
-    esi.read_index_states,
-    esi.plan_index_work,
-    esi.apply_index_work,
-    esi.stored_model_names,
-    esi.coverage_warnings,
-)
 
 A = EmbeddingSpace(space_id="aa", model_name="/models/aa", dimension=4)
 B = EmbeddingSpace(space_id="bb", model_name="/models/bb", dimension=8)
@@ -167,8 +158,9 @@ def test_apply_refuses_a_connection_without_the_attribute():
         def cursor(self):  # pragma: no cover - never reached
             raise AssertionError("must not run")
 
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError) as raised:
         esi.apply_index_work(Bare(), WORK)
+    assert str(raised.value).startswith(esi.CODE_NEEDS_AUTOCOMMIT)
 
 
 def test_a_failing_statement_stops_the_run():

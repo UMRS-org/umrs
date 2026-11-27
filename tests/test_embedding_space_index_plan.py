@@ -10,7 +10,6 @@ from __future__ import annotations
 from dataclasses import replace
 
 import pytest
-from kn_s6_pending import pending
 from umrs.knowledge import embedding_spaces as es
 from umrs.knowledge.embedding_spaces import (
     BUNDLED_SPACE,
@@ -19,13 +18,6 @@ from umrs.knowledge.embedding_spaces import (
     IndexState,
 )
 
-pytestmark = pending(
-    "kn-s6-01",
-    es.index_signature,
-    es.comment_index_sql,
-    es.index_actions,
-    es.uncovered_names,
-)
 
 SPACE = EmbeddingSpace(
     space_id="me5b",
