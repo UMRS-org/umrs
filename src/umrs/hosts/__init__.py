@@ -8,6 +8,10 @@ package imports the r4 extension (ADR-117 D-3).
 ``HostRegistry`` (ADR-098 D-4, SH-H1a) is the per-site ``hosts`` table the
 inline front registers itself in; ``umrs.hosts.janitor`` heartbeats it and
 ends the sessions of hosts that miss their heartbeats (``host_lost``).
+
+``umrs.hosts.identity`` and ``umrs.hosts.enroll`` (ADR-098 D-5/D-6, SH-H1b)
+hold agent-host identity: one-time enrollment tokens, enrolled ed25519
+public keys, short-lived signed host tokens and the host binding of leases.
 """
 
 from umrs.hosts.inline import InlineHostRuntime, WorkerRunArgs, worker_run_args

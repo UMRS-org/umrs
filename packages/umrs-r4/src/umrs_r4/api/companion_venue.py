@@ -43,6 +43,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 from umrs.api.session_policy_errors import policy_typed  # re-export (U3 S1 item 5)
 from umrs.api.typed_errors import PlatformError, raise_typed
+from umrs.hosts.identity import HOST_TOKEN_HEADER
 from umrs.session_policy import PolicyError
 
 from umrs_r4.api._companion_session_bus import (
@@ -62,6 +63,7 @@ from umrs_r4.api._rail_identity import (
     RailPrincipal,
     attest,
     bearer_token,
+    rail_host_keys,
     resolve_rail_principal,
     revoke_attestation,
 )
@@ -379,7 +381,8 @@ async def resume_venue(session_id: str, request: Request) -> dict[str, Any]:
 
 
 def rail_principal(request: Request, session_id: str) -> RailPrincipal:
-    """FastAPI dependency: lease-token principal or a named 401."""
+    """FastAPI dependency: host token (agent hosts), then the lease-token
+    principal; a named 401, or 403 ``rail.host_mismatch`` (ADR-098 D-6)."""
     service = get_venue_service(request)
     client_ip = request.client.host if request.client else ""
     try:
@@ -389,9 +392,17 @@ def rail_principal(request: Request, session_id: str) -> RailPrincipal:
             client_ip=client_ip,
             broker=service.broker,
             ip_check=service.config.rail_ip_check,
+            headers=request.headers,
+            host_keys=rail_host_keys(request.app.state),
         )
     except RailAuthError as exc:
-        raise_typed(PlatformError.companionvenue("unauthorized", exc.reason), cause=exc)
+        raise_typed(_rail_refusal(exc), cause=exc)
+
+
+def _rail_refusal(exc: RailAuthError) -> PlatformError:
+    if exc.host_mismatch:
+        return PlatformError.rail("host_mismatch", "lease is bound to another host")
+    return PlatformError.companionvenue("unauthorized", exc.reason)
 
 
 @router.get("/{session_id}/rail/snapshot", response_model=dict[str, Any])
@@ -664,6 +675,7 @@ _RAIL_GW_DROP_HEADERS = frozenset(
         "x-verified-project-memberships",
         "x-api-key",
         RAIL_ATTESTATION_HEADER,
+        HOST_TOKEN_HEADER,
     }
 )
 # ADR-092 slice 8: a plan-run worker reaches the traces family for its own

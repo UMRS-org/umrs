@@ -642,6 +642,12 @@ ONTOLOGY_ERRORS = {
     "ontology.conflict": 409,
 }
 
+RAIL_ERRORS = {
+    # ADR-098 D-6 (SH-H1b, 2026-11-27): a host-bound lease presented with
+    # another host's token, on the worker rail or the inference proxy.
+    "rail.host_mismatch": 403,
+}
+
 
 @dataclass(frozen=True)
 class PlatformError:
@@ -1037,6 +1043,15 @@ class PlatformError:
         )
 
     @classmethod
+    def rail(cls, name: str, message: str, **detail: Any) -> PlatformError:
+        return cls(
+            code=f"rail.{name}",
+            message=message,
+            http_status=RAIL_ERRORS[f"rail.{name}"],
+            detail=detail,
+        )
+
+    @classmethod
     def adaptive(cls, name: str, message: str, **detail: Any) -> PlatformError:
         return cls(
             code=f"adaptive.{name}",
@@ -1424,6 +1439,7 @@ def known_error_codes() -> dict[str, int]:
         WORKFLOWS2_ERRORS,
         HPCACCESS_ERRORS,
         ONTOLOGY_ERRORS,
+        RAIL_ERRORS,
     ):
         out.update(fam)
     return out

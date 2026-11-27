@@ -103,8 +103,13 @@ class SecretRedactingFilter(logging.Filter):
 
     _PATTERNS = (
         re.compile(r"(?i)bearer\s+\S+"),
-        re.compile(r"(?i)(authorization|x-api-key|x-goog-api-key|api-key)[:=]\s*\S+"),
+        re.compile(
+            r"(?i)(authorization|x-api-key|x-goog-api-key|api-key"
+            r"|x-umrs-host-token)[:=]\s*\S+"
+        ),
         re.compile(r"sk-[A-Za-z0-9_-]{4,}"),
+        # ADR-098 D-5: host tokens and enrollment tokens.
+        re.compile(r"umrs-(host\.v1\.|enroll-)\S+"),
     )
 
     def filter(self, record: logging.LogRecord) -> bool:
@@ -203,7 +208,23 @@ def _denied(request: Request, lease: Any, status: int, reason: str) -> JSONRespo
 
 
 def _verbatim_error_status(reason: str) -> int:
-    return 401 if reason.startswith(("token", "lease", "ip", "sid")) else 403
+    return 401 if reason.startswith(("token", "lease", "ip", "sid", "host_")) else 403
+
+
+def _request_host(request: Request) -> tuple[str, Any]:
+    """(verified host id or '', refusal) from the optional host token,
+    checked before the lease (ADR-098 D-5/D-6)."""
+    from umrs.hosts.identity import (
+        HostAuthError,
+        host_keys_from_state,
+        presented_host,
+    )
+
+    try:
+        store = host_keys_from_state(request.app.state)
+        return presented_host(request.headers, store), None
+    except HostAuthError as exc:
+        return "", _json_error(exc.status, exc.reason)
 
 
 def _source_header(request: Request) -> str | None:
@@ -219,6 +240,9 @@ def _prepare(request: Request) -> _Prepared:
     token = extract_session_token(request.headers)
     if not token:
         return _Prepared(error=_json_error(401, "token_invalid"))
+    host, refusal = _request_host(request)
+    if refusal is not None:
+        return _Prepared(error=refusal)
     pool = getattr(request.app.state, "umrs_db_pool", None)
     lease = lease_by_token(pool, token)
     client_ip = _client_ip(request)
@@ -227,6 +251,7 @@ def _prepare(request: Request) -> _Prepared:
         sid=sid,
         client_ip=client_ip,
         source_override=_source_header(request),
+        host=host,
     )
     logger.info(
         "infer_eval sid=%s client=%s verdict=%s path=%s method=%s",
@@ -690,12 +715,16 @@ async def _proxy_site(request: Request) -> Any:
     token = extract_session_token(request.headers)
     if not token:
         return _json_error(401, "token_invalid")
+    host, refusal = _request_host(request)
+    if refusal is not None:
+        return refusal
     pool = getattr(request.app.state, "umrs_db_pool", None)
     verdict = check_lease(
         lease_by_token(pool, token),
         sid=request.path_params["sid"],
         client_ip=_client_ip(request),
         source_override=SITE_SOURCE_ID,
+        host=host,
     )
     if verdict.deny():
         status = _verbatim_error_status(verdict.reason)

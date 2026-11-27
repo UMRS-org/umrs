@@ -3,10 +3,19 @@
 The sandbox worker holds exactly one credential: its session token (a
 broker lease, hash-only server-side). The rail routes authenticate it here:
 
+    X-UMRS-Host-Token: <host token>          (agent hosts only, ADR-098 D-5)
+      → umrs.hosts.identity.verify_host_token → the verified host id
     Authorization: Bearer <token>
       → SecretBroker.lease_by_plaintext_token
       → valid · scope == "inference" · lease.session_id == {session_id} in path
-      → (optional) request.client.host == lease.egress_ip
+      → lease host == presented host (ADR-098 D-6; else 403 rail.host_mismatch,
+        or host_token_required when an agent-bound lease comes without one)
+      → (optional, inline only) request.client.host == lease.egress_ip
+
+The host is verified before the lease, so an unenrolled key, a forged or
+expired host token is refused (401) without touching the lease. A lease
+bound to an agent host skips the IP check: the host token replaces it,
+because rootless pasta defeats egress-IP binding.
 
 The owner is ``lease.owner_id``; bodies never carry identity. User JWTs
 never reach these routes (the sidecar strips the gateway identity headers
@@ -20,14 +29,28 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from umrs.hosts.identity import (
+    HOST_MISMATCH,
+    HostAuthError,
+    host_keys_from_state,
+    lease_host_refusal,
+    presented_host,
+)
+
 
 class RailAuthError(Exception):
     """Named refusal reason (token_invalid | lease_revoked | lease_expired |
-    scope_mismatch | sid_mismatch | ip_mismatch)."""
+    scope_mismatch | sid_mismatch | ip_mismatch | host_token_invalid |
+    host_token_expired | host_unenrolled | host_token_required |
+    rail.host_mismatch). Every reason is a 401 except the host mismatch (403)."""
 
     def __init__(self, reason: str) -> None:
         super().__init__(reason)
         self.reason = reason
+
+    @property
+    def host_mismatch(self) -> bool:
+        return self.reason == HOST_MISMATCH
 
 
 @dataclass(frozen=True)
@@ -49,24 +72,27 @@ def bearer_token(headers: Any) -> str | None:
     return parts[1].strip()
 
 
-def _lease_refusal(lease: Any, session_id: str, client_ip: str, ip_check: bool) -> str:
+def _lease_refusal(
+    lease: Any, session_id: str, client_ip: str, ip_check: bool, host: str = ""
+) -> str:
     """The named reason a lease may not ride this rail ("" = accepted),
-    checked in the historical order."""
+    checked in the historical order; the host binding comes before the IP,
+    which is not checked for a verified host."""
+    host_reason = lease_host_refusal(lease, host)
     checks = (
         (lease.is_revoked, "lease_revoked"),
         (lease.is_expired, "lease_expired"),
         (lease.scope != "inference", "scope_mismatch"),
         (lease.session_id != session_id, "sid_mismatch"),
-        (_ip_mismatch(lease, client_ip, ip_check), "ip_mismatch"),
+        (bool(host_reason), host_reason),
+        (_ip_mismatch(lease, client_ip, ip_check and not host), "ip_mismatch"),
         (not lease.owner_id, "token_invalid"),
     )
     return next((reason for failed, reason in checks if failed), "")
 
 
 def _ip_mismatch(lease: Any, client_ip: str, ip_check: bool) -> bool:
-    return bool(
-        ip_check and lease.egress_ip and client_ip and client_ip != lease.egress_ip
-    )
+    return bool(ip_check and lease.egress_ip and client_ip and client_ip != lease.egress_ip)
 
 
 def resolve_rail_principal(
@@ -76,12 +102,18 @@ def resolve_rail_principal(
     client_ip: str,
     broker: Any,
     ip_check: bool = True,
+    headers: Any = None,
+    host_keys: Any = None,
 ) -> RailPrincipal:
-    """Pure resolver (no HTTP): raises RailAuthError with the named reason."""
+    """Pure resolver (no HTTP): raises RailAuthError with the named reason.
+
+    ``headers`` carry the optional host token, verified against
+    ``host_keys`` (a ``HostKeyStore``) before the lease is read."""
+    host = _verified_host(headers, host_keys)
     lease = broker.lease_by_plaintext_token(token) if token else None
     if lease is None:
         raise RailAuthError("token_invalid")
-    reason = _lease_refusal(lease, session_id, client_ip, ip_check)
+    reason = _lease_refusal(lease, session_id, client_ip, ip_check, host)
     if reason:
         raise RailAuthError(reason)
     return RailPrincipal(
@@ -90,6 +122,19 @@ def resolve_rail_principal(
         lease_id=str(lease.lease_id),
         lease=lease,
     )
+
+
+def _verified_host(headers: Any, host_keys: Any) -> str:
+    """The host a request proves it comes from ('' = none presented)."""
+    try:
+        return presented_host(headers, host_keys)
+    except HostAuthError as exc:
+        raise RailAuthError(exc.reason) from exc
+
+
+def rail_host_keys(state: Any) -> Any:
+    """The site's enrolled host keys for the rail (core accessor)."""
+    return host_keys_from_state(state)
 
 
 # ── rail attestation (ADR-092 slice 8) ─────────────────────────────────────

@@ -14,8 +14,13 @@ import pytest
 from umrs.jobs.secret_broker import SecretBroker
 
 _MIGRATIONS_DIR = Path(__file__).resolve().parents[1] / "src/umrs/migrations"
-# 0085 creates the tables; 0124 adds the issuing site (RS-0 S-2).
-_MIGRATIONS = ("0085_secret_leases.sql", "0124_secret_leases_venue.sql")
+# 0085 creates the tables; 0124 adds the issuing site (RS-0 S-2); the
+# host-identity migration binds leases to a host (ADR-098 D-6).
+_MIGRATIONS = (
+    "0085_secret_leases.sql",
+    "0124_secret_leases_venue.sql",
+    next(_MIGRATIONS_DIR.glob("*_host_identity.sql")).name,
+)
 
 _TABLES = "secret_audit, secret_leases"
 

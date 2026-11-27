@@ -5,7 +5,8 @@ asyncpg when the server runs with one; the sync fallback maps the R0-2
 broker's pool). No lease caching: revocation must deny the NEXT request.
 
 Checks (design §2.3): exists · not expired · not revoked ·
-``session_id == <sid>`` · client IP == ``lease.egress_ip`` · source ∈
+``session_id == <sid>`` · lease host == the host token's host (ADR-098
+D-6) · client IP == ``lease.egress_ip`` (inline leases only) · source ∈
 ``lease.source_ids`` (default source when no override header).
 """
 
@@ -21,7 +22,9 @@ from umrs.jobs.secret_broker import SecretLease
 @dataclass(frozen=True)
 class LeaseVerdict:
     ok: bool
-    reason: str = ""  # token_invalid | lease_expired | lease_revoked | sid_mismatch | ip_mismatch | source_not_in_lease
+    # token_invalid | lease_expired | lease_revoked | sid_mismatch |
+    # host_token_required | rail.host_mismatch | ip_mismatch | source_not_in_lease
+    reason: str = ""
     lease: SecretLease | None = None
     source_id: str = ""
 
@@ -59,22 +62,38 @@ def check_lease(
     sid: str,
     client_ip: str,
     source_override: str | None,
+    host: str = "",
 ) -> LeaseVerdict:
-    """Pure verdict — no I/O. ``lease`` None = unknown token."""
+    """Pure verdict — no I/O. ``lease`` None = unknown token.
+
+    ``host`` is the host a verified host token named ('' = none; ADR-098
+    D-6): the lease must be bound to it, and the IP check is skipped for
+    it (the host token replaces egress-IP binding)."""
     if lease is None:
         return LeaseVerdict(ok=False, reason="token_invalid")
-    if lease.is_revoked:
-        return LeaseVerdict(ok=False, reason="lease_revoked", lease=lease)
-    if _expired(lease):
-        return LeaseVerdict(ok=False, reason="lease_expired", lease=lease)
-    if lease.session_id != sid:
-        return LeaseVerdict(ok=False, reason="sid_mismatch", lease=lease)
-    if lease.egress_ip and client_ip != lease.egress_ip:
-        return LeaseVerdict(ok=False, reason="ip_mismatch", lease=lease)
+    reason = _lease_refusal(lease, sid, client_ip, host)
+    if reason:
+        return LeaseVerdict(ok=False, reason=reason, lease=lease)
     source_id = source_override or lease.default_source_id
     if source_id not in lease.source_ids:
         return LeaseVerdict(ok=False, reason="source_not_in_lease", lease=lease)
     return LeaseVerdict(ok=True, lease=lease, source_id=source_id)
+
+
+def _lease_refusal(lease: SecretLease, sid: str, client_ip: str, host: str) -> str:
+    """The first named refusal, in the historical order ("" = none)."""
+    from umrs.hosts.identity import lease_host_refusal
+
+    host_reason = lease_host_refusal(lease, host)
+    ip_bound = bool(not host and lease.egress_ip and client_ip != lease.egress_ip)
+    checks = (
+        (lease.is_revoked, "lease_revoked"),
+        (_expired(lease), "lease_expired"),
+        (lease.session_id != sid, "sid_mismatch"),
+        (bool(host_reason), host_reason),
+        (ip_bound, "ip_mismatch"),
+    )
+    return next((reason for failed, reason in checks if failed), "")
 
 
 def lease_by_token(pool: Any, token: str) -> SecretLease | None:

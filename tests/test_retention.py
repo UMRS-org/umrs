@@ -13,6 +13,11 @@ from umrs.security.sealed_sources import SealedSourceStore
 _MIGRATIONS = Path(__file__).resolve().parents[1] / "src/umrs/migrations"
 
 
+# 0150 binds leases to a host (ADR-098 D-6): the broker reads host_id.
+def _identity_migration() -> str:
+    return next(_MIGRATIONS.glob("*_host_identity.sql")).name
+
+
 @pytest.fixture
 def pool(request):
     pytest.importorskip("psycopg2")
@@ -30,6 +35,7 @@ def pool(request):
                 "0086_user_sources_sealed.sql",
                 "0087_source_grants.sql",
                 "0124_secret_leases_venue.sql",
+                _identity_migration(),
             ):
                 cur.execute((_MIGRATIONS / mig).read_text())
             cur.execute("TRUNCATE user_source_audit, source_grants, user_sources_sealed")

@@ -85,7 +85,8 @@ def pool():
     with admin.cursor() as cur:
         cur.execute(f"CREATE SCHEMA {schema}")
         cur.execute(f"SET search_path TO {schema}")
-        for name in (*_BASE, _hosts_migration()):
+        identity = next(_MIGRATIONS.glob("*_host_identity.sql")).name
+        for name in (*_BASE, _hosts_migration(), identity):
             cur.execute((_MIGRATIONS / name).read_text())
         cur.execute(_JOBS)
     admin.commit()
