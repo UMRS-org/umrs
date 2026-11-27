@@ -54,27 +54,22 @@ def fold_summary(groups: Iterable[SummaryGroup]) -> dict[str, Any]:
       "by_type": {}, "oldest": None, "newest": None}``.
     - The input iterable is consumed once (it may be a generator).
     """
-    total = 0
+    counted = [group for group in groups if group.n > 0]
     by_status: dict[str, int] = {}
     by_type: dict[str, int] = {}
-    oldest: datetime | None = None
-    newest: datetime | None = None
-
-    for group in groups:
-        if group.n <= 0:
-            continue
-        total += group.n
+    for group in counted:
         by_status[group.status] = by_status.get(group.status, 0) + group.n
         by_type[group.kind] = by_type.get(group.kind, 0) + group.n
-        if group.oldest is not None and (oldest is None or group.oldest < oldest):
-            oldest = group.oldest
-        if group.newest is not None and (newest is None or group.newest > newest):
-            newest = group.newest
-
+    oldest = min((g.oldest for g in counted if g.oldest is not None), default=None)
+    newest = max((g.newest for g in counted if g.newest is not None), default=None)
     return {
-        "total": total,
+        "total": sum(group.n for group in counted),
         "by_status": dict(sorted(by_status.items())),
         "by_type": dict(sorted(by_type.items())),
-        "oldest": oldest.isoformat() if oldest is not None else None,
-        "newest": newest.isoformat() if newest is not None else None,
+        "oldest": _iso(oldest),
+        "newest": _iso(newest),
     }
+
+
+def _iso(moment: datetime | None) -> str | None:
+    return moment.isoformat() if moment is not None else None

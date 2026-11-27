@@ -46,25 +46,30 @@ def parse_fields(
       names in first-seen order, each name once. Names in ``always`` need
       not be in ``allowed``.
     """
-    if raw is None or raw == "":
+    if not raw:
         return None
+    names = _split_names(raw)
+    _refuse_unknown(names, allowed)
+    return tuple(dict.fromkeys((*always, *names)))
 
+
+def _split_names(raw: str) -> list[str]:
+    """The non-empty, stripped names of ``raw``, at most ``MAX_FIELDS``."""
     names = [name.strip() for name in raw.split(",") if name.strip()]
     if not names:
         raise FieldsError("fields: no field names")
     if len(names) > MAX_FIELDS:
         raise FieldsError(f"fields: at most {MAX_FIELDS} names")
+    return names
 
+
+def _refuse_unknown(names: list[str], allowed: frozenset[str]) -> None:
+    """Raise the typed error naming every unknown and every allowed name."""
     unknown = sorted({name for name in names if name not in allowed})
     if unknown:
         raise FieldsError(
-            "fields: unknown "
-            + ", ".join(unknown)
-            + "; allowed: "
-            + ", ".join(sorted(allowed))
+            f"fields: unknown {', '.join(unknown)}; allowed: {', '.join(sorted(allowed))}"
         )
-
-    return tuple(dict.fromkeys((*always, *names)))
 
 
 def project(row: Mapping[str, Any], fields: tuple[str, ...]) -> dict[str, Any]:
