@@ -196,16 +196,23 @@ def spec_resource_refusal(
     return _owned_resource_refusal(job_type, spec, user_id)
 
 
+#: Job types whose backend reads (and records on) the object store bucket
+#: their spec names with the server's credentials: the caller must be able
+#: to use that bucket (ADR-079 owner or ADR-080 grantee).
+BUCKET_SPEC_JOB_TYPES = frozenset({JobType.DATA_INGESTION, JobType.OBJECT_VERIFY})
+
+
 def _owned_resource_refusal(
     job_type: JobType, spec: dict[str, Any], user_id: str
 ) -> str | None:
-    """A data_ingestion bucket / index_build table the caller does not own."""
+    """A data_ingestion / object_verify bucket or an index_build table the
+    caller does not own."""
     from umrs.server.step_staging import bucket_owned_by, database_table_owned_by
 
-    if job_type == JobType.DATA_INGESTION and not bucket_owned_by(
+    if job_type in BUCKET_SPEC_JOB_TYPES and not bucket_owned_by(
         str(spec.get("bucket") or ""), user_id
     ):
-        return "data_ingestion spec.bucket is not a bucket you may use"
+        return f"{job_type.value} spec.bucket is not a bucket you may use"
     if job_type == JobType.INDEX_BUILD and not database_table_owned_by(
         str(spec.get("database") or "").strip(),
         str(spec.get("table") or "").strip(),
