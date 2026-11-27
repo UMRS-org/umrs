@@ -76,7 +76,27 @@ def where_clause(
     Example: ``JobReadFilters(project_id="p", user_id="u")`` gives
     ``("WHERE user_id = %s AND project_id = %s", ["u", "p"])``.
     """
-    raise NotImplementedError("a105-s6a-01")
+    conditions: list[str] = []
+    params: list[Any] = []
+
+    if filters.user_id is not None:
+        conditions.append("user_id = %s")
+        params.append(filters.user_id)
+    if filters.project_id:
+        conditions.append("project_id = %s")
+        params.append(filters.project_id)
+    if filters.status:
+        conditions.append("status = %s")
+        params.append(filters.status)
+    if filters.job_type:
+        conditions.append("job_type = %s")
+        params.append(filters.job_type)
+    if after is not None:
+        conditions.append("(created_at, job_id) < (%s, %s)")
+        params.extend([after.created_at, after.job_id])
+
+    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+    return where, params
 
 
 def page_sql(
@@ -99,7 +119,19 @@ def page_sql(
     ``MIN_LIMIT`` and ``MAX_LIMIT`` inclusive, or ``offset`` is not an
     ``int`` >= 0 (``bool`` is rejected for both).
     """
-    raise NotImplementedError("a105-s6a-01")
+    if (
+        isinstance(limit, bool)
+        or not isinstance(limit, int)
+        or limit < MIN_LIMIT
+        or limit > MAX_LIMIT
+    ):
+        raise ValueError(f"limit must be an int between {MIN_LIMIT} and {MAX_LIMIT}")
+    if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+        raise ValueError("offset must be a non-negative int")
+
+    where, params = where_clause(filters, after)
+    sql = f"SELECT * FROM jobs {where} {JOB_ORDER_SQL} LIMIT %s OFFSET %s"
+    return sql, [*params, limit, offset]
 
 
 def summary_sql(filters: JobReadFilters) -> tuple[str, list[Any]]:
@@ -111,13 +143,20 @@ def summary_sql(filters: JobReadFilters) -> tuple[str, list[Any]]:
     job_type"`` with ``<where>`` from ``where_clause(filters)`` (no keyset;
     a single space when empty). Parameters: the WHERE parameters.
     """
-    raise NotImplementedError("a105-s6a-01")
+    where, params = where_clause(filters)
+    sql = (
+        "SELECT status, job_type, COUNT(*) AS n, "
+        "MIN(created_at) AS oldest, MAX(created_at) AS newest "
+        f"FROM jobs {where} "
+        "GROUP BY status, job_type ORDER BY status, job_type"
+    )
+    return sql, params
 
 
 def position_to_fields(position: JobKeysetPosition) -> dict[str, str]:
     """The cursor payload of a position: ``{"c": created_at.isoformat(),
     "j": job_id}``."""
-    raise NotImplementedError("a105-s6a-01")
+    return {"c": position.created_at.isoformat(), "j": position.job_id}
 
 
 def position_from_fields(fields: dict[str, str]) -> JobKeysetPosition:
@@ -129,4 +168,21 @@ def position_from_fields(fields: dict[str, str]) -> JobKeysetPosition:
     whose message is exactly ``"cursor is malformed"``. Round trip:
     ``position_from_fields(position_to_fields(p)) == p``.
     """
-    raise NotImplementedError("a105-s6a-01")
+    if set(fields) != {"c", "j"}:
+        raise ValueError("cursor is malformed")
+
+    created_text = fields["c"]
+    job_id = fields["j"]
+    if (
+        not isinstance(created_text, str)
+        or not isinstance(job_id, str)
+        or not job_id
+        or len(job_id) > 128
+    ):
+        raise ValueError("cursor is malformed")
+
+    try:
+        created_at = datetime.fromisoformat(created_text)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("cursor is malformed") from exc
+    return JobKeysetPosition(created_at=created_at, job_id=job_id)

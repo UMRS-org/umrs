@@ -46,7 +46,25 @@ def parse_fields(
       names in first-seen order, each name once. Names in ``always`` need
       not be in ``allowed``.
     """
-    raise NotImplementedError("a105-s6a-03")
+    if raw is None or raw == "":
+        return None
+
+    names = [name.strip() for name in raw.split(",") if name.strip()]
+    if not names:
+        raise FieldsError("fields: no field names")
+    if len(names) > MAX_FIELDS:
+        raise FieldsError(f"fields: at most {MAX_FIELDS} names")
+
+    unknown = sorted({name for name in names if name not in allowed})
+    if unknown:
+        raise FieldsError(
+            "fields: unknown "
+            + ", ".join(unknown)
+            + "; allowed: "
+            + ", ".join(sorted(allowed))
+        )
+
+    return tuple(dict.fromkeys((*always, *names)))
 
 
 def project(row: Mapping[str, Any], fields: tuple[str, ...]) -> dict[str, Any]:
@@ -55,4 +73,4 @@ def project(row: Mapping[str, Any], fields: tuple[str, ...]) -> dict[str, Any]:
     A name missing from ``row`` is left out (no ``None`` placeholder).
     Values are the same objects (no copy).
     """
-    raise NotImplementedError("a105-s6a-03")
+    return {name: row[name] for name in fields if name in row}

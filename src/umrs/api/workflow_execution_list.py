@@ -17,8 +17,10 @@ total order, so a keyset position never repeats or skips a record).
 
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 
 from umrs.jobs.read_summary import SummaryGroup
@@ -63,7 +65,23 @@ def execution_row(record: ExecutionRecord) -> dict[str, Any]:
     ``len(record.steps)``; ``steps_done`` counts the steps whose ``status``
     is in ``DONE_STEP_STATES``.
     """
-    raise NotImplementedError("a105-s6a-05")
+    return {
+        "execution_id": record.execution_id,
+        "workflow_name": record.workflow_name,
+        "workflow_version": record.workflow_version,
+        "user_id": record.user_id,
+        "status": record.status,
+        "progress": record.progress,
+        "submitted_at": record.submitted_at,
+        "started_at": record.started_at,
+        "finished_at": record.finished_at,
+        "error": record.error,
+        "steps_done": sum(
+            step.status in DONE_STEP_STATES for step in record.steps.values()
+        ),
+        "steps_total": len(record.steps),
+        "durable_job_id": record.durable_job_id,
+    }
 
 
 def page_executions(
@@ -86,7 +104,27 @@ def page_executions(
     Raise ``ValueError`` when ``limit`` is not an ``int`` >= 1 (``bool`` is
     rejected).
     """
-    raise NotImplementedError("a105-s6a-05")
+    if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+        raise ValueError("limit must be an integer >= 1")
+
+    ordered = sorted(
+        records,
+        key=lambda record: (record.submitted_at, record.execution_id),
+        reverse=True,
+    )
+    if after is not None:
+        after_key = (after.submitted_at, after.execution_id)
+        ordered = [
+            record
+            for record in ordered
+            if (record.submitted_at, record.execution_id) < after_key
+        ]
+
+    page = ordered[:limit]
+    if len(ordered) <= limit:
+        return page, None
+    last = page[-1]
+    return page, ExecutionPosition(last.submitted_at, last.execution_id)
 
 
 def summary_groups(records: Sequence[ExecutionRecord]) -> list[SummaryGroup]:
@@ -98,13 +136,34 @@ def summary_groups(records: Sequence[ExecutionRecord]) -> list[SummaryGroup]:
     (``datetime.fromtimestamp(ts, tz=timezone.utc)``). Groups are sorted by
     ``(status, kind)``. No records: ``[]``.
     """
-    raise NotImplementedError("a105-s6a-05")
+    grouped: dict[tuple[str, str], list[ExecutionRecord]] = {}
+    for record in records:
+        key = (record.status, record.workflow_name)
+        grouped.setdefault(key, []).append(record)
+
+    groups: list[SummaryGroup] = []
+    for status, kind in sorted(grouped):
+        group = grouped[(status, kind)]
+        groups.append(
+            SummaryGroup(
+                status=status,
+                kind=kind,
+                n=len(group),
+                oldest=datetime.fromtimestamp(
+                    min(record.submitted_at for record in group), tz=timezone.utc
+                ),
+                newest=datetime.fromtimestamp(
+                    max(record.submitted_at for record in group), tz=timezone.utc
+                ),
+            )
+        )
+    return groups
 
 
 def position_to_fields(position: ExecutionPosition) -> dict[str, str]:
     """The cursor payload: ``{"t": repr(submitted_at), "e": execution_id}``
     (``repr`` of a float round-trips exactly through ``float()``)."""
-    raise NotImplementedError("a105-s6a-05")
+    return {"t": repr(position.submitted_at), "e": position.execution_id}
 
 
 def position_from_fields(fields: dict[str, str]) -> ExecutionPosition:
@@ -115,4 +174,23 @@ def position_from_fields(fields: dict[str, str]) -> ExecutionPosition:
     string of at most 128 characters. Anything else raises ``ValueError``
     whose message is exactly ``"cursor is malformed"``.
     """
-    raise NotImplementedError("a105-s6a-05")
+    if set(fields) != {"t", "e"}:
+        raise ValueError("cursor is malformed")
+
+    raw_submitted_at = fields["t"]
+    execution_id = fields["e"]
+    if (
+        not isinstance(raw_submitted_at, str)
+        or not isinstance(execution_id, str)
+        or not execution_id
+        or len(execution_id) > 128
+    ):
+        raise ValueError("cursor is malformed")
+
+    try:
+        submitted_at = float(raw_submitted_at)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("cursor is malformed") from exc
+    if not math.isfinite(submitted_at):
+        raise ValueError("cursor is malformed")
+    return ExecutionPosition(submitted_at=submitted_at, execution_id=execution_id)
