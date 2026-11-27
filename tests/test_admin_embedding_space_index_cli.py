@@ -48,6 +48,7 @@ def calls(monkeypatch) -> list[tuple[str, tuple, dict]]:
     _patch(monkeypatch, seen, embedding_space_index, "plan_index_work", WORK)
     _patch(monkeypatch, seen, embedding_space_index, "stored_model_names", ["/x/me5b"])
     _patch(monkeypatch, seen, embedding_space_index, "coverage_warnings", [])
+    _patch(monkeypatch, seen, embedding_space_index, "require_iterative_scan", None)
     _patch(
         monkeypatch,
         seen,
@@ -108,6 +109,7 @@ def test_index_calls_the_modules_in_order(calls):
         "plan_index_work",
         "stored_model_names",
         "coverage_warnings",
+        "require_iterative_scan",
         "apply_index_work",
     ]
 
@@ -121,7 +123,12 @@ def test_index_passes_the_connection_and_results_along(calls):
     assert kwargs == {"only": None}
     assert calls[4] == ("stored_model_names", (CONN,), {})
     assert calls[5] == ("coverage_warnings", ([ME5B, OLD], ["/x/me5b"]), {})
-    assert calls[6] == ("apply_index_work", (CONN, WORK), {})
+
+
+def test_index_checks_pgvector_then_applies_the_planned_work(calls):
+    assert _run(["index"]) == cli.EXIT_OK
+    assert calls[6] == ("require_iterative_scan", (CONN, WORK), {})
+    assert calls[7] == ("apply_index_work", (CONN, WORK), {})
 
 
 def test_index_passes_the_selected_spaces(calls):
@@ -156,6 +163,16 @@ def test_an_unknown_space_is_refused(monkeypatch, calls, capsys):
     _patch(monkeypatch, calls, embedding_space_index, "plan_index_work", refusal)
     assert _run(["index", "--space", "nope"]) == cli.EXIT_REFUSED
     assert capsys.readouterr().err.startswith(f"error: {CODE_INVALID}")
+
+
+def test_an_old_pgvector_refuses_the_build_and_runs_nothing(monkeypatch, calls, capsys):
+    refusal = EmbeddingSpaceError(embedding_space_index.CODE_PGVECTOR_TOO_OLD, "pgvector 0.5.1")
+    _patch(monkeypatch, calls, embedding_space_index, "require_iterative_scan", refusal)
+    assert _run(["index"]) == cli.EXIT_REFUSED
+    assert "apply_index_work" not in _names(calls)
+    assert capsys.readouterr().err.startswith(
+        f"error: {embedding_space_index.CODE_PGVECTOR_TOO_OLD}"
+    )
 
 
 def test_no_database_exits_with_its_code(monkeypatch, capsys):

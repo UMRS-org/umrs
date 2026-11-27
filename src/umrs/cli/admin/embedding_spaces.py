@@ -305,7 +305,9 @@ def cmd_index(args: argparse.Namespace, _store: Any = None) -> int:
     6. with ``args.dry_run``: for each item of ``work``, for each of its
        statements, print ``would run: <statement>``; run nothing; return
        EXIT_OK;
-    7. else ``ran = embedding_space_index.apply_index_work(conn, work)``; print
+    7. else ``embedding_space_index.require_iterative_scan(conn, work)``
+       (an old pgvector refuses a build, KN-S6 review), then
+       ``ran = embedding_space_index.apply_index_work(conn, work)``; print
        ``ran: <statement>`` for each statement of ``ran``; return EXIT_OK.
 
     Call the modules through their module objects (as above) so tests can
@@ -330,6 +332,7 @@ def cmd_index(args: argparse.Namespace, _store: Any = None) -> int:
                 for statement in item.statements:
                     print(f"would run: {statement}")
             return EXIT_OK
+        embedding_space_index.require_iterative_scan(conn, work)
         ran = embedding_space_index.apply_index_work(conn, work)
         for statement in ran:
             print(f"ran: {statement}")

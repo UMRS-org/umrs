@@ -21,6 +21,7 @@ from ``embedding_spaces`` (names validated there).
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -46,6 +47,11 @@ STORED_NAMES_SQL = (
     "SELECT DISTINCT model_name FROM knowledge_node_embeddings ORDER BY model_name"
 )
 CODE_NEEDS_AUTOCOMMIT = "knowledge.embedding_space_index_needs_autocommit"
+#: The installed pgvector version; no parameter, one row or none.
+PGVECTOR_VERSION_SQL = "SELECT extversion FROM pg_extension WHERE extname = 'vector'"
+#: ``hnsw.iterative_scan`` arrived in pgvector 0.8.0 (ADR-083 D-2).
+MIN_PGVECTOR = (0, 8, 0)
+CODE_PGVECTOR_TOO_OLD = "knowledge.embedding_space_index_pgvector_too_old"
 
 Actions = Callable[[EmbeddingSpace, IndexState], tuple[str, ...]]
 Uncovered = Callable[[EmbeddingSpace, Iterable[str]], tuple[str, ...]]
@@ -155,6 +161,43 @@ def apply_index_work(conn: Any, work: Sequence[IndexWork]) -> list[str]:
             cur.execute(statement)
             executed.append(statement)
     return executed
+
+
+def _version(text: str) -> tuple[int, ...]:
+    """``"0.8.1"`` → ``(0, 8, 1)``; a part without leading digits counts 0."""
+    parts = []
+    for part in str(text).split("."):
+        digits = re.match(r"\d+", part)
+        parts.append(int(digits.group()) if digits else 0)
+    return tuple(parts)
+
+
+def _builds(work: Sequence[IndexWork]) -> bool:
+    return any(s.startswith("CREATE INDEX") for item in work for s in item.statements)
+
+
+def require_iterative_scan(conn: Any, work: Sequence[IndexWork]) -> None:
+    """Refuse work that builds an index pgvector cannot read filtered.
+
+    Before pgvector 0.8.0 there is no ``hnsw.iterative_scan``: a filtered
+    read that the planner sends through ``hnsw_<space>`` stops after
+    ``ef_search`` index candidates, so a small project in a big space gets
+    fewer than ``k`` rows, silently (KN-S6 review). Without the index the
+    read stays an exact scan, so refusing the build keeps answers right.
+    Work without a ``CREATE INDEX`` (drops, comments) passes unread."""
+    if not _builds(work):
+        return
+    cur = conn.cursor()
+    cur.execute(PGVECTOR_VERSION_SQL)
+    rows = cur.fetchall()
+    found = str(rows[0][0]) if rows else ""
+    if not found or _version(found) < MIN_PGVECTOR:
+        need = ".".join(str(n) for n in MIN_PGVECTOR)
+        raise EmbeddingSpaceError(
+            CODE_PGVECTOR_TOO_OLD,
+            f"pgvector {found or 'absent'} has no hnsw.iterative_scan; "
+            f"upgrade to {need} or later before building indexes",
+        )
 
 
 def stored_model_names(conn: Any) -> list[str]:

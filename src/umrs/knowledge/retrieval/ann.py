@@ -26,6 +26,7 @@ Composition-layer code: nothing here imports ``umrs.api``.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import replace
 from typing import Any
 
 from umrs.knowledge.embedding_space_guard import SELECT_SPACES_SQL
@@ -33,9 +34,11 @@ from umrs.knowledge.embedding_spaces import (
     BUNDLED_SPACE,
     COLUMNS,
     EmbeddingSpace,
+    normalize_name,
     require_space,
     space_filter_sql,
     space_from_row,
+    space_names,
     vector_cast_sql,
 )
 
@@ -146,9 +149,26 @@ def query_space(pool: Any, model: str) -> EmbeddingSpace:
     """The ACTIVE space the query encoder's ``model`` belongs to.
 
     An empty registry stands for the bundled space alone (the write side's
-    rule). No active space → ``UnregisteredEmbeddingModel``; two →
+    rule), widened by :func:`covering`. No active space →
+    ``UnregisteredEmbeddingModel``; two →
     ``EmbeddingSpaceError`` (ambiguous); a missing table raises the
     driver's error. Callers turn each into an ``unavailable`` lane.
     """
     spaces = read_spaces(pool) or [BUNDLED_SPACE]
-    return require_space(model, spaces)
+    return covering(require_space(model, spaces), model)
+
+
+def covering(space: EmbeddingSpace, model: str) -> EmbeddingSpace:
+    """``space`` whose names also hold the query ``model``'s own name.
+
+    The writer admits a model whose path only basename-matches a bare
+    registered name and stores its vectors under that path, so the read
+    must rank that name too (KN-S6 review). A covered model leaves the space
+    unchanged (the read keeps the index predicate exactly); an uncovered one
+    reads by exact scan until an admin registers it as a legacy name and
+    reruns ``admin embedding-space index`` (which warns about it).
+    """
+    name = normalize_name(model)
+    if not name or name in space_names(space):
+        return space
+    return replace(space, legacy_names=(*space.legacy_names, name))

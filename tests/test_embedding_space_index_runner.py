@@ -216,3 +216,29 @@ def test_a_retired_space_is_never_warned_about():
     lines = esi.coverage_warnings([C], ["/x/cc"], uncovered=_uncovered)
     assert lines == []
     assert esi.coverage_warnings([active_c], ["/x/cc"], uncovered=_uncovered) != []
+
+
+# ── require_iterative_scan (KN-S6 review) ───────────────────────────────────
+
+BUILD = [esi.IndexWork("aa", "hnsw_aa", ("CREATE INDEX CONCURRENTLY x", "COMMENT ON INDEX x"))]
+DROP_ONLY = [esi.IndexWork("cc", "hnsw_cc", ("DROP INDEX CONCURRENTLY IF EXISTS hnsw_cc",))]
+
+
+@pytest.mark.parametrize("version", ["0.5.1", "0.7.4", ""])
+def test_a_build_on_pgvector_before_0_8_is_refused(version):
+    conn = _Conn(rows=[(version,)] if version else [])
+    with pytest.raises(EmbeddingSpaceError) as caught:
+        esi.require_iterative_scan(conn, BUILD)
+    assert str(caught.value).startswith(esi.CODE_PGVECTOR_TOO_OLD)
+    assert conn.executed == [(esi.PGVECTOR_VERSION_SQL, None)]
+
+
+@pytest.mark.parametrize("version", ["0.8.0", "0.8.1", "0.10.0", "1.0"])
+def test_a_build_on_pgvector_0_8_or_later_passes(version):
+    esi.require_iterative_scan(_Conn(rows=[(version,)]), BUILD)
+
+
+def test_work_without_a_build_reads_no_version():
+    conn = _Conn(rows=[("0.5.1",)])
+    esi.require_iterative_scan(conn, DROP_ONLY)
+    assert conn.executed == []
