@@ -349,6 +349,11 @@ COMPANIONVENUE_ERRORS = {
     # ADR-099 D-8: an answer to a remote ask_user question that is no longer
     # pending (answered from another client, expired, cancelled).
     "companionvenue.question_closed": 409,
+    # ADR-098 D-9 (SH-H2, 2026-11-27): host placement. A pinned host
+    # (cpu:<host>) that is undeclared, unregistered, draining, down or refused
+    # by a stage is never replaced by another host; no eligible host at all.
+    "companionvenue.host_unavailable": 409,
+    "companionvenue.no_host": 503,
 }
 
 # Session policy (ADR-099 D-2, D-3; remote-session plan RS-1): limit rules,

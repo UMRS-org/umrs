@@ -819,8 +819,9 @@ def _start_hosts() -> HostMaintenance | None:
     in the hosts registry, then heartbeat it and run the site-scoped hosts
     janitor every ``UMRS_HOST_HEARTBEAT_SEC`` (30 s). Needs the site
     database; ``UMRS_HOSTS_ENABLED=false`` turns it off."""
-    flag = os.environ.get("UMRS_HOSTS_ENABLED", "true").strip().lower()
-    if flag in ("false", "0", "no"):
+    from umrs.hosts.janitor import hosts_enabled
+
+    if not hosts_enabled():
         logger.warning("hosts registry disabled (UMRS_HOSTS_ENABLED)")
         return None
     from umrs.api._asyncpg_pool import _resolve_knowledge_dsn

@@ -134,6 +134,8 @@ def build_venue_service(pool: Any) -> FrontendVenueService:
 
     config = FrontendVenueConfig.from_env()
     broker = get_broker()
+    site = _site_name()
+    hosts, load = _host_sources(pool, site)
     return FrontendVenueService(
         config=config,
         broker=broker,
@@ -141,11 +143,31 @@ def build_venue_service(pool: Any) -> FrontendVenueService:
         provisioner=FrontendPodmanProvisioner(broker, session_root=config.session_root),
         pool=pool,
         job_store=get_optional_job_store(),
-        site_name=_site_name(),
+        site_name=site,
         quota_check=_quota_check(pool),
         start_lock=_start_lock(pool),
         policy_store=PolicyRuleStore(pool),
+        host_registry=hosts,
+        host_load=load,
     )
+
+
+def _host_sources(pool: Any, site: str) -> tuple[Any, Any]:
+    """ADR-098 D-9 (SH-H2): the site's Postgres hosts registry and its live
+    sessions per host; ``(None, None)`` without a pool (the service then
+    places on its own inline host alone). With the registry switched off
+    (``UMRS_HOSTS_ENABLED=false``) the inline host never registers, so the
+    service places on its own inline host too (review SH-H2: it read the
+    empty table and refused every start ``no_host``)."""
+    if pool is None:
+        return None, None
+    from umrs.hosts import HostRegistry
+    from umrs.hosts.janitor import hosts_enabled
+
+    from umrs_r4.quotas.host_load import host_load
+
+    registry = HostRegistry(pool, venue=site) if hosts_enabled() else None
+    return registry, lambda: host_load(pool, site)
 
 
 def _typed(exc: VenueError) -> None:
@@ -198,32 +220,36 @@ class RailApprovalBody(BaseModel):
 # ── owner routes ───────────────────────────────────────────────────────────
 
 
-def _refuse_cpu_venue_on_frontend_rail(
-    request: Request, uid: str, session_id: str
-) -> None:
-    """D-48 (2026-09-22): sessions whose registry venue is cpu:<host> may
-    not start on the frontend rail — the cpu worker rail is the ROADMAP
-    3.2 leg; fail honest, never a silent frontend placement."""
+def _session_pin(request: Request, uid: str, session_id: str) -> str:
+    """The host a session's registry venue ``cpu:<host>`` pins, else "".
+
+    ADR-098 D-9 (SH-H2, 2026-11-27; was a 400 "frontend rail" refusal since
+    D-48 2026-09-22): placement runs the session on that host or refuses it
+    by name (``companionvenue.host_unavailable``), never on the front. An
+    unreadable venue refuses the start (503) instead of dropping the pin."""
+    from umrs.shared.venue_placement import PlacementError, pinned_host
+
     from umrs_r4.api.companion_sessions import snapshot_detail_row
 
     pool = getattr(request.app.state, "umrs_db_pool", None)
     if pool is None:
-        return
+        return ""
     conn = pool.getconn()
     try:
         row = snapshot_detail_row(conn, uid, session_id)
-    except Exception:  # noqa: BLE001 — venue lookup must not block a start
-        return
-    finally:
-        pool.putconn(conn)
-    if row and str(row.get("venue") or "").startswith("cpu:"):
+    except Exception as exc:  # noqa: BLE001 — fail closed: a pin is never lost
         raise_typed(
             PlatformError.companionvenue(
-                "bad_request",
-                f"session venue {row['venue']!r} may not start on the frontend rail "
-                "(cpu worker rail is the ROADMAP 3.2 leg)",
-            )
+                "unavailable", f"session venue unreadable: {type(exc).__name__}"
+            ),
+            cause=exc,
         )
+    finally:
+        pool.putconn(conn)
+    try:
+        return pinned_host(str((row or {}).get("venue") or ""))
+    except PlacementError as exc:
+        raise_typed(PlatformError.companionvenue("bad_request", str(exc)), cause=exc)
 
 
 def _checked_start_project(request: Request, requested: str) -> str:
@@ -254,7 +280,7 @@ async def start_venue(
     """
     uid = _uid(request)
     _pool(request)
-    _refuse_cpu_venue_on_frontend_rail(request, uid, session_id)
+    pin = _session_pin(request, uid, session_id)
     project = _checked_start_project(request, body.project)
     service = get_venue_service(request)
     try:
@@ -267,6 +293,7 @@ async def start_venue(
             web_policy=body.web_policy,
             web_allow_domains=body.web_allow_domains,
             project=project,
+            pin=pin,
         )
     except VenueError as exc:
         _typed(exc)

@@ -1,4 +1,4 @@
-"""D-48 pins: cpu:<host> venue grammar + declaration gate + rail refusal."""
+"""D-48 pins: cpu:<host> venue grammar + declaration gate + the start's pin."""
 
 from __future__ import annotations
 
@@ -53,47 +53,53 @@ def test_bad_request_message_names_document_section(monkeypatch):
     assert "extra.venues.cpu_hosts" in str(exc.value.detail)
 
 
-def test_frontend_rail_refuses_cpu_venued_session(monkeypatch):
-    """The frontend rail never silently places a cpu-venued session."""
+# ── the start's pin (ADR-098 D-9, SH-H2; was a 400 "frontend rail" refusal) ──
+
+
+class _Pool:
+    def getconn(self):
+        return object()
+
+    def putconn(self, conn):
+        pass
+
+
+def _pin_of(monkeypatch, row_fn):
     from unittest.mock import MagicMock
 
     import umrs_r4.api.companion_venue as cv
 
-    class _Pool:
-        def getconn(self):
-            return object()
-
-        def putconn(self, conn):
-            pass
-
     request = MagicMock()
     request.app.state.umrs_db_pool = _Pool()
-    monkeypatch.setattr(
-        "umrs_r4.api.companion_sessions.snapshot_detail_row",
-        lambda _conn, _uid, _sid: {"venue": "cpu:atom-0"},
-    )
+    monkeypatch.setattr("umrs_r4.api.companion_sessions.snapshot_detail_row", row_fn)
+    return cv._session_pin(request, "alice", "sess-1")
+
+
+def test_cpu_venued_session_start_carries_its_pin(monkeypatch):
+    """A cpu-venued session's start pins that host (placement then runs it
+    there or refuses it by name; never a silent frontend placement)."""
+    pin = _pin_of(monkeypatch, lambda _c, _u, _s: {"venue": "cpu:atom-0"})
+    assert pin == "atom-0"
+
+
+def test_frontend_venued_session_has_no_pin(monkeypatch):
+    assert _pin_of(monkeypatch, lambda _c, _u, _s: {"venue": "frontend"}) == ""
+    assert _pin_of(monkeypatch, lambda _c, _u, _s: None) == ""
+
+
+def test_malformed_cpu_venue_refused_not_dropped(monkeypatch):
     with pytest.raises(HTTPException) as exc:
-        cv._refuse_cpu_venue_on_frontend_rail(request, "alice", "sess-1")
+        _pin_of(monkeypatch, lambda _c, _u, _s: {"venue": "cpu:"})
     assert exc.value.status_code == 400
-    assert "frontend rail" in str(exc.value.detail)
 
 
-def test_frontend_rail_allows_frontend_venued_session(monkeypatch):
-    from unittest.mock import MagicMock
+def test_unreadable_venue_refuses_the_start(monkeypatch):
+    """A failed lookup used to read as "no venue" (a cpu pin silently became
+    a frontend start); it now refuses the start."""
 
-    import umrs_r4.api.companion_venue as cv
+    def boom(_c, _u, _s):
+        raise RuntimeError("db down")
 
-    class _Pool:
-        def getconn(self):
-            return object()
-
-        def putconn(self, conn):
-            pass
-
-    request = MagicMock()
-    request.app.state.umrs_db_pool = _Pool()
-    monkeypatch.setattr(
-        "umrs_r4.api.companion_sessions.snapshot_detail_row",
-        lambda _conn, _uid, _sid: {"venue": "frontend"},
-    )
-    cv._refuse_cpu_venue_on_frontend_rail(request, "alice", "sess-1")  # no raise
+    with pytest.raises(HTTPException) as exc:
+        _pin_of(monkeypatch, boom)
+    assert exc.value.status_code == 503

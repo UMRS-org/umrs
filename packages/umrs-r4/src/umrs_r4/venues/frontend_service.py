@@ -28,10 +28,18 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Any, Protocol
 
-from umrs.hosts import INLINE_HOST_ID, HostRuntime
+from umrs.hosts import INLINE_HOST_ID, HostRecord, HostRegistry, HostRuntime
+from umrs.hosts.placement import (
+    PlacementRefused,
+    PlacementRequest,
+    parse_cpus,
+    parse_memory_gb,
+    place,
+)
 from umrs.session_policy import (
     PolicyRuleStore,
     WebChoice,
+    placement_labels,
     resolve_session_policy,
     web_choice_required,
 )
@@ -42,6 +50,7 @@ from umrs.shared.project_data_class import (
     is_institutional_url,
 )
 from umrs.shared.site_source import SITE_SOURCE_ID, SITE_SOURCE_NAME
+from umrs.shared.venue_placement import declared_cpu_hosts
 from umrs.venues.session_audit import audit_session_stop, audit_venue
 
 from umrs_r4.quotas.session_cap import (
@@ -122,6 +131,8 @@ class FrontendVenueService:
         policy_store: PolicyRuleStore | None = None,
         policy_env: Mapping[str, str] | None = None,
         questions_factory: Callable[[Any], Any] | None = None,
+        host_registry: HostRegistry | None = None,
+        host_load: Callable[[], Mapping[str, int]] | None = None,
     ) -> None:
         self.config = config
         self.broker = broker
@@ -153,6 +164,11 @@ class FrontendVenueService:
         # ADR-099 D-8: the ask_user questions store on a pooled connection
         # (None = ChatTurnQuestionsStore; tests inject the sqlite one).
         self.questions_factory = questions_factory
+        # ADR-098 D-9 (SH-H2): this site's hosts and their live sessions.
+        # None = this process's inline host alone, with the site's declared
+        # profile (in memory; the routes wire the Postgres registry).
+        self.host_registry = host_registry
+        self._host_load = host_load
 
     # ── helpers ───────────────────────────────────────────────────────
 
@@ -280,12 +296,15 @@ class FrontendVenueService:
         web_policy: str = "",
         web_allow_domains: list[str] | None = None,
         project: str = "",
+        pin: str = "",
     ) -> dict[str, Any]:
         """Validate, reserve the row, submit the ``frontend_session`` job.
 
         ``web_policy``/``web_allow_domains`` are the user's web choice
         (ADR-099 D-2; ``""`` = none made); a refusal of it raises
-        :class:`PolicyError`."""
+        :class:`PolicyError`. ``pin`` is the host a ``cpu:<host>`` session
+        venue pins (ADR-098 D-9): that host or a typed refusal, never
+        another host."""
         self._require_configured()
         refs = _validated_refs(source_refs)
         default_name = _validated_default(refs, default_source)
@@ -297,6 +316,7 @@ class FrontendVenueService:
             default_name=default_name,
             choice=_web_choice(web_policy, web_allow_domains),
             project=project,
+            pin=pin,
         )
 
     def start_plan_run(
@@ -345,6 +365,7 @@ class FrontendVenueService:
         choice: WebChoice,
         project: str,
         plan_run: tuple[str, str] | None = None,
+        pin: str = "",
     ) -> dict[str, Any]:
         names, ids, default_id = self._resolve_default(owner, refs, default_name)
         policy = self._resolve_policy(owner, project, choice)
@@ -360,6 +381,7 @@ class FrontendVenueService:
                     policy=policy,
                     project=project,
                     plan_run=plan_run,
+                    pin=pin,
                 )
         except StartInFlight as exc:
             raise VenueError("already_running", str(exc), state="starting") from exc
@@ -395,14 +417,17 @@ class FrontendVenueService:
         policy: dict[str, Any],
         project: str,
         plan_run: tuple[str, str] | None,
+        pin: str = "",
     ) -> str:
         """Under the venue's start lock (ADR-099 D-6): the running check, the
-        cap, the data-class gate, the subnet, the job and the row, so a
-        parallel start counts this one and never takes its subnet."""
+        cap, the data-class gate, the host (ADR-098 D-9), the subnet, the job
+        and the row, so a parallel start counts this one and never takes its
+        subnet."""
         names, ids, default_id, default_name = sources
         self._require_not_running(owner, session_id)
         self._run_start_check(owner, project, session_id, policy)
         self._enforce_data_class_gate(owner, project, names)
+        host = self._place_host(project, policy, pin)
         subnet = self._reserve_subnet()
         spec = _session_spec(
             session_id=session_id,
@@ -416,6 +441,7 @@ class FrontendVenueService:
             site=self.site_name,
             subnet=subnet,
         )
+        spec["host_id"] = host.host_id
         if plan_run:
             spec["plan_run_id"], spec["plan_run_job_id"] = plan_run
         job_id = self._submit_job(owner, session_id, spec)
@@ -625,6 +651,38 @@ class FrontendVenueService:
                 data_class=data_class,
                 refused=public,
             )
+
+    # ── host placement (ADR-098 D-7, D-9; SH-H2) ──────────────────────
+
+    def _registry(self) -> HostRegistry:
+        if self.host_registry is None:
+            self.host_registry = inline_only_registry(self.site_name)
+        return self.host_registry
+
+    def _place_host(
+        self, project: str, policy: dict[str, Any], pin: str
+    ) -> HostRecord:
+        """The host this session runs on: resources, then the policy's
+        labels and the data-class isolation floor, then the least loaded;
+        a pin is that host or a typed refusal (``host_unavailable``), never
+        another; no eligible host is ``no_host``."""
+        sensitive = bool(project) and (
+            data_class_for_project(self.pool, project) == "sensitive"
+        )
+        request = PlacementRequest(
+            role="session",
+            pin=pin,
+            declared=frozenset(declared_cpu_hosts()) if pin else frozenset(),
+            cpus=parse_cpus(self.config.worker_cpus),
+            memory_gb=parse_memory_gb(self.config.worker_memory),
+            labels=placement_labels(policy),
+            sensitive=sensitive,
+        )
+        load = self._host_load() if self._host_load is not None else {}
+        try:
+            return place(self._registry().hosts(), request, load)
+        except PlacementRefused as exc:
+            raise VenueError(exc.code, exc.message, **exc.detail) from exc
 
     def _reserve_subnet(self) -> str:
         try:
@@ -878,10 +936,26 @@ class FrontendVenueService:
 
 IDEMPOTENCY_KEY_MAX = 64  # jobs.idempotency_key VARCHAR(64)
 
-# The session host every sandbox runs on today: the API's own podman host
-# (ADR-098 inline mode). SH-H1a's host registry gives the inline front this
-# id; SH-H2 placement replaces the constant with the placed host's id.
+# The host an admin view names: the API's own podman host (ADR-098 inline
+# mode). Placement (SH-H2) can only choose inline hosts until umrs-hostd
+# (SH-H3) adds the agent mode, and the inline host's id is this one; the
+# placed id also rides the job spec (``host_id``).
 SESSION_HOST = INLINE_HOST_ID
+
+
+def inline_only_registry(site_name: str) -> HostRegistry:
+    """An in-memory registry holding this process's inline host with the
+    site's declared profile (a service built without the Postgres one)."""
+    from umrs.hosts.janitor import site_inline_profile
+
+    registry = HostRegistry(None, venue=site_name)
+    registry.register(
+        INLINE_HOST_ID,
+        launch_mode="inline",
+        roles=("session",),
+        **site_inline_profile(),
+    )
+    return registry
 
 # Worker-reported runtime fields an admin view leaves out: the live
 # assistant text and tool lines are the user's conversation, not control data.
