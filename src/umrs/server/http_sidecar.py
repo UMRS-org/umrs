@@ -1228,6 +1228,10 @@ def _create_app():
     app.include_router(secret_broker_router)
     app.include_router(user_sources_router)
     app.include_router(source_grants_router)
+    # ADR-062 amendment 2 (S-D37-3): workstation leases for umrs-infer.
+    from umrs.api.infer_leases import router as infer_leases_router
+
+    app.include_router(infer_leases_router)
     # ADR-051 (2026-09-14): self-service durable projects registry.
     from umrs.api.projects import router as projects_router
 

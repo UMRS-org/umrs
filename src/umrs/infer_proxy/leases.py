@@ -8,12 +8,21 @@ Checks (design §2.3): exists · not expired · not revoked ·
 ``session_id == <sid>`` · lease host == the host token's host (ADR-098
 D-6) · client IP == ``lease.egress_ip`` (inline leases only) · source ∈
 ``lease.source_ids`` (default source when no override header).
+
+Lease kinds (ADR-062 amendment 2, S-D37-3): a sandbox lease reaches the
+proxy as ``/s/{sid}/...`` from its session's egress sidecar; a
+``kind=workstation`` lease (``tier == "workstation"``, minted by
+``POST /umrs/infer/leases``) reaches it as ``/w/{sid}/...`` through the edge
+route ``/gw/infer/``. Each route admits its own kind only, so an edge caller
+can never present a sandbox token and a workstation token never rides the
+sandbox route. A workstation lease must name its owner and project.
 """
 
 from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import Any
 
 from umrs.jobs.secret_broker import SecretLease
@@ -22,8 +31,9 @@ from umrs.jobs.secret_broker import SecretLease
 @dataclass(frozen=True)
 class LeaseVerdict:
     ok: bool
-    # token_invalid | lease_expired | lease_revoked | sid_mismatch |
-    # host_token_required | rail.host_mismatch | ip_mismatch | source_not_in_lease
+    # token_invalid | lease_expired | lease_revoked | lease_kind_mismatch |
+    # lease_unbound | lease_too_long | sid_mismatch | host_token_required |
+    # rail.host_mismatch | ip_mismatch | source_not_in_lease
     reason: str = ""
     lease: SecretLease | None = None
     source_id: str = ""
@@ -94,6 +104,65 @@ def _lease_refusal(lease: SecretLease, sid: str, client_ip: str, host: str) -> s
         (ip_bound, "ip_mismatch"),
     )
     return next((reason for failed, reason in checks if failed), "")
+
+
+# The workstation lease kind (S-D37-3). Stored in ``secret_leases.tier``
+# (no schema change); ``secret_name`` names it for the audit trail.
+WORKSTATION_KIND = "workstation"
+WORKSTATION_SECRET_NAME = "workstation-inference"
+# A workstation lease's whole life (issue to lifetime cap), renewals included.
+WORKSTATION_MAX_LIFETIME_SECONDS = 3600
+_WORKSTATION_MAX_LIFETIME = timedelta(seconds=WORKSTATION_MAX_LIFETIME_SECONDS)
+
+
+def is_workstation_lease(lease: SecretLease | None) -> bool:
+    return lease is not None and lease.tier == WORKSTATION_KIND
+
+
+def check_route_lease(
+    lease: SecretLease | None,
+    *,
+    workstation: bool,
+    sid: str,
+    client_ip: str,
+    source_override: str | None,
+    host: str = "",
+) -> LeaseVerdict:
+    """``check_lease`` plus the route's lease kind (``/w/`` vs ``/s/``).
+
+    A workstation lease must also carry its owner and project: the class
+    gate and the source-ownership check read them on every request.
+    """
+    verdict = check_lease(
+        lease,
+        sid=sid,
+        client_ip=client_ip,
+        source_override=source_override,
+        host=host,
+    )
+    if verdict.deny():
+        return verdict
+    if is_workstation_lease(verdict.lease) != workstation:
+        return LeaseVerdict(ok=False, reason="lease_kind_mismatch", lease=lease)
+    unfit = _workstation_unfit(verdict.lease) if workstation else ""
+    if unfit:
+        return LeaseVerdict(ok=False, reason=unfit, lease=lease)
+    return verdict
+
+
+def _workstation_unfit(lease: SecretLease | None) -> str:
+    """Why a workstation lease may not ride the edge route, ``""`` if fit.
+
+    The generic ``POST /umrs/secrets/lease`` also mints ``tier=workstation``
+    with any lifetime cap (or none) and lets the holder renew up to it, so the
+    short-lived rule (DEC-037) is re-checked here, not trusted to the issuer.
+    """
+    if not (lease and lease.owner_id and lease.project):
+        return "lease_unbound"
+    cap = lease.max_lifetime_at
+    if cap is None or cap - lease.issued_at > _WORKSTATION_MAX_LIFETIME:
+        return "lease_too_long"
+    return ""
 
 
 def lease_by_token(pool: Any, token: str) -> SecretLease | None:

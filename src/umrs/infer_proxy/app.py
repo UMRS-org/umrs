@@ -27,6 +27,16 @@ owner's daily token or per-minute request cap with a typed 429
 ``llm_usage_log`` row (``origin='infer_proxy'``) after the answer was sent;
 the token counts come from a bounded head/tail copy of the answer, so the
 upstream is asked for an uncompressed (``identity``) answer.
+
+Workstation leases (ADR-062 amendment 2, S-D37-3): ``/w/{sid}/{path}`` is
+the route the edge's ``/gw/infer/`` relays to; it admits only a
+``kind=workstation`` lease (``/s/`` refuses one). On it the source must be
+the lease owner's own sealed row (403 ``source_not_owned``), the class gate
+fails closed (a public provider needs the project's ``data_class`` to read
+``non_sensitive``, else 403 ``source_class_refused``; an institutional host
+stays admitted), the site source is not served (``/gw/llm`` serves it), and
+edge-added identity and forwarding headers plus credential-shaped query
+parameters are stripped before the provider is called.
 """
 
 from __future__ import annotations
@@ -40,6 +50,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlencode
 
 import httpx
 from starlette.applications import Starlette
@@ -60,7 +71,12 @@ from umrs.shared.project_data_class import (
 from umrs.shared.site_source import SITE_PATH_PREFIX, SITE_SOURCE_ID
 
 from . import site_models
-from .leases import check_lease, extract_session_token, lease_by_token
+from .leases import (
+    check_route_lease,
+    extract_session_token,
+    is_workstation_lease,
+    lease_by_token,
+)
 from .policies import allows, inject_credential, policy_for, strip_credential_headers
 from .urljoin import join_provider_url
 
@@ -207,6 +223,40 @@ def _denied(request: Request, lease: Any, status: int, reason: str) -> JSONRespo
     return _json_error(status, reason)
 
 
+# Headers the edge (nginx, the auth sidecar) or the client adds that must not
+# reach a public provider from the workstation route: identity claims,
+# forwarding chains (the user's address) and the source selector.
+_EDGE_HEADER_PREFIXES = ("x-forwarded-", "x-verified-", "x-umrs-", "x-r4-")
+_EDGE_HEADERS = frozenset(
+    {"forwarded", "x-real-ip", "x-user-id", "x-project-id", "x-request-id", "via"}
+)
+# Credential-shaped query parameters (Google's ``?key=`` and its kin).
+_CREDENTIAL_QUERY_KEYS = frozenset({"key", "api_key", "api-key", "access_token"})
+
+
+def _strip_edge_headers(headers: dict) -> dict:
+    return {
+        name: value
+        for name, value in headers.items()
+        if name not in _EDGE_HEADERS and not name.startswith(_EDGE_HEADER_PREFIXES)
+    }
+
+
+def _request_path(request: Request, workstation: bool) -> str:
+    """``/<path>[?query]``; the workstation route drops credential params."""
+    path = "/" + request.path_params.get("path", "")
+    if not request.query_params:
+        return path
+    if not workstation:
+        return path + "?" + str(request.query_params)
+    items = [
+        (key, value)
+        for key, value in request.query_params.multi_items()
+        if key.lower() not in _CREDENTIAL_QUERY_KEYS
+    ]
+    return path + ("?" + urlencode(items) if items else "")
+
+
 def _verbatim_error_status(reason: str) -> int:
     return 401 if reason.startswith(("token", "lease", "ip", "sid", "host_")) else 403
 
@@ -234,7 +284,7 @@ def _source_header(request: Request) -> str | None:
     return header(request.headers, "source") or None
 
 
-def _prepare(request: Request) -> _Prepared:
+def _prepare(request: Request, *, workstation: bool = False) -> _Prepared:
     """Token → lease verdict → sealed source → policy + host check."""
     sid = request.path_params["sid"]
     token = extract_session_token(request.headers)
@@ -246,8 +296,9 @@ def _prepare(request: Request) -> _Prepared:
     pool = getattr(request.app.state, "umrs_db_pool", None)
     lease = lease_by_token(pool, token)
     client_ip = _client_ip(request)
-    verdict = check_lease(
+    verdict = check_route_lease(
         lease,
+        workstation=workstation,
         sid=sid,
         client_ip=client_ip,
         source_override=_source_header(request),
@@ -281,11 +332,10 @@ def _resolve_source(
     full = store.fetch_for_unseal(source_id) if store else None
     if full is None:
         return _Prepared(error=_denied(request, lease, 410, "source_tombstoned"))
-    if _source_class_refused(pool, lease, full):
-        return _Prepared(error=_denied(request, lease, 403, "source_class_refused"))
-    path = "/" + request.path_params.get("path", "")
-    if request.query_params:
-        path += "?" + str(request.query_params)
+    refusal = _gate_refusal(pool, lease, full)
+    if refusal:
+        return _Prepared(error=_denied(request, lease, 403, refusal))
+    path = _request_path(request, is_workstation_lease(lease))
     policy = policy_for(full.provider_kind)
     if not allows(policy, request.method, path, full.allow_paths):
         return _Prepared(error=_denied(request, lease, 403, "path_denied"))
@@ -307,6 +357,33 @@ def _resolve_source(
 def _first_ip_or_none(ips: list[str]) -> str | None:
     """Deterministic pin — sorted first; empty = host denied."""
     return ips[0] if ips else None
+
+
+def _gate_refusal(pool: Any, lease: Any, full: Any) -> str:
+    """The refusal reason for this lease and source, ``""`` when admitted."""
+    if is_workstation_lease(lease):
+        return _workstation_refusal(pool, lease, full)
+    return "source_class_refused" if _source_class_refused(pool, lease, full) else ""
+
+
+def _workstation_refusal(pool: Any, lease: Any, full: Any) -> str:
+    """S-D37-3: the edge-reachable route fails closed.
+
+    The source must be the lease owner's own row (a lease minted through the
+    generic broker API may name any source id). A public-kind source outside
+    the site's institutional allowlist needs the project to read
+    ``non_sensitive``: an unknown class (no row, no pool, a failed lookup)
+    refuses, unlike the sandbox route, which never invents a class.
+    """
+    if str(getattr(full, "owner", "") or "") != lease.owner_id:
+        return "source_not_owned"
+    if full.provider_kind not in PUBLIC_PROVIDER_KINDS:
+        return ""
+    if is_institutional_url(getattr(full, "allow_host", "")):
+        return ""
+    if data_class_for_project(pool, lease.project) != "non_sensitive":
+        return "source_class_refused"
+    return ""
 
 
 def _source_class_refused(pool: Any, lease: Any, full: Any) -> bool:
@@ -343,7 +420,7 @@ def _unseal_api_key(request: Request, full: Any) -> str:
 
 
 def _upstream_headers(
-    request: Request, policy: Any, api_key: str, allow_host: str
+    request: Request, policy: Any, api_key: str, allow_host: str, workstation: bool
 ) -> dict:
     headers = {}
     for name, value in request.headers.raw:
@@ -352,6 +429,8 @@ def _upstream_headers(
             continue
         headers[decoded] = value.decode("latin-1")
     headers = strip_credential_headers(headers)
+    if workstation:
+        headers = _strip_edge_headers(headers)
     headers = inject_credential(policy, headers, api_key)
     headers["accept-encoding"] = "identity"  # the usage tap reads plain bytes
     tail = allow_host.split("://", 1)[1]
@@ -533,7 +612,21 @@ async def proxy_request(request: Request) -> Any:
     """ANY /s/{sid}/{path:path} — the credential-injecting forward."""
     if request.path_params.get("path", "").startswith(SITE_PATH_PREFIX):
         return await _proxy_site(request)
-    prep = _prepare(request)
+    return await _relay_sealed(request, workstation=False)
+
+
+async def proxy_workstation(request: Request) -> Any:
+    """ANY /w/{sid}/{path:path} — the edge's ``/gw/infer/`` (S-D37-3).
+
+    Only a workstation lease; the site source is ``/gw/llm``'s, not this."""
+    if request.path_params.get("path", "").startswith(SITE_PATH_PREFIX):
+        return _json_error(403, "path_denied")
+    return await _relay_sealed(request, workstation=True)
+
+
+async def _relay_sealed(request: Request, *, workstation: bool) -> Any:
+    """Lease → sealed source → quota → unseal → relay (one usage row)."""
+    prep = _prepare(request, workstation=workstation)
     if prep.error is not None:
         return prep.error
     lease = prep.lease
@@ -547,7 +640,9 @@ async def proxy_request(request: Request) -> Any:
     except SealError:
         return _denied(request, lease, 500, "unseal_failed")
 
-    headers = _upstream_headers(request, prep.policy, api_key, prep.full.allow_host)
+    headers = _upstream_headers(
+        request, prep.policy, api_key, prep.full.allow_host, workstation
+    )
     sent = _Sent()
     try:
         upstream = await _send_upstream(request, prep, headers, sent)
@@ -719,8 +814,9 @@ async def _proxy_site(request: Request) -> Any:
     if refusal is not None:
         return refusal
     pool = getattr(request.app.state, "umrs_db_pool", None)
-    verdict = check_lease(
+    verdict = check_route_lease(
         lease_by_token(pool, token),
+        workstation=False,
         sid=request.path_params["sid"],
         client_ip=_client_ip(request),
         source_override=SITE_SOURCE_ID,
@@ -822,6 +918,9 @@ def _site_headers(request: Request, lease: Any, endpoint: Any) -> dict[str, str]
     return headers
 
 
+_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
+
+
 def create_app(
     *,
     umrs_db_pool: Any,
@@ -841,11 +940,8 @@ def create_app(
     app = Starlette(
         routes=[
             Route("/healthz", healthz, methods=["GET"]),
-            Route(
-                "/s/{sid}/{path:path}",
-                proxy_request,
-                methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"],
-            ),
+            Route("/s/{sid}/{path:path}", proxy_request, methods=_METHODS),
+            Route("/w/{sid}/{path:path}", proxy_workstation, methods=_METHODS),
         ]
     )
     app.state.umrs_db_pool = umrs_db_pool
