@@ -100,14 +100,17 @@ def test_admin_may_name_any_project(lease_client):
 
 
 @pytest.fixture
-def venue_client():
-    from umrs_r4.api import companion_venue
+def venue_client(monkeypatch):
+    from umrs_r4.api import companion_sessions, companion_venue
 
     service = MagicMock()
     service.start.return_value = {"state": "provisioning"}
     app = FastAPI()
     app.include_router(companion_venue.router)
-    app.state.umrs_db_pool = MagicMock()  # the cpu-venue probe swallows its errors
+    # The session has no registry venue (no cpu:<host> pin). Since SH-H2 an
+    # unreadable venue refuses the start (503) instead of being swallowed.
+    monkeypatch.setattr(companion_sessions, "snapshot_detail_row", lambda *_a: None)
+    app.state.umrs_db_pool = MagicMock()
     app.state.companion_venue_service = service
     return TestClient(app), service
 
