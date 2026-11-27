@@ -382,6 +382,20 @@ def test_the_command_status_count(tagging_ready: None, status: Any, want: int) -
     assert tag.updated_count(status) == want
 
 
+def test_the_tag_statements_are_the_seams() -> None:
+    """Only untagged proposed rows of the caller's project; fixed text."""
+    assert tag.TAG_NODES_SQL == (
+        "UPDATE knowledge_nodes SET scope_path = $3"
+        " WHERE project_id = $1 AND node_id = ANY($2::text[])"
+        " AND scope_path IS NULL AND status = 'proposed'"
+    )
+    assert tag.TAG_EDGES_SQL == (
+        "UPDATE knowledge_edges SET scope_path = $3"
+        " WHERE project_id = $1 AND edge_id = ANY($2::text[])"
+        " AND scope_path IS NULL AND status = 'proposed'"
+    )
+
+
 def test_nodes_and_edges_are_tagged_in_order(tagging_ready: None) -> None:
     db = _Recorder("UPDATE 2", "UPDATE 1")
     got = asyncio.run(tag.tag_graph_rows(db, "p", ("n1", "n2"), ["e1"], "s-1"))
