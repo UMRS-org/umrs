@@ -243,6 +243,25 @@ def _enforce_spec_resources(
         _deny_unless(refusal is None, refusal or "")
 
 
+def _enforce_spec_shape(
+    job_type: "JobType",
+    spec: dict[str, Any],
+    fan_out_jobs: list[dict[str, Any]] | None,
+) -> None:
+    """400 for an ``object_verify`` spec (parent or fan-out child) its lane
+    would refuse anyway: refused at submit, not after a stored job's
+    retries (review of MB-S2c, 2026-11-27)."""
+    from ..jobs.object_verify import validate_spec
+
+    for target_type, target_spec in _spec_targets(job_type, spec, fan_out_jobs):
+        if target_type != JobType.OBJECT_VERIFY:
+            continue
+        try:
+            validate_spec(target_spec if isinstance(target_spec, dict) else {})
+        except ValueError as exc:
+            raise_typed(PlatformError.jobs("bad_request", str(exc)), cause=exc)
+
+
 def _enforce_spec_project(
     job_type: "JobType",
     spec: dict[str, Any],
@@ -739,6 +758,7 @@ async def create_job(
             x_verified_hmac,
         )
         _enforce_job_scope_policy(job_type, spec, user_id, project_id, is_admin)
+        _enforce_spec_shape(job_type, spec, request.fan_out_jobs)
         _enforce_spec_resources(job_type, spec, user_id, is_admin, request.fan_out_jobs)
         _enforce_spec_project(job_type, spec, project_id, request.fan_out_jobs)
         _enforce_endpoint_host_paths(

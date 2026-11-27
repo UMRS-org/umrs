@@ -216,7 +216,9 @@ class _S3:
         if self.on_head is not None:
             self.on_head(Bucket, Key)
         if (Bucket, Key) not in self.objects:
-            raise KeyError("NoSuchKey")
+            from botocore.exceptions import ClientError
+
+            raise ClientError({"Error": {"Code": "404", "Message": "Not Found"}}, "HeadObject")
         body = self.objects[(Bucket, Key)]
         etag = self.etags.get((Bucket, Key), _md5(body))
         return {"ETag": f'"{etag}"', "ContentLength": len(body), "ContentType": "video/mp4"}
@@ -559,11 +561,14 @@ def test_the_job_completes_with_the_verdict_in_its_metrics(monkeypatch) -> None:
     provenance.set_provenance_pool(pool)
     monkeypatch.setattr(ingest_jobs, "_ingest_s3_client", lambda *_a: s3)
     job = _job(bucket=OUT, key="intake/a.mp4")
-    ref = asyncio.run(ObjectVerifyBackend().submit_job(job, SimpleNamespace()))
-    assert parse_ref(ref)["state"] == "mismatch"
-    result = asyncio.run(
-        ObjectVerifyStatusChecker().check_status(SimpleNamespace(backend_ref=ref), job)
-    )
+
+    async def scenario() -> Any:
+        ref = await ObjectVerifyBackend().submit_job(job, _attempt("att-m"))
+        assert parse_ref(ref) == {"attempt": "att-m"}
+        return await _settle(ObjectVerifyStatusChecker(), ref, job)
+
+    result = asyncio.run(scenario())
+    assert result.status == "succeeded"
     assert result.metrics["sha256_state"] == "mismatch"
     assert result.metrics["reason"] == "etag_not_body_md5"
 
@@ -679,3 +684,135 @@ def test_a_reservation_is_invisible_to_reads_on_postgres(scratch) -> None:
     assert provenance.lookup(scratch, OUT, "reviews/k.jsonl").legacy
     found = provenance.lookup_many(scratch, [(OUT, "reviews/k.jsonl", "")])
     assert found[(OUT, "reviews/k.jsonl")].legacy
+
+
+# ── review fixes (MB-S2c adversarial review, 2026-11-27) ────────────────────
+
+
+class _HeadDownS3(_S3):
+    """The store answers HEAD with an error that is not "no such key"."""
+
+    def head_object(self, *, Bucket, Key):  # noqa: N803, ARG002 — boto3
+        from botocore.exceptions import ClientError
+
+        raise ClientError({"Error": {"Code": "503", "Message": "SlowDown"}}, "HeadObject")
+
+
+def test_a_create_only_save_when_the_store_cannot_say_is_503_not_an_overwrite(
+    monkeypatch,
+) -> None:
+    """A HEAD that fails for another reason than "no such key" (store busy,
+    denied) read as "absent": the claim won and the PUT overwrote a review
+    written before create-only existed. It fails closed now."""
+    s3 = _HeadDownS3()
+    s3.objects[(OUT, "reviews/k.jsonl")] = b"the first review"
+    pool = _Pool()
+    r = _save(_app(monkeypatch, s3, pool), "reviews/k.jsonl")
+    assert r.status_code == 503, r.text
+    assert r.headers[ERROR_CODE] == "files.create_only_unavailable"
+    assert s3.objects[(OUT, "reviews/k.jsonl")] == b"the first review"
+    assert pool.db.rows == {}
+
+
+def test_a_create_only_save_of_a_missing_key_saves_on_a_real_404(monkeypatch) -> None:
+    app = _app(monkeypatch, _S3(), _Pool())
+    assert _save(app, "reviews/k.jsonl").status_code == 201
+    assert _save(app, "reviews/k.jsonl").status_code == 409
+
+
+class _SlowS3(_S3):
+    """A re-read that blocks until the test lets it go (an 8 GiB object)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.release = threading.Event()
+
+    def get_object(self, *, Bucket, Key):  # noqa: N803 — boto3
+        self.release.wait(30)
+        return super().get_object(Bucket=Bucket, Key=Key)
+
+
+def _attempt(attempt_id: str = "att-1", ref: str | None = None) -> Any:
+    return SimpleNamespace(attempt_id=attempt_id, backend_ref=ref)
+
+
+async def _settle(checker: Any, ref: str, job: Any) -> Any:
+    for _ in range(300):
+        result = await checker.check_status(_attempt(ref=ref), job)
+        if result.status != "running":
+            return result
+        await asyncio.sleep(0.01)
+    raise AssertionError("the verify never settled")
+
+
+def test_submit_returns_before_the_re_read_so_the_scheduler_is_not_held(monkeypatch) -> None:
+    """The scheduler awaits every submit in turn: a submit that awaited the
+    whole re-read held every other job of the front for its duration."""
+    s3, pool = _SlowS3(), _Pool()
+    _stored(s3)
+    provenance.set_provenance_pool(pool)
+    monkeypatch.setattr(ingest_jobs, "_ingest_s3_client", lambda *_a: s3)
+    job = _job(bucket=OUT, key="intake/a.mp4")
+
+    async def scenario() -> Any:
+        ref = await asyncio.wait_for(
+            ObjectVerifyBackend().submit_job(job, _attempt()), timeout=2
+        )
+        checker = ObjectVerifyStatusChecker()
+        assert (await checker.check_status(_attempt(ref=ref), job)).status == "running"
+        s3.release.set()
+        return await _settle(checker, ref, job)
+
+    try:
+        result = asyncio.run(scenario())
+    finally:
+        s3.release.set()
+    assert result.status == "succeeded"
+    assert result.metrics["sha256_state"] == "verified"
+
+
+def test_a_verify_lost_to_a_restart_fails_its_attempt_for_a_retry() -> None:
+    job = _job(bucket=OUT, key="intake/a.mp4")
+    result = asyncio.run(
+        ObjectVerifyStatusChecker().check_status(
+            _attempt(ref="object_verify|attempt=gone-after-restart"), job
+        )
+    )
+    assert result.status == "failed"
+    assert "restart" in (result.exit_reason or "")
+
+
+def test_a_gone_object_fails_the_attempt_in_the_checker(monkeypatch) -> None:
+    s3 = _S3()
+    provenance.set_provenance_pool(_Pool())
+    monkeypatch.setattr(ingest_jobs, "_ingest_s3_client", lambda *_a: s3)
+    job = _job(bucket=OUT, key="intake/gone.mp4")
+
+    async def scenario() -> Any:
+        ref = await ObjectVerifyBackend().submit_job(job, _attempt("att-g"))
+        return await _settle(ObjectVerifyStatusChecker(), ref, job)
+
+    result = asyncio.run(scenario())
+    assert result.status == "failed"
+    assert "no verdict" in (result.exit_reason or "")
+
+
+def test_a_malformed_spec_fails_at_submit_not_in_the_background() -> None:
+    with pytest.raises(ValueError):
+        asyncio.run(ObjectVerifyBackend().submit_job(_job(bucket=OUT), _attempt()))
+
+
+def test_the_http_submit_seam_refuses_a_malformed_spec_with_400() -> None:
+    from fastapi import HTTPException
+    from umrs.api import jobs as jobs_api
+
+    with pytest.raises(HTTPException) as caught:
+        jobs_api._enforce_spec_shape(JobType.OBJECT_VERIFY, {"bucket": OUT}, None)
+    assert caught.value.status_code == 400
+    with pytest.raises(HTTPException):
+        jobs_api._enforce_spec_shape(
+            JobType.DATA_INGESTION,
+            {},
+            [{"job_type": "object_verify", "spec": {"bucket": OUT, "sha256": "x"}}],
+        )
+    jobs_api._enforce_spec_shape(JobType.OBJECT_VERIFY, {"bucket": OUT, "key": "k"}, None)

@@ -49,7 +49,6 @@ from umrs.data_catalog.provenance import (
     Sha256Reader,
     hashed,
     legacy_record,
-    live_etag,
     lookup_many_best_effort,
     output_prefix_rule,
     provenance_row,
@@ -571,8 +570,7 @@ def _claim_create_only(
     pool = getattr(request.app.state, "umrs_db_pool", None)
     if pool is None:
         _create_only_unavailable()
-    if live_etag(s3_client, target.bucket, target.key) is not None:
-        _create_only_exists(target.bucket, target.key)
+    _require_absent(s3_client, target.bucket, target.key)
     origin = {
         "source_kind": target.source_kind,
         "uploader": uploader,
@@ -581,6 +579,26 @@ def _claim_create_only(
     if not _reserve_on(pool, target.bucket, target.key, origin):
         _create_only_exists(target.bucket, target.key)
     return pool
+
+
+_NOT_FOUND_CODES = ("404", "NoSuchKey", "NotFound")
+
+
+def _require_absent(s3_client: Any, bucket: str, key: str) -> None:
+    """409 when the store holds *key* (also one written before create-only
+    existed); 503 when the store cannot say. Only a "no such key" answer
+    reads as absent: a HEAD that failed for another reason (store busy,
+    denied) used to read as absent, and the save overwrote the record
+    (review of MB-S2c, 2026-11-27)."""
+    try:
+        s3_client.head_object(Bucket=bucket, Key=key)
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") in _NOT_FOUND_CODES:
+            return
+        _create_only_unavailable(exc)
+    except Exception as exc:  # noqa: BLE001 — fail closed: never write unsure
+        _create_only_unavailable(exc)
+    _create_only_exists(bucket, key)
 
 
 def _release_claim(pool: Any, bucket: str, key: str) -> None:
