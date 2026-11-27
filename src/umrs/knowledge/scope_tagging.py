@@ -40,7 +40,7 @@ def updated_count(status: Any) -> int:
     Surrounding whitespace is ignored.
     """
     words = str(status or "").strip().split()
-    if not words or not words[-1].isdigit():
+    if not words or not (words[-1].isascii() and words[-1].isdecimal()):
         return 0
     return int(words[-1])
 

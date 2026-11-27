@@ -11,11 +11,6 @@ refusal, the worker tasks' modules (``scope_lineage``/``parent_scope``,
 ``scope_tagging``, ``scope_subtree``), and Postgres checks (env-gated:
 ``UMRS_TEST_DB_URL`` or the CI job's ``POSTGRES_*``) in a scratch schema
 dropped afterwards.
-
-Tests of a worker task's stub skip while it still raises
-``NotImplementedError("<task>")``, unless ``S_W3A_REQUIRE`` names that task
-(or ``all``); the task's validate.sh sets it. The integrator deletes
-``_skip_until_implemented`` once every task has landed.
 """
 
 from __future__ import annotations
@@ -25,7 +20,6 @@ import contextlib
 import json
 import os
 import uuid
-from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -47,19 +41,6 @@ _MIGRATION = (
     / "migrations"
     / "0150_knowledge_scope_path.sql"
 )
-
-
-def _skip_until_implemented(task: str, probe: Callable[[], object]) -> None:
-    """Skip while ``task``'s stub raises (S-W3a seam; integrator removes)."""
-    required = os.environ.get("S_W3A_REQUIRE", "")
-    if required in (task, "all"):
-        return
-    try:
-        probe()
-    except NotImplementedError:
-        pytest.skip(f"{task} not implemented yet")
-    except Exception:  # noqa: BLE001 — implemented; the test itself decides
-        return
 
 
 # ── pure rules (scope_overlay, implemented with the seam) ──────────────────
@@ -304,11 +285,6 @@ def test_a_client_built_spec_naming_scope_path_is_refused() -> None:
 # ── task s-w3a-01: scope_lineage, parent_scope ──────────────────────────────
 
 
-@pytest.fixture()
-def lineage_ready() -> None:
-    _skip_until_implemented("s-w3a-01", lambda: so.scope_lineage("a"))
-
-
 @pytest.mark.parametrize(
     ("path", "want"),
     [
@@ -319,16 +295,16 @@ def lineage_ready() -> None:
         ("   ", ()),
     ],
 )
-def test_the_lineage_is_root_most_first(lineage_ready: None, path: str, want: tuple) -> None:
+def test_the_lineage_is_root_most_first(path: str, want: tuple) -> None:
     assert so.scope_lineage(path) == want
 
 
-def test_a_lineage_of_a_malformed_path_raises(lineage_ready: None) -> None:
+def test_a_lineage_of_a_malformed_path_raises() -> None:
     with pytest.raises(so.ScopeOverlayError):
         so.scope_lineage("a//b")
 
 
-def test_the_deepest_lineage_has_eight_entries(lineage_ready: None) -> None:
+def test_the_deepest_lineage_has_eight_entries() -> None:
     path = "/".join(f"l{i}" for i in range(8))
     lineage = so.scope_lineage(path)
     assert len(lineage) == 8 and lineage[-1] == path and lineage[0] == "l0"
@@ -337,12 +313,12 @@ def test_the_deepest_lineage_has_eight_entries(lineage_ready: None) -> None:
 @pytest.mark.parametrize(
     ("path", "want"), [("a/b/c", "a/b"), ("a/b", "a"), ("a", None), (" a/b ", "a")]
 )
-def test_the_parent_scope(lineage_ready: None, path: str, want: str | None) -> None:
+def test_the_parent_scope(path: str, want: str | None) -> None:
     assert so.parent_scope(path) == want
 
 
 @pytest.mark.parametrize("path", ["", "  ", "a//b"])
-def test_the_root_and_a_malformed_path_have_no_parent(lineage_ready: None, path: str) -> None:
+def test_the_root_and_a_malformed_path_have_no_parent(path: str) -> None:
     with pytest.raises(so.ScopeOverlayError):
         so.parent_scope(path)
 
@@ -360,11 +336,6 @@ class _Recorder:
         return self.statuses.pop(0)
 
 
-@pytest.fixture()
-def tagging_ready() -> None:
-    _skip_until_implemented("s-w3a-02", lambda: tag.updated_count("UPDATE 1"))
-
-
 @pytest.mark.parametrize(
     ("status", "want"),
     [
@@ -374,11 +345,13 @@ def tagging_ready() -> None:
         ("UPDATE", 0),
         ("UPDATE x", 0),
         ("UPDATE -1", 0),
+        ("UPDATE \u00b2", 0),  # isdigit() but not int(): no crash
+        ("UPDATE \u0663", 0),  # a non-ASCII decimal digit
         ("", 0),
         (None, 0),
     ],
 )
-def test_the_command_status_count(tagging_ready: None, status: Any, want: int) -> None:
+def test_the_command_status_count(status: Any, want: int) -> None:
     assert tag.updated_count(status) == want
 
 
@@ -396,7 +369,7 @@ def test_the_tag_statements_are_the_seams() -> None:
     )
 
 
-def test_nodes_and_edges_are_tagged_in_order(tagging_ready: None) -> None:
+def test_nodes_and_edges_are_tagged_in_order() -> None:
     db = _Recorder("UPDATE 2", "UPDATE 1")
     got = asyncio.run(tag.tag_graph_rows(db, "p", ("n1", "n2"), ["e1"], "s-1"))
     assert got == (2, 1)
@@ -406,7 +379,7 @@ def test_nodes_and_edges_are_tagged_in_order(tagging_ready: None) -> None:
     ]
 
 
-def test_an_empty_list_sends_no_statement(tagging_ready: None) -> None:
+def test_an_empty_list_sends_no_statement() -> None:
     db = _Recorder("UPDATE 1")
     assert asyncio.run(tag.tag_graph_rows(db, "p", [], ["e1"], "s-1")) == (0, 1)
     assert [sql for sql, _ in db.executed] == [tag.TAG_EDGES_SQL]
@@ -415,14 +388,14 @@ def test_an_empty_list_sends_no_statement(tagging_ready: None) -> None:
     assert none.executed == []
 
 
-def test_the_root_scope_is_never_written_as_a_tag(tagging_ready: None) -> None:
+def test_the_root_scope_is_never_written_as_a_tag() -> None:
     db = _Recorder("UPDATE 1")
     with pytest.raises(ValueError):
         asyncio.run(tag.tag_graph_rows(db, "p", ["n1"], [], ""))
     assert db.executed == []
 
 
-def test_a_database_error_propagates(tagging_ready: None) -> None:
+def test_a_database_error_propagates() -> None:
     class _Down:
         async def execute(self, *_a: Any) -> str:
             raise RuntimeError("down")
@@ -432,11 +405,6 @@ def test_a_database_error_propagates(tagging_ready: None) -> None:
 
 
 # ── task s-w3a-03: scope_subtree ────────────────────────────────────────────
-
-
-@pytest.fixture()
-def subtree_ready() -> None:
-    _skip_until_implemented("s-w3a-03", lambda: sub.subtree_like_pattern("a"))
 
 
 @pytest.mark.parametrize(
@@ -450,17 +418,17 @@ def subtree_ready() -> None:
         (" a ", " a /%"),
     ],
 )
-def test_the_like_pattern_escapes(subtree_ready: None, path: str, want: str) -> None:
+def test_the_like_pattern_escapes(path: str, want: str) -> None:
     assert sub.subtree_like_pattern(path) == want
 
 
 @pytest.mark.parametrize("path", ["", "   "])
-def test_the_root_has_no_subtree_pattern(subtree_ready: None, path: str) -> None:
+def test_the_root_has_no_subtree_pattern(path: str) -> None:
     with pytest.raises(ValueError):
         sub.subtree_like_pattern(path)
 
 
-def test_the_subtree_condition(subtree_ready: None) -> None:
+def test_the_subtree_condition() -> None:
     assert sub.subtree_condition("scope_path", 3) == (
         "(scope_path = $3 OR scope_path LIKE $4 ESCAPE '\\')"
     )
@@ -473,9 +441,7 @@ def test_the_subtree_condition(subtree_ready: None) -> None:
     ("column", "first"),
     [("status", 1), ("scope_path; DROP TABLE x", 1), ("scope_path", 0), ("scope_path", True)],
 )
-def test_the_subtree_condition_refuses(
-    subtree_ready: None, column: str, first: Any
-) -> None:
+def test_the_subtree_condition_refuses(column: str, first: Any) -> None:
     with pytest.raises(ValueError):
         sub.subtree_condition(column, first)
 
@@ -607,8 +573,7 @@ async def _insert_both(schema: str) -> list[Any]:
         )
         return list(
             await pool.fetch(
-                "SELECT artifact_id, tier, scope_path FROM knowledge_artifacts"
-                " ORDER BY artifact_id"
+                "SELECT artifact_id, tier, scope_path FROM knowledge_artifacts ORDER BY artifact_id"
             )
         )
     finally:
@@ -655,9 +620,7 @@ async def _tag_rows(schema: str) -> tuple[tuple[int, int], list[Any]]:
 
 
 @needs_pg
-def test_only_untagged_proposed_rows_of_the_project_are_tagged(
-    scratch: Any, tagging_ready: None
-) -> None:
+def test_only_untagged_proposed_rows_of_the_project_are_tagged(scratch: Any) -> None:
     _conn, schema = scratch
     counts, rows = asyncio.run(_tag_rows(schema))
     assert counts == (1, 1)
@@ -671,9 +634,7 @@ def test_only_untagged_proposed_rows_of_the_project_are_tagged(
 
 
 @needs_pg
-def test_the_subtree_condition_selects_the_scope_and_beneath(
-    scratch: Any, subtree_ready: None
-) -> None:
+def test_the_subtree_condition_selects_the_scope_and_beneath(scratch: Any) -> None:
     conn, _schema = scratch
     paths = ["a_b", "a_b/c", "a_b/c/d", "axb", "axb/c", "a_bc", "a"]
     where = sub.subtree_condition("scope_path", 1)
