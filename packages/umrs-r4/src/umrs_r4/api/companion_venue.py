@@ -12,7 +12,9 @@ Worker rail (lease-token principal — see ``_rail_identity``):
 
     GET  /umrs/companion/sessions/{sid}/rail/snapshot
     POST /umrs/companion/sessions/{sid}/rail/snapshot
-    POST /umrs/companion/sessions/{sid}/rail/queue/pop
+    POST /umrs/companion/sessions/{sid}/rail/queue/claim  (ADR-057 D-8)
+    POST /umrs/companion/sessions/{sid}/rail/queue/ack
+    POST /umrs/companion/sessions/{sid}/rail/queue/pop    (legacy alias)
     POST /umrs/companion/sessions/{sid}/rail/heartbeat
     POST /umrs/companion/sessions/{sid}/rail/approvals
     GET  /umrs/companion/sessions/{sid}/rail/approvals/{approval_id}
@@ -46,6 +48,7 @@ from umrs.api.typed_errors import PlatformError, raise_typed
 from umrs.hosts.identity import HOST_TOKEN_HEADER
 from umrs.session_policy import PolicyError
 
+from umrs_r4.api._companion_queue_claim import QueueAckBody
 from umrs_r4.api._companion_session_bus import (
     SessionBusBindBody,
     SessionBusInboxBody,
@@ -534,6 +537,45 @@ async def rail_append_subagent_event(
     return result
 
 
+@router.post("/{session_id}/rail/queue/claim", response_model=dict[str, Any])
+async def rail_queue_claim(
+    session_id: str,
+    request: Request,
+    principal: RailPrincipal = Depends(rail_principal),
+) -> dict[str, Any]:
+    """Claim the next queued turn; it stays queued until acked (ADR-057 D-8).
+    # auth: lease-token
+    """
+    from umrs_r4.api._companion_queue_claim import worker_claim_row
+
+    pool = _pool(request)
+    conn = pool.getconn()
+    try:
+        return worker_claim_row(conn, principal.owner, session_id)
+    finally:
+        pool.putconn(conn)
+
+
+@router.post("/{session_id}/rail/queue/ack", response_model=dict[str, Any])
+async def rail_queue_ack(
+    session_id: str,
+    body: QueueAckBody,
+    request: Request,
+    principal: RailPrincipal = Depends(rail_principal),
+) -> dict[str, Any]:
+    """Remove a claimed turn after its reply is in the journal (ADR-057 D-8).
+    # auth: lease-token
+    """
+    from umrs_r4.api._companion_queue_claim import worker_ack_row
+
+    pool = _pool(request)
+    conn = pool.getconn()
+    try:
+        return worker_ack_row(conn, principal.owner, session_id, body)
+    finally:
+        pool.putconn(conn)
+
+
 @router.post("/{session_id}/rail/queue/pop", response_model=dict[str, Any])
 async def rail_queue_pop(
     session_id: str,
@@ -541,6 +583,9 @@ async def rail_queue_pop(
     principal: RailPrincipal = Depends(rail_principal),
 ) -> dict[str, Any]:
     """Pop the next queued turn (F9 owner-scope queue) for the worker.
+
+    Legacy alias of claim + ack in one step (ADR-057 D-8), kept for workers
+    that predate ``claim``: a worker that dies after the pop loses the turn.
     # auth: lease-token
     """
     from umrs_r4.api._companion_session_bus import worker_pop_row
