@@ -1797,6 +1797,16 @@ def _unwritten(
     ]
 
 
+def _scope_kwargs(desc: dict[str, Any]) -> dict[str, str]:
+    """``{"scope_path": ...}`` for a descriptor ``attach_scope_path`` tagged
+    (ADR-108 D-4, S-W3a): the row lands proposed and tagged. A root
+    descriptor passes nothing, so its insert is exactly as before."""
+    from umrs.knowledge.scope_overlay import SCOPE_KEY
+
+    path = desc.get(SCOPE_KEY)
+    return {SCOPE_KEY: str(path)} if path else {}
+
+
 async def _store_one_artifact(
     store: Any, desc: dict[str, Any], project_id: str, deduped: dict[str, str]
 ) -> None:
@@ -1812,6 +1822,7 @@ async def _store_one_artifact(
         project_id=project_id,
         source_ref=desc.get("source_ref", ""),
         metadata=desc.get("metadata"),
+        **_scope_kwargs(desc),
     )
     if held_by and held_by != fresh:  # a concurrent upload stored the bytes
         deduped[fresh] = held_by
@@ -2527,13 +2538,23 @@ def _note_degraded(result: KnowledgeUnderstandResult, notes: list[str]) -> None:
 
 
 async def _write_rows(
-    store: Any, nodes: list, edges: list, artifact_id: str, result: KnowledgeUnderstandResult
+    store: Any,
+    nodes: list,
+    edges: list,
+    artifact_id: str,
+    result: KnowledgeUnderstandResult,
+    scope: tuple[str, str] | None = None,
 ) -> bool:
+    """Upsert the rows; ``scope`` = ``(project_id, scope_path)`` of a scoped
+    job (ADR-108 D-4) writes and tags them in one transaction."""
     try:
-        for node in nodes:
-            await store.upsert_node(node)
-        for edge in edges:
-            await store.upsert_edge(edge)
+        if scope is not None:
+            await _write_scoped_rows(store, nodes, edges, scope)
+        else:
+            for node in nodes:
+                await store.upsert_node(node)
+            for edge in edges:
+                await store.upsert_edge(edge)
     except Exception as exc:  # noqa: BLE001 — best-effort adapter path, reported not raised
         logger.error("Node/edge upsert failed: %s: %s", artifact_id, exc)
         result.failed_items.append(
@@ -2543,6 +2564,31 @@ async def _write_rows(
     result.nodes_created += len(nodes)
     result.edges_created += len(edges)
     return True
+
+
+async def _write_scoped_rows(
+    store: Any, nodes: list, edges: list, scope: tuple[str, str]
+) -> None:
+    """ADR-108 D-4 (S-W3a): a scoped pass's upserts and their ``scope_path``
+    tags on one connection in one transaction, so no proposed row is
+    committed untagged (it would read as a root proposal). The rows are
+    already proposed (``_tiered_rows``); ``tag_graph_rows`` tags only
+    untagged proposed rows."""
+    from umrs.knowledge.scope_tagging import tag_graph_rows
+
+    project_id, scope_path = scope
+    async with store._pool.acquire() as conn, conn.transaction():
+        for node in nodes:
+            await store.upsert_node(node, conn=conn)
+        for edge in edges:
+            await store.upsert_edge(edge, conn=conn)
+        await tag_graph_rows(
+            conn,
+            project_id,
+            [n.node_id for n in nodes],
+            [e.edge_id for e in edges],
+            scope_path,
+        )
 
 
 # A re-extraction (ADR-116 extractor bump) writes new semantic rows beside
@@ -2687,7 +2733,9 @@ async def _understand_one_artifact(
     # enters the two-tier graph as proposed — the establish seam (human) is
     # the only promotion; a vouched answer names its establisher.
     nodes, edges = _tiered_rows(nodes, edges, job, origin_actor)
-    if not await _write_rows(store, nodes, edges, artifact_id, result):
+    if not await _write_rows(
+        store, nodes, edges, artifact_id, result, _job_scope(job, project_id)
+    ):
         return
     await _drop_superseded_rows(
         store, (project_id, target_graph_id, artifact_id, ir.ir_id), edges
@@ -2767,17 +2815,31 @@ def _node_id_scope(project_id: str, graph_id: str) -> str:
     return f"{graph_id}-"
 
 
+def _job_scope(job: Any, project_id: str) -> tuple[str, str] | None:
+    """``(project_id, scope_path)`` for a scoped understand job, else None
+    (ADR-108 D-4; the path rides from the ingest spec, ``_run_scope_path``)."""
+    from umrs.knowledge.scope_overlay import scoped_spec_path
+
+    path = scoped_spec_path(getattr(job, "spec", None))
+    return (project_id, path) if path else None
+
+
 def _tiered_rows(nodes: list, edges: list, job: Any, origin_actor: str) -> tuple[list, list]:
     """The rows in the tier the job's spec gives them (``tier_stamp``):
     proposed and stamped for an agent origin or a kept /save answer; a
     vouched /save stamps its human-tier rows with the establisher (rows
     already proposed, e.g. K-1 extractions, keep their own stamp)."""
+    from umrs.knowledge.scope_overlay import scoped_spec_path, scoped_tier_stamp
     from umrs.knowledge.session_turns import tier_stamp
 
     proposed, stamp = tier_stamp(
         {**job.spec, "origin_actor": origin_actor},
         job.job_id,
         str(getattr(job, "user_id", "") or ""),
+    )
+    # ADR-108 D-4 (S-W3a): a scoped job never writes established rows.
+    proposed, stamp = scoped_tier_stamp(
+        proposed, stamp, scoped_spec_path(job.spec), job.job_id
     )
     if proposed:
         return _as_proposed_tier(nodes, edges, stamp=stamp)
@@ -5781,6 +5843,9 @@ def _enqueue_understand_job(
                 "origin_actor": job.spec.get("origin_actor", ""),
                 # K1.6: a kept (proposed) or vouched (established) /save.
                 **tier_fields(job.spec),
+                # ADR-108 D-4 (S-W3a): a scoped ingest's graph rows land
+                # proposed and tagged with its scope.
+                **_run_scope_path(job),
                 # ADR-116 D-2: full | lite | off.
                 "extract_mode": _job_extract_mode(job, extract_mode),
             },
