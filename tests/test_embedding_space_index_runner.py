@@ -20,7 +20,6 @@ from umrs.knowledge.embedding_spaces import (
     IndexState,
 )
 
-
 A = EmbeddingSpace(space_id="aa", model_name="/models/aa", dimension=4)
 B = EmbeddingSpace(space_id="bb", model_name="/models/bb", dimension=8)
 C = EmbeddingSpace(space_id="cc", model_name="/models/cc", dimension=8, status="retired")

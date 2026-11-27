@@ -101,8 +101,14 @@ def test_the_overfetch_and_its_settings():
 
 def test_an_ann_query_of_another_dimension_is_refused_before_sql():
     with pytest.raises(ValueError, match=ann.CODE_DIMENSION):
-        ann.ann_query(SPACE, columns=(("e.node_id", "node_id"),), where="true",
-                      where_params=(), vector=[1.0, 2.0, 3.0], k=5)
+        ann.ann_query(
+            SPACE,
+            columns=(("e.node_id", "node_id"),),
+            where="true",
+            where_params=(),
+            vector=[1.0, 2.0, 3.0],
+            k=5,
+        )
 
 
 # ── the fence (recording pool) ──────────────────────────────────────────────
@@ -207,12 +213,12 @@ FENCED = {
 
 
 def test_the_fence_inventory_covers_every_read_lane_module():
-    scanned = [*sorted((SRC / "knowledge" / "retrieval").glob("*.py")),
-               SRC / "api" / "knowledge_query.py"]
+    scanned = [
+        *sorted((SRC / "knowledge" / "retrieval").glob("*.py")),
+        SRC / "api" / "knowledge_query.py",
+    ]
     found = {
-        str(path.relative_to(SRC))
-        for path in scanned
-        if "<=>" in path.read_text(encoding="utf-8")
+        str(path.relative_to(SRC)) for path in scanned if "<=>" in path.read_text(encoding="utf-8")
     }
     assert found == FENCED
 
@@ -339,8 +345,9 @@ def corpus() -> Iterator[tuple[Any, dict[str, dict[str, np.ndarray]]]]:
 
 def _explain(pool: Any, project: str, vector: list[float]) -> str:
     where, params = dense.chunk_scope_clause(RetrieveSpec(queries=("q",), project_id=project))
-    sql, args = ann.ann_query(LIVE, columns=dense._DENSE_COLUMNS, where=where,
-                              where_params=params, vector=vector, k=10)
+    sql, args = ann.ann_query(
+        LIVE, columns=dense._DENSE_COLUMNS, where=where, where_params=params, vector=vector, k=10
+    )
     settings, select = sql.rsplit("; ", 1)
     conn = pool.getconn()
     try:

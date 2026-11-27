@@ -49,7 +49,11 @@ def calls(monkeypatch) -> list[tuple[str, tuple, dict]]:
     _patch(monkeypatch, seen, embedding_space_index, "stored_model_names", ["/x/me5b"])
     _patch(monkeypatch, seen, embedding_space_index, "coverage_warnings", [])
     _patch(
-        monkeypatch, seen, embedding_space_index, "apply_index_work", ["CREATE me5b", "COMMENT me5b", "DROP old"]
+        monkeypatch,
+        seen,
+        embedding_space_index,
+        "apply_index_work",
+        ["CREATE me5b", "COMMENT me5b", "DROP old"],
     )
     return seen
 

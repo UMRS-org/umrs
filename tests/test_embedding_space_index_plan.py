@@ -18,17 +18,13 @@ from umrs.knowledge.embedding_spaces import (
     IndexState,
 )
 
-
 SPACE = EmbeddingSpace(
     space_id="me5b",
     model_name="/models/me5b",
     dimension=768,
     legacy_names=("intfloat/multilingual-e5-base", "me5b"),
 )
-SIGNATURE = (
-    "umrs-space:v1 space=me5b dim=768 "
-    "names=/models/me5b,intfloat/multilingual-e5-base,me5b"
-)
+SIGNATURE = "umrs-space:v1 space=me5b dim=768 names=/models/me5b,intfloat/multilingual-e5-base,me5b"
 
 
 # ── index_signature / comment_index_sql ─────────────────────────────────────
@@ -93,7 +89,9 @@ def test_an_invalid_build_is_dropped_and_rebuilt():
     assert es.index_actions(SPACE, state) == (DROP, CREATE, _comment())
 
 
-@pytest.mark.parametrize("comment", [None, "", "umrs-space:v1 space=me5b dim=768 names=/models/me5b"])
+@pytest.mark.parametrize(
+    "comment", [None, "", "umrs-space:v1 space=me5b dim=768 names=/models/me5b"]
+)
 def test_a_stale_or_missing_comment_is_rebuilt(comment):
     state = IndexState(exists=True, valid=True, comment=comment)
     assert es.index_actions(SPACE, state) == (DROP, CREATE, _comment())

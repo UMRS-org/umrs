@@ -107,23 +107,30 @@ def plan_index_work(
     ``statements = actions(space, states.get(space.space_id, IndexState()))``;
     a space with no statements is left out; else append
     ``IndexWork(space.space_id, space.index_name, statements)``."""
-    known_ids = {space.space_id for space in spaces}
-    requested = only or ()
-    for space_id in requested:
-        if space_id not in known_ids:
-            raise EmbeddingSpaceError(
-                CODE_INVALID, f"unknown embedding space id {space_id!r}"
-            )
-    selected = set(requested) if requested else None
-
-    work = []
-    for space in spaces:
-        if selected is not None and space.space_id not in selected:
-            continue
+    selected = _selected_spaces(spaces, only)
+    work: list[IndexWork] = []
+    for space in selected:
         statements = actions(space, states.get(space.space_id, IndexState()))
         if statements:
             work.append(IndexWork(space.space_id, space.index_name, statements))
     return work
+
+
+def _selected_spaces(
+    spaces: Sequence[EmbeddingSpace], only: Sequence[str] | None
+) -> list[EmbeddingSpace]:
+    """``spaces`` restricted to the ids in ``only`` (all when None/empty),
+    in the order of ``spaces``; an unknown id raises ``CODE_INVALID``."""
+    if not only:
+        return list(spaces)
+    known_ids = {space.space_id for space in spaces}
+    for space_id in only:
+        if space_id not in known_ids:
+            raise EmbeddingSpaceError(
+                CODE_INVALID, f"unknown embedding space id {space_id!r}"
+            )
+    wanted = set(only)
+    return [space for space in spaces if space.space_id in wanted]
 
 
 def apply_index_work(conn: Any, work: Sequence[IndexWork]) -> list[str]:
