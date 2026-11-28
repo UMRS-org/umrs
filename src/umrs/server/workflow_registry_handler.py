@@ -15,6 +15,7 @@ Catalog file: <resolved UMRS config dir>/workflow_catalog.json
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import logging
@@ -1140,7 +1141,9 @@ def _keep_run_spec(prior: Any, record: Any) -> None:
     """Wave C (K19): a grant run's spec may be composed again before its
     first submit; a re-dispatch keeps the one the record already holds
     (the durable job spec carries the first)."""
-    same = getattr(prior, "grant_id", None) and prior.grant_id == getattr(record, "grant_id", None)
+    same = getattr(prior, "grant_id", None) and prior.grant_id == getattr(
+        record, "grant_id", None
+    )
     if same and prior.run_spec_b64 and prior.run_spec_id != record.run_spec_id:
         record.update(run_spec_b64=prior.run_spec_b64, run_spec_id=prior.run_spec_id)
 
@@ -1368,6 +1371,30 @@ def _job_execution_id(job: dict[str, Any], execution_id: str) -> str:
     return existing if isinstance(existing, str) and existing else execution_id
 
 
+def _serialized_durable_job(store: Any, job: Any) -> dict[str, Any]:
+    from umrs.server.job_tracking_handler import _serialize_job
+
+    attempts = store.get_attempts_for_job(job.job_id)
+    return _serialize_job(job, attempts)
+
+
+def _existing_durable_job(
+    job_backend: DurableJobCommandBackend | None,
+    params: dict[str, Any],
+    idempotency_key: str | None,
+) -> dict[str, Any] | None:
+    """A read-only lookup for an already accepted plan commit. In particular,
+    a budget-only denial must not submit again merely to discover its row."""
+    if job_backend is None or not idempotency_key:
+        return None
+    store = getattr(job_backend, "_job_store", None)
+    finder = getattr(store, "get_job_by_idempotency_key", None)
+    if finder is None:
+        return None
+    job = finder(_workflow_project_id(params), idempotency_key)
+    return _serialized_durable_job(store, job) if job is not None else None
+
+
 def _submit_durable_workflow_run(
     *,
     client_id: str,
@@ -1384,6 +1411,7 @@ def _submit_durable_workflow_run(
     source_sha256: str | None = None,
     intent: dict[str, str] | None = None,
     scope: dict[str, str] | None = None,
+    existing_job: dict[str, Any] | None = None,
 ) -> str:
     spec: dict[str, Any] = {
         "workflow_name": workflow_name,
@@ -1409,9 +1437,19 @@ def _submit_durable_workflow_run(
 
     stamp_origin_session(spec, origin_session_id)
     _stamp_scope(spec, scope)
-    raw = job_backend.submit_workflow_run(
-        client_id, _workflow_run_job_payload(params, spec, idempotency_key)
-    )
+    if existing_job is None:
+        raw = job_backend.submit_workflow_run(
+            client_id, _workflow_run_job_payload(params, spec, idempotency_key)
+        )
+    else:
+        raw = json.dumps(
+            {
+                "status": "ok",
+                "message": f"Job already exists: {existing_job.get('job_id')}",
+                "job": existing_job,
+            },
+            default=str,
+        )
     try:
         data = json.loads(raw)
     except json.JSONDecodeError as exc:
@@ -1425,6 +1463,24 @@ def _submit_durable_workflow_run(
     job = data.get("job") if isinstance(data.get("job"), dict) else {}
     durable_job_id = job.get("job_id")
     run_id = _job_execution_id(job, execution_id)
+    existing = _existing_run(data, run_id, execution_id)
+    job, intent, refused = _grant_replay(
+        job_backend=job_backend,
+        job=job,
+        existing=existing,
+        intent=intent,
+        client_id=client_id,
+        workflow_name=workflow_name,
+        params=params,
+        step_count=step_count,
+        workflow_version=workflow_version,
+        source_sha256=source_sha256,
+        verified_project=verified_project,
+        idempotency_key=idempotency_key,
+    )
+    if refused is not None:
+        return refused
+    source_path = _replayed_source_path(job, existing, intent, source_path)
     body: dict[str, Any] = {
         "status": "ok",
         "action": "run-workflow",
@@ -1442,7 +1498,7 @@ def _submit_durable_workflow_run(
             f"{durable_job_id or '<unknown>'} ({step_count} steps)"
         ),
     }
-    if _existing_run(data, run_id, execution_id):
+    if existing:
         # The idempotency key matched an existing job: no new run started.
         body["existing_run"] = True
     return _submit_answer(body, intent)
@@ -1456,7 +1512,9 @@ def _scope_record(scope: Any) -> dict[str, str]:
     """The bounded, known string fields of a run's verified scope."""
     if not isinstance(scope, dict):
         return {}
-    out = {key: str(scope.get(key) or "")[:limit] for key, limit in _SCOPE_FIELDS.items()}
+    out = {
+        key: str(scope.get(key) or "")[:limit] for key, limit in _SCOPE_FIELDS.items()
+    }
     return {key: value for key, value in out.items() if value}
 
 
@@ -1485,6 +1543,207 @@ def _existing_run(data: dict[str, Any], run_id: str, execution_id: str) -> bool:
     return run_id != execution_id or duplicate
 
 
+def _decoded_grant_body(gated: dict[str, str]) -> dict[str, Any] | None:
+    """A grant run spec whose recorded id is the digest of its exact bytes."""
+    try:
+        raw = base64.b64decode(gated.get("run_spec_b64", ""), validate=True)
+        body = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(body, dict) or hashlib.sha256(raw).hexdigest() != gated.get(
+        "run_spec_id"
+    ):
+        return None
+    return body
+
+
+def _grant_execution_matches(
+    body: dict[str, Any], spec: dict[str, Any], step_count: int
+) -> bool:
+    """The job's execution pointer is the run spec's own immutable run."""
+    steps = body.get("steps")
+    return (
+        body.get("run_id") == spec.get("execution_id")
+        and isinstance(steps, list)
+        and len(steps) == step_count
+    )
+
+
+#: Signed-plan and identity fields that two compositions of one grant run must
+#: share. Nonce, issue/expiry times and run id deliberately differ between
+#: compositions; the durable winner supplies their replayed values.
+_GRANT_REPLAY_BODY_FIELDS = (
+    "site",
+    "principal",
+    "login",
+    "account",
+    "project",
+    "workflow",
+    "version",
+    "source_sha256",
+    "params",
+)
+
+
+def _grant_intent_matches(
+    spec: dict[str, Any], current: dict[str, str], steps: int
+) -> bool:
+    """The durable grant envelope and the new admission name the same run."""
+    persisted = spec.get("intent")
+    if not isinstance(persisted, dict) or persisted.get("grant_id") != current.get(
+        "grant_id"
+    ):
+        return False
+    if persisted.get("workflow_steps_b64") != current.get("workflow_steps_b64"):
+        return False
+    old_body, new_body = _decoded_grant_body(persisted), _decoded_grant_body(current)
+    if old_body is None or new_body is None:
+        return False
+    return _grant_execution_matches(old_body, spec, steps) and all(
+        old_body.get(field) == new_body.get(field)
+        for field in _GRANT_REPLAY_BODY_FIELDS
+    )
+
+
+def _job_matches_grant_replay(
+    job: dict[str, Any],
+    *,
+    client_id: str,
+    workflow_name: str,
+    params: dict[str, Any],
+    workflow_version: str | None,
+    source_sha256: str | None,
+    verified_project: str | None,
+    idempotency_key: str | None,
+    allow_planned: bool = False,
+) -> bool:
+    """No replay across users, projects, plans or another signed workflow.
+    ``allow_planned`` is only for the bounded enqueue reconciliation; the
+    final replay always requires one of the durable, queued-or-later states."""
+    spec = job.get("spec")
+    if not isinstance(spec, dict):
+        return False
+    actual = (
+        job.get("user_id"),
+        job.get("project_id"),
+        job.get("job_type"),
+        job.get("idempotency_key"),
+        spec.get("workflow_name"),
+        spec.get("workflow_version"),
+        spec.get("source_sha256"),
+        spec.get("params"),
+        spec.get(VERIFIED_PROJECT_SPEC_KEY),
+    )
+    expected = (
+        client_id,
+        _workflow_project_id(params),
+        "workflow_run",
+        idempotency_key,
+        workflow_name,
+        workflow_version,
+        source_sha256,
+        params,
+        verified_project,
+    )
+    committed_states = {"queued", "running", "completed", "failed", "cancelled"}
+    states = committed_states | {"planned"} if allow_planned else committed_states
+    source_path = spec.get("source_path")
+    valid_source = isinstance(source_path, str) and bool(source_path)
+    return actual == expected and valid_source and job.get("status") in states
+
+
+def _replayed_source_path(
+    job: dict[str, Any], existing: bool, intent: dict[str, str] | None, current: str
+) -> str:
+    """The response names the source reference accepted with the durable run,
+    not the catalog's later (equivalent-digest) location."""
+    if not existing or not intent or not intent.get("grant_id"):
+        return current
+    spec = job.get("spec") if isinstance(job.get("spec"), dict) else {}
+    return str(spec["source_path"])
+
+
+_GRANT_PLANNED_WAIT_SECONDS = 2.0
+_GRANT_PLANNED_POLL_SECONDS = 0.01
+
+
+def _reconcile_planned_grant_job(
+    job_backend: DurableJobCommandBackend,
+    job: dict[str, Any],
+    expected_winner: Callable[[dict[str, Any]], bool],
+) -> dict[str, Any]:
+    """Refresh an exact winner's short create→enqueue window. Each store read
+    is independent (no transaction spans a wait), and a broken PLANNED row
+    reaches the same fail-closed conflict instead of being accepted."""
+    store = getattr(job_backend, "_job_store", None)
+    if job.get("status") != "planned" or store is None or not expected_winner(job):
+        return job
+    deadline = time.monotonic() + _GRANT_PLANNED_WAIT_SECONDS
+    waiter = threading.Event()
+    while job.get("status") == "planned" and expected_winner(job):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        waiter.wait(min(_GRANT_PLANNED_POLL_SECONDS, remaining))
+        refreshed = store.get_job(str(job.get("job_id") or ""))
+        job = _serialized_durable_job(store, refreshed)
+    return job
+
+
+def _grant_conflict(idempotency_key: str | None) -> str:
+    body = {"status": "error", "message": "idempotency_key already in use"}
+    if idempotency_key:
+        # The run-intent API's existing typed 409 is the commit route's one
+        # conflict mapping. A still PLANNED row is not an accepted execution
+        # and never returns its ids; ``workflows.plan_stale`` is a route-local
+        # error and cannot be mapped from this handler response.
+        body["code"] = "hpcaccess.intent_used"
+    return json.dumps(body)
+
+
+def _grant_replay(
+    *,
+    job_backend: DurableJobCommandBackend,
+    job: dict[str, Any],
+    existing: bool,
+    intent: dict[str, str] | None,
+    client_id: str,
+    workflow_name: str,
+    params: dict[str, Any],
+    step_count: int,
+    workflow_version: str | None,
+    source_sha256: str | None,
+    verified_project: str | None,
+    idempotency_key: str | None,
+) -> tuple[dict[str, Any], dict[str, str] | None, str | None]:
+    """A duplicate grant commit returns the persisted envelope, not the new
+    composition. One-shot intents and ordinary runs keep their old behavior;
+    a corrupt or foreign pointer fails closed without ids."""
+    if not existing or not intent or not intent.get("grant_id"):
+        return job, intent, None
+
+    def expected_winner(candidate: dict[str, Any]) -> bool:
+        spec = candidate.get("spec") if isinstance(candidate.get("spec"), dict) else {}
+        identity = _job_matches_grant_replay(
+            candidate,
+            client_id=client_id,
+            workflow_name=workflow_name,
+            params=params,
+            workflow_version=workflow_version,
+            source_sha256=source_sha256,
+            verified_project=verified_project,
+            idempotency_key=idempotency_key,
+            allow_planned=True,
+        )
+        return identity and _grant_intent_matches(spec, intent, step_count)
+
+    job = _reconcile_planned_grant_job(job_backend, job, expected_winner)
+    if expected_winner(job) and job.get("status") != "planned":
+        spec = job["spec"]
+        return job, dict(spec["intent"]), None
+    return job, None, _grant_conflict(idempotency_key)
+
+
 def _stamp_intent(
     spec: dict[str, Any], intent: dict[str, str] | None, key: str | None
 ) -> str | None:
@@ -1498,7 +1757,9 @@ def _stamp_intent(
     if key:
         return key
     if intent.get("grant_id"):  # wave C: one durable job per grant run
-        return _durable_key(f"grant-run:{intent['grant_id']}:{spec.get('execution_id')}")
+        return _durable_key(
+            f"grant-run:{intent['grant_id']}:{spec.get('execution_id')}"
+        )
     return _durable_key(f"intent:{intent['id']}")
 
 
@@ -1522,16 +1783,21 @@ def _gated_answer(gated: dict[str, str]) -> dict[str, str]:
     """The answer's ids of a gated run: ``intent_id``, or (wave C) the
     run's ``grant_id`` and ``run_spec_id``."""
     if gated.get("grant_id"):
-        return {"grant_id": gated["grant_id"], "run_spec_id": gated.get("run_spec_id", "")}
+        return {
+            "grant_id": gated["grant_id"],
+            "run_spec_id": gated.get("run_spec_id", ""),
+        }
     return {"intent_id": gated["id"]}
 
 
 def _submit_answer(body: dict[str, Any], intent: dict[str, str] | None) -> str:
-    """The submit's answer (with the run's ``intent_id``); a second trigger
-    of one intent is ``intent_used``."""
+    """The submit's answer (with its gated ids). A repeated grant-backed plan
+    commit returns its existing execution; a second trigger of a one-shot
+    signed intent remains ``intent_used``."""
     if intent:
         body.update(_gated_answer(intent))
-    if not (intent and body.get("existing_run")):
+    reused = bool(intent and body.get("existing_run"))
+    if not reused or bool(intent and intent.get("grant_id")):
         return json.dumps(body, default=str)
     from umrs.server.run_intent_admission import error_json
 
@@ -1601,11 +1867,83 @@ def _require_plan_refusal(
     )
 
 
+def _composed_grant_admission(
+    identity: Any,
+    payload: dict[str, Any],
+    params: dict[str, Any],
+    run: dict[str, Any],
+    target: _RunTarget,
+) -> Any:
+    """The unchanged first-submission grant checks, stopping with the
+    composed run in hand immediately before its advisory budget check."""
+    from umrs.hpc_accounts.grants import signed_body
+    from umrs.server import grant_admission as grant
+
+    rows, ctx = grant.grant_rows(identity)
+    row = grant.choose_grant(
+        rows,
+        ctx,
+        str(payload.get("grant_id") or ""),
+        run,
+        str(identity.slurm_account or ""),
+    )
+    signed = signed_body(row)
+    grant.check_params(signed, run, params)
+    body = grant.composed_run_spec(
+        target, identity, run, params, signed, payload.get("inputs")
+    )
+    gated = grant.encode_run(row["grant_id"], body, target.workflow_json)
+    grant.check_covers(row, gated)
+    return gated
+
+
+def _grant_hpc_admission(
+    identity: Any,
+    payload: dict[str, Any],
+    params: dict[str, Any],
+    run: dict[str, Any],
+    target: _RunTarget,
+) -> tuple[Any, str | None]:
+    """A grant run retains its verified composition when *only* the budget
+    rejects the retry. The caller may then replay its exact durable row; every
+    grant/signature/coverage check above still runs on every attempt."""
+    from umrs.hpc_accounts.site_profile import published
+    from umrs.hpc_accounts.usage_ledger import BudgetExceeded, LedgerUnavailable
+    from umrs.server import grant_admission as grant
+    from umrs.server.run_intent_admission import RunAdmission
+
+    try:
+        gated = _composed_grant_admission(identity, payload, params, run, target)
+    except Exception as exc:
+        refused = grant.refusal_json(exc)
+        if refused is None:
+            raise
+        return None, refused
+    try:
+        grant.check_run_budget(gated.body, published(grant.ctx_site())[0])
+    except (BudgetExceeded, LedgerUnavailable) as exc:
+        admitted = RunAdmission(dict(gated.body["params"]), grant=gated)
+        return (
+            admitted if isinstance(exc, BudgetExceeded) else None,
+            grant.refusal_json(exc),
+        )
+    return RunAdmission(dict(gated.body["params"]), grant=gated), None
+
+
+def _is_grant_admission(identity: Any, payload: dict[str, Any]) -> bool:
+    from umrs.server.hpc_user_work import is_user_account
+
+    signed = payload.get("intent") or payload.get("signature")
+    return is_user_account(identity) and not signed
+
+
 def _hpc_admission(
     target: _RunTarget,
     client_id: str,
     projects: tuple[str | None, str | None],
     payload: dict[str, Any],
+    *,
+    replay_aware: bool = False,
 ) -> tuple[Any, str | None]:
     """``(admission, None)`` or ``(None, error JSON)``: the typed
     ``hpcaccess.*`` refusal when the run would use this site's HPC lane and
@@ -1636,7 +1974,61 @@ def _hpc_admission(
         "principal": client_id,
     }
     params = payload.get("params", {})
+    if replay_aware and _is_grant_admission(identity, payload):
+        return _grant_hpc_admission(identity, payload, params, run, target)
     return admit_run(identity, payload, params, run, execution_exists, target)
+
+
+def _durable_admission_answer(
+    *,
+    target: _RunTarget,
+    admission: Any,
+    refused: str | None,
+    client_id: str,
+    payload: dict[str, Any],
+    identity_verified: bool,
+    job_backend: DurableJobCommandBackend,
+    verified_project: str | None,
+    idempotency_key: str | None,
+    existing_job: dict[str, Any] | None,
+) -> str | None:
+    """Answer from a new submit or an exact existing grant row. A failed
+    budget-only replay returns None so the original owner error survives."""
+    if admission is None or admission.grant is None:
+        existing_job = None
+    budget_retry = _response_field(refused or "", "code")
+    if refused and (
+        existing_job is None or budget_retry != "hpcaccess.budget_exceeded"
+    ):
+        return None
+    answer = _submit_durable_workflow_run(
+        client_id=client_id,
+        workflow_name=str(target.entry.get("name")),
+        params=admission.params,
+        execution_id=admission.new_execution_id(),
+        source_path=target.source_path,
+        step_count=target.step_count,
+        job_backend=job_backend,
+        verified_project=verified_project,
+        origin_session_id=payload.get("_origin_session_id"),
+        idempotency_key=idempotency_key,
+        workflow_version=target.version,
+        source_sha256=target.digest,
+        intent=admission.intent_spec(),
+        scope=_verified_scope(payload, identity_verified),
+        existing_job=existing_job,
+    )
+    if refused and _response_field(answer, "status") != "ok":
+        return None
+    return answer
+
+
+def _response_field(raw: str, field: str) -> Any:
+    try:
+        body = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    return body.get(field) if isinstance(body, dict) else None
 
 
 def _run_refusal(exc: ValueError) -> str:
@@ -1686,7 +2078,10 @@ def _handle_run_workflow(
     params = payload.get("params", {})
     if idempotency_key is None:
         refusal = _require_plan_refusal(
-            payload["workflow_name"], params, job_backend, signed=bool(payload.get("intent"))
+            payload["workflow_name"],
+            params,
+            job_backend,
+            signed=bool(payload.get("intent")),
         )
         if refusal:
             return refusal
@@ -1704,29 +2099,34 @@ def _handle_run_workflow(
         )
     except ValueError as exc:
         return _run_refusal(exc)
+    existing_job = _existing_durable_job(job_backend, params, idempotency_key)
     admission, refused = _hpc_admission(
-        target, client_id, (caller_project, user_work_project), payload
+        target,
+        client_id,
+        (caller_project, user_work_project),
+        payload,
+        replay_aware=existing_job is not None,
     )
-    if refused:
-        return refused
-
     if job_backend is not None:
-        return _submit_durable_workflow_run(
+        answer = _durable_admission_answer(
+            target=target,
+            admission=admission,
+            refused=refused,
             client_id=client_id,
-            workflow_name=str(target.entry.get("name")),
-            params=admission.params,
-            execution_id=admission.new_execution_id(),
-            source_path=target.source_path,
-            step_count=target.step_count,
+            payload=payload,
+            identity_verified=identity_verified,
             job_backend=job_backend,
             verified_project=caller_project,
-            origin_session_id=payload.get("_origin_session_id"),
             idempotency_key=idempotency_key,
-            workflow_version=target.version,
-            source_sha256=target.digest,
-            intent=admission.intent_spec(),
-            scope=_verified_scope(payload, identity_verified),
+            existing_job=existing_job,
         )
+        if answer is not None:
+            return answer
+    if refused:
+        # A different plan/project behind this key never changes the owner's
+        # original budget error into a replay (or reveals the durable ids).
+        return refused
+
     return _run_in_process(
         target,
         client_id,
